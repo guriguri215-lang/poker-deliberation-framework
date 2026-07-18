@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Poker Hand"
+  short_description: "Normalize and audit poker hands with reproducible calculations"
+  default_prompt: "Use $review-poker-hand to normalize and review this hand without inventing missing data."

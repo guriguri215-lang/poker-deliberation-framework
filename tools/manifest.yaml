@@ -1,0 +1,273 @@
+version: 1
+policy:
+  default_timeout_seconds: 30
+  local_memory_policy: structural_input_node_work_caps
+  default_output_limit_bytes: 1000000
+  default_run_limit_bytes: 10000000
+  external_execution_requires_approval: true
+tools:
+  - name: pot_odds
+    purpose: Exact pot odds and break-even call equity
+    supported_games: [NLHE, PLO, generic]
+    input_schema: {pot_before_bet: number, opponent_bet: number, call_cost: number, expected_rake: number}
+    output_schema: {required_equity: number, final_pot_after_rake: number}
+    exact_or_approximate: exact
+    assumptions: [All amounts use one currency or chip unit]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate pot_odds --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [known-pot-100-bet-50-call-50]
+  - name: break_even_fold
+    purpose: Exact zero-equity bluff break-even fold frequency
+    supported_games: [generic]
+    input_schema: {risk: number, reward: number}
+    output_schema: {break_even_fold_frequency: number}
+    exact_or_approximate: exact
+    assumptions: [Called branch has zero equity and risk/reward are incremental]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate break_even_fold --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [risk-50-reward-100]
+  - name: mdf
+    purpose: Exact minimum defense frequency for a one-bet toy model
+    supported_games: [generic]
+    input_schema: {pot_before_bet: number, bet: number}
+    output_schema: {minimum_defense_frequency: number, minimum_defense_percent: number}
+    exact_or_approximate: exact
+    assumptions: [Single bet, no future action, zero-equity bluff indifference model]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate mdf --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [pot-10-bet-5]
+  - name: spr
+    purpose: Exact stack-to-pot ratio
+    supported_games: [NLHE, PLO, generic]
+    input_schema: {effective_stack: number, pot: number}
+    output_schema: {spr: number}
+    exact_or_approximate: exact
+    assumptions: [Inputs refer to the same decision point and unit]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate spr --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [stack-97.5-pot-5.5]
+  - name: effective_stack
+    purpose: Minimum of supplied remaining stacks
+    supported_games: [NLHE, PLO, generic]
+    input_schema: {stacks: array}
+    output_schema: {effective_stack: number}
+    exact_or_approximate: exact
+    assumptions: [Stacks use one unit and refer to relevant active players]
+    complexity: O(players)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate effective_stack --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [minimum-of-three-stacks]
+  - name: rake_amount
+    purpose: Declared percentage rake with optional cap
+    supported_games: [cash, generic]
+    input_schema: {pot_total: number, rake_percent: number, rake_cap: number-or-null}
+    output_schema: {rake_amount: number, raw_rake: number}
+    exact_or_approximate: exact
+    assumptions: [rake_percent uses percentage points, declared rake timing applies]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate rake_amount --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [five-percent-with-cap]
+  - name: raked_call_ev
+    purpose: Call EV with declared final-pot rake
+    supported_games: [cash, generic]
+    input_schema: {equity: number, pot_after_bet: number, call_cost: number, rake_percent: number, rake_cap: number-or-null}
+    output_schema: {ev: number, rake_amount: number, final_pot_after_rake: number}
+    exact_or_approximate: exact
+    assumptions: [No future betting, supplied equity, rake taken from final pot]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate raked_call_ev --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [declared-rake-call-ev]
+  - name: bluff_ev
+    purpose: Single-street bluff or semi-bluff EV
+    supported_games: [generic]
+    input_schema: {fold_frequency: number, pot_before_bet: number, bet: number, equity_when_called: number}
+    output_schema: {ev: number, called_branch_ev: number}
+    exact_or_approximate: exact
+    assumptions: [Call-or-fold response, no rake, no future betting]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate bluff_ev --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [zero-equity-break-even-bluff]
+  - name: polar_river_bluff_fraction
+    purpose: Polarized river indifference bluff fraction
+    supported_games: [NLHE, PLO, generic]
+    input_schema: {pot_before_bet: number, bet: number}
+    output_schema: {bluff_fraction: number, bluff_percent: number}
+    exact_or_approximate: exact
+    assumptions: [River, polarized range, bluff-catcher, no rake]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate polar_river_bluff_fraction --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [pot-sized-river-bet]
+  - name: bayes_update
+    purpose: Bayesian posterior from supplied prior and likelihoods
+    supported_games: [generic]
+    input_schema: {prior: number, likelihood_given_h: number, likelihood_given_not_h: number}
+    output_schema: {posterior: number, evidence_probability: number}
+    exact_or_approximate: exact
+    assumptions: [Prior and likelihoods are supplied assumptions]
+    complexity: O(1)
+    resource_limits: {timeout_seconds: 1}
+    command: poker-deliberate calculate bayes_update --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [balanced-prior-likelihood-update]
+  - name: pot_reconstruction
+    purpose: Exact pot reconstruction from incremental contributions
+    supported_games: [generic]
+    input_schema: {starting_pot: number, contributions: array}
+    output_schema: {final_pot: number, pots_after_each_contribution: array}
+    exact_or_approximate: exact
+    assumptions: [Contributions are incremental and use one unit]
+    complexity: O(contributions)
+    resource_limits: {input_limit_bytes: 1000000}
+    command: poker-deliberate calculate pot_reconstruction --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [incremental-pot-reconstruction]
+  - name: combos
+    purpose: Hold'em combo expansion, weights, and blocker removal
+    supported_games: [NLHE]
+    input_schema: {hand_class_or_range: string, dead_cards: array}
+    output_schema: {combo_count: integer, combos_or_weights: array}
+    exact_or_approximate: exact
+    assumptions: [Canonical two-character cards]
+    complexity: O(range-combos)
+    resource_limits: {timeout_seconds: 2}
+    command: poker-deliberate calculate combos --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [pair-6, suited-4, offsuit-12]
+  - name: holdem_equity
+    purpose: Heads-up exact enumeration or seeded Monte Carlo equity
+    supported_games: [NLHE]
+    input_schema: {hero_range: string, villain_range: string, board: array, seed: integer, samples: integer}
+    output_schema: {hero_equity: number, method: string, confidence_interval_95: array}
+    exact_or_approximate: mixed
+    assumptions: [Heads-up, weighted combo independence before overlap filtering]
+    complexity: O(range-pairs * remaining-board-combinations) or O(samples)
+    resource_limits: {hard_exact_evaluations: 2000000, hard_samples: 1000000}
+    command: poker-deliberate calculate holdem_equity --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [known-showdown, seed-reproducibility, duplicate-card-rejection]
+  - name: icm
+    purpose: Independent Chip Model expected payouts
+    supported_games: [tournament]
+    input_schema: {stacks: array, payouts: array}
+    output_schema: {equities: array, equity_sum: number}
+    exact_or_approximate: exact-under-model
+    assumptions: [ICM independence assumption]
+    complexity: O(n * 2^n)
+    resource_limits: {hard_active_players: 12, hard_listed_players: 100}
+    command: poker-deliberate calculate icm --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [symmetry, prize-sum, zero-stack-boundary]
+  - name: matrix_game
+    purpose: Small two-player zero-sum equilibrium with verified duality gap
+    supported_games: [matrix]
+    input_schema: {matrix: array}
+    output_schema: {row_strategy: array, column_strategy: array, value: number, duality_gap: number}
+    exact_or_approximate: exact-support-enumeration-with-approximate-fallback
+    assumptions: [Two players, zero sum]
+    complexity: Exponential support enumeration
+    resource_limits: {hard_dimension: 32, hard_support_candidates: 250000, hard_fictitious_work: 5000000}
+    command: poker-deliberate calculate matrix_game --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [rock-paper-scissors]
+  - name: fixed_strategy_best_response
+    purpose: Best response to a fully fixed opponent strategy in a small finite extensive-form game
+    supported_games: [finite_extensive_form]
+    input_schema: {game: object, fixed_strategy: object, best_responder: integer}
+    output_schema: {value: number, pure_policy: object}
+    exact_or_approximate: exact
+    assumptions: [Perfect recall, finite acyclic tree, fixed opponent strategy]
+    complexity: Product of best-responder information-set action counts
+    resource_limits: {hard_policies: 1000000, hard_policy_node_work: 5000000, hard_depth: 256, dag_memoized: true}
+    command: poker-deliberate calculate fixed_strategy_best_response --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [shared-information-set, simple-fixed-strategy, kuhn-poker]
+  - name: ev_tree
+    purpose: Expected value of a supplied finite probability tree
+    supported_games: [generic]
+    exact_or_approximate: exact
+    assumptions: [Branch probabilities are supplied and sum to one]
+    resource_limits: {hard_nodes: 10000, hard_depth: 256}
+    command: poker-deliberate calculate ev_tree --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [weighted-terminal-values, cycle-rejection]
+  - name: hand_validator
+    purpose: Canonical hand card, action, stack, and pot validation
+    supported_games: [NLHE, PLO]
+    exact_or_approximate: exact-for-declared-rules
+    assumptions: [Incremental action amounts]
+    command: poker-deliberate calculate hand_validator --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [pydantic]
+    license: MIT
+    validation_tests: [duplicate-card, stack-underflow, pot-mismatch]
+  - name: sensitivity
+    purpose: Bounds and parameter impact over supplied scenarios
+    supported_games: [generic]
+    exact_or_approximate: exact-over-grid
+    assumptions: [Grid supplied by caller]
+    command: poker-deliberate calculate sensitivity --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: [python-standard-library]
+    license: MIT
+    validation_tests: [bounds, influence-ranking]
+  - name: solver_status
+    purpose: External solver capability discovery
+    supported_games: [NLHE]
+    exact_or_approximate: unavailable-until-configured
+    assumptions: []
+    command: poker-deliberate calculate solver_status --analysis-scope retrospective --input INPUT.json
+    version: 1.0.0
+    dependencies: []
+    license: MIT
+    validation_tests: [honest-unavailable]

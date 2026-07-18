@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools==80.9.0", "wheel==0.45.1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poker-deliberation-framework"
+version = "0.1.0"
+description = "Auditable, reproducible multi-agent poker analysis framework"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "poker-deliberation-framework contributors"}]
+dependencies = [
+  "pydantic>=2.12,<3",
+]
+
+[project.optional-dependencies]
+agents = ["openai-agents>=0.7"]
+dev = [
+  "hypothesis>=6.140",
+  "mypy>=1.18",
+  "pytest>=8.4",
+  "pytest-cov>=7",
+  "pyyaml>=6.0",
+  "ruff>=0.13",
+]
+
+[project.scripts]
+poker-deliberate = "poker_deliberation.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings"
+testpaths = ["tests"]
+markers = [
+  "golden: end-to-end golden scenario",
+  "property: property-based invariant",
+  "adversarial: prompt-injection and security behavior",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["runs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["poker_deliberation"]
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = "agents.*"
+ignore_missing_imports = true

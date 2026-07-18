@@ -1,0 +1,12 @@
+game_type: NLHE
+format: cash
+table_size: 2
+small_blind: 1
+big_blind: 2
+player: hero, SB, 100
+player: villain, BB, 100
+hero_player_id: hero
+hero_cards: As Kh
+action: preflop, hero, post_blind, 1
+action: preflop, villain, post_blind, 2
+action: preflop, hero, call, 1

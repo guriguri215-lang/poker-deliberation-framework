@@ -1,0 +1,4 @@
+interface:
+  display_name: "Audit Poker Claim"
+  short_description: "Verify poker math and game-theory claims with explicit evidence"
+  default_prompt: "Use $audit-poker-claim to verify this claim and clearly correct any mathematical error."

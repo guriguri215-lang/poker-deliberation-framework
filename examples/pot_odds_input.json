@@ -1,0 +1,6 @@
+{
+  "pot_before_bet": 100,
+  "opponent_bet": 50,
+  "call_cost": 50,
+  "expected_rake": 0
+}

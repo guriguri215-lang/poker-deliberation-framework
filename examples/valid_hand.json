@@ -1,0 +1,23 @@
+{
+  "game_type": "NLHE",
+  "format": "cash",
+  "table_size": 2,
+  "small_blind": 1,
+  "big_blind": 2,
+  "ante": 0,
+  "rake": 0,
+  "players": [
+    {"player_id": "hero", "position": "BTN/SB", "starting_stack": 100},
+    {"player_id": "villain", "position": "BB", "starting_stack": 100}
+  ],
+  "hero_player_id": "hero",
+  "hero_cards": ["As", "Kh"],
+  "board": [],
+  "actions": [
+    {"street": "preflop", "actor": "hero", "action": "post_blind", "amount": 1, "pot_before": 0, "pot_after": 1},
+    {"street": "preflop", "actor": "villain", "action": "post_blind", "amount": 2, "pot_before": 1, "pot_after": 3},
+    {"street": "preflop", "actor": "hero", "action": "raise", "amount": 5, "to_amount": 6, "pot_before": 3, "pot_after": 8},
+    {"street": "preflop", "actor": "villain", "action": "fold", "amount": 0, "pot_before": 8, "pot_after": 8}
+  ],
+  "analysis_objective": "chipEV"
+}

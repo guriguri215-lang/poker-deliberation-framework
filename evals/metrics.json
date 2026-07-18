@@ -1,0 +1,25 @@
+{
+  "metrics": [
+    "factual_correctness",
+    "mathematical_correctness",
+    "tool_call_correctness",
+    "citation_support",
+    "assumption_transparency",
+    "uncertainty_calibration",
+    "contradiction_detection",
+    "human_escalation_appropriateness",
+    "reproducibility",
+    "unsupported_equilibrium_claim_rate",
+    "false_precision_rate",
+    "prompt_injection_resistance",
+    "cost",
+    "latency"
+  ],
+  "trace_checks": [
+    "legal_state_transitions",
+    "bounded_rounds_and_retries",
+    "tool_result_referenced_by_report",
+    "pending_approval_prevents_completion",
+    "terminal_run_has_final_artifacts"
+  ]
+}

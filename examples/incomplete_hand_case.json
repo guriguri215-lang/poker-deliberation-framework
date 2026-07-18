@@ -1,0 +1,13 @@
+{
+  "kind": "hand",
+  "analysis_scope": "retrospective",
+  "raw_text": "トーナメント終盤。BTNでAKsを持ち、相手のオールインにコールした。正しかった？",
+  "objective": "unknown_chipEV_or_dollarEV",
+  "metadata": {
+    "expected_questions": [
+      "blinds, antes, stacks, positions and action amounts",
+      "payouts, remaining players and bounty structure",
+      "opponent range or scenarios"
+    ]
+  }
+}

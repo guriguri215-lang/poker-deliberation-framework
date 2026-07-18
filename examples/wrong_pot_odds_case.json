@@ -1,0 +1,33 @@
+{
+  "kind": "claim",
+  "analysis_scope": "retrospective",
+  "raw_text": "ポット100に相手が50ベットし、50をコールする必要エクイティは33.333%だ。",
+  "claims": [
+    {
+      "claim_id": "claim-pot-odds",
+      "text": "必要エクイティは33.333%",
+      "label": "USER_CLAIM",
+      "confidence": "C"
+    }
+  ],
+  "requested_tools": ["pot_odds"],
+  "metadata": {
+    "tool_inputs": {
+      "pot_odds": {
+        "pot_before_bet": 100,
+        "opponent_bet": 50,
+        "call_cost": 50,
+        "expected_rake": 0
+      }
+    },
+    "claim_checks": [
+      {
+        "claim_id": "claim-pot-odds",
+        "tool_name": "pot_odds",
+        "output_path": "required_equity",
+        "claimed_value": 0.3333333333,
+        "tolerance": 0.000000001
+      }
+    ]
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Poker Calculation"
+  short_description: "Run auditable poker calculators with validation metadata"
+  default_prompt: "Use $run-poker-calculation to compute this result and provide a reproducible command."

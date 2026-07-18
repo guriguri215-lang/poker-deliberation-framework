@@ -1,0 +1,32 @@
+{
+  "best_responder": 0,
+  "game": {
+    "root": "deal",
+    "nodes": {
+      "deal": {
+        "type": "chance",
+        "actions": {
+          "high": {"probability": 0.5, "child": "high-decision"},
+          "low": {"probability": 0.5, "child": "low-decision"}
+        }
+      },
+      "high-decision": {
+        "type": "player",
+        "player": 0,
+        "information_set": "hidden-card-decision",
+        "actions": {"a": "high-a", "b": "high-b"}
+      },
+      "low-decision": {
+        "type": "player",
+        "player": 0,
+        "information_set": "hidden-card-decision",
+        "actions": {"a": "low-a", "b": "low-b"}
+      },
+      "high-a": {"type": "terminal", "payoff": 1},
+      "high-b": {"type": "terminal", "payoff": 0},
+      "low-a": {"type": "terminal", "payoff": 0},
+      "low-b": {"type": "terminal", "payoff": 1}
+    }
+  },
+  "fixed_strategy": {}
+}

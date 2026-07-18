@@ -1,0 +1,19 @@
+{
+  "kind": "strategy",
+  "analysis_scope": "retrospective",
+  "raw_text": "100bb cash NLHEの全ゲーム木で正確なGTOレンジを出してほしい。レーキとベットサイズは未指定。",
+  "requested_tools": ["solver_status", "sensitivity"],
+  "metadata": {
+    "tool_inputs": {
+      "solver_status": {},
+      "sensitivity": {
+        "decision_threshold": 0,
+        "scenarios": [
+          {"name": "tight", "parameters": {"range": "tight"}, "value": -1.0},
+          {"name": "baseline", "parameters": {"range": "baseline"}, "value": 0.2},
+          {"name": "loose", "parameters": {"range": "loose"}, "value": 1.1}
+        ]
+      }
+    }
+  }
+}

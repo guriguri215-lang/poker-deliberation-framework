@@ -1,0 +1,13 @@
+{
+  "kind": "strategy",
+  "analysis_scope": "retrospective",
+  "raw_text": "公開された100bb・レーキなしのBTN chartを、50bb・高レーキ環境の正確なGTOとして使えるか。",
+  "assumptions": [
+    {
+      "assumption_id": "assumption-range-scenarios",
+      "text": "公開chartは対象条件と一致しないため、仮定レンジの一シナリオとしてだけ扱う",
+      "reason": "stack and rake mismatch",
+      "sensitivity": "compare tight, baseline, loose"
+    }
+  ]
+}

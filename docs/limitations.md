@@ -1,12 +1,10 @@
 # Current limitations
 
-- OpenAI Agents SDK and API key are absent in the inspected environment. The Provider boundary exists,
-  but outbound model execution is intentionally not implemented.
-- Developer Docs MCP could not be registered because the installed Codex executable returned access
-  denied. The official Codex Manual and official OpenAI web documentation were used instead.
-- The workspace contains an empty `.git` directory but no initialized Git repository. Choose either
-  `git init` (and an intentional first commit) or removal of the empty directory before relying on
-  Git-aware tooling; this repository does not make that ownership decision automatically.
+- `OpenAIAgentsProvider` outbound analyze is not implemented. It reports `disabled` and `available=false`
+  whether the optional SDK/API key is absent or present; the probes never imply outbound capability.
+- The workspace is an initialized Git repository. Local history can be audited offline, but remote
+  repository visibility, branch protection, and Actions logs remain UNKNOWN without an approved
+  external check.
 - No external poker solver, external card library, paid range, or private dataset is bundled.
 - No full NLHE game-tree equilibrium, CFR/CFR+, node locking, or solver exploitability computation.
 - Equity is heads-up NLHE only; multiway and PLO equity are unsupported.
@@ -28,7 +26,24 @@
   but the MVP has no OS-level preemptive CPU or memory sandbox. Providers must honor the cooperative
   cancellation contract. Any future external-code executor must use process isolation and true
   time/memory limits.
+- Budget fields for deliberation rounds, tool retries, and concurrency are not executed by the ordinary
+  orchestrator path. They are disabled capability declarations, not enforced runtime guarantees.
 - Redaction covers common structured keys and token forms, not arbitrary personal information or
   every possible secret encoding.
 - `audit-claim` without structured calculation inputs preserves a USER_CLAIM as unverified rather
   than guessing its truth.
+- The offline public preflight uses bounded pattern matching and package metadata; it is not proof that
+  every possible secret, PII encoding, or license issue is absent. It intentionally does not scan
+  ignored `user_materials/` or ignored runs. It locally scans reachable commit blobs and commit/tag/ref
+  metadata, redacts matched values and identity candidates to fingerprints, and keeps secret/PII status
+  UNKNOWN when an object, ref inventory, or supported text encoding cannot be read completely. Git
+  author/committer/tagger identities are review candidates, not confirmed personal information.
+- CPython 3.11-3.13 on Windows/Ubuntu is a candidate matrix inferred from `requires-python`, not a set
+  of verified rows. Rows not executed locally or in CI remain UNKNOWN.
+- On Windows, pytest path viability depends on the combined depth of the clone and temp paths and on
+  long-path support in the OS/process configuration. The short workspace-local automatic temp reduces
+  this risk but does not establish support for arbitrarily deep clone or explicit `--basetemp` paths.
+- Pytest may leave empty session directories after its own retention cleanup. The repository does not
+  recursively remove the shared temp root or other sessions because hook ordering and concurrent runs
+  make such cleanup unsafe; empty ignored directories are an intentional local-only trade-off.
+- Wheel/sdist contents, clean install, remote CI, and a coverage threshold are not asserted in Phase 0.

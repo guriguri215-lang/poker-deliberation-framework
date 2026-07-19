@@ -1,4 +1,9 @@
-from poker_deliberation.providers.base import AgentProvider, ProviderAvailability, ProviderControl
+from poker_deliberation.providers.base import (
+    AgentProvider,
+    ProviderAvailability,
+    ProviderControl,
+    ProviderStatus,
+)
 from poker_deliberation.providers.local import LocalProvider
 from poker_deliberation.providers.mock import DeterministicMockProvider
 from poker_deliberation.providers.openai_agents import OpenAIAgentsProvider
@@ -10,4 +15,5 @@ __all__ = [
     "OpenAIAgentsProvider",
     "ProviderAvailability",
     "ProviderControl",
+    "ProviderStatus",
 ]

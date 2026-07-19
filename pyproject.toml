@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Auditable, reproducible multi-agent poker analysis framework"
 readme = "README.md"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
 authors = [{name = "poker-deliberation-framework contributors"}]
 dependencies = [
   "pydantic>=2.12,<3",
@@ -37,6 +37,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers --disable-warnings"
 testpaths = ["tests"]
+tmp_path_retention_policy = "none"
 markers = [
   "golden: end-to-end golden scenario",
   "property: property-based invariant",

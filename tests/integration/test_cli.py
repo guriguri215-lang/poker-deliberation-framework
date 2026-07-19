@@ -12,6 +12,9 @@ def test_doctor_without_api_key(capsys) -> None:  # type: ignore[no-untyped-def]
     assert exit_code == 0
     assert payload["status"] == "ok"
     assert payload["external_solver"] == "unavailable"
+    assert payload["providers"]["local"]["status"] == "available"
+    assert payload["providers"]["openai_agents"]["status"] == "disabled"
+    assert payload["providers"]["openai_agents"]["available"] is False
 
 
 def test_calculate_cli(capsys) -> None:  # type: ignore[no-untyped-def]

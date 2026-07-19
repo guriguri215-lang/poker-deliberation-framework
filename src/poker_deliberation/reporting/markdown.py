@@ -15,6 +15,10 @@ def _bullets(values: list[str], empty: str = "なし") -> list[str]:
     return [f"- {value}" for value in values] if values else [f"- {empty}"]
 
 
+def _inline_json(value: object) -> str:
+    return f"`{json.dumps(value, ensure_ascii=False, sort_keys=True)}`"
+
+
 def render_markdown(report: FinalReport) -> str:
     lines = [
         "# ポーカー検討レポート",
@@ -86,8 +90,15 @@ def render_markdown(report: FinalReport) -> str:
                     "",
                     f"- 状態: `{result.status.value}`",
                     f"- 区分: `{result.exactness.value}`",
-                    f"- バージョン: `{result.version}`",
-                    f"- 実行時間: `{result.duration_seconds:.6f}s`",
+                    f"- バージョン: {_inline_json(result.version)}",
+                    f"- 実行時間(秒): {_inline_json(result.duration_seconds)}",
+                    f"- 仮定: {_inline_json(result.assumptions)}",
+                    f"- 警告: {_inline_json(result.warnings)}",
+                    f"- seed: {_inline_json(result.seed)}",
+                    f"- samples: {_inline_json(result.samples)}",
+                    f"- 信頼区間: {_inline_json(result.confidence_interval)}",
+                    f"- エラー: {_inline_json(result.error)}",
+                    f"- 再現コマンド: {_inline_json(result.reproduce_command)}",
                     "- 出力:",
                     "",
                     "```json",
@@ -96,8 +107,6 @@ def render_markdown(report: FinalReport) -> str:
                     "",
                 ]
             )
-            if result.error:
-                lines.extend([f"- エラー: {result.error}", ""])
     else:
         lines.extend(["- 計算ツールは実行されていません。", ""])
     lines.extend(

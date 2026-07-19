@@ -1,0 +1,80 @@
+# 能力と実行状態
+
+この文書は Phase 0 の能力表示契約です。`poker-deliberate doctor --format json` の
+`capabilities`、provider health、登録済みtool、追跡済みエージェント定義と照合します。
+
+## 状態の定義
+
+- **implemented**: 現在のローカル実行経路と回帰テストが存在する。
+- **disabled**: 境界や設定項目は存在するが、通常経路で意図的に実行不能にしている。
+- **unavailable**: 要求された能力を実行する実装・adapter・対象gameが同梱されていない。
+- **planned**: ロードマップ候補であり、Phase 0 の実装済み能力ではない。
+
+Providerの`available`は、現在`analyze`を実行できる場合だけ`true`です。providerの
+`disabled`と`unavailable`はどちらも`available=false`ですが、前者は意図的な実行停止、後者は
+実行前提の欠落を表します。CLI全体のdoctor `status=ok`は診断処理が完了したという意味で、
+全能力がavailableという意味ではありません。
+
+## Capability matrix
+
+| capability ID | 状態 | 実行上の意味 |
+|---|---|---|
+| `local_calculators` | **implemented** | 登録済みローカルtoolをtyped `ToolResult`として実行する。 |
+| `local_provider` | **implemented** | 境界検証用。文章的な専門分析やモデル推論は生成しない。 |
+| `openai_agents_outbound` | **disabled** | `OpenAIAgentsProvider.analyze`は未実装。SDK/API keyの有無にかかわらず外部送信しない。 |
+| `external_solver` | **unavailable** | `solver_status`は正直なUnavailableを返すだけで、外部solverを実行しない。 |
+| `full_nlhe_equilibrium` | **unavailable** | full NLHE game tree、CFR、node locking、検証済み均衡計算はない。 |
+| `heads_up_nlhe_equity` | **implemented** | heads-up NLHEに限り、上限付きexact enumerationまたはseed付きMonte Carloを実行する。 |
+| `multiway_or_plo_equity` | **unavailable** | multiway equityとPLO equityは未対応。 |
+| `documented_hand_parser` | **implemented** | 文書化したkey-value/player/action形式だけを保守的に正規化する。 |
+| `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
+| `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
+| `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
+| `phase_1_hardening` | **planned** | Phase 1の数学契約・manifest・run schema強化は今回の実装範囲外。 |
+
+## 20 tools、Codex 9役、Python 7役
+
+- **FACT**: `default_registry()`と`tools/manifest.yaml`には`20`個のtool名があり、計算または
+  capability照会の実行単位を表す。
+- **FACT**: `.codex/agents/`の`9`定義はCodexネイティブの役割である。orchestratorと開発専用
+  calculator builderを含む。
+- **FACT**: `ROLE_CATALOG`の`7`役はPython orchestratorが分析を配分する役であり、Codexの
+  9定義と同じ一覧ではない。
+- **FACT**: `LocalProvider`はこれら7役へ文章的な専門分析を供給せず、空の結論と制限を返す。
+  明示的に注入する`DeterministicMockProvider`はテスト用であり、外部モデル能力ではない。
+
+この数は品質指標ではありません。contract testは実装から件数を再計算し、文書との差を検出します。
+
+## Game、parser、sandbox境界
+
+- 主対象は事後のNLHE cash/tournament review。リアルタイム助言はfail-closedで拒否する。
+- equityはheads-up NLHEだけ。ICMは指定したpayout model、小規模gameは明示した有限modelだけを扱う。
+- free-text parserは文書化grammarだけを扱い、不明行を警告として保存する。
+- toolはpayload/work/output capを持つが、in-process実行を強制停止するOS sandboxではない。
+- solver実行、収束、対象game/rake/stackの一致がない結果をGTO・均衡・正確なrangeと表示しない。
+
+## 品質とplatform
+
+canonical quality gateは次の4コマンドです。
+
+```text
+python -m pytest
+ruff check .
+ruff format --check .
+mypy src
+```
+
+pytestの既定tempは`tests/conftest.py`により、ワークスペース内のignoredな
+`.pytest-tmp/s-<process-hex>-<nonce>/`へ分離します。呼出側の明示`--basetemp`は上書きしません。
+固定共有ディレクトリを再利用しないため、並行sessionが互いのtempを開始時に削除しません。
+
+- **ASSUMPTION**: `requires-python >=3.11`を根拠に、候補matrixはCPython 3.11-3.13、Windowsと
+  Ubuntuとする。
+- **FACT**: 今回ローカルで実行する環境はWindows / CPython 3.12である。
+- **FACT**: 自動temp名はWindowsのpath消費を抑えるため短縮し、session固有性を維持する。
+- **UNKNOWN**: 深いclone先・深い明示`--basetemp`・long-path設定の異なるWindows環境。これらは
+  `FileNotFoundError`等のOS path制約に影響され得るため、常時対応とは表示しない。
+- **UNKNOWN**: ローカルで実行していないOS/Python行、clean install、wheel/sdist、remote CIの結果。
+- **UNKNOWN**: coverage thresholdは人間承認値がないため、Phase 0では設定しない。
+
+公開判断は[公開前チェックリスト](public-release-checklist.md)を参照してください。

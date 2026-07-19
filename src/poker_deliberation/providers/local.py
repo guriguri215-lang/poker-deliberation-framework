@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from poker_deliberation.providers.base import ProviderAvailability, ProviderControl
+from poker_deliberation.providers.base import (
+    ProviderAvailability,
+    ProviderControl,
+    ProviderStatus,
+)
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport, ConfidenceGrade
 
 
 class LocalProvider:
     def availability(self) -> ProviderAvailability:
         return ProviderAvailability(
+            status=ProviderStatus.AVAILABLE,
             available=True,
             provider="local",
             reason="deterministic local validation and calculators are available",

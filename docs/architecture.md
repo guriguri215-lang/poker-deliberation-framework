@@ -22,14 +22,17 @@ followed by `CRITIQUE -> ADJUDICATION`. Sensitive requests enter `HUMAN_REVIEW_R
 Safe paths end through `FINAL_SYNTHESIS -> COMPLETED`; unavailable approved external execution may
 end at `FAILED_WITH_LIMITATIONS`.
 
-The application, not an SDK or model, owns transition legality, rounds, retries, runtime, concurrency,
-cost defaults, and terminal conditions.
+The application, not an SDK or model, owns transition legality, runtime checks, output/run caps,
+cost defaults, and terminal conditions. Budget fields for deliberation rounds, tool retries, and
+concurrency exist, but ordinary orchestration does not execute those controls; they are documented as
+disabled until their semantics are implemented and contract-tested.
 
 ## Provider boundary
 
-`LocalProvider` is the default and produces no invented expert prose. Optional OpenAI Agents SDK
-support first checks the package and API key. Its outbound implementation is intentionally disabled
-until explicit approval, data-handling design, and integration tests exist.
+`LocalProvider` is the default and produces no specialist prose. `OpenAIAgentsProvider` reports
+`disabled` and `available=false` for every SDK/API-key combination because outbound `analyze` is not
+implemented. Package and key probes are diagnostics, not proof of execution capability. No external
+data is sent.
 
 Every provider receives a role-specific `AgentContext`, not the complete `CaseInput`. Provider prose
 and claims remain `UNKNOWN` and cannot become a final conclusion without tool/evidence adjudication.
@@ -41,3 +44,8 @@ the disabled external provider cannot bypass this boundary, and the local provid
 Web pages, GitHub content, hand histories, ranges, and model output are untrusted data. Only typed
 input, validated tool results, primary evidence records, and explicit approvals cross into synthesis.
 New run IDs are created exclusively; only resume may mutate an existing run.
+
+High-level `implemented / disabled / unavailable / planned` states are centralized in
+`capabilities.py`, exposed by `doctor`, documented in `docs/capabilities.md`, and checked by contract
+tests. The offline public preflight scans only Git-tracked and non-ignored public candidates; it does
+not enumerate ignored user data or run artifacts.

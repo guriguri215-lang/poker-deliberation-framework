@@ -218,6 +218,11 @@ def _combo_tool(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _equity_tool(payload: dict[str, Any]) -> dict[str, Any]:
+    game_type = str(payload.get("game_type", "NLHE")).upper()
+    if game_type != "NLHE":
+        raise ValueError("holdem_equity supports NLHE only")
+    if "opponent_ranges" in payload or "villain_ranges" in payload:
+        raise ValueError("holdem_equity supports exactly one villain")
     return holdem_equity(
         hero_range=str(payload["hero_range"]),
         villain_range=str(payload["villain_range"]),

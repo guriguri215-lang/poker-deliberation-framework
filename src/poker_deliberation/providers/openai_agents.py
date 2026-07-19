@@ -6,30 +6,29 @@ import importlib.metadata
 import importlib.util
 import os
 
-from poker_deliberation.providers.base import ProviderAvailability, ProviderControl
+from poker_deliberation.providers.base import (
+    ProviderAvailability,
+    ProviderControl,
+    ProviderStatus,
+)
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport
 
 
 class OpenAIAgentsProvider:
     def availability(self) -> ProviderAvailability:
-        if importlib.util.find_spec("agents") is None:
-            return ProviderAvailability(
-                available=False,
-                provider="openai-agents",
-                reason="openai-agents package is not installed",
-            )
-        if not os.getenv("OPENAI_API_KEY"):
-            return ProviderAvailability(
-                available=False,
-                provider="openai-agents",
-                reason="OPENAI_API_KEY is not configured",
-                version=self._version(),
-            )
+        package_present = importlib.util.find_spec("agents") is not None
+        api_key_present = bool(os.getenv("OPENAI_API_KEY"))
+        package_state = "present" if package_present else "absent"
+        key_state = "configured" if api_key_present else "not configured"
         return ProviderAvailability(
-            available=True,
+            status=ProviderStatus.DISABLED,
+            available=False,
             provider="openai-agents",
-            reason="SDK and API key are available",
-            version=self._version(),
+            reason=(
+                "outbound analyze is not implemented and is disabled; "
+                f"SDK package is {package_state}; API key is {key_state}"
+            ),
+            version=self._version() if package_present else None,
         )
 
     @staticmethod
@@ -46,10 +45,6 @@ class OpenAIAgentsProvider:
         control: ProviderControl,
     ) -> AgentReport:
         control.raise_if_cancelled()
-        availability = self.availability()
-        if not availability.available:
-            raise RuntimeError(availability.reason)
         raise NotImplementedError(
-            "MVP defines the provider boundary but does not send user data externally; "
-            "implement after explicit approval and integration tests"
+            "OpenAIAgentsProvider outbound analyze is not implemented; no user data was sent"
         )

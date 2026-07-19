@@ -1,9 +1,49 @@
 # Progress
 
+## 2026-07-19 — Phase 0
+
+- **FACT**: `main` / `b149600e422ad2404a74348650a234f9b8de03bb`、clean worktreeから着手。
+- **FACT**: RM-001としてcanonical capability state、doctor出力、能力matrix、文書contractを追加。
+- **FACT**: RM-002としてOpenAI outbound providerをSDK/keyの有無にかかわらず`disabled`、
+  `available=false`とし、`analyze`を明示的なNotImplemented pathに統一。
+- **FACT**: RM-003としてpytest tempをignoredなworkspace-local session directoryへ分離し、
+  pathを短縮したsession固有名、明示`--basetemp`尊重、canonical 4 gateとPowerShell runnerを追加。
+- **FACT**: RM-008としてtracked/non-ignored worktreeと全Git historyを対象にするoffline preflight、
+  解決後worktree path境界、scan不完全時のsecret/PII `UNKNOWN`保持、UTF-16/非対応形式方針、
+  redacted fingerprint、synthetic canary分類、ignored-path/history fixture testを追加。
+- **FACT**: RM-009としてMarkdown ToolResultのstatus/exactness/assumptions/warnings/seed/samples/
+  confidence interval/version/duration/error/reproduction表示と4状態のgolden testを追加。
+- **FACT**: provider/Markdown/pytest temp/capability contract/preflightのtargeted testsは38件成功。
+- **FACT**: 追加`--basetemp`なしのcanonical `python -m pytest`は164件成功。
+- **FACT**: 一意なignored pathを明示`--basetemp`に指定したfull suiteも164件成功し、呼出側の
+  指定値を上書きしないcontractを確認。
+- **FACT**: `ruff check .`、`ruff format --check .`、`mypy src`が成功。mypy対象は41 source files。
+- **FACT**: quality runnerの直接`.ps1`起動はWindows ExecutionPolicyで拒否されたが、system設定を
+  変更しないprocess限定`-ExecutionPolicy Bypass`でrunnerと4 gateが成功。READMEへ実行形を反映。
+- **FACT**: CLI smokeはdoctor `ok` / OpenAI provider `disabled`、20 tools、exact pot odds 0.25、
+  hand review `completed`、`runs/<generated-run-id>/final_report.md`生成を確認。
+- **FACT**: Git metadata修正後のpublic preflight unit/history targeted testsは21件成功。
+- **FACT**: 修正後のcanonical `python -m pytest`は170件成功し、短い一意なignored path
+  `.pytest-tmp/m-019f796b`を明示したfull suiteも170件成功。
+- **FACT**: 最初に試した長い一意なignored `user_materials/` basetempではWindows path深度により
+  1件が`FileNotFoundError`、169件が成功した。既存の短いworkspace-local temp方針で再検証した。
+- **FACT**: 修正後の`ruff check .`、67 filesの`ruff format --check .`、`mypy src` 41 source filesが成功。
+- **FACT**: 修正後のCLI smokeはdoctor `ok` / OpenAI provider `disabled`、20 tools、exact pot odds
+  0.25、hand review `completed`、`runs/<generated-run-id>/final_report.md`生成を確認。
+- **FACT**: 最新offline preflightは
+  `user_materials/public-preflight-20260719-metadata-final-f21bdd34.json`へGit ignoredで保存。fail 0、pass 8、
+  review 2、unknown 3、実秘密候補0、説明付きsynthetic canary 4、PII候補10、metadata skipped 0。
+- **FACT**: 最新報告はcommit/ref metadataの完全性がtrue、tag 0件を正常処理し、14 findingsすべて
+  `[REDACTED]`、再抽出した候補値5種の平文一致0件、publication decisionは
+  `human_review_required`のまま。
+- **UNKNOWN**: setuptools/wheelのlicense metadata、remote Actions/log、未build wheel/sdist、
+  Windows CPython 3.12以外のOS/Python matrix、深いclone/temp pathとlong-path設定の組合せ、
+  coverage threshold。
+
 ## 2026-07-18
 
-- 再レビュー反例を追加し、現在の全126テストが成功。
-- Ruff lint、Ruff format check、mypy strictがすべて成功。
+- 当時の再レビュー反例を追加し、当時の126テストがworkspace-local basetempで成功。
+- 当時のRuff lint、Ruff format check、mypy strictが成功。現在のgate結果ではない。
 - scope fail-closed、blind isolation、provider入力境界、side-pot回帰を強化。
 
 ## 2026-07-17

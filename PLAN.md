@@ -1,62 +1,46 @@
 # 実装計画
 
-## 調査結果（2026-07-17 JST）
+## 現在の基準
 
-- 作業ディレクトリは空で、Gitは未初期化。
-- Windows / PowerShell 5.1。Codex Desktopパッケージは
-  `OpenAI.Codex_26.715.2305.0_x64`。CLI実行はアクセス拒否のためバージョン文字列を
-  直接取得できなかった。
-- Codex同梱Python 3.12.13を利用可能。`pydantic 2.13.4` は同梱済み。
-- `OPENAI_API_KEY`、OpenAI Python SDK、OpenAI Agents SDKは未導入。
-- Codex Manualは公式URLから2026-07-17に取得。Developer Docs MCPの登録は
-  `codex.exe` のアクセス拒否で失敗したため、Responses API / Agents SDKはOpenAI公式
-  ドキュメントをウェブ参照した。
-- 公式Manualで、プロジェクト設定は `.codex/config.toml`、カスタムエージェントは
-  `.codex/agents/*.toml`、リポジトリSkillsは `.agents/skills/*/SKILL.md` と確認した。
-- 現行モデルカタログと実行環境の両方で `gpt-5.6-sol` / `gpt-5.6-terra` を確認した。
+- **FACT**: Phase 0着手時の基準は`main`、HEAD
+  `b149600e422ad2404a74348650a234f9b8de03bb`、tracked/untracked差分なし。
+- **USER_CLAIM**: `user_materials/ROADMAP.md`は2026-07-19 JSTに人間承認済み。
+- **FACT**: 今回のscopeはRM-001、RM-002、RM-003、RM-008、RM-009だけ。
+- **FACT**: 外部通信、依存追加、solver/API実行、commit、tag、push、PR、release、公開は行わない。
 
-## 設計方針
+## Phase 0作業順
 
-1. APIキーなしで動く決定的なPythonコアを先に実装する。
-2. アプリケーション側が状態、予算、終了条件、承認、run artifactsを所有する。
-3. Agents SDKは任意Providerとし、未導入時は明示的なUnavailableを返す。
-4. 厳密計算、Monte Carlo、推定をToolResultのメタデータで区別する。
-5. 小規模best responseは純粋方策列挙でinformation-set制約を厳守する。
-6. 大規模NLHE均衡は解かず、外部SolverAdapterのUnavailableを返す。
-7. 外部パッケージ導入は承認後に専用 `.venv` へ限定する。
+- [x] AGENTS.md、承認済みroadmap、Git初期状態を確認し、既存差分がないことを確認する。
+- [x] RM-001: capability stateをコード/doctor/docsへ集約し、20 tools・Codex 9役・Python 7役を区別する。
+- [x] RM-002: providerのavailable/unavailable/disabled契約とSDK/key 4組合せをテストする。
+- [x] RM-003: pytest tempをworkspace-localかつsession固有にし、4 quality gateを統一する。
+- [x] RM-008: tracked/public候補/historyを対象とするoffline preflightと安全境界テストを追加する。
+- [x] RM-009: MarkdownへToolResult metadataを欠落なく表示し、4状態のgolden testを追加する。
+- [x] targeted/full pytest、Ruff lint/format、mypy、CLI smoke、実repository preflightを完走する。
+- [x] 最終Git状態とignored成果物を確認し、Phase 0完了可否を判定する。
 
-## 実装順序
+## 品質ゲート
 
-- [x] 環境・公式仕様調査
-- [x] PLAN / ADR /プロジェクト骨格
-- [ ] Pydanticスキーマ、状態機械、保存、承認
-- [ ] ローカル計算ツール
-- [ ] Provider、役割選択、オーケストレーター、レポート
-- [ ] CLIとrun再開・表示
-- [ ] CodexエージェントとSkills
-- [ ] docs / examples / evals
-- [ ] unit / property / integration / golden / adversarial tests
-- [ ] lint / format / type check
-- [ ] 4観点の独立read-onlyレビュー
-- [ ] 指摘修正と全検証再実行
+```text
+python -m pytest
+ruff check .
+ruff format --check .
+mypy src
+```
 
-## 完了ゲート
+追加でprovider/doctor、capability contract、pytest temp、public preflight、Markdown rendererの
+targeted tests、doctor/list-tools/pot_odds/reviewのCLI smoke、offline preflightを実行する。
 
-次を完了チェックリストとして使用する。
+**ASSUMPTION**: supported候補は`requires-python >=3.11`に基づくCPython 3.11-3.13、Windowsと
+Ubuntu。今回実行しないmatrix行は`UNKNOWN`であり、成功扱いにしない。coverage thresholdは
+人間承認値がないため追加しない。
 
-- 対象入力、仮定、制限、承認要否が明示されている。
-- exactとapproximateが分離され、再現コマンドとToolResultが保存される。
-- unit / property / integration / golden / adversarialテストが成功する。
-- `ruff check .`、`ruff format --check .`、`mypy src`が成功する。
-- レビュー指摘が修正済み、明示的に見送り、または制限事項として記録されている。
+## 非目標
 
-品質チェックが未実行、またはレビュー指摘が未処理の状態では完了としない。
+Phase 1以降、full NLHE solver/CFR、multiway/PLO equity、外部provider/solver、dependency変更、
+履歴書換え、公開操作は対象外。実装に不可欠でない変更はPhase 1候補として残す。
 
-## 公式資料
+## 履歴の扱い
 
-- Codex Manual: <https://developers.openai.com/codex/codex-manual.md>
-- OpenAI Agents SDK: <https://openai.github.io/openai-agents-python/>
-- Agents SDK human-in-the-loop:
-  <https://openai.github.io/openai-agents-python/human_in_the_loop/>
-- OpenAI model catalog: <https://developers.openai.com/api/docs/models>
-- Responses API reference: <https://platform.openai.com/docs/api-reference/responses>
+2026-07-17の初期構築計画は当時の履歴であり、現在の能力判断にはコード、doctor、contract test、
+今回の実行結果を優先する。過去のtest数やcoverage値を現在の成功としてコピーしない。

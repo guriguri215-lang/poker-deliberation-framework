@@ -16,10 +16,11 @@ import pydantic
 
 from poker_deliberation import __version__
 from poker_deliberation.agents import ROLE_CATALOG
+from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.config import AppConfig
 from poker_deliberation.normalization import normalize_hand_text
 from poker_deliberation.orchestrator import Orchestrator
-from poker_deliberation.providers import OpenAIAgentsProvider
+from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel
 from poker_deliberation.security import redact_sensitive
@@ -60,6 +61,7 @@ def _emit(value: Any, format_name: str) -> None:
 
 def doctor() -> dict[str, Any]:
     agents_provider = OpenAIAgentsProvider().availability()
+    local_provider = LocalProvider().availability()
     project_files = [
         "AGENTS.md",
         ".codex/config.toml",
@@ -74,14 +76,24 @@ def doctor() -> dict[str, Any]:
         "pydantic": pydantic.__version__,
         "openai_api_key_present": bool(os.getenv("OPENAI_API_KEY")),
         "openai_agents": agents_provider.model_dump(mode="json"),
+        "providers": {
+            "local": local_provider.model_dump(mode="json"),
+            "openai_agents": agents_provider.model_dump(mode="json"),
+        },
         "pytest_installed": importlib.util.find_spec("pytest") is not None,
         "ruff_installed": importlib.util.find_spec("ruff") is not None,
         "mypy_installed": importlib.util.find_spec("mypy") is not None,
         "project_files": {path: Path(path).exists() for path in project_files},
         "local_calculators": default_registry().names(),
+        "capabilities": capability_snapshot(),
         "external_solver": "unavailable",
         "notes": [
+            "Doctor status 'ok' means diagnostics completed; disabled or unavailable "
+            "capabilities remain listed.",
             "Local calculators and schema validation do not require an API key.",
+            "LocalProvider does not generate specialist prose.",
+            "OpenAIAgentsProvider outbound analyze is not implemented, even when SDK and "
+            "key are present.",
             "No user data is sent externally by the MVP.",
         ],
     }

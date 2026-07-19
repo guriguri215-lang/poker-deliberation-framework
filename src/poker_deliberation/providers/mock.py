@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from poker_deliberation.providers.base import ProviderAvailability, ProviderControl
+from poker_deliberation.providers.base import (
+    ProviderAvailability,
+    ProviderControl,
+    ProviderStatus,
+)
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport
 
 
@@ -18,6 +22,7 @@ class DeterministicMockProvider:
 
     def availability(self) -> ProviderAvailability:
         return ProviderAvailability(
+            status=ProviderStatus.AVAILABLE,
             available=True,
             provider="deterministic-mock",
             reason="scripted test reports are available",

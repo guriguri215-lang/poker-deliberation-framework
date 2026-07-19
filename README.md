@@ -1,11 +1,12 @@
 # poker-deliberation-framework
 
 監査可能・再現可能なポーカー問題検討MVPです。No-Limit Texas Hold'emのキャッシュと
-トーナメントを主対象に、Codexカスタムエージェント、決定的なPython状態機械、ローカル計算、
-承認台帳、run artifactsを組み合わせます。
+トーナメントの事後検討を主対象に、Codexカスタムエージェント定義、決定的なPython状態機械、
+ローカル計算、承認台帳、run artifactsを組み合わせます。既定の`LocalProvider`は文章的な
+専門分析やモデル推論を生成しません。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
-小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、全テストが
+小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
 動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。
 effective stack、SPR、MDF、レーキ、レーキ込みcall EV、bluff EV、polar river bluff fraction、
 Bayes更新も、仮定をToolResultへ明記する決定論ツールとして利用できます。
@@ -21,8 +22,9 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --no-deps --no-build-isolation -e .
 ```
 
-任意のOpenAI Agents SDK連携を後で実装・試験する場合だけ、次を使います。MVPはユーザーデータを
-外部送信しません。
+次の任意依存は将来のOpenAI Agents SDK adapter開発用です。現在の
+`OpenAIAgentsProvider.analyze`は未実装であり、SDKとAPI keyが存在してもproviderは`disabled`、
+`available=false`です。MVPはユーザーデータを外部送信しません。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e ".[agents]"
@@ -38,6 +40,9 @@ poker-deliberate list-agents
 
 現在の開発環境でeditable install前に実行する場合は、`$env:PYTHONPATH="src"` を設定し、
 `python -m poker_deliberation` を `poker-deliberate` の代わりに使えます。
+
+`doctor`の最上位`status=ok`は診断が完了した意味です。個別能力の`implemented / disabled /
+unavailable / planned`は[能力matrix](docs/capabilities.md)と`capabilities`出力を確認してください。
 
 ## CLI
 
@@ -133,15 +138,16 @@ FACT / CALCULATED / INFERENCE / ESTIMATE / ASSUMPTION / USER_CLAIM / UNKNOWNを�
 | `report-writer` | `report-writer` | レポート生成 |
 | `calculator-builder` | なし | 開発時だけ使うコード変更役 |
 
-Python MVPは常に`LocalProvider`を使い、モデルへ外部送信しません。
+Python MVPは常に`LocalProvider`を使い、モデルへ外部送信せず、文章的な専門分析を生成しません。
 `POKER_DELIBERATION_PROVIDER`は`local`だけを許可し、モデル名・推論強度の環境設定は未対応として
 エラーにします。外部providerは、承認と統合テスト後に`Orchestrator(provider=...)`へ明示注入します。
 成果物の保存先だけは`POKER_DELIBERATION_RUNS_DIR`でワークスペース内に変更できます。
 
 ## 状態と成果物
 
-状態はINTAKEからCOMPLETEDまたはFAILED_WITH_LIMITATIONSまで明示的に遷移します。無制限ループは
-なく、討論回数、ツール再試行、実行時間、並列数を設定で制限します。
+状態はINTAKEからCOMPLETEDまたはFAILED_WITH_LIMITATIONSまで明示的に遷移します。実行時間と
+artifact/output sizeの上限は通常経路で強制します。討論round、tool retry、concurrencyのbudget
+fieldは存在しますが、通常のorchestrator経路には未接続で`disabled`です。
 
 各runには次を保存します。
 
@@ -168,19 +174,45 @@ runs/<run_id>/
 
 ## 品質チェック
 
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-.\.venv\Scripts\ruff.exe check .
-.\.venv\Scripts\ruff.exe format --check .
-.\.venv\Scripts\mypy.exe src
+```text
+python -m pytest
+ruff check .
+ruff format --check .
+mypy src
 ```
 
-テストはunit、property、integration、golden、adversarialに分かれます。
+テストはunit、property、integration、golden、adversarialに分かれます。pytestのtempは
+`tests/conftest.py`がワークスペース内のignoredなセッション固有ディレクトリへ設定します。
+自動設定名はpath長を抑えた`.pytest-tmp/s-<pid-hex>-<nonce>/`で、呼出側が指定した
+`--basetemp`は変更しません。
+PowerShellでは次で同じ4 gateを順番に実行できます。system-wide ExecutionPolicyは変更しません。
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\check_quality.ps1
+```
+
+**ASSUMPTION**としてsupported候補はCPython 3.11-3.13、WindowsとUbuntuです。今回ローカルで
+実行していないmatrix行は`UNKNOWN`であり、成功とは扱いません。coverage thresholdは人間承認値が
+ないため設定していません。
+
+Windowsのpytest結果は、Python versionだけでなくclone先とtemp rootを合わせたpathの深さ、および
+OS/processのlong-path設定にも左右されます。今回の確認対象は現在のclone先と短い自動temp、または
+明示した短い`--basetemp`に限ります。深いclone/temp pathを常にサポートするとは判断せず、未実行の
+組合せは`UNKNOWN`です。
+
+## 公開前のローカル監査
+
+`scripts/public_preflight.py`はtracked worktree、非ignoredなuntracked候補、到達可能なGit履歴の
+blobとcommit/tag/ref metadataを外部通信なしで検査し、秘密・PII候補の値を表示せずredacted指紋だけの
+JSON/Markdown報告を生成します。objectの読取・parse・decodeまたはref列挙が不完全なら`UNKNOWN`を
+保持します。author/committer/tagger identityは機械的候補であり、個人情報の確定判定ではありません。
+ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実行方法と人間判断項目は
+[公開前チェックリスト](docs/public-release-checklist.md)を参照してください。
 
 ## 外部依存関係
 
 - Pydantic 2.x — MIT — 実行時の型付きスキーマ。
-- OpenAI Agents SDK — MIT — 任意。MVP既定経路では未導入・未送信。
+- OpenAI Agents SDK — MIT — 任意依存。outbound analyzeは未実装・disabled・未送信。
 - pytest / pytest-cov / PyYAML / Ruff / mypy — MIT、Hypothesis — MPL-2.0 — 開発時のみ。
 - setuptools / wheel — MIT — 固定されたbuild時依存。
 
@@ -190,11 +222,13 @@ runs/<run_id>/
 ## 文書
 
 - [Architecture](docs/architecture.md)
+- [Capabilities](docs/capabilities.md)
 - [Agent protocol](docs/agent-protocol.md)
 - [Calculation policy](docs/calculation-policy.md)
 - [Source policy](docs/source-policy.md)
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
+- [Offline public release checklist](docs/public-release-checklist.md)
 - [Independent review remediation](docs/review-remediation.md)
 
 ## ライセンス

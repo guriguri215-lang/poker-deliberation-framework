@@ -103,6 +103,12 @@ FACT / CALCULATED / INFERENCE / ESTIMATE / ASSUMPTION / USER_CLAIM / UNKNOWNを�
 [Codex実行プロンプト例](docs/example-prompts.md)にまとめています。サンプルハンドのレビュー、
 決定的計算、主張監査、不完全なハンドへの質問、手持ちハンド用テンプレートを収録しています。
 
+### ユーザー資料
+
+公開リポジトリへ含めたくない手持ちの資料や自作ツールは、`user_materials/`へ置けます。Codexは依頼に関連する資料がある場合に限り、必要な範囲を参照します。このフォルダでは`README.md`と`.gitignore`だけが追跡対象で、後から追加したファイルとサブフォルダはすべてGitから無視されます。
+
+資料は未検証のユーザー提供情報として扱われます。コード、マクロ、実行ファイルは自動実行せず、内容を外部サービスへ送信せず、公開情報として引用・再配布しません。APIキーなどの秘密情報は、Gitから無視されていても置かないでください。
+
 - `AGENTS.md`: Codexが自動適用する短い恒常ルール
 - `.codex/config.toml`: プロジェクト設定
 - `.codex/agents/*.toml`: 9体のエージェント定義。`developer_instructions`が各役の指示本体

@@ -1,0 +1,4 @@
+# Keep this directory in the repository, but never track user-provided contents.
+*
+!.gitignore
+!README.md

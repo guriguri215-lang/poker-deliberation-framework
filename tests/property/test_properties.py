@@ -25,7 +25,8 @@ def test_required_equity_is_probability(pot: float, bet: float, call: float) -> 
 def test_icm_prize_conservation(stacks: list[int]) -> None:
     payouts = [float(len(stacks) - index) for index in range(len(stacks))]
     result = calculate_icm(list(map(float, stacks)), payouts)
-    assert math.isclose(result["equity_sum"], sum(payouts), abs_tol=1e-8)
+    assert abs(result["equity_sum"] - sum(payouts)) <= result["verification_tolerance"]
+    assert result["conservation_verified"] is True
     assert all(0 <= value <= sum(payouts) for value in result["equities"])
 
 

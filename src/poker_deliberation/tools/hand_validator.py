@@ -44,9 +44,28 @@ def _contestable_pot_before_short_call(
     return prior_street_and_antes + current_street_contestable
 
 
-def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, object]:
-    if not math.isfinite(tolerance) or tolerance < 0:
+def _derived_chip_tolerance(hand: CanonicalHand) -> float:
+    magnitudes = [
+        hand.small_blind,
+        hand.big_blind,
+        hand.ante,
+        *(player.starting_stack for player in hand.players),
+    ]
+    for action in hand.actions:
+        magnitudes.extend(
+            value
+            for value in (action.amount, action.to_amount, action.pot_before, action.pot_after)
+            if value is not None
+        )
+    scale = max(1.0, *(abs(value) for value in magnitudes))
+    operation_bound = max(32, 4 * (len(hand.actions) + len(hand.players)))
+    return math.ulp(scale) * operation_bound
+
+
+def validate_hand(hand: CanonicalHand, *, tolerance: float | None = None) -> dict[str, object]:
+    if tolerance is not None and (not math.isfinite(tolerance) or tolerance < 0):
         raise ValueError("tolerance must be finite and non-negative")
+    tolerance = _derived_chip_tolerance(hand) if tolerance is None else tolerance
     errors: list[str] = []
     warnings: list[str] = []
     try:
@@ -253,6 +272,7 @@ def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, 
         history.append(f"{action.street.value}: {action.actor} {action.action}{amount}{to_amount}")
     return {
         "valid": not errors,
+        "verification_tolerance": tolerance,
         "errors": errors,
         "warnings": sorted(set(warnings)),
         "final_pot": pot,

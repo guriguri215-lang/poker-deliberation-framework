@@ -71,7 +71,8 @@ $review-poker-hand を使って examples/free_text_hand.txt を正規化し、�
 ```text
 $run-poker-calculation を使い、examples/pot_odds_input.json を入力として pot_odds を実行してください。
 入力の単位と前提条件を確認してから計算し、結果をCALCULATEDとして報告してください。
-ToolResultのstatus、exactness、assumptions、warningsを確認し、同じ結果を再現できるCLIコマンドも
+ToolResultのstatus、numeric_exactness（legacy exactnessだけではなく）、assumptions、warnings、
+verification/approximation metadataを確認し、同じ結果を再現できるCLIコマンドも
 示してください。暗算による別の数値は追加しないでください。
 ```
 

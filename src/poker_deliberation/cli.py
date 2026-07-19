@@ -22,7 +22,7 @@ from poker_deliberation.normalization import normalize_hand_text
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
 from poker_deliberation.reporting import render_markdown
-from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel
+from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools import default_registry
 
@@ -198,7 +198,18 @@ def main(argv: list[str] | None = None) -> int:
                 print("error: calculate is retrospective-only", file=sys.stderr)
                 return 2
             result = default_registry().execute(args.tool, _read_json(args.input))
-            _emit(redact_sensitive(result), args.format)
+            if args.format == "json":
+                rendered_result: object = redact_sensitive(result)
+            else:
+                rendered_result = render_markdown(
+                    FinalReport(
+                        run_id="standalone-calculation",
+                        conclusion="単独の計算結果です。状態・数値区分・仮定・誤差を確認してください。",
+                        tool_results=[result],
+                        reproduction_steps=[result.reproduce_command or "再現コマンドなし"],
+                    )
+                )
+            _emit(rendered_result, args.format)
             return 0 if result.status.value == "success" else 2
         if args.command == "list-tools":
             _emit(default_registry().describe(), args.format)

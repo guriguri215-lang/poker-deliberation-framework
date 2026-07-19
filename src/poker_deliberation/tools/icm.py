@@ -50,13 +50,18 @@ def calculate_icm(stacks: list[float], payouts: list[float]) -> dict[str, object
     equities = list(recurse(active, 0))
     expected_total = sum(equities)
     payable_total = sum(effective_payouts)
+    operation_upper_bound = max(1, math.factorial(len(active)) * max(1, len(effective_payouts)))
+    verification_tolerance = math.ulp(max(1.0, abs(payable_total))) * 64 * operation_upper_bound
+    sum_error = expected_total - payable_total
     return {
         "stacks": stacks,
         "payouts": payouts,
         "equities": equities,
         "equity_sum": expected_total,
         "payable_prize_sum": payable_total,
-        "sum_error": expected_total - payable_total,
+        "sum_error": sum_error,
+        "verification_tolerance": verification_tolerance,
+        "conservation_verified": abs(sum_error) <= verification_tolerance,
         "zero_stack_players": [index for index, stack in enumerate(stacks) if stack == 0],
         "warning": None,
         "model": "Independent Chip Model; future-game simulation and risk preferences excluded",

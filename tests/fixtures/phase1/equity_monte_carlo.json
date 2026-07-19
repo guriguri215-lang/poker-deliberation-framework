@@ -1,0 +1,7 @@
+{
+  "hero_range": "AKs",
+  "villain_range": "QQ",
+  "mode": "monte_carlo",
+  "samples": 100,
+  "seed": 19
+}

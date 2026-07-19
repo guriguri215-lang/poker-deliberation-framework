@@ -60,6 +60,10 @@ poker-deliberate resume RUN_ID --reject APPROVAL_ID --reason "外部実行を許
 
 各コマンドは `--format json` または `--format markdown` を受け付けます。計算入力と完全な
 ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンドがレポートに入ります。
+新しいcontract version 2では、旧3値`exactness`を互換用に残し、`numeric_exactness`で
+`exact` / `exact-under-model` / `floating-verified` / `approximate` / `unavailable`を区別します。
+20 toolのstrict input/output schema、前提、上限、単位、toleranceは
+[生成済みtool contracts](docs/tool-contracts.md)を参照してください。
 自由文ハンドは `key: value`、`player: id, position, stack`、
 `action: street, actor, action, amount[, to_amount]` の保守的な形式だけを正規化します。
 承認待ちのCLIはレポートを出力して終了コード3を返します。
@@ -69,7 +73,7 @@ ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンド
 
 CaseInputの `metadata.claim_checks` はUSER_CLAIMの値を計算出力と比較します。
 `examples/wrong_pot_odds_case.json` は「pot 100に50 bet、50 callの必要equityが33.3%」という
-誤りを、厳密計算25%で訂正する例です。
+誤りを、tool固有ULP policyで検証済みの浮動小数計算25%で訂正する例です。
 
 ```powershell
 poker-deliberate review-strategy --file examples\wrong_pot_odds_case.json --format markdown

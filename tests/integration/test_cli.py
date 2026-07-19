@@ -34,6 +34,30 @@ def test_calculate_cli(capsys) -> None:  # type: ignore[no-untyped-def]
     assert exit_code == 0
     assert payload["output"]["required_equity"] == 0.25
     assert payload["exactness"] == "exact"
+    assert payload["numeric_exactness"] == "floating-verified"
+    assert payload["contract_version"] == "2.0.0"
+    assert payload["verification"]["passed"] is True
+
+
+def test_calculate_cli_markdown_has_v2_json_parity_fields(capsys) -> None:  # type: ignore[no-untyped-def]
+    exit_code = main(
+        [
+            "calculate",
+            "pot_odds",
+            "--analysis-scope",
+            "retrospective",
+            "--input",
+            str(ROOT / "examples" / "pot_odds_input.json"),
+            "--format",
+            "markdown",
+        ]
+    )
+    rendered = capsys.readouterr().out
+    assert exit_code == 0
+    assert "- 数値区分: `floating-verified`" in rendered
+    assert '- 契約バージョン: `"2.0.0"`' in rendered
+    assert '"passed": true' in rendered
+    assert '"required_equity": 0.25' in rendered
 
 
 def test_cli_rejects_non_finite_json_numbers(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]

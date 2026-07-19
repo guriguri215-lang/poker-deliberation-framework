@@ -1,5 +1,34 @@
 # Progress
 
+## 2026-07-19 — Phase 1
+
+- **FACT**: `origin/main`のmerge commit `2a62e5cc6b7b8df8ae93e8efd638d80a0db217fd`、
+  clean worktreeから`codex/phase1-math-contracts`を作成した。
+- **FACT**: RM-004としてpriority 5 modulesの入力境界、fallback、failure、locator、warningを
+  unit/property/adversarial testで覆った。52 targeted testsでbranchを含む対象240 statements / 90
+  branchesが100%だった。global coverage thresholdは追加していない。
+- **FACT**: RM-005として旧3値`exactness`を互換projectionとして維持し、contract v2の
+  `numeric_exactness`に`exact` / `exact-under-model` / `floating-verified` / `approximate` /
+  `unavailable`を追加した。approximate successのmethod、stochastic/seed、samples/iterations、
+  interval/error、stopping conditionをschemaで強制した。
+- **FACT**: universal epsilonは導入せず、tool/field/unitごとのULP、caller-supplied matrix tolerance、
+  Monte Carlo interval、ICM conservation bound、chip magnitude由来toleranceを明示した。
+- **FACT**: RM-006として20 toolsのstrict typed input/output、前提、precondition、limit、unit、
+  failure、version、exactnessをcanonical definitionへ集約し、manifestとtool contracts文書を生成した。
+  round-trip、extra/missing field、version mismatch、registry/manifest/docs parity testsが成功した。
+- **FACT**: RM-007としてFraction known-answer、invariant、scale/order/symmetry、invalid boundary、
+  deterministic/seeded reproducibility、matrix sensitivityをlocal oracle/metamorphic packへ追加した。
+  外部oracle、package、solver、provider、datasetは使用していない。
+- **FACT**: final candidateのcanonical full pytestと一意なworkspace-local `--basetemp` full pytestは
+  ともに291件成功した。Ruff lint、72 filesのformat check、mypy 42 source filesも成功した。
+- **FACT**: CLI smokeはdoctor `ok`、20 tools、exact combos、floating-verified pot odds、seeded
+  approximate equity、unavailable solverを確認し、JSON/Markdown metadata parityも成功した。
+- **FACT**: offline public preflightはfail 0 / pass 8 / review 2 / unknown 3、secret候補0だった。
+  PII review候補は既存fixtureとGit identity metadataに限定され、Phase 1ファイル由来ではなかった。
+- **UNKNOWN**: dependency license metadataの一部、remote Actions/log、未build package内容、未実行の
+  OS/Python matrix、coverage release thresholdはPhase 1でも確定していない。
+- **FACT**: dependency追加、外部送信/取得、sub-agent、push、PR、tag、releaseは実行していない。
+
 ## 2026-07-19 — Phase 0
 
 - **FACT**: `main` / `b149600e422ad2404a74348650a234f9b8de03bb`、clean worktreeから着手。

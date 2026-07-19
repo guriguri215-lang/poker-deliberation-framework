@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -36,7 +37,21 @@ class ConfidenceGrade(StrEnum):
 
 
 class Exactness(StrEnum):
+    """Legacy three-value compatibility projection.
+
+    New results also expose ``numeric_exactness``.  This field remains stable so
+    version-1 JSON consumers can migrate without an enum-breaking change.
+    """
+
     EXACT = "exact"
+    APPROXIMATE = "approximate"
+    UNAVAILABLE = "unavailable"
+
+
+class NumericalExactness(StrEnum):
+    EXACT = "exact"
+    EXACT_UNDER_MODEL = "exact-under-model"
+    FLOATING_VERIFIED = "floating-verified"
     APPROXIMATE = "approximate"
     UNAVAILABLE = "unavailable"
 
@@ -335,6 +350,48 @@ class ToolRequest(StrictModel):
     input: dict[str, Any]
     requested_by: str = "orchestrator"
     requires_approval: bool = False
+    contract_version: str | None = None
+
+
+class TolerancePolicy(StrictModel):
+    """Algorithm/field-specific tolerance; never a repository-wide epsilon."""
+
+    fields: list[str] = Field(min_length=1)
+    kind: Literal["absolute", "relative", "absolute-or-relative", "ulp", "caller-supplied"]
+    absolute: NonNegativeFiniteFloat | None = None
+    relative: NonNegativeFiniteFloat | None = None
+    ulps: int | None = Field(default=None, ge=1)
+    formula: str | None = None
+    unit: str
+    rationale: str
+
+    @model_validator(mode="after")
+    def require_bound(self) -> TolerancePolicy:
+        if self.kind == "absolute" and self.absolute is None:
+            raise ValueError("absolute tolerance requires an absolute bound")
+        if self.kind == "relative" and self.relative is None:
+            raise ValueError("relative tolerance requires a relative bound")
+        if self.kind == "absolute-or-relative" and (self.absolute is None or self.relative is None):
+            raise ValueError("absolute-or-relative tolerance requires both bounds")
+        if self.kind == "ulp" and self.ulps is None:
+            raise ValueError("ulp tolerance requires an ulps bound")
+        if self.kind == "caller-supplied" and not self.formula:
+            raise ValueError("caller-supplied tolerance requires a formula")
+        return self
+
+
+class VerificationMetadata(StrictModel):
+    method: str = Field(min_length=1)
+    checks: list[str] = Field(min_length=1)
+    tolerance: TolerancePolicy
+    passed: bool
+
+
+class NumericalErrorMetadata(StrictModel):
+    metric: str = Field(min_length=1)
+    value: NonNegativeFiniteFloat
+    bound: NonNegativeFiniteFloat | None = None
+    unit: str
 
 
 class ToolResult(StrictModel):
@@ -344,16 +401,99 @@ class ToolResult(StrictModel):
     output: dict[str, Any] = Field(default_factory=dict)
     status: ToolStatus
     exactness: Exactness
+    numeric_exactness: NumericalExactness
+    contract_version: str = "1.0.0"
     assumptions: list[str] = Field(default_factory=list)
     version: str = "1.0.0"
+    model_qualifier: str | None = None
+    method: str | None = None
+    stochastic: bool | None = None
     seed: int | None = None
     samples: int | None = Field(default=None, ge=0)
+    iterations: int | None = Field(default=None, ge=0)
     confidence_interval: tuple[float, float] | None = None
+    confidence_level: float | None = Field(default=None, gt=0, lt=1, allow_inf_nan=False)
+    error_metadata: NumericalErrorMetadata | None = None
+    stopping_condition: str | None = None
+    verification: VerificationMetadata | None = None
     duration_seconds: float = Field(default=0, ge=0)
     warnings: list[str] = Field(default_factory=list)
     error: str | None = None
     reproduce_command: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_v1_numeric_exactness(cls, data: object) -> object:
+        if not isinstance(data, dict) or data.get("numeric_exactness") is not None:
+            return data
+        raw_exactness = data.get("exactness")
+        value = raw_exactness.value if isinstance(raw_exactness, Exactness) else raw_exactness
+        migrated = dict(data)
+        if isinstance(value, str):
+            migrated["numeric_exactness"] = {
+                Exactness.EXACT.value: NumericalExactness.EXACT.value,
+                Exactness.APPROXIMATE.value: NumericalExactness.APPROXIMATE.value,
+                Exactness.UNAVAILABLE.value: NumericalExactness.UNAVAILABLE.value,
+            }.get(value)
+        return migrated
+
+    @model_validator(mode="after")
+    def validate_numeric_contract(self) -> ToolResult:
+        projection = {
+            NumericalExactness.EXACT: Exactness.EXACT,
+            NumericalExactness.EXACT_UNDER_MODEL: Exactness.EXACT,
+            NumericalExactness.FLOATING_VERIFIED: Exactness.EXACT,
+            NumericalExactness.APPROXIMATE: Exactness.APPROXIMATE,
+            NumericalExactness.UNAVAILABLE: Exactness.UNAVAILABLE,
+        }
+        numeric = self.numeric_exactness
+        if projection[numeric] is not self.exactness:
+            raise ValueError("exactness must be the compatibility projection of numeric_exactness")
+
+        if self.confidence_interval is not None:
+            low, high = self.confidence_interval
+            if not math.isfinite(low) or not math.isfinite(high) or low > high:
+                raise ValueError("confidence_interval must contain ordered finite bounds")
+
+        is_v2 = self.contract_version.startswith("2.")
+        if self.status is ToolStatus.SUCCESS:
+            if numeric is NumericalExactness.UNAVAILABLE:
+                raise ValueError("successful results cannot have unavailable numeric exactness")
+            if self.error is not None:
+                raise ValueError("successful results cannot carry an error")
+        else:
+            if numeric is not NumericalExactness.UNAVAILABLE:
+                raise ValueError("failed/unavailable results require unavailable numeric exactness")
+            if self.exactness is not Exactness.UNAVAILABLE:
+                raise ValueError("failed/unavailable results require unavailable legacy exactness")
+            if self.status is ToolStatus.FAILED and self.output:
+                raise ValueError("failed results cannot carry output values")
+
+        if not is_v2:
+            return self
+        if self.status is not ToolStatus.SUCCESS:
+            return self
+        if numeric is NumericalExactness.EXACT_UNDER_MODEL and not self.model_qualifier:
+            raise ValueError("exact-under-model results require model_qualifier")
+        if numeric is NumericalExactness.FLOATING_VERIFIED and (
+            self.verification is None or not self.verification.passed
+        ):
+            raise ValueError("floating-verified results require passed verification metadata")
+        if numeric is NumericalExactness.APPROXIMATE:
+            if not self.method:
+                raise ValueError("approximate results require method")
+            if self.stochastic is None:
+                raise ValueError("approximate results require stochastic=true/false")
+            if self.stochastic and self.seed is None:
+                raise ValueError("stochastic approximate results require seed")
+            if not ((self.samples or 0) > 0 or (self.iterations or 0) > 0):
+                raise ValueError("approximate results require positive samples or iterations")
+            if self.confidence_interval is None and self.error_metadata is None:
+                raise ValueError("approximate results require an interval or error metadata")
+            if not self.stopping_condition:
+                raise ValueError("approximate results require a stopping condition")
+        return self
 
 
 class EvidenceRecord(StrictModel):
@@ -382,7 +522,7 @@ class ClaimCheck(StrictModel):
     tool_name: str = Field(pattern=r"^[A-Za-z0-9_]{1,64}$")
     output_path: str = Field(pattern=r"^[A-Za-z0-9_.]{1,256}$")
     claimed_value: float = Field(allow_inf_nan=False)
-    tolerance: float = Field(default=1e-9, ge=0, allow_inf_nan=False)
+    tolerance: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     unit: str | None = None
 
 

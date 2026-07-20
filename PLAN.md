@@ -1,5 +1,20 @@
 # 実装計画
 
+## RM-010 / P2-010A Pure phase services（2026-07-20）
+
+- **USER_CLAIM**: `goal-rm010-p2-010a-governance-amendment-2026-07-20`と
+  `goal-rm010-p2-010a-2026-07-20`の明示承認を受けた。
+- **CALCULATED**: governance topics digestは
+  `c3a011edf9134bdd74a55688694ced80bc4283894cca6f367a0a66d97f4cf475`、P2-010Aの
+  canonical implementation scope digestは
+  `03bd675003b31ab0861ac196bd3b79229b863dca3ce15d555f76fb2f3e8a6f89`である。
+- **FACT**: roadmap schema 1.1は承認をマイルストーン単位でappend-onlyにbindingする。
+  P2-010Aだけを`in_progress`とし、P2-010Bは別承認がないため`not_started`のまま保つ。
+- **FACT**: 実装対象はstrict versioned phase contract、決定論的pure phase service、serialな
+  Analysis/ToolResearch executor境界、現行orchestratorへの最小統合、互換性・securityテストである。
+- **NON-GOAL**: persistence transaction、manifest revision、lock/recovery/CAS、自動retry、parallel、
+  budget、timeout/cancellation再設計、durable resume、cleanup、external provider/solverは実装しない。
+
 ## RM-024 / P2-024A Context lifecycle（2026-07-20）
 
 - **FACT**: `goal-rm024-p2-024a-2026-07-20`を人間承認の一次記録とし、RM-024の

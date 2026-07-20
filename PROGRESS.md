@@ -3,6 +3,18 @@
 このファイルは実行履歴であり、RMの現在状態を再定義しない。canonical statusは
 `src/poker_deliberation/roadmap_status.json`、人間向けprojectionは`docs/roadmap-status.md`を参照する。
 
+## 2026-07-20 — RM-010 / P2-010A scope approval
+
+- **FACT**: baseline `875e88d994f4abd3daf6081d578f73d0aef850eb`をfetch/pullなしで検証し、
+  `codex/phase2-pure-phase-services`を作成した。開始時のtracked/untracked差分はなかった。
+- **FACT**: 変更前にArchitecture/API、purity/context/security、governance/evidenceの3系統を
+  read-only監査し、P2-010A承認がP2-010Bまで暗黙に解禁するgovernance欠陥を特定した。
+- **USER_CLAIM**: ユーザーはgovernance amendmentとP2-010Aのcanonical scopeを明示承認した。
+- **FACT**: schema 1.1の`milestone_approvals`はP2-024Aを既存承認へ、P2-010Aを今回承認へ
+  bindingし、P2-010Bをnullに保つ。旧schema 1.0承認recordは書き換えず引き続き検証する。
+- **FACT**: RM-010はappend-onlyに`planned -> in_progress`、P2-010Aは
+  `not_started -> in_progress`へ進めた。実装・変更後レビュー・completion evidenceは進行中である。
+
 ## 2026-07-20 — RM-024 / P2-024A completion
 
 - **FACT**: implementation commitは`fc2e41dd4fbde2962373ff7ea29019bff2999505`。versioned

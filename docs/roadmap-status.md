@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する追跡済みprojectionです。
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
-- schema version: `1.0.0`
-- source SHA-256: `decadca9f22895c3fda4f36630abe6e22176676368fe8b08c5152de63a103d77`
+- schema version: `1.1.0`
+- source SHA-256: `b8ccac1daa2759c640e1040e95b885823f5a9659f3ee55f1303c5b7d2bae666a`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -29,7 +29,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | milestone | RM | state | dependencies | scope |
 |---|---|---|---|---|
 | `P2-024A` | `RM-024` | `completed` | `RM-006`, `RM-023` | Context envelope policy, schema, ownership, lineage, and allowlists. |
-| `P2-010A` | `RM-010` | `not_started` | `RM-006`, `RM-007`, `RM-023`, `P2-024A` | Typed pure phase services with serial execution and no persistence integration. |
+| `P2-010A` | `RM-010` | `in_progress` | `RM-006`, `RM-007`, `RM-023`, `P2-024A` | Typed pure phase services with serial execution and no persistence integration. |
 | `P2-011A` | `RM-011` | `not_started` | `RM-023`, `P2-010A` | Strict budget schema, fake clock, serial accounting, and retry classification. |
 | `P2-027A` | `RM-027` | `not_started` | `RM-023`, `P2-024A` | Classification, retention, expiry, quarantine, and disposition policy/schema only. |
 | `P2-012A` | `RM-012` | `not_started` | `RM-023`, `P2-010A`, `P2-011A`, `P2-027A` | Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation. |
@@ -54,7 +54,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | `RM-007` | Mathematical oracle and metamorphic test pack | `phase-1` | `P1` | `completed` | `RM-005`, `RM-006` | `n/a` | `not_required` |
 | `RM-008` | Offline public preflight | `phase-0` | `P0` | `completed` | `RM-001`, `RM-003` | `n/a` | `approved_scope` |
 | `RM-009` | Complete Markdown ToolResult metadata | `phase-0` | `P0` | `completed` | `RM-005` | `n/a` | `not_required` |
-| `RM-010` | Orchestrator phase services | `phase-2` | `P1` | `planned` | `RM-006`, `RM-007`, `RM-023`, `RM-024` | `P2-010B` | `pending` |
+| `RM-010` | Orchestrator phase services | `phase-2` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-023`, `RM-024` | `P2-010B` | `approved_scope` |
 | `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `planned` | `RM-023`, `RM-024` | `P2-011B` | `pending` |
 | `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `planned` | `RM-023`, `RM-024` | `P2-012B` | `pending` |
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `planned` | `RM-012`, `RM-024` | `P2-013B` | `pending` |

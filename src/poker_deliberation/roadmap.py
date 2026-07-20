@@ -12,8 +12,19 @@ from pathlib import Path
 from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
-ROADMAP_SCHEMA_VERSION = "1.0.0"
-APPROVAL_SCOPE_SCHEMA_VERSION = "1.0.0"
+ROADMAP_SCHEMA_VERSION = "1.1.0"
+LEGACY_ROADMAP_SCHEMA_VERSION = "1.0.0"
+SUPPORTED_ROADMAP_SCHEMA_VERSIONS = {
+    LEGACY_ROADMAP_SCHEMA_VERSION,
+    ROADMAP_SCHEMA_VERSION,
+}
+APPROVAL_SCOPE_SCHEMA_VERSION = "1.1.0"
+LEGACY_APPROVAL_SCOPE_SCHEMA_VERSION = "1.0.0"
+SUPPORTED_APPROVAL_SCOPE_SCHEMA_VERSIONS = {
+    LEGACY_APPROVAL_SCOPE_SCHEMA_VERSION,
+    APPROVAL_SCOPE_SCHEMA_VERSION,
+}
+ROADMAP_SCHEMA_AMENDMENT_REFERENCE = "goal-rm010-p2-010a-governance-amendment-2026-07-20"
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
 MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -104,30 +115,59 @@ def _item_contract_snapshot(item: dict[str, Any]) -> dict[str, Any]:
     return {field: item.get(field) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)}
 
 
+def _milestone_contract_snapshot(milestone: dict[str, Any]) -> dict[str, Any]:
+    return {field: milestone.get(field) for field in ("id", "rm_id", "dependencies", "scope")}
+
+
+def _approval_milestone_id(record: dict[str, Any]) -> str | None:
+    if "scope" not in record:
+        return None
+    scope = _require_dict(record["scope"], "approval scope")
+    if scope.get("schema_version") == LEGACY_APPROVAL_SCOPE_SCHEMA_VERSION:
+        value = scope.get("milestone_id")
+    else:
+        value = _require_dict(scope.get("milestone_contract"), "approval milestone contract").get(
+            "id"
+        )
+    return value if isinstance(value, str) else None
+
+
 def _validate_scoped_approval_record(
     reference: str,
     record: dict[str, Any],
     *,
     rm_id: str | None = None,
     item: dict[str, Any] | None = None,
+    milestone: dict[str, Any] | None = None,
 ) -> None:
     scope = _require_dict(record.get("scope"), f"approval_records.{reference}.scope")
-    expected_fields = {
-        "schema_version",
-        "rm_id",
-        "milestone_id",
-        "item_contract",
-        "policy_decisions",
-    }
+    schema_version = scope.get("schema_version")
+    if schema_version not in SUPPORTED_APPROVAL_SCOPE_SCHEMA_VERSIONS:
+        raise ValueError(f"unsupported approval scope schema: {reference}")
+    expected_fields = (
+        {
+            "schema_version",
+            "rm_id",
+            "milestone_id",
+            "item_contract",
+            "policy_decisions",
+        }
+        if schema_version == LEGACY_APPROVAL_SCOPE_SCHEMA_VERSION
+        else {
+            "schema_version",
+            "rm_id",
+            "milestone_contract",
+            "item_contract",
+            "milestone_implementation_scope",
+            "policy_decisions",
+        }
+    )
     if set(scope) != expected_fields:
         raise ValueError(f"invalid approval scope fields: {reference}")
-    if scope.get("schema_version") != APPROVAL_SCOPE_SCHEMA_VERSION:
-        raise ValueError(f"unsupported approval scope schema: {reference}")
     if not isinstance(scope.get("rm_id"), str) or not RM_ID_PATTERN.fullmatch(scope["rm_id"]):
         raise ValueError(f"invalid approval scope RM: {reference}")
-    if not isinstance(scope.get("milestone_id"), str) or not MILESTONE_ID_PATTERN.fullmatch(
-        scope["milestone_id"]
-    ):
+    milestone_id = _approval_milestone_id(record)
+    if not isinstance(milestone_id, str) or not MILESTONE_ID_PATTERN.fullmatch(milestone_id):
         raise ValueError(f"invalid approval scope milestone: {reference}")
     decisions = _require_string_list(
         scope.get("policy_decisions"), f"approval_records.{reference}.policy_decisions"
@@ -139,17 +179,109 @@ def _validate_scoped_approval_record(
     )
     if set(contract) != IMMUTABLE_ITEM_CONTRACT_FIELDS:
         raise ValueError(f"approval scope item contract is incomplete: {reference}")
+    if schema_version == APPROVAL_SCOPE_SCHEMA_VERSION:
+        milestone_contract = _require_dict(
+            scope.get("milestone_contract"),
+            f"approval_records.{reference}.milestone_contract",
+        )
+        if set(milestone_contract) != {"id", "rm_id", "dependencies", "scope"}:
+            raise ValueError(f"invalid approval milestone contract: {reference}")
+        if milestone_contract.get("rm_id") != scope["rm_id"]:
+            raise ValueError(f"approval milestone owner mismatch: {reference}")
+        dependencies = _require_string_list(
+            milestone_contract.get("dependencies"),
+            f"approval_records.{reference}.milestone_contract.dependencies",
+        )
+        if len(dependencies) != len(set(dependencies)):
+            raise ValueError(f"duplicate approval milestone dependency: {reference}")
+        if (
+            not isinstance(milestone_contract.get("scope"), str)
+            or not milestone_contract["scope"].strip()
+        ):
+            raise ValueError(f"empty approval milestone scope: {reference}")
+        implementation_scope = _require_dict(
+            scope.get("milestone_implementation_scope"),
+            f"approval_records.{reference}.milestone_implementation_scope",
+        )
+        if set(implementation_scope) != {"targets", "tests", "acceptance_criteria"}:
+            raise ValueError(f"invalid milestone implementation scope: {reference}")
+        for field in ("targets", "tests", "acceptance_criteria"):
+            values = _require_string_list(
+                implementation_scope.get(field),
+                f"approval_records.{reference}.milestone_implementation_scope.{field}",
+            )
+            if not values or len(values) != len(set(values)):
+                raise ValueError(f"invalid milestone implementation scope {field}: {reference}")
     if rm_id is None or item is None:
-        return
-    if scope["rm_id"] != rm_id:
-        raise ValueError(f"approval scope RM does not match item: {rm_id}")
-    if scope["milestone_id"] not in {
-        item.get("entry_milestone"),
-        item.get("completion_milestone"),
-    }:
-        raise ValueError(f"approval scope milestone does not match item: {rm_id}")
-    if contract != _item_contract_snapshot(item):
-        raise ValueError(f"approval scope contract does not match item: {rm_id}")
+        if milestone is not None:
+            raise ValueError("approval milestone validation requires its parent item")
+    else:
+        if scope["rm_id"] != rm_id:
+            raise ValueError(f"approval scope RM does not match item: {rm_id}")
+        if milestone_id not in {
+            item.get("entry_milestone"),
+            item.get("completion_milestone"),
+        }:
+            raise ValueError(f"approval scope milestone does not match item: {rm_id}")
+        if contract != _item_contract_snapshot(item):
+            raise ValueError(f"approval scope contract does not match item: {rm_id}")
+    if milestone is not None:
+        if schema_version != APPROVAL_SCOPE_SCHEMA_VERSION:
+            expected_id = milestone.get("id")
+            if milestone_id != expected_id or scope["rm_id"] != milestone.get("rm_id"):
+                raise ValueError(f"legacy approval scope does not match milestone: {expected_id}")
+        elif _require_dict(scope["milestone_contract"], "milestone_contract") != (
+            _milestone_contract_snapshot(milestone)
+        ):
+            raise ValueError(f"approval scope contract does not match milestone: {milestone_id}")
+
+
+def _milestone_approval_map(
+    document: dict[str, Any],
+    items: dict[str, dict[str, Any]],
+    milestones: dict[str, dict[str, Any]],
+    approval_records: dict[str, dict[str, Any]],
+) -> dict[str, str | None]:
+    if document.get("schema_version") == LEGACY_ROADMAP_SCHEMA_VERSION:
+        derived: dict[str, str | None] = {}
+        for milestone_id, milestone in milestones.items():
+            parent = items[str(milestone["rm_id"])]
+            approval = _require_dict(parent["human_approval"], "human_approval")
+            reference = approval.get("approval_reference")
+            record = approval_records.get(reference) if isinstance(reference, str) else None
+            derived[milestone_id] = (
+                reference
+                if record is not None and _approval_milestone_id(record) == milestone_id
+                else None
+            )
+        return derived
+
+    raw_bindings = _require_dict(document.get("milestone_approvals"), "milestone_approvals")
+    if set(raw_bindings) != set(milestones):
+        raise ValueError("milestone approval IDs must exactly match milestone IDs")
+    bindings: dict[str, str | None] = {}
+    for milestone_id, raw_reference in raw_bindings.items():
+        if raw_reference is None:
+            bindings[milestone_id] = None
+            continue
+        if not isinstance(raw_reference, str) or raw_reference not in approval_records:
+            raise ValueError(f"unknown milestone approval reference: {milestone_id}")
+        record = approval_records[raw_reference]
+        if "scope" not in record:
+            raise ValueError(f"milestone approval is not scoped: {milestone_id}")
+        milestone = milestones[milestone_id]
+        parent = items[str(milestone["rm_id"])]
+        _validate_scoped_approval_record(
+            raw_reference,
+            record,
+            rm_id=str(milestone["rm_id"]),
+            item=parent,
+            milestone=milestone,
+        )
+        if _approval_milestone_id(record) != milestone_id:
+            raise ValueError(f"milestone approval does not match milestone: {milestone_id}")
+        bindings[milestone_id] = raw_reference
+    return bindings
 
 
 def _evidence_is_contract_bound(reference: str, declared: list[str]) -> bool:
@@ -182,7 +314,11 @@ def validate_transition(source: str, target: str, transitions: dict[str, Any]) -
         raise ValueError(f"illegal status transition: {source} -> {target}")
 
 
-def _validate_milestones(document: dict[str, Any], items: dict[str, dict[str, Any]]) -> None:
+def _validate_milestones(
+    document: dict[str, Any],
+    items: dict[str, dict[str, Any]],
+    approval_records: dict[str, dict[str, Any]],
+) -> None:
     raw_milestones = document.get("implementation_milestones")
     if not isinstance(raw_milestones, list) or not raw_milestones:
         raise ValueError("implementation_milestones must be a non-empty list")
@@ -232,6 +368,8 @@ def _validate_milestones(document: dict[str, Any], items: dict[str, dict[str, An
     for milestone_id in milestones:
         visit(milestone_id)
 
+    milestone_approvals = _milestone_approval_map(document, items, milestones, approval_records)
+
     raw_progress = _require_dict(document.get("milestone_progress"), "milestone_progress")
     if set(raw_progress) != set(milestones):
         raise ValueError("milestone progress IDs must exactly match milestone IDs")
@@ -262,9 +400,29 @@ def _validate_milestones(document: dict[str, Any], items: dict[str, dict[str, An
             raise ValueError(f"completed milestone lacks evidence: {milestone_id}")
         if state == "completed":
             parent = items[str(milestones[milestone_id]["rm_id"])]
-            declared = _require_string_list(parent["targets"], "targets") + _require_string_list(
-                parent["tests"], "tests"
+            approval_reference = milestone_approvals[milestone_id]
+            approval_record = (
+                approval_records[approval_reference] if approval_reference is not None else None
             )
+            if (
+                approval_record is not None
+                and "scope" in approval_record
+                and _require_dict(approval_record["scope"], "approval scope").get("schema_version")
+                == APPROVAL_SCOPE_SCHEMA_VERSION
+            ):
+                implementation_scope = _require_dict(
+                    _require_dict(approval_record["scope"], "approval scope")[
+                        "milestone_implementation_scope"
+                    ],
+                    "milestone implementation scope",
+                )
+                declared = _require_string_list(
+                    implementation_scope["targets"], "targets"
+                ) + _require_string_list(implementation_scope["tests"], "tests")
+            else:
+                declared = _require_string_list(
+                    parent["targets"], "targets"
+                ) + _require_string_list(parent["tests"], "tests")
             if any(
                 not _evidence_is_contract_bound(reference, declared)
                 for reference in evidence_lists["paths"] + evidence_lists["tests"]
@@ -288,6 +446,8 @@ def _validate_milestones(document: dict[str, Any], items: dict[str, dict[str, An
         parent_approval = _require_dict(parent_item["human_approval"], "human_approval")
         if parent_approval["required"] and parent_approval["state"] != "approved_scope":
             raise ValueError(f"active milestone lacks parent approval: {milestone_id}")
+        if parent_approval["required"] and milestone_approvals[milestone_id] is None:
+            raise ValueError(f"active milestone lacks scoped approval: {milestone_id}")
         for dependency in _require_string_list(milestone["dependencies"], "dependencies"):
             dependency_completed = (
                 items[dependency]["status"] == "completed"
@@ -349,7 +509,7 @@ def _validate_milestones(document: dict[str, Any], items: dict[str, dict[str, An
 def validate_roadmap(document: dict[str, Any]) -> None:
     """Fail closed on malformed status, evidence, approval, references, or dependency cycles."""
 
-    if document.get("schema_version") != ROADMAP_SCHEMA_VERSION:
+    if document.get("schema_version") not in SUPPORTED_ROADMAP_SCHEMA_VERSIONS:
         raise ValueError("unsupported roadmap schema version")
 
     source_policy = _require_dict(document.get("source_policy"), "source_policy")
@@ -570,7 +730,7 @@ def validate_roadmap(document: dict[str, Any]) -> None:
 
     for rm_id in items:
         visit(rm_id)
-    _validate_milestones(document, items)
+    _validate_milestones(document, items, approval_records)
 
 
 def validate_roadmap_update(
@@ -583,8 +743,21 @@ def validate_roadmap_update(
     validate_roadmap(previous)
     validate_roadmap(current)
     authorized = newly_approved_references or set()
+    previous_schema = previous.get("schema_version")
+    current_schema = current.get("schema_version")
+    if previous_schema != current_schema:
+        migration_is_authorized = (
+            previous_schema == LEGACY_ROADMAP_SCHEMA_VERSION
+            and current_schema == ROADMAP_SCHEMA_VERSION
+            and ROADMAP_SCHEMA_AMENDMENT_REFERENCE in authorized
+            and ROADMAP_SCHEMA_AMENDMENT_REFERENCE
+            in _require_dict(current.get("approval_records"), "approval_records")
+            and ROADMAP_SCHEMA_AMENDMENT_REFERENCE
+            not in _require_dict(previous.get("approval_records"), "approval_records")
+        )
+        if not migration_is_authorized:
+            raise ValueError("roadmap schema migration was not externally authorized")
     for field in (
-        "schema_version",
         "source_policy",
         "status_vocabulary",
         "legal_transitions",
@@ -605,6 +778,23 @@ def validate_roadmap_update(
     for reference in set(new_records) - set(old_records):
         if reference not in authorized:
             raise ValueError(f"approval change was not externally authorized: {reference}")
+
+    old_milestones = {
+        str(milestone["id"]): _require_dict(milestone, "milestone")
+        for milestone in previous["implementation_milestones"]
+    }
+    new_milestones = {
+        str(milestone["id"]): _require_dict(milestone, "milestone")
+        for milestone in current["implementation_milestones"]
+    }
+    old_bindings = _milestone_approval_map(previous, previous_items, old_milestones, old_records)
+    new_bindings = _milestone_approval_map(current, current_items, new_milestones, new_records)
+    for milestone_id, old_reference in old_bindings.items():
+        new_reference = new_bindings[milestone_id]
+        if old_reference is not None and new_reference != old_reference:
+            raise ValueError(f"milestone approval was deleted or rewritten: {milestone_id}")
+        if old_reference is None and new_reference is not None and new_reference not in authorized:
+            raise ValueError(f"milestone approval was not externally authorized: {milestone_id}")
 
     for rm_id in sorted(EXPECTED_RM_IDS):
         changed_contract_fields = {
@@ -840,6 +1030,13 @@ def roadmap_summary(document: dict[str, Any] | None = None) -> dict[str, Any]:
         str(item["id"]): _require_dict(item, "milestone")
         for item in source["implementation_milestones"]
     }
+    approval_records = {
+        str(reference): _require_dict(record, f"approval_records.{reference}")
+        for reference, record in _require_dict(
+            source["approval_records"], "approval_records"
+        ).items()
+    }
+    milestone_approvals = _milestone_approval_map(source, by_id, milestones, approval_records)
     progress = _require_dict(source["milestone_progress"], "milestone_progress")
     milestone_ready: list[str] = []
     for milestone_id, milestone in milestones.items():
@@ -857,6 +1054,7 @@ def roadmap_summary(document: dict[str, Any] | None = None) -> dict[str, Any]:
             milestone_progress["state"] == "not_started"
             and parent["status"] in {"planned", "in_progress"}
             and (not approval["required"] or approval["state"] == "approved_scope")
+            and (not approval["required"] or milestone_approvals[milestone_id] is not None)
             and dependencies_complete
         ):
             milestone_ready.append(milestone_id)

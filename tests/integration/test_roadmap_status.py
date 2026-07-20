@@ -34,13 +34,25 @@ def _by_id() -> dict[str, dict[str, object]]:
     return {str(item["id"]): item for item in roadmap_items()}
 
 
-def _scoped_approval_record(item: dict[str, object], topics: list[str]) -> dict[str, object]:
+def _scoped_approval_record(
+    document: dict[str, object], item: dict[str, object], topics: list[str]
+) -> dict[str, object]:
+    milestone = next(
+        milestone
+        for milestone in document["implementation_milestones"]
+        if milestone["id"] == item["entry_milestone"]
+    )
     scope = {
         "schema_version": APPROVAL_SCOPE_SCHEMA_VERSION,
         "rm_id": item["id"],
-        "milestone_id": item["entry_milestone"],
+        "milestone_contract": deepcopy(milestone),
         "item_contract": {
             field: deepcopy(item.get(field)) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
+        },
+        "milestone_implementation_scope": {
+            "targets": deepcopy(item["targets"]),
+            "tests": deepcopy(item["tests"]),
+            "acceptance_criteria": deepcopy(item["acceptance_criteria"]),
         },
         "policy_decisions": topics,
     }
@@ -62,7 +74,7 @@ def test_packaged_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == "1.0.0"
+    assert document["schema_version"] == "1.1.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "user_materials").exists()
 
@@ -76,7 +88,8 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
         "RM-023",
         "RM-024",
     }
-    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(10, 18))
+    assert items["RM-010"]["status"] == "in_progress"
+    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(11, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in range(25, 29))
     assert items["RM-023"]["completion_evidence"]
@@ -158,11 +171,10 @@ def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> N
         validate_roadmap_update(previous, changed_scope)
 
     remapped = deepcopy(previous)
-    planned = next(item for item in remapped["items"] if item["id"] == "RM-010")
-    planned["completion_milestone"] = "P2-010A"
-    validate_roadmap(remapped)
-    with pytest.raises(ValueError, match="RM contract field requires a schema amendment"):
-        validate_roadmap_update(previous, remapped)
+    active = next(item for item in remapped["items"] if item["id"] == "RM-010")
+    active["completion_milestone"] = "P2-010A"
+    with pytest.raises(ValueError, match="approval scope contract does not match item"):
+        validate_roadmap(remapped)
 
 
 def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
@@ -181,7 +193,7 @@ def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
     planned["status_history"]["RM-027"].append("planned")
     topics = ["test-approved P2-027A scope"]
     reference = "test-rm027-scope-freeze"
-    planned["approval_records"][reference] = _scoped_approval_record(rm_027, topics)
+    planned["approval_records"][reference] = _scoped_approval_record(planned, rm_027, topics)
     rm_027["human_approval"] = {
         "required": True,
         "state": "approved_scope",
@@ -291,6 +303,68 @@ def test_exact_rm_and_milestone_sets_are_required() -> None:
         validate_roadmap(status_on_ordering_node)
 
 
+def test_milestone_approval_is_digest_bound_and_does_not_unlock_p2_010b() -> None:
+    document = load_roadmap()
+    reference = "goal-rm010-p2-010a-2026-07-20"
+    record = document["approval_records"][reference]
+    canonical = json.dumps(
+        record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
+    assert document["milestone_approvals"]["P2-010A"] == reference
+    assert document["milestone_approvals"]["P2-010B"] is None
+    assert "P2-010B" not in roadmap_summary(document)["milestone_ready_ids"]
+
+    rebound = deepcopy(document)
+    rebound["milestone_approvals"]["P2-010B"] = reference
+    with pytest.raises(ValueError, match="approval scope contract does not match milestone"):
+        validate_roadmap(rebound)
+
+    activated = deepcopy(document)
+    progress = activated["milestone_progress"]["P2-010B"]
+    progress["state"] = "in_progress"
+    progress["history"].append("in_progress")
+    with pytest.raises(ValueError, match="active milestone lacks scoped approval"):
+        validate_roadmap(activated)
+
+
+def test_milestone_approval_binding_is_append_only() -> None:
+    previous = load_roadmap()
+    current = deepcopy(previous)
+    old_reference = current["milestone_approvals"]["P2-024A"]
+    new_reference = "test-p2-024a-reapproval"
+    current["approval_records"][new_reference] = deepcopy(
+        current["approval_records"][old_reference]
+    )
+    current["milestone_approvals"]["P2-024A"] = new_reference
+
+    validate_roadmap(current)
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, current, {new_reference})
+
+
+def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -> None:
+    counterexample = deepcopy(load_roadmap())
+    progress = counterexample["milestone_progress"]["P2-010A"]
+    progress["state"] = "completed"
+    progress["history"].append("completed")
+    progress["completion_evidence"] = {
+        "commits": ["a" * 40],
+        "paths": ["future phase service modules"],
+        "tests": ["phase unit/property tests"],
+    }
+    with pytest.raises(ValueError, match="milestone evidence is not contract-bound"):
+        validate_roadmap(counterexample)
+
+    counterexample["milestone_progress"]["P2-010A"]["completion_evidence"] = {
+        "commits": ["a" * 40],
+        "paths": ["src/poker_deliberation/phases"],
+        "tests": ["tests/unit/test_phase_contracts.py"],
+    }
+    validate_roadmap(counterexample)
+
+
 def test_completed_milestone_requires_parent_dependency_and_evidence_consistency() -> None:
     counterexample = deepcopy(load_roadmap())
     parent = next(item for item in counterexample["items"] if item["id"] == "RM-028")
@@ -309,8 +383,8 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(counterexample)
 
     pending_parent = deepcopy(load_roadmap())
-    pending_parent["milestone_progress"]["P2-010A"]["state"] = "in_progress"
-    pending_parent["milestone_progress"]["P2-010A"]["history"] = [
+    pending_parent["milestone_progress"]["P2-011A"]["state"] = "in_progress"
+    pending_parent["milestone_progress"]["P2-011A"]["history"] = [
         "not_started",
         "in_progress",
     ]
@@ -318,11 +392,11 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(pending_parent)
 
     blocked_under_active_parent = deepcopy(load_roadmap())
-    rm_010 = next(item for item in blocked_under_active_parent["items"] if item["id"] == "RM-010")
-    rm_010["status"] = "in_progress"
-    rm_010["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    blocked_under_active_parent["status_history"]["RM-010"].append("in_progress")
-    blocked_progress = blocked_under_active_parent["milestone_progress"]["P2-010A"]
+    rm_011 = next(item for item in blocked_under_active_parent["items"] if item["id"] == "RM-011")
+    rm_011["status"] = "in_progress"
+    rm_011["human_approval"] = {"required": False, "state": "not_required", "topics": []}
+    blocked_under_active_parent["status_history"]["RM-011"].append("in_progress")
+    blocked_progress = blocked_under_active_parent["milestone_progress"]["P2-011A"]
     blocked_progress["state"] = "blocked"
     blocked_progress["history"] = ["not_started", "blocked"]
     blocked_progress["blockers"] = ["RM-024 incomplete"]
@@ -332,9 +406,9 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(blocked_under_active_parent)
 
     pending_item = deepcopy(load_roadmap())
-    rm_010 = next(item for item in pending_item["items"] if item["id"] == "RM-010")
-    rm_010["status"] = "in_progress"
-    pending_item["status_history"]["RM-010"].append("in_progress")
+    rm_011 = next(item for item in pending_item["items"] if item["id"] == "RM-011")
+    rm_011["status"] = "in_progress"
+    pending_item["status_history"]["RM-011"].append("in_progress")
     with pytest.raises(ValueError, match="in-progress item lacks required approval"):
         validate_roadmap(pending_item)
 
@@ -432,14 +506,23 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 1,
-        "not_started": 11,
+        "in_progress": 1,
+        "not_started": 10,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
     assert (
-        generate_roadmap_status(["--check", "--approve-reference", "goal-rm024-p2-024a-2026-07-20"])
+        generate_roadmap_status(
+            [
+                "--check",
+                "--approve-reference",
+                "goal-rm010-p2-010a-governance-amendment-2026-07-20",
+                "--approve-reference",
+                "goal-rm010-p2-010a-2026-07-20",
+            ]
+        )
         == 0
     )
 

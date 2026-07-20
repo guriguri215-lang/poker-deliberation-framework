@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "source_policy": {
     "canonical": true,
     "description": "Tracked single source of truth for RM implementation state. user_materials/ROADMAP.md is explanatory policy and is not a runtime dependency.",
@@ -92,6 +92,118 @@
         ]
       },
       "scope_digest": "50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069"
+    },
+    "goal-rm010-p2-010a-governance-amendment-2026-07-20": {
+      "source_label": "explicit human approval of governance amendment",
+      "topics": [
+        "Migrate the canonical roadmap schema from 1.0.0 to 1.1.0 without rewriting existing approval records or status history.",
+        "Add an append-only milestone_approvals mapping so approval for P2-010A cannot authorize P2-010B.",
+        "Support approval scope schema 1.1.0 while continuing to validate existing 1.0.0 scoped approvals.",
+        "Bind a 1.1.0 approval to the canonical milestone contract and an explicit milestone implementation scope containing targets, tests, and acceptance criteria.",
+        "Bind completed milestone evidence to its milestone-specific approved implementation scope; do not weaken repository, commit-tree, changed-path, or append-only evidence validation."
+      ],
+      "scope_digest": "c3a011edf9134bdd74a55688694ced80bc4283894cca6f367a0a66d97f4cf475"
+    },
+    "goal-rm010-p2-010a-2026-07-20": {
+      "source_label": "attached goal objective explicitly approved by human",
+      "topics": [
+        "Advance RM-010 from planned to in_progress and implement P2-010A only.",
+        "Implement typed phase schemas, pure phase services, and only the minimum connection to the current serial orchestrator.",
+        "Preserve the calculation assignment artifact, including the currently assigned but unexecuted report-writer, without deletion, rename, or schema change.",
+        "Treat the P2-024A context retention and classification contract as authoritative and add no P2-010A retention, deletion, quarantine, cleanup, or persistence semantics.",
+        "Preserve the current attempt-memory-only-v1 semantics and defer retention or disposition changes to RM-027A/B.",
+        "Treat the phase schema as a versioned internal API and do not declare it a stable public API.",
+        "Preserve Orchestrator.run, resume, load_report, CLI, exit codes, CaseInput, FinalReport, ToolResult, and existing artifact meanings.",
+        "Pure phases do not directly access filesystem, state machine, provider, tool, network, approval ledger, ambient clock, or ambient randomness.",
+        "Provide time, IDs, policy, and capability data as typed inputs or explicitly injected values.",
+        "Isolate Analysis and ToolResearch effects behind explicit executor or adapter boundaries without changing serial execution semantics.",
+        "Allow phases to return requested next state and artifact intent only as values without executing transitions or writes.",
+        "Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.",
+        "Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.",
+        "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.",
+        "Update the roadmap only from implementation evidence and review results and do not start work beyond P2-010A.",
+        "Stop for a new human approval and digest before changing immutable scope, dependencies, or approved policy decisions.",
+        "Keep intermediate and progress data in ignored areas and do not commit raw review logs, caches, run artifacts, or user_materials."
+      ],
+      "scope": {
+        "schema_version": "1.1.0",
+        "rm_id": "RM-010",
+        "milestone_contract": {
+          "id": "P2-010A",
+          "rm_id": "RM-010",
+          "dependencies": ["RM-006", "RM-007", "RM-023", "P2-024A"],
+          "scope": "Typed pure phase services with serial execution and no persistence integration."
+        },
+        "item_contract": {
+          "acceptance_criteria": ["Pure phase services do not mutate state or artifacts; the orchestrator alone requests transitions after durable writes."],
+          "capabilities": [],
+          "completion_milestone": "P2-010B",
+          "dependencies": ["RM-006", "RM-007", "RM-023", "RM-024"],
+          "entry_milestone": "P2-010A",
+          "evidence_mode": null,
+          "id": "RM-010",
+          "objective": "Split orchestration into typed, independently testable phases while preserving public behavior.",
+          "phase": "phase-2",
+          "priority": "P1",
+          "relations": null,
+          "targets": ["src/poker_deliberation/orchestrator.py", "future phase service modules"],
+          "tests": ["phase unit/property tests", "artifact parity", "state and write fault injection"],
+          "title": "Orchestrator phase services"
+        },
+        "milestone_implementation_scope": {
+          "targets": [
+            "src/poker_deliberation/orchestrator.py",
+            "src/poker_deliberation/phases",
+            "docs/phase-services.md",
+            "docs/architecture.md",
+            "docs/security.md"
+          ],
+          "tests": [
+            "tests/characterization/test_orchestrator_phase_baseline.py",
+            "tests/unit/test_phase_contracts.py",
+            "tests/unit/test_pure_phase_services.py",
+            "tests/property/test_phase_properties.py",
+            "tests/integration/test_phase_orchestration.py",
+            "tests/adversarial/test_phase_boundaries.py",
+            "tests/fault/test_phase_failures.py",
+            "tests/integration/test_context_lifecycle_integration.py",
+            "tests/adversarial/test_context_lifecycle_security.py",
+            "tests/integration/test_tool_contracts.py",
+            "tests/golden/test_golden_scenarios.py",
+            "tests/integration/test_cli.py"
+          ],
+          "acceptance_criteria": [
+            "Versioned strict PhaseRequest and PhaseOutcome contracts reject missing, extra, malformed, and unsupported-version data and carry structured failures, warnings, requested next state, and artifact intents as values.",
+            "IntakeValidation, Normalization, Routing, ContextBuild, Critique, Adjudication, and Synthesis are deterministic pure services with injected IDs, time, policy, and capability snapshots and do not mutate inputs or nested values.",
+            "Analysis and ToolResearch execute only through explicit typed serial executor boundaries with run, phase, attempt, assignment, context, report, request, result, and contract correlation validated before materialization.",
+            "The actual Orchestrator.run path uses every applicable typed phase while Orchestrator alone retains existing state transitions and artifact writes.",
+            "P2-024A ContextEnvelope enforcement, calculation assignment including unexecuted report-writer, provider/tool call order and count, ToolResult metadata, public API, CLI exit codes, artifact names, meanings, and normalized ordering remain compatible.",
+            "Provider output cannot inject state transitions or artifact paths, unsafe or duplicate report/result IDs fail closed, and provider claims remain untrusted USER_CLAIM or UNKNOWN until typed adjudication.",
+            "Persistence transactions, manifest revisions, locks, recovery, CAS, automatic retry, parallel execution, budget accounting, timeout/cancellation redesign, durable resume, cleanup, external provider, and external solver behavior are not implemented.",
+            "Characterization, unit, property, integration, adversarial, fault, context, calculator, tool contract, golden, CLI, roadmap, doctor, and canonical quality gates pass with no unresolved High or Medium finding."
+          ]
+        },
+        "policy_decisions": [
+          "Advance RM-010 from planned to in_progress and implement P2-010A only.",
+          "Implement typed phase schemas, pure phase services, and only the minimum connection to the current serial orchestrator.",
+          "Preserve the calculation assignment artifact, including the currently assigned but unexecuted report-writer, without deletion, rename, or schema change.",
+          "Treat the P2-024A context retention and classification contract as authoritative and add no P2-010A retention, deletion, quarantine, cleanup, or persistence semantics.",
+          "Preserve the current attempt-memory-only-v1 semantics and defer retention or disposition changes to RM-027A/B.",
+          "Treat the phase schema as a versioned internal API and do not declare it a stable public API.",
+          "Preserve Orchestrator.run, resume, load_report, CLI, exit codes, CaseInput, FinalReport, ToolResult, and existing artifact meanings.",
+          "Pure phases do not directly access filesystem, state machine, provider, tool, network, approval ledger, ambient clock, or ambient randomness.",
+          "Provide time, IDs, policy, and capability data as typed inputs or explicitly injected values.",
+          "Isolate Analysis and ToolResearch effects behind explicit executor or adapter boundaries without changing serial execution semantics.",
+          "Allow phases to return requested next state and artifact intent only as values without executing transitions or writes.",
+          "Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.",
+          "Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.",
+          "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.",
+          "Update the roadmap only from implementation evidence and review results and do not start work beyond P2-010A.",
+          "Stop for a new human approval and digest before changing immutable scope, dependencies, or approved policy decisions.",
+          "Keep intermediate and progress data in ignored areas and do not commit raw review logs, caches, run artifacts, or user_materials."
+        ]
+      },
+      "scope_digest": "03bd675003b31ab0861ac196bd3b79229b863dca3ce15d555f76fb2f3e8a6f89"
     }
   },
   "status_vocabulary": {
@@ -120,7 +232,7 @@
     "RM-007": ["proposed", "planned", "completed"],
     "RM-008": ["proposed", "planned", "completed"],
     "RM-009": ["proposed", "planned", "completed"],
-    "RM-010": ["proposed", "planned"],
+    "RM-010": ["proposed", "planned", "in_progress"],
     "RM-011": ["proposed", "planned"],
     "RM-012": ["proposed", "planned"],
     "RM-013": ["proposed", "planned"],
@@ -155,9 +267,23 @@
     {"id": "P2-013B", "rm_id": "RM-013", "dependencies": ["P2-013A", "P2-027B"], "scope": "Resume integration, legacy reissue, expiry/revocation, and lifecycle binding."},
     {"id": "P2-028A", "rm_id": "RM-028", "dependencies": ["P2-011B", "P2-012B", "P2-013B", "P2-027B"], "scope": "Approved isolation boundary, durable external-effect state, cancellation, and reconciliation."}
   ],
+  "milestone_approvals": {
+    "P2-024A": "goal-rm024-p2-024a-2026-07-20",
+    "P2-010A": "goal-rm010-p2-010a-2026-07-20",
+    "P2-011A": null,
+    "P2-027A": null,
+    "P2-012A": null,
+    "P2-010B": null,
+    "P2-011B": null,
+    "P2-012B": null,
+    "P2-013A": null,
+    "P2-027B": null,
+    "P2-013B": null,
+    "P2-028A": null
+  },
   "milestone_progress": {
     "P2-024A": {"state": "completed", "history": ["not_started", "in_progress", "completed"], "completion_evidence": {"commits": ["fc2e41dd4fbde2962373ff7ea29019bff2999505"], "paths": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"], "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"]}},
-    "P2-010A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
+    "P2-010A": {"state": "in_progress", "history": ["not_started", "in_progress"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
     "P2-011A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
     "P2-027A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
     "P2-012A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
@@ -319,7 +445,7 @@
       "title": "Orchestrator phase services",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "planned",
+      "status": "in_progress",
       "dependencies": ["RM-006", "RM-007", "RM-023", "RM-024"],
       "capabilities": [],
       "objective": "Split orchestration into typed, independently testable phases while preserving public behavior.",
@@ -329,8 +455,8 @@
       "entry_milestone": "P2-010A",
       "completion_milestone": "P2-010B",
       "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["calculation-case assignment compatibility", "context retention policy"]},
-      "status_reason": "Implementation is intentionally not started; the draft contract is conditionally frozen subject to its listed human approvals."
+      "human_approval": {"required": true, "state": "approved_scope", "topics": ["Advance RM-010 from planned to in_progress and implement P2-010A only.", "Implement typed phase schemas, pure phase services, and only the minimum connection to the current serial orchestrator.", "Preserve the calculation assignment artifact, including the currently assigned but unexecuted report-writer, without deletion, rename, or schema change.", "Treat the P2-024A context retention and classification contract as authoritative and add no P2-010A retention, deletion, quarantine, cleanup, or persistence semantics.", "Preserve the current attempt-memory-only-v1 semantics and defer retention or disposition changes to RM-027A/B.", "Treat the phase schema as a versioned internal API and do not declare it a stable public API.", "Preserve Orchestrator.run, resume, load_report, CLI, exit codes, CaseInput, FinalReport, ToolResult, and existing artifact meanings.", "Pure phases do not directly access filesystem, state machine, provider, tool, network, approval ledger, ambient clock, or ambient randomness.", "Provide time, IDs, policy, and capability data as typed inputs or explicitly injected values.", "Isolate Analysis and ToolResearch effects behind explicit executor or adapter boundaries without changing serial execution semantics.", "Allow phases to return requested next state and artifact intent only as values without executing transitions or writes.", "Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.", "Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.", "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.", "Update the roadmap only from implementation evidence and review results and do not start work beyond P2-010A.", "Stop for a new human approval and digest before changing immutable scope, dependencies, or approved policy decisions.", "Keep intermediate and progress data in ignored areas and do not commit raw review logs, caches, run artifacts, or user_materials."], "approval_reference": "goal-rm010-p2-010a-2026-07-20", "scope_digest": "03bd675003b31ab0861ac196bd3b79229b863dca3ce15d555f76fb2f3e8a6f89"},
+      "status_reason": "The approved P2-010A scope is active; P2-010B remains separately unapproved and not started."
     },
     {
       "id": "RM-011",

@@ -74,7 +74,8 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     completed = {rm_id for rm_id, item in items.items() if item["status"] == "completed"}
     assert completed == {f"RM-{number:03d}" for number in range(1, 10)} | {"RM-023"}
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(10, 18))
-    assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in range(24, 29))
+    assert items["RM-024"]["status"] == "planned"
+    assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in range(25, 29))
     assert items["RM-023"]["completion_evidence"]
 
 
@@ -161,21 +162,21 @@ def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> N
 def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
     previous = load_roadmap()
     planned = deepcopy(previous)
-    rm_024 = next(item for item in planned["items"] if item["id"] == "RM-024")
-    rm_024["status"] = "planned"
-    rm_024["targets"] = [
-        "src/poker_deliberation/context_lifecycle.py",
-        "src/poker_deliberation/orchestrator.py",
+    rm_027 = next(item for item in planned["items"] if item["id"] == "RM-027")
+    rm_027["status"] = "planned"
+    rm_027["targets"] = [
+        "src/poker_deliberation/lifecycle_policy.py",
+        "src/poker_deliberation/storage",
     ]
-    rm_024["tests"] = [
-        "tests/unit/test_context_lifecycle.py",
-        "tests/integration/test_context_lifecycle.py",
+    rm_027["tests"] = [
+        "tests/unit/test_lifecycle_policy.py",
+        "tests/integration/test_lifecycle_policy.py",
     ]
-    planned["status_history"]["RM-024"].append("planned")
-    topics = ["test-approved P2-024A scope"]
-    reference = "test-rm024-scope-freeze"
-    planned["approval_records"][reference] = _scoped_approval_record(rm_024, topics)
-    rm_024["human_approval"] = {
+    planned["status_history"]["RM-027"].append("planned")
+    topics = ["test-approved P2-027A scope"]
+    reference = "test-rm027-scope-freeze"
+    planned["approval_records"][reference] = _scoped_approval_record(rm_027, topics)
+    rm_027["human_approval"] = {
         "required": True,
         "state": "approved_scope",
         "topics": topics,
@@ -187,7 +188,7 @@ def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
         validate_roadmap_update(previous, planned)
 
     mutated_after_freeze = deepcopy(planned)
-    mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-024")
+    mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-027")
     mutated["targets"].append("src/poker_deliberation/security.py")
     with pytest.raises(ValueError, match="approval scope contract does not match item"):
         validate_roadmap(mutated_after_freeze)
@@ -424,10 +425,14 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {"not_started": 12}
-    assert doctor()["roadmap"]["milestone_ready_ids"] == []
+    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-024A"]
+    assert doctor()["roadmap"]["implementation_ready_ids"] == ["RM-024"]
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
-    assert generate_roadmap_status(["--check"]) == 0
+    assert (
+        generate_roadmap_status(["--check", "--approve-reference", "goal-rm024-p2-024a-2026-07-20"])
+        == 0
+    )
 
 
 def test_plan_progress_and_readme_reference_the_canonical_source() -> None:

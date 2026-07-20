@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.0.0`
-- source SHA-256: `c2f17628d7096f2f22fc4dcdbbb4cc5f4fa6d789128ced334f926d49dcae5728`
+- source SHA-256: `c3de40db7834ed4b590b52043eb1dbd0a419ccc5e16bcf4e9e2a95d20d31e619`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -69,7 +69,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | `RM-021` | Multiway and PLO equity feasibility | `phase-5` | `P3` | `planned` | `RM-006`, `RM-007` | `n/a` | `pending` |
 | `RM-022` | Small imperfect-information research | `phase-5` | `P3` | `planned` | `RM-007`, `RM-017` | `n/a` | `pending` |
 | `RM-023` | Roadmap and status single source of truth | `readiness` | `P0` | `completed` | `RM-001` | `n/a` | `approved_scope` |
-| `RM-024` | Context lifecycle contract | `phase-2` | `P1` | `proposed` | `RM-006`, `RM-023` | `P2-024A` | `pending` |
+| `RM-024` | Context lifecycle contract | `phase-2` | `P1` | `planned` | `RM-006`, `RM-023` | `P2-024A` | `approved_scope` |
 | `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P2` | `proposed` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `n/a` | `pending` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `pending` |
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `proposed` | `RM-023`, `RM-024` | `P2-027B` | `pending` |

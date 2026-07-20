@@ -3,6 +3,22 @@
 このファイルは実行履歴であり、RMの現在状態を再定義しない。canonical statusは
 `src/poker_deliberation/roadmap_status.json`、人間向けprojectionは`docs/roadmap-status.md`を参照する。
 
+## 2026-07-20 — RM-024 / P2-024A scope approval
+
+- **FACT**: 開始branch/HEADは`codex/phase1-math-contracts` /
+  `dfc1723d3edb5db5425db2822401e21bf93d820d`、upstream差0/0、worktree clean、remoteは
+  `https://github.com/guriguri215-lang/poker-deliberation-framework.git`だった。fetchは実行していない。
+- **FACT**: read-only sub-agent 3系統がcontext/provider互換性、security/allowlist/expiry/hash/
+  lineage、roadmap/status/approval/evidenceを独立監査した。
+- **FACT**: 監査で見つかったcompletion evidence不能のgovernance自己矛盾を、commit
+  `db14581de869d323920ddbfe5bb83ed654dd9b30`で修復した。approved scope freezeは一度限りで、
+  completion commitはHEAD ancestor、commit tree、changed pathへbindingされる。
+- **FACT**: 人間承認referenceは`goal-rm024-p2-024a-2026-07-20`。RM-024を
+  `proposed -> planned`へ進め、P2-024Aは`not_started`のまま保持した。
+- **CALCULATED**: full approval scope digestはcanonical JSONからコードで算出した
+  `50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069`である。
+- **FACT**: `user_materials/`はruntime、stage、commit対象にしていない。
+
 ## 2026-07-20 — Phase 2 readiness
 
 - **FACT**: 開始branchは`codex/phase1-math-contracts`、開始HEADは

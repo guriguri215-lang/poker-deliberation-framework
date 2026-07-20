@@ -1,5 +1,18 @@
 # 実装計画
 
+## RM-024 / P2-024A Context lifecycle（2026-07-20）
+
+- **FACT**: `goal-rm024-p2-024a-2026-07-20`を人間承認の一次記録とし、RM-024の
+  immutable scopeと11件のpolicy decisionをcanonical approval scopeへbindingした。
+- **CALCULATED**: approval scope digestはcanonical JSONからコードで算出した
+  `50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069`である。
+- **FACT**: RM-024は`proposed -> planned`、P2-024Aは`not_started`である。次の独立commitで
+  RM-024とP2-024Aを`in_progress`へ進めてから、実装・レビュー・completion evidenceを行う。
+- **FACT**: governance validatorは、承認済み`proposed -> planned`時の一度限りのscope freeze、
+  HEAD ancestor/tree/change-bound evidence、1対1 RM/milestone evidence parityを要求する。
+- **NON-GOAL**: persistence、retention期間の決定、cleanup executor、external provider/solver、
+  dependency追加、Codex/Python bridge、RM-010〜013、RM-027本体、parallel executionは実装しない。
+
 ## Phase 2 readiness（2026-07-20）
 
 - **FACT**: RM実装状態のsingle source of truthは
@@ -9,7 +22,8 @@
 - **FACT**: RM-010〜013本体は今回実装せず、`docs/phase2-readiness-contracts.md`で
   phase/budget/run/approvalの実装前contractを、人間承認事項を条件としてfreezeする。
 - **FACT**: RM-018はpre-release前の`RM-018A`とPhase 2後stable tag前の`RM-018B`へ分割する。
-- **FACT**: RM-023は今回実装し、RM-024〜028は候補として`proposed`に保つ。
+- **FACT**: このreadiness履歴ではRM-023を実装し、RM-024〜028を候補として`proposed`に保った。
+  現在のRM-024状態は上のContext lifecycle節とcanonical JSONを正とする。
 - **FACT**: `user_materials/ROADMAP.md`は承認方針・説明文書であり、runtime、doctor、
   generated docsの入力にしない。編集案はGitへstage/commitしない。
 - **NON-GOAL**: Phase 2本体、external provider/solver、dependency追加、fetch、PR、tag、release、

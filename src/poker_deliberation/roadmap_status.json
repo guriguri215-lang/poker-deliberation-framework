@@ -16,6 +16,82 @@
       "source_label": "attached goal objective",
       "topics": ["tracked packaged JSON as canonical RM status"],
       "scope_digest": "bab1b56a1cf48cd2ec67dd710119038a09ce4bdcffc036cc46a50b54aea6f976"
+    },
+    "goal-rm024-p2-024a-2026-07-20": {
+      "source_label": "attached goal objective approved by human",
+      "topics": [
+        "Implement RM-024 milestone P2-024A only.",
+        "Use context classifications public, internal by default, sensitive, and restricted.",
+        "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.",
+        "Create a fresh immutable ContextEnvelope for every attempt.",
+        "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.",
+        "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.",
+        "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.",
+        "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.",
+        "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.",
+        "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.",
+        "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."
+      ],
+      "scope": {
+        "schema_version": "1.0.0",
+        "rm_id": "RM-024",
+        "milestone_id": "P2-024A",
+        "item_contract": {
+          "acceptance_criteria": [
+            "A strict versioned immutable ContextPolicy and ContextEnvelope bind classification, retention-policy ID, UTC expiry, exact allowlist, canonical payload/source/policy hashes, and run/assignment/attempt/runtime lineage.",
+            "The actual orchestrator-to-provider path validates integrity, expiry, lineage, runtime, assignment allowlist parity, restricted secrets, and provider availability before delivering a fresh AgentContext copy.",
+            "Unknown fields, versions, runtimes, dotted-path allowlists, tampering, replay, expired context, and restricted provider handoff fail closed without enabling external providers or writing context lifecycle state.",
+            "Existing AgentContext and provider signatures, LocalProvider behavior, CLI exit codes, run/resume/show, and existing artifact meanings remain compatible.",
+            "Unit, property/metamorphic, integration, adversarial, CLI, roadmap, doctor, and canonical quality gates pass with no new dependency."
+          ],
+          "capabilities": [],
+          "completion_milestone": "P2-024A",
+          "dependencies": ["RM-006", "RM-023"],
+          "entry_milestone": "P2-024A",
+          "evidence_mode": null,
+          "id": "RM-024",
+          "objective": "Implement the approved P2-024A attempt-scoped context policy, immutable envelope, lineage, expiry, integrity, and provider allowlist contract without persistence, cleanup, external runtime, or later Phase 2 work.",
+          "phase": "phase-2",
+          "priority": "P1",
+          "relations": ["Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance."],
+          "targets": [
+            "src/poker_deliberation/context_lifecycle.py",
+            "src/poker_deliberation/orchestrator.py",
+            "src/poker_deliberation/schemas.py",
+            "src/poker_deliberation/agents/roles.py",
+            "src/poker_deliberation/providers",
+            "docs/context-lifecycle.md",
+            "docs/architecture.md",
+            "docs/security.md",
+            "docs/limitations.md",
+            "docs/agent-protocol.md"
+          ],
+          "tests": [
+            "tests/unit/test_context_lifecycle.py",
+            "tests/property/test_context_lifecycle_properties.py",
+            "tests/integration/test_context_lifecycle_integration.py",
+            "tests/adversarial/test_context_lifecycle_security.py",
+            "tests/adversarial/test_review_regressions.py",
+            "tests/adversarial/test_blind_isolation.py",
+            "tests/integration/test_cli.py"
+          ],
+          "title": "Context lifecycle contract"
+        },
+        "policy_decisions": [
+          "Implement RM-024 milestone P2-024A only.",
+          "Use context classifications public, internal by default, sensitive, and restricted.",
+          "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.",
+          "Create a fresh immutable ContextEnvelope for every attempt.",
+          "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.",
+          "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.",
+          "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.",
+          "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.",
+          "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.",
+          "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.",
+          "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."
+        ]
+      },
+      "scope_digest": "50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069"
     }
   },
   "status_vocabulary": {
@@ -59,7 +135,7 @@
     "RM-021": ["proposed", "planned"],
     "RM-022": ["proposed", "planned"],
     "RM-023": ["proposed", "planned", "completed"],
-    "RM-024": ["proposed"],
+    "RM-024": ["proposed", "planned"],
     "RM-025": ["proposed"],
     "RM-026": ["proposed"],
     "RM-027": ["proposed"],
@@ -492,18 +568,18 @@
       "title": "Context lifecycle contract",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "proposed",
+      "status": "planned",
       "dependencies": ["RM-006", "RM-023"],
-      "capabilities": ["codex_python_runtime_bridge"],
-      "objective": "Version context envelopes and define ownership, allowlists, lineage, classification, expiry, retention policy, and tamper detection per attempt.",
-      "targets": ["AgentContext and future ContextEnvelope", "routing and provider boundaries", "local data policy"],
-      "acceptance_criteria": ["Fresh immutable context per attempt records producer/consumer, run/assignment/attempt lineage, allowed fields, deterministic hash, classification, expiry, and retention-policy ID; unknown, expired, or tampered context fails closed."],
-      "tests": ["allowlist parity", "mutation isolation", "retry lineage", "expired/tampered/unknown-version rejection", "retention classification"],
+      "capabilities": [],
+      "objective": "Implement the approved P2-024A attempt-scoped context policy, immutable envelope, lineage, expiry, integrity, and provider allowlist contract without persistence, cleanup, external runtime, or later Phase 2 work.",
+      "targets": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "src/poker_deliberation/providers", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"],
+      "acceptance_criteria": ["A strict versioned immutable ContextPolicy and ContextEnvelope bind classification, retention-policy ID, UTC expiry, exact allowlist, canonical payload/source/policy hashes, and run/assignment/attempt/runtime lineage.", "The actual orchestrator-to-provider path validates integrity, expiry, lineage, runtime, assignment allowlist parity, restricted secrets, and provider availability before delivering a fresh AgentContext copy.", "Unknown fields, versions, runtimes, dotted-path allowlists, tampering, replay, expired context, and restricted provider handoff fail closed without enabling external providers or writing context lifecycle state.", "Existing AgentContext and provider signatures, LocalProvider behavior, CLI exit codes, run/resume/show, and existing artifact meanings remain compatible.", "Unit, property/metamorphic, integration, adversarial, CLI, roadmap, doctor, and canonical quality gates pass with no new dependency."],
+      "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"],
       "entry_milestone": "P2-024A",
       "completion_milestone": "P2-024A",
       "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["context retention/deletion", "classification model", "cross-runtime lineage"]},
-      "status_reason": "Approved as a roadmap candidate only; no lifecycle implementation exists.",
+      "human_approval": {"required": true, "state": "approved_scope", "topics": ["Implement RM-024 milestone P2-024A only.", "Use context classifications public, internal by default, sensitive, and restricted.", "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.", "Create a fresh immutable ContextEnvelope for every attempt.", "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.", "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.", "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.", "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.", "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.", "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.", "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."], "approval_reference": "goal-rm024-p2-024a-2026-07-20"},
+      "status_reason": "The attached human-approved P2-024A scope is frozen and planned; implementation has not started.",
       "relations": ["Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance."]
     },
     {

@@ -14,7 +14,14 @@ from poker_deliberation.providers.base import (
     ProviderControl,
     ProviderStatus,
 )
-from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport, CaseInput
+from poker_deliberation.schemas import (
+    AgentAssignment,
+    AgentContext,
+    AgentReport,
+    CaseInput,
+    Claim,
+    EpistemicLabel,
+)
 
 
 class FailingNormalizationService(NormalizationService):
@@ -108,6 +115,46 @@ def test_provider_timeout_stops_remaining_analysis_and_tool_work(tmp_path: Path)
     assert report.tool_results == []
     assert len(report.agent_execution_records) == 1
     assert report.agent_execution_records[0].status.value == "failed"
+
+
+class ObjectionThenTimeoutProvider(TimeoutProvider):
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        del context, control
+        self.analyze_calls += 1
+        if self.analyze_calls == 1:
+            return AgentReport(
+                report_id="report-with-objection",
+                agent_role=assignment.agent_role,
+                task=assignment.task,
+                objections=["first specialist objection"],
+            )
+        raise TimeoutError("forced provider timeout")
+
+
+def test_early_timeout_preserves_objections_from_completed_reports(tmp_path: Path) -> None:
+    provider = ObjectionThenTimeoutProvider()
+    report = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider).run(
+        CaseInput(
+            kind="strategy",
+            raw_text="review",
+            analysis_scope="retrospective",
+            claims=[
+                Claim(
+                    claim_id="claim-1",
+                    text="decision claim",
+                    label=EpistemicLabel.USER_CLAIM,
+                )
+            ],
+        ),
+        run_id="run-timeout-after-objection",
+    )
+    assert report.run_status == "failed_with_limitations"
+    assert [dispute.issue for dispute in report.disputes] == ["first specialist objection"]
 
 
 def test_final_write_fault_keeps_known_p2_010b_atomicity_limitation(

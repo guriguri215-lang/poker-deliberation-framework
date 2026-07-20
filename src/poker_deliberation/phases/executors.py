@@ -73,15 +73,13 @@ def _analyze_with_timeout(
         except Exception as exc:  # the boundary classifies provider failures below
             errors.append(exc)
 
-    worker = Thread(target=invoke, daemon=True)
+    worker = Thread(target=invoke, daemon=True, name=f"provider-{assignment.agent_role}")
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
         control.cancel()
-        suffix = ""
-        provider_name = getattr(provider, "provider_name", None)
-        if provider_name:
-            suffix = f" ({provider_name})"
+        worker.join(min(0.5, max(0.05, timeout_seconds)))
+        suffix = " and ignored cancellation" if worker.is_alive() else " and was cancelled"
         raise TimeoutError(f"provider exceeded deadline {timeout_seconds} seconds{suffix}")
     if errors:
         raise errors[0]
@@ -114,6 +112,33 @@ def _context_record_fields(
 def _safe_unique_id(value: str, existing: set[str], label: str) -> None:
     if not _PORTABLE_ID.fullmatch(value) or value in existing:
         raise PhaseContractError(f"unsafe or duplicate {label}")
+
+
+def validate_tool_research_output(
+    request: PhaseRequest[ToolResearchInput],
+    output: ToolResearchOutput,
+) -> None:
+    """Bind every result to the exact outer request before materialization."""
+
+    value = request.input
+    if len(output.bindings) != len(value.requests):
+        raise PhaseContractError("tool binding count does not match phase request")
+    seen_result_ids = set(value.existing_result_ids)
+    for offset, (tool_request, binding) in enumerate(
+        zip(value.requests, output.bindings, strict=True)
+    ):
+        expected_ordinal = value.start_ordinal + offset
+        if (
+            binding.run_id != request.run_id
+            or binding.phase_attempt_id != request.attempt_id
+            or binding.ordinal != expected_ordinal
+            or binding.request != tool_request
+            or binding.requested_contract_version != tool_request.contract_version
+            or binding.request_input_sha256 != canonical_sha256(tool_request.input)
+        ):
+            raise PhaseContractError("tool execution binding correlation mismatch")
+        _safe_unique_id(binding.result.result_id, seen_result_ids, "bound tool result ID")
+        seen_result_ids.add(binding.result.result_id)
 
 
 class AnalysisExecutor:
@@ -268,6 +293,19 @@ class AnalysisExecutor:
         report = AgentReport.model_validate(
             redact_sensitive(report, enabled=not value.record_sensitive_data)
         )
+        try:
+            _safe_unique_id(report.report_id, existing_report_ids, "redacted report ID")
+        except PhaseContractError as exc:
+            warnings.append(f"provider {assignment.agent_role} report ID rejected: {exc}")
+            report = AgentReport(
+                report_id=value.fallback_report_id,
+                agent_role=assignment.agent_role,
+                task=assignment.task,
+                uncertainties=["Provider report identity became unsafe after redaction."],
+                confidence=ConfidenceGrade.D,
+            )
+            execution_status = AgentExecutionStatus.FAILED
+            execution_error = str(exc)
         report_size = len(
             json.dumps(report.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
         )
@@ -341,6 +379,7 @@ class ToolResearchExecutor:
         ):
             _safe_unique_id(fallback_result_id, seen, "fallback result ID")
             request_is_safe = bool(_PORTABLE_ID.fullmatch(tool_request.request_id))
+            supported_contract_version = tool_request.contract_version or "1.0.0"
             if request_is_safe:
                 raw_result = ToolResult.model_validate(
                     self.registry.execute(
@@ -349,9 +388,15 @@ class ToolResearchExecutor:
                         contract_version=tool_request.contract_version,
                     )
                 )
+                supported_contract_version = raw_result.contract_version
                 if (
                     raw_result.tool_name != tool_request.tool_name
                     or raw_result.input != tool_request.input
+                    or (
+                        raw_result.status is ToolStatus.SUCCESS
+                        and tool_request.contract_version is not None
+                        and raw_result.contract_version != tool_request.contract_version
+                    )
                 ):
                     warnings.append(f"{tool_request.tool_name}: tool result correlation mismatch")
                     result = ToolResult(
@@ -361,7 +406,7 @@ class ToolResearchExecutor:
                         status=ToolStatus.FAILED,
                         exactness=Exactness.UNAVAILABLE,
                         numeric_exactness=NumericalExactness.UNAVAILABLE,
-                        contract_version=tool_request.contract_version or "1.0.0",
+                        contract_version=supported_contract_version,
                         error="tool result correlation mismatch",
                     )
                 else:
@@ -376,7 +421,7 @@ class ToolResearchExecutor:
                     status=ToolStatus.FAILED,
                     exactness=Exactness.UNAVAILABLE,
                     numeric_exactness=NumericalExactness.UNAVAILABLE,
-                    contract_version=tool_request.contract_version or "1.0.0",
+                    contract_version=supported_contract_version,
                     error="unsafe tool request correlation ID",
                 )
                 warnings.append(f"{tool_request.tool_name}: unsafe tool request correlation ID")
@@ -392,12 +437,31 @@ class ToolResearchExecutor:
                     status=ToolStatus.FAILED,
                     exactness=Exactness.UNAVAILABLE,
                     numeric_exactness=NumericalExactness.UNAVAILABLE,
-                    contract_version=tool_request.contract_version or "1.0.0",
+                    contract_version=supported_contract_version,
                     error="unsafe or duplicate tool result ID",
                 )
             result = ToolResult.model_validate(
                 redact_sensitive(result, enabled=not self.record_sensitive_data)
             )
+            if not _PORTABLE_ID.fullmatch(result.result_id) or result.result_id in seen:
+                warnings.append(
+                    f"{tool_request.tool_name}: unsafe or duplicate tool result ID after redaction"
+                )
+                result = ToolResult.model_validate(
+                    redact_sensitive(
+                        ToolResult(
+                            result_id=fallback_result_id,
+                            tool_name=tool_request.tool_name,
+                            input=dict(tool_request.input),
+                            status=ToolStatus.FAILED,
+                            exactness=Exactness.UNAVAILABLE,
+                            numeric_exactness=NumericalExactness.UNAVAILABLE,
+                            contract_version=supported_contract_version,
+                            error="unsafe or duplicate tool result ID after redaction",
+                        ),
+                        enabled=not self.record_sensitive_data,
+                    )
+                )
             seen.add(result.result_id)
             any_failure = any_failure or result.status is not ToolStatus.SUCCESS
             bindings.append(
@@ -407,7 +471,10 @@ class ToolResearchExecutor:
                     ordinal=value.start_ordinal + offset,
                     request=tool_request,
                     request_input_sha256=canonical_sha256(tool_request.input),
+                    validated_result_input_sha256=canonical_sha256(tool_request.input),
+                    materialized_result_input_sha256=canonical_sha256(result.input),
                     requested_contract_version=tool_request.contract_version,
+                    supported_contract_version=supported_contract_version,
                     result_contract_version=result.contract_version,
                     result=result,
                 )
@@ -416,6 +483,7 @@ class ToolResearchExecutor:
             bindings=tuple(bindings),
             data_quality=tuple(warnings),
         )
+        validate_tool_research_output(isolated, output)
         return successful_outcome(
             isolated,
             output,

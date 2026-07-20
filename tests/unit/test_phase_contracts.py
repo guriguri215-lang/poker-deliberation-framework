@@ -20,7 +20,11 @@ from poker_deliberation.phases import (
     revalidate_outcome,
 )
 from poker_deliberation.phases.contracts import failed_outcome, successful_outcome
-from poker_deliberation.phases.models import NormalizationInput, NormalizationOutput
+from poker_deliberation.phases.models import (
+    IntakeValidationInput,
+    NormalizationInput,
+    NormalizationOutput,
+)
 from poker_deliberation.schemas import CaseInput
 
 
@@ -55,6 +59,19 @@ def test_phase_request_rejects_missing_extra_hash_and_version_changes() -> None:
         )
     with pytest.raises(ValidationError, match="input hash mismatch"):
         PhaseRequest[NormalizationInput].model_validate({**payload, "input_hash": "b" * 64})
+
+
+def test_phase_models_reject_type_coercion() -> None:
+    request = _request()
+    payload = request.model_dump(mode="python")
+    with pytest.raises(ValidationError):
+        PhaseRequest[NormalizationInput].model_validate({**payload, "context_ids": []})
+    with pytest.raises(ValidationError):
+        IntakeValidationInput(
+            case=CaseInput(kind="strategy", raw_text="review"),
+            record_sensitive_data=1,  # type: ignore[arg-type]
+            sensitive_action_categories=(),
+        )
 
 
 def test_phase_outcome_requires_exact_shape_hash_and_request_correlation() -> None:

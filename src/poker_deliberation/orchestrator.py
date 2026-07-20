@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from poker_deliberation.agents import select_roles
-from poker_deliberation.approvals import ApprovalLedger
+from poker_deliberation.approvals import SENSITIVE_ACTIONS, ApprovalLedger
 from poker_deliberation.config import AppConfig
 from poker_deliberation.context_lifecycle import (
     new_attempt_id,
@@ -30,6 +30,7 @@ from poker_deliberation.phases import (
     canonical_sha256,
     make_phase_request,
     revalidate_outcome,
+    validate_tool_research_output,
 )
 from poker_deliberation.phases.models import (
     AdjudicationInput,
@@ -114,6 +115,12 @@ class Orchestrator:
         )
         self.provider = provider or LocalProvider()
         self.context_clock = context_clock or (lambda: datetime.now(UTC))
+        self.tool_contract_versions = {
+            str(description["name"]): str(description["contract_version"])
+            for description in self.registry.describe()
+            if description.get("name") is not None
+            and description.get("contract_version") is not None
+        }
         self.intake_service = intake_service or IntakeValidationService()
         self.normalization_service = normalization_service or NormalizationService()
         self.routing_service = routing_service or RoutingService()
@@ -136,6 +143,8 @@ class Orchestrator:
             {
                 "record_sensitive_data": self.config.record_sensitive_data,
                 "registered_tools": self.registry.names(),
+                "tool_contract_versions": self.tool_contract_versions,
+                "sensitive_action_categories": sorted(SENSITIVE_ACTIONS),
                 "context_retention_policy": "attempt-memory-only-v1",
                 "execution": "serial",
             }
@@ -174,6 +183,7 @@ class Orchestrator:
             input_value=IntakeValidationInput(
                 case=case,
                 record_sensitive_data=self.config.record_sensitive_data,
+                sensitive_action_categories=tuple(sorted(SENSITIVE_ACTIONS)),
                 fallback_approval_ids=fallback_approval_ids,
             ),
         )
@@ -274,6 +284,7 @@ class Orchestrator:
                     request_id=_new_internal_id("tool-request"),
                     tool_name="hand_validator",
                     input=case.hand.model_dump(mode="json"),
+                    contract_version=self.tool_contract_versions.get("hand_validator"),
                 )
                 tool_phase_request = make_phase_request(
                     run_id=actual_run_id,
@@ -292,6 +303,7 @@ class Orchestrator:
                 )
                 if tool_phase_outcome.output is None:
                     raise PhaseContractError("hand validation returned no output")
+                validate_tool_research_output(tool_phase_request, tool_phase_outcome.output)
                 data_quality.extend(tool_phase_outcome.output.data_quality)
                 validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
@@ -440,6 +452,31 @@ class Orchestrator:
                     f"agent_reports/{analysis.report.report_id}.json",
                     analysis.report,
                 )
+                objection_request = make_phase_request(
+                    run_id=actual_run_id,
+                    phase_id=PhaseId.CRITIQUE,
+                    attempt_id=_new_phase_attempt_id(PhaseId.CRITIQUE),
+                    policy_snapshot_hash=self.phase_policy_snapshot_hash,
+                    input_value=CritiqueInput(
+                        case=case,
+                        reports=(analysis.report,),
+                        tool_results=(),
+                        evidence_ids=(),
+                        existing_disputes=tuple(disputes),
+                        include_objections=True,
+                        include_provider_claims=False,
+                        include_auxiliary_findings=False,
+                    ),
+                )
+                objection_outcome = revalidate_outcome(
+                    objection_request,
+                    self.critique_service.run(objection_request),
+                    output_type=CritiqueOutput,
+                )
+                if objection_outcome.output is None:
+                    raise PhaseContractError("objection critique returned no output")
+                disputes = list(objection_outcome.output.disputes)
+                data_quality.extend(objection_outcome.output.data_quality)
             if not machine.enforce_runtime():
                 data_quality.append("maximum runtime exceeded after provider analysis")
                 return self._synthesize(
@@ -481,6 +518,7 @@ class Orchestrator:
                     request_id=_new_internal_id("tool-request"),
                     tool_name=tool_name,
                     input=payload,
+                    contract_version=self.tool_contract_versions.get(tool_name),
                 )
             )
         requested_tools_request = make_phase_request(
@@ -504,6 +542,7 @@ class Orchestrator:
         )
         if requested_tools_outcome.output is None:
             raise PhaseContractError("tool research returned no output")
+        validate_tool_research_output(requested_tools_request, requested_tools_outcome.output)
         data_quality.extend(requested_tools_outcome.output.data_quality)
         tool_results.extend(binding.result for binding in requested_tools_outcome.output.bindings)
         for result in tool_results:
@@ -541,6 +580,9 @@ class Orchestrator:
                 tool_results=tuple(tool_results),
                 evidence_ids=tuple(record.evidence_id for record in evidence.all()),
                 existing_disputes=tuple(disputes),
+                include_objections=False,
+                include_provider_claims=True,
+                include_auxiliary_findings=True,
             ),
         )
         critique_outcome = revalidate_outcome(

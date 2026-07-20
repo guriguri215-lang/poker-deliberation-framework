@@ -33,9 +33,6 @@
   lineage, UTC use-expiry, exact allowlists, and unkeyed SHA-256 integrity. It does not persist the
   envelope, choose a storage retention duration, delete data, run cleanup, provide secure erase, add
   a durable authenticity trust anchor, execute retries, or connect Codex and Python runtimes.
-- P2-010A splits the serial run path into strict typed pure phases plus Analysis/ToolResearch effect
-  adapters. This internal API is not declared stable and adds no retry, parallelism, budget ledger,
-  timeout/cancellation redesign, persistence transaction, durable resume, or lifecycle cleanup.
 - Run artifacts are confined. JSON and text replacement writes use a temporary file per artifact,
   but JSONL evidence is appended directly and is not crash-atomic. There is no versioned run
   manifest, whole-run atomic completion protocol, retention/deletion policy, migration contract, or

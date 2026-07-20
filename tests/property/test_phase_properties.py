@@ -42,6 +42,7 @@ def test_intake_phase_is_stable_and_nested_input_isolation_holds(
     value = IntakeValidationInput(
         case=case,
         record_sensitive_data=record_sensitive_data,
+        sensitive_action_categories=(),
     )
     request = make_phase_request(
         run_id="run-property",

@@ -16,6 +16,8 @@ ID, schema version, phase-attempt ID, canonical input hash, policy-snapshot hash
 IDs. Missing/extra fields, unsupported versions, non-canonical values, hash mismatch, phase/input
 mismatch, and request/outcome correlation mismatch fail closed. Inputs and outputs are dumped and
 revalidated at each boundary so caller-owned nested values are not used as phase working memory.
+Strict mode also rejects Python-side scalar and collection coercion; policy such as sensitive-action
+categories is passed as a canonical sorted snapshot instead of read from a mutable global registry.
 
 An outcome is either output-bearing (`succeeded` or `completed_with_failures`) or a top-level typed
 failure. It can request a next state and carry `ArtifactIntent` values, but cannot perform either
@@ -35,7 +37,8 @@ global registry.
 - Routing validates the canonical role order. Calculation retains `math-auditor` and the assigned
   but unexecuted `report-writer`, both with empty `context_keys`.
 - ContextBuild produces a fresh P2-024A `ContextEnvelope` from injected UTC time and IDs and preserves
-  `attempt-memory-only-v1`; no envelope is persisted.
+  `attempt-memory-only-v1`; the dispatch context must exactly match the envelope's canonical payload
+  and assignment hash, and no envelope is persisted.
 - Critique rejects provider claims from adjudicated conclusions until typed evidence/tool checks
   exist and applies the deterministic results-orientation rules.
 - Adjudication consumes complete `ToolResult` values and preserves tool-specific exactness and
@@ -55,8 +58,10 @@ epistemic labels are untrusted and normalized to `USER_CLAIM`/at most confidence
 unadjudicated provider sections as `UNKNOWN`.
 
 ToolResearch binds the full original `ToolRequest`, ordinal, run/phase attempt, canonical input hash,
-requested/result contract versions, and complete unprojected `ToolResult`. Unsafe/duplicate result
-IDs become safe failed results. Exactness, assumptions, warnings, confidence interval, error and
+requested/supported/result contract versions, validated/materialized input hashes, and complete
+unprojected `ToolResult`. The orchestrator revalidates every binding against the outer phase request
+before writing. Contract-version mismatches and unsafe/duplicate result IDs become safe failed
+results. Exactness, assumptions, warnings, confidence interval, error and
 verification metadata, seed/sample/iteration/stopping data, and reproduction metadata are preserved.
 The executor is used once for structured-hand validation before provider analysis and once for the
 ordered requested-tool batch after analysis; repeated `hand_validator` remains skipped.

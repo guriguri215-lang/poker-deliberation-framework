@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from poker_deliberation.config import AppConfig
+from poker_deliberation.context_lifecycle import build_context_envelope, context_payload
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases import (
     ArtifactIntent,
@@ -14,9 +17,10 @@ from poker_deliberation.phases import (
     PhaseContractError,
     PhaseId,
     make_phase_request,
+    validate_tool_research_output,
 )
 from poker_deliberation.phases.executors import ToolResearchExecutor
-from poker_deliberation.phases.models import ToolResearchInput
+from poker_deliberation.phases.models import ContextDispatch, ToolResearchInput
 from poker_deliberation.phases.services import SynthesisService
 from poker_deliberation.providers.base import (
     ProviderAvailability,
@@ -108,6 +112,20 @@ def test_duplicate_report_ids_fail_closed_to_unique_fallbacks(tmp_path: Path) ->
     assert sum(record.status.value == "failed" for record in report.agent_execution_records) == 3
 
 
+def test_report_id_made_unsafe_by_redaction_uses_safe_fallback(tmp_path: Path) -> None:
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=MaliciousReportProvider(report_id="sk-abcdefghijk"),
+    ).run(
+        CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
+        run_id="run-redacted-report-id",
+    )
+    run_dir = tmp_path / "runs" / report.run_id / "agent_reports"
+    assert len(list(run_dir.glob("*.json"))) == 4
+    assert not (run_dir / "[REDACTED].json").exists()
+    assert all(record.status.value == "failed" for record in report.agent_execution_records)
+
+
 def test_provider_cannot_inject_state_or_artifact_fields(tmp_path: Path) -> None:
     report = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
@@ -131,6 +149,47 @@ class UnsafeResultRegistry:
     ) -> ToolResult:
         return ToolResult(
             result_id="../assignments",
+            tool_name=name,
+            input=payload,
+            output={"value": 1},
+            status=ToolStatus.SUCCESS,
+            exactness=Exactness.EXACT,
+            numeric_exactness=NumericalExactness.EXACT,
+            contract_version=contract_version or "1.0.0",
+        )
+
+
+class MismatchedContractRegistry(UnsafeResultRegistry):
+    def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+    ) -> ToolResult:
+        del contract_version
+        return ToolResult(
+            result_id="tool-result-contract-mismatch",
+            tool_name=name,
+            input=payload,
+            output={"value": 1},
+            status=ToolStatus.SUCCESS,
+            exactness=Exactness.EXACT,
+            numeric_exactness=NumericalExactness.EXACT,
+            contract_version="999.0.0",
+        )
+
+
+class RedactedResultIdRegistry(UnsafeResultRegistry):
+    def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+    ) -> ToolResult:
+        return ToolResult(
+            result_id="sk-abcdefghijk",
             tool_name=name,
             input=payload,
             output={"value": 1},
@@ -167,6 +226,121 @@ def test_unsafe_tool_result_id_is_replaced_without_losing_request_binding() -> N
     assert binding.result.result_id == "tool-result-safe"
     assert binding.result.status is ToolStatus.FAILED
     assert binding.result.input == tool_request.input
+
+
+def test_tool_result_id_made_unsafe_by_redaction_uses_safe_fallback() -> None:
+    executor = ToolResearchExecutor(  # type: ignore[arg-type]
+        RedactedResultIdRegistry(), record_sensitive_data=False
+    )
+    tool_request = ToolRequest(
+        request_id="tool-request-redaction",
+        tool_name="fake",
+        input={"value": 1},
+    )
+    request = make_phase_request(
+        run_id="run-tool-redaction",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-redaction",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-safe",),
+        ),
+    )
+    outcome = executor.run(request)
+    assert outcome.output is not None
+    result = outcome.output.bindings[0].result
+    assert result.result_id == "tool-result-safe"
+    assert result.status is ToolStatus.FAILED
+    assert "unsafe or duplicate" in (result.error or "")
+
+
+def test_successful_tool_result_with_wrong_contract_version_fails_closed() -> None:
+    executor = ToolResearchExecutor(  # type: ignore[arg-type]
+        MismatchedContractRegistry(), record_sensitive_data=False
+    )
+    tool_request = ToolRequest(
+        request_id="tool-request-contract",
+        tool_name="fake",
+        input={"value": 1},
+        contract_version="2.0.0",
+    )
+    request = make_phase_request(
+        run_id="run-tool-contract",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-contract",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-safe",),
+        ),
+    )
+    outcome = executor.run(request)
+    assert outcome.output is not None
+    binding = outcome.output.bindings[0]
+    assert binding.requested_contract_version == "2.0.0"
+    assert binding.supported_contract_version == "999.0.0"
+    assert binding.result.status is ToolStatus.FAILED
+    assert "correlation mismatch" in (binding.result.error or "")
+
+
+def test_tool_binding_from_another_phase_attempt_is_rejected() -> None:
+    executor = ToolResearchExecutor(  # type: ignore[arg-type]
+        MismatchedContractRegistry(), record_sensitive_data=False
+    )
+    tool_request = ToolRequest(
+        request_id="tool-request-outer",
+        tool_name="fake",
+        input={"value": 1},
+        contract_version="2.0.0",
+    )
+    request = make_phase_request(
+        run_id="run-tool-outer",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-outer",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-safe",),
+        ),
+    )
+    outcome = executor.run(request)
+    assert outcome.output is not None
+    forged = outcome.output.model_copy(
+        update={
+            "bindings": (outcome.output.bindings[0].model_copy(update={"run_id": "run-other"}),)
+        },
+        deep=True,
+    )
+    with pytest.raises(PhaseContractError, match="binding correlation mismatch"):
+        validate_tool_research_output(request, forged)
+
+
+def test_context_dispatch_rejects_context_from_another_envelope_payload() -> None:
+    context = AgentContext(kind="strategy", objective="ENVELOPE-A", strategy_text="review")
+    assignment = AgentAssignment(
+        assignment_id="assignment-context",
+        agent_role="strategy-analyst",
+        task="review",
+        context_keys=sorted(context_payload(context)),
+    )
+    now = datetime(2026, 7, 20, tzinfo=UTC)
+    envelope = build_context_envelope(
+        context,
+        assignment,
+        run_id="run-context",
+        expires_at=now + timedelta(minutes=1),
+        clock=lambda: now,
+        context_id="context-a",
+        attempt_id="attempt-a",
+    )
+    tampered_context = context.model_copy(update={"objective": "DISPATCH-B"}, deep=True)
+    with pytest.raises(ValidationError, match="canonical envelope payload"):
+        ContextDispatch(
+            assignment=assignment,
+            context=tampered_context,
+            envelope=envelope,
+        )
 
 
 class ForgedSynthesisService(SynthesisService):

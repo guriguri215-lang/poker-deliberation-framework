@@ -52,7 +52,11 @@ def test_intake_and_normalization_are_deterministic_and_do_not_mutate_nested_inp
         metadata={"normalization_warnings": ["source warning"], "nested": {"items": [1]}},
     )
     original = deepcopy(case.model_dump(mode="python"))
-    intake_input = IntakeValidationInput(case=case, record_sensitive_data=False)
+    intake_input = IntakeValidationInput(
+        case=case,
+        record_sensitive_data=False,
+        sensitive_action_categories=(),
+    )
     request = _request(PhaseId.INTAKE_VALIDATION, intake_input)
 
     first = IntakeValidationService().run(request)
@@ -194,6 +198,8 @@ def test_pure_service_module_has_no_effect_owner_imports() -> None:
         "WorkflowStateMachine",
         "AgentProvider",
         "ToolRegistry",
+        "poker_deliberation.approvals",
+        "requires_human_approval",
         "datetime.now",
         "uuid4(",
         "secrets.",

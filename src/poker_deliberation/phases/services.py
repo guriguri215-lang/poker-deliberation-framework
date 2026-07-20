@@ -8,7 +8,6 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
-from poker_deliberation.approvals import requires_human_approval
 from poker_deliberation.context_lifecycle import (
     build_context_envelope,
     context_payload,
@@ -146,7 +145,7 @@ class IntakeValidationService(PurePhaseService[IntakeValidationInput, IntakeVali
                         "input-supplied approval decision fields were ignored: "
                         f"{sorted(injected_fields)}"
                     )
-                if not requires_human_approval(proposal.action_category):
+                if proposal.action_category not in value.sensitive_action_categories:
                     raise ValueError("approval proposal category is not a sensitive action")
                 approval_proposals.append(proposal)
         elif raw_approvals:
@@ -337,92 +336,100 @@ class CritiqueService(PurePhaseService[CritiqueInput, CritiqueOutput]):
             result.result_id for result in value.tool_results if result.status is ToolStatus.SUCCESS
         }
         ordinal = len(disputes)
-        for report in value.reports:
-            report_evidence_ids = set(report.evidence_ids)
-            report_tool_ids = set(report.tool_result_ids)
-            invalid_refs = (report_evidence_ids - valid_evidence_ids) | (
-                report_tool_ids - valid_tool_result_ids
-            )
-            if invalid_refs:
-                warnings.append(
-                    f"{report.report_id}: unknown provider evidence/tool IDs: "
-                    f"{sorted(invalid_refs)}"
+        if value.include_objections:
+            for report in value.reports:
+                for objection in report.objections:
+                    if value.case.claims:
+                        disputes.append(
+                            Dispute(
+                                dispute_id=_dispute_id("objection", ordinal, objection),
+                                claim_ids=[value.case.claims[0].claim_id],
+                                issue=objection,
+                                positions=[objection],
+                                unresolved=True,
+                            )
+                        )
+                        ordinal += 1
+        if value.include_provider_claims:
+            for report in value.reports:
+                report_evidence_ids = set(report.evidence_ids)
+                report_tool_ids = set(report.tool_result_ids)
+                invalid_refs = (report_evidence_ids - valid_evidence_ids) | (
+                    report_tool_ids - valid_tool_result_ids
                 )
-            for objection in report.objections:
-                if value.case.claims:
+                if invalid_refs:
+                    warnings.append(
+                        f"{report.report_id}: unknown provider evidence/tool IDs: "
+                        f"{sorted(invalid_refs)}"
+                    )
+                for provider_claim in report.claims:
+                    claim_refs = (
+                        set(provider_claim.evidence_ids) | report_evidence_ids | report_tool_ids
+                    )
+                    valid_refs = claim_refs & (valid_evidence_ids | valid_tool_result_ids)
+                    if valid_refs and not invalid_refs:
+                        dispute = Dispute(
+                            dispute_id=_dispute_id("provider-claim", ordinal, provider_claim.text),
+                            claim_ids=[provider_claim.claim_id],
+                            issue=(
+                                "Provider claim references valid artifacts but lacks typed "
+                                "adjudication"
+                            ),
+                            positions=[provider_claim.text],
+                            resolution_basis=[f"valid references: {sorted(valid_refs)}"],
+                            unresolved=True,
+                        )
+                    else:
+                        dispute = Dispute(
+                            dispute_id=_dispute_id("provider-claim", ordinal, provider_claim.text),
+                            claim_ids=[provider_claim.claim_id],
+                            issue=(
+                                "Provider claim lacks valid claim-level evidence or tool "
+                                "verification"
+                            ),
+                            positions=[provider_claim.text],
+                            resolution=(
+                                "Rejected from the adjudicated conclusion and labeled UNKNOWN"
+                            ),
+                            resolution_basis=["provider output is untrusted input"],
+                            unresolved=False,
+                        )
+                    disputes.append(dispute)
+                    ordinal += 1
+        if value.include_auxiliary_findings:
+            for result in value.tool_results:
+                if result.status is ToolStatus.FAILED:
+                    warnings.append(f"{result.tool_name} failed: {result.error}")
+                if result.status is ToolStatus.UNAVAILABLE:
+                    warnings.append(f"{result.tool_name} unavailable: {result.error}")
+            rationale_sources: list[tuple[str, str]] = []
+            if value.case.raw_text:
+                rationale_sources.append(("input-raw", value.case.raw_text))
+            rationale_sources.extend((claim.claim_id, claim.text) for claim in value.case.claims)
+            for report in value.reports:
+                rationale_sources.extend((claim.claim_id, claim.text) for claim in report.claims)
+                rationale_sources.extend(
+                    (f"{report.report_id}-conclusion", text) for text in report.conclusions
+                )
+            for source_id, text in rationale_sources:
+                for finding in detect_results_orientation(text):
                     disputes.append(
                         Dispute(
-                            dispute_id=_dispute_id("objection", ordinal, objection),
-                            claim_ids=[value.case.claims[0].claim_id],
-                            issue=objection,
-                            positions=[objection],
-                            unresolved=True,
+                            dispute_id=_dispute_id(
+                                "results-orientation", ordinal, (source_id, text, finding.rule_id)
+                            ),
+                            claim_ids=[source_id],
+                            issue="結果論を意思決定の正しさの根拠として使用しています。",
+                            positions=[text],
+                            resolution=finding.correction,
+                            resolution_basis=[f"deterministic rule: {finding.rule_id}"],
+                            unresolved=False,
                         )
                     )
                     ordinal += 1
-            for provider_claim in report.claims:
-                claim_refs = (
-                    set(provider_claim.evidence_ids) | report_evidence_ids | report_tool_ids
-                )
-                valid_refs = claim_refs & (valid_evidence_ids | valid_tool_result_ids)
-                if valid_refs and not invalid_refs:
-                    dispute = Dispute(
-                        dispute_id=_dispute_id("provider-claim", ordinal, provider_claim.text),
-                        claim_ids=[provider_claim.claim_id],
-                        issue=(
-                            "Provider claim references valid artifacts but lacks typed adjudication"
-                        ),
-                        positions=[provider_claim.text],
-                        resolution_basis=[f"valid references: {sorted(valid_refs)}"],
-                        unresolved=True,
+                    warnings.append(
+                        f"{source_id}: 結果論の論拠を棄却し、意思決定時点の情報で再評価が必要です。"
                     )
-                else:
-                    dispute = Dispute(
-                        dispute_id=_dispute_id("provider-claim", ordinal, provider_claim.text),
-                        claim_ids=[provider_claim.claim_id],
-                        issue=(
-                            "Provider claim lacks valid claim-level evidence or tool verification"
-                        ),
-                        positions=[provider_claim.text],
-                        resolution="Rejected from the adjudicated conclusion and labeled UNKNOWN",
-                        resolution_basis=["provider output is untrusted input"],
-                        unresolved=False,
-                    )
-                disputes.append(dispute)
-                ordinal += 1
-        for result in value.tool_results:
-            if result.status is ToolStatus.FAILED:
-                warnings.append(f"{result.tool_name} failed: {result.error}")
-            if result.status is ToolStatus.UNAVAILABLE:
-                warnings.append(f"{result.tool_name} unavailable: {result.error}")
-        rationale_sources: list[tuple[str, str]] = []
-        if value.case.raw_text:
-            rationale_sources.append(("input-raw", value.case.raw_text))
-        rationale_sources.extend((claim.claim_id, claim.text) for claim in value.case.claims)
-        for report in value.reports:
-            rationale_sources.extend((claim.claim_id, claim.text) for claim in report.claims)
-            rationale_sources.extend(
-                (f"{report.report_id}-conclusion", text) for text in report.conclusions
-            )
-        for source_id, text in rationale_sources:
-            for finding in detect_results_orientation(text):
-                disputes.append(
-                    Dispute(
-                        dispute_id=_dispute_id(
-                            "results-orientation", ordinal, (source_id, text, finding.rule_id)
-                        ),
-                        claim_ids=[source_id],
-                        issue="結果論を意思決定の正しさの根拠として使用しています。",
-                        positions=[text],
-                        resolution=finding.correction,
-                        resolution_basis=[f"deterministic rule: {finding.rule_id}"],
-                        unresolved=False,
-                    )
-                )
-                ordinal += 1
-                warnings.append(
-                    f"{source_id}: 結果論の論拠を棄却し、意思決定時点の情報で再評価が必要です。"
-                )
         output = CritiqueOutput(disputes=tuple(disputes), data_quality=tuple(warnings))
         return successful_outcome(isolated, output, warnings=output.data_quality)
 

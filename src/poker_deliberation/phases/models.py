@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from poker_deliberation.context_lifecycle import ContextEnvelope, context_payload
+from poker_deliberation.context_lifecycle import (
+    ContextEnvelope,
+    assignment_sha256,
+    context_payload,
+)
+from poker_deliberation.phases.contracts import canonical_sha256
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentContext,
@@ -31,14 +37,23 @@ class PhasePayload(BaseModel):
         extra="forbid",
         frozen=True,
         revalidate_instances="always",
+        strict=True,
     )
 
 
 class IntakeValidationInput(PhasePayload):
     case: CaseInput
     record_sensitive_data: bool
+    sensitive_action_categories: tuple[str, ...]
     security_events: tuple[SecurityEvent, ...] = ()
     fallback_approval_ids: tuple[str, ...] = ()
+
+    @field_validator("sensitive_action_categories")
+    @classmethod
+    def sorted_unique_categories(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(set(value))):
+            raise ValueError("sensitive_action_categories must be sorted and unique")
+        return value
 
 
 class IntakeValidationOutput(PhasePayload):
@@ -98,8 +113,20 @@ class ContextDispatch(PhasePayload):
     def lineage_matches_dispatch(self) -> ContextDispatch:
         if self.envelope.lineage.assignment_id != self.assignment.assignment_id:
             raise ValueError("context assignment lineage mismatch")
-        if tuple(sorted(context_payload(self.context))) != tuple(self.assignment.context_keys):
+        if self.envelope.lineage.assignment_sha256 != assignment_sha256(self.assignment):
+            raise ValueError("context assignment hash mismatch")
+        payload = context_payload(self.context)
+        if tuple(sorted(payload)) != tuple(self.assignment.context_keys):
             raise ValueError("context allowlist does not match assignment context keys")
+        canonical_payload = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        if self.envelope.canonical_payload != canonical_payload:
+            raise ValueError("dispatch context does not match its canonical envelope payload")
         return self
 
 
@@ -151,7 +178,10 @@ class ToolExecutionBinding(PhasePayload):
     ordinal: int = Field(ge=0)
     request: ToolRequest
     request_input_sha256: str
+    validated_result_input_sha256: str
+    materialized_result_input_sha256: str
     requested_contract_version: str | None = None
+    supported_contract_version: str
     result_contract_version: str
     result: ToolResult
 
@@ -159,6 +189,21 @@ class ToolExecutionBinding(PhasePayload):
     def tool_and_input_match(self) -> ToolExecutionBinding:
         if self.result.tool_name != self.request.tool_name:
             raise ValueError("tool result name does not match its request")
+        request_hash = canonical_sha256(self.request.input)
+        if self.request_input_sha256 != request_hash:
+            raise ValueError("tool request input hash mismatch")
+        if self.validated_result_input_sha256 != request_hash:
+            raise ValueError("validated tool result input correlation mismatch")
+        if self.materialized_result_input_sha256 != canonical_sha256(self.result.input):
+            raise ValueError("materialized tool result input hash mismatch")
+        if self.result_contract_version != self.result.contract_version:
+            raise ValueError("tool result contract version binding mismatch")
+        if (
+            self.result.status.value == "success"
+            and self.requested_contract_version is not None
+            and self.result_contract_version != self.requested_contract_version
+        ):
+            raise ValueError("successful tool result contract version mismatch")
         return self
 
 
@@ -173,6 +218,9 @@ class CritiqueInput(PhasePayload):
     tool_results: tuple[ToolResult, ...]
     evidence_ids: tuple[str, ...]
     existing_disputes: tuple[Dispute, ...] = ()
+    include_objections: bool = True
+    include_provider_claims: bool = True
+    include_auxiliary_findings: bool = True
 
 
 class CritiqueOutput(PhasePayload):

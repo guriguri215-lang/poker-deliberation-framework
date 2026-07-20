@@ -10,7 +10,7 @@ from typing import Any, Generic, Literal, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-PHASE_SCHEMA_VERSION = "1.0.0"
+PHASE_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -69,6 +69,7 @@ class _PhaseModel(BaseModel):
         extra="forbid",
         frozen=True,
         revalidate_instances="always",
+        strict=True,
     )
 
 

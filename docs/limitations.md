@@ -29,8 +29,10 @@
   but the MVP has no OS-level preemptive CPU or memory sandbox. Providers must honor the cooperative
   cancellation contract. Any future external-code executor must use process isolation and true
   time/memory limits.
-- Role-specific provider contexts are deep-copied and hashed per call, but there is no versioned
-  lifecycle contract for context provenance, expiry, retention/deletion, or Codex/Python lineage.
+- Role-specific provider contexts now use a versioned P2-024A attempt envelope with Python-local
+  lineage, UTC use-expiry, exact allowlists, and unkeyed SHA-256 integrity. It does not persist the
+  envelope, choose a storage retention duration, delete data, run cleanup, provide secure erase, add
+  a durable authenticity trust anchor, execute retries, or connect Codex and Python runtimes.
 - Run artifacts are confined. JSON and text replacement writes use a temporary file per artifact,
   but JSONL evidence is appended directly and is not crash-atomic. There is no versioned run
   manifest, whole-run atomic completion protocol, retention/deletion policy, migration contract, or

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from poker_deliberation.agents import ROLE_CATALOG
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import DeterministicMockProvider
@@ -116,7 +117,7 @@ def test_unspecified_calculation_fails_closed_before_tool_execution(tmp_path: Pa
 
 def test_prompt_injection_is_recorded_but_remains_inert(tmp_path: Path) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     provider = DeterministicMockProvider(scripts)
@@ -144,7 +145,7 @@ def test_prompt_injection_in_mapping_key_is_removed_from_provider_context(
     tmp_path: Path,
 ) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     provider = DeterministicMockProvider(scripts)
@@ -186,7 +187,7 @@ def test_prompt_injection_paraphrases_are_recorded_and_removed(
     malicious: str,
 ) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     provider = DeterministicMockProvider(scripts)
@@ -218,7 +219,11 @@ def test_results_orientation_rejects_only_the_rationale(tmp_path: Path) -> None:
     text = "このコールで勝ったから正しかった"
     assert detect_results_orientation(text)
     scripts = {
-        role: AgentReport(agent_role=role, task="test", conclusions=[text])
+        role: AgentReport(
+            agent_role=role,
+            task=ROLE_CATALOG[role].purpose,
+            conclusions=[text],
+        )
         for role in ("strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     report = Orchestrator(
@@ -233,7 +238,7 @@ def test_results_orientation_rejects_only_the_rationale(tmp_path: Path) -> None:
 
 def test_agent_execution_records_include_context_hash_and_provider(tmp_path: Path) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     report = Orchestrator(

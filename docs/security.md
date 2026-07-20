@@ -10,10 +10,23 @@
 - Tools have non-overridable aggregate work estimates (including support combinations and
   policy-node work), memoized DAG evaluation, plus serialized input/output limits; failures remain
   failures. RunStore enforces per-artifact and whole-run byte budgets.
-- Providers receive a cooperative deadline/cancellation control and role-specific deep-copy context.
+- Providers receive a cooperative deadline/cancellation control and a fresh role-specific context
+  only after the versioned context envelope passes strict schema, UTC expiry, exact top-level
+  allowlist, run/assignment/attempt/parent/source correlation, Python-local runtime, and canonical
+  payload/policy/envelope integrity checks. Unknown versions/runtimes, dotted allowlists, tampering,
+  cross-run/assignment/context/attempt replay, expired contexts, unavailable providers, and
+  mismatched provider reports fail closed.
   Strings matched by deterministic prompt-injection rules are replaced by hash-tagged removal
   markers before any provider call. This is best-effort lexical detection, not a semantic guarantee.
   The only outbound provider is disabled; no external/untrusted executable is run.
+- Context classification is `public`, `internal` by default, `sensitive`, or `restricted`. Detected
+  credentials force `restricted` and never cross the provider boundary. Redaction is artifact defense
+  in depth, not authorization. Raw envelopes and canonical context payloads are not persisted as new
+  lifecycle artifacts.
+- Versioned SHA-256 values detect corruption and stale/cross-attempt substitution within the checked
+  boundary. They are unkeyed and therefore do not prove authenticity against an attacker who can
+  rewrite both data and hashes. P2-024A adds no durable trust anchor, retention duration, deletion, or
+  cleanup executor.
 - Hand strategy analysis uses a mechanically verified decision-time payload. The focal action size,
   later streets, realized result, showdown-only cards, and user claims are excluded. Each payload is
   represented in the execution audit by its SHA-256 hash. Unprovenanced `known_ranges` are excluded
@@ -36,6 +49,7 @@
 - Reproduction instructions are stored as JSON argv, and unknown tool names never produce a shell
   command.
 
-Adversarial tests also cover blind-context invariance, prohibited-use refusal, prompt-injection event
+Adversarial tests also cover blind-context invariance, context tampering/replay/expiry/unknown runtime,
+restricted and unavailable provider call suppression, prohibited-use refusal, prompt-injection event
 recording, pre-approved injection, fake provider claims, secret canaries, command injection names,
 hard compute limits, runtime overruns, duplicate run IDs, and outside-root config.

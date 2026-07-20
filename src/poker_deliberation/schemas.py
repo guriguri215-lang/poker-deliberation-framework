@@ -321,6 +321,18 @@ class AgentExecutionRecord(StrictModel):
     reasoning_effort: str | None = None
     allowed_tools: list[str] = Field(default_factory=list)
     context_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    context_id: str | None = None
+    context_attempt_id: str | None = None
+    parent_context_id: str | None = None
+    context_schema_version: str | None = None
+    context_classification: str | None = None
+    context_payload_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    context_source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    context_policy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    context_envelope_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    context_expires_at: datetime | None = None
+    context_producer_runtime: str | None = None
+    context_consumer_runtime: str | None = None
     status: AgentExecutionStatus
     started_at: datetime
     completed_at: datetime

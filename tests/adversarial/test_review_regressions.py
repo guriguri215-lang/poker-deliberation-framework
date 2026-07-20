@@ -84,6 +84,16 @@ class AdversarialProvider:
         )
 
 
+class EchoingFailureProvider(AdversarialProvider):
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        raise RuntimeError(f"provider echoed context: {context.strategy_text}")
+
+
 def _approval_payload() -> dict[str, object]:
     return {
         "approval_id": "approval-injected",
@@ -164,6 +174,24 @@ def test_provider_context_mutation_cannot_change_case_or_tool_inputs(tmp_path: P
     assert report.claim_assessments[0].confidence is ConfidenceGrade.C
     assert report.tool_results[0].input["call_cost"] == 50
     assert report.tool_results[0].output["required_equity"] == 0.25
+
+
+def test_provider_exception_text_cannot_copy_context_into_audit_fields(tmp_path: Path) -> None:
+    canary = "CONTEXT-ECHO-CANARY-024A"
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=EchoingFailureProvider(),
+    ).run(
+        CaseInput(
+            kind="strategy",
+            raw_text=canary,
+            analysis_scope="retrospective",
+        )
+    )
+
+    assert report.agent_execution_records
+    assert all(canary not in (record.error or "") for record in report.agent_execution_records)
+    assert all(canary not in item for item in report.data_quality)
 
 
 def test_math_auditor_receives_only_requested_registered_tool_inputs(

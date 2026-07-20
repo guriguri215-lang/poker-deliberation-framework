@@ -15,6 +15,12 @@ source/editable checkoutでの読込はcontract test対象ですが、wheel/sdis
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
 `user_materials/ROADMAP.md`は承認方針・背景説明であり、runtimeやdoctorの入力ではありません。
 
+Python providerへのrole別contextは、P2-024Aの
+[`Context lifecycle contract`](docs/context-lifecycle.md)に従い、試行ごとのstrict immutable envelopeで
+allowlist、UTC期限、classification、integrity、run/assignment/attempt/runtime系譜を検証してからfresh
+`AgentContext`として渡します。envelope/payloadの新規永続化、retention期間、削除、cleanup、外部送信、
+Codex/Python bridgeは追加していません。
+
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
 動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。
@@ -185,6 +191,10 @@ runs/<run_id>/
   final_report.md
   final_report.json
 ```
+
+`agent_execution_records.json`の既存`context_sha256`は従来の完全な`AgentContext` hash計算を維持します。
+P2-024Aはcontext/attemptとsparse payload/source/policy/integrity/runtime/expiryの監査metadataを
+任意fieldとして追加し、旧artifactの読込・hash値互換性を維持します。
 
 既定では共通の秘密キーとAPI-key/token形式をredactします。任意の個人情報まで完全検出する
 ものではないため、入力へ秘密情報を含めないでください。

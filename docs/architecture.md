@@ -11,6 +11,7 @@ Python `AgentExecutionRecord` entries or run artifacts.
 - `schemas.py`: strict Pydantic contracts.
 - `state_machine.py`: legal bounded transitions and budget counters.
 - `orchestrator.py`: routing, provider calls, tools, adjudication inputs, synthesis, artifacts.
+- `context_lifecycle.py`: attempt-scoped policy, immutable envelope, integrity, expiry, and lineage.
 - `normalization.py`: conservative documented free-text hand format to canonical schema.
 - `approvals.py`: explicit pending/approved/rejected ledger.
 - `storage/`: run-root confinement and atomic JSON/text writes.
@@ -37,12 +38,19 @@ disabled until their semantics are implemented and contract-tested.
 implemented. Package and key probes are diagnostics, not proof of execution capability. No external
 data is sent.
 
-Every provider receives a role-specific `AgentContext`, not the complete `CaseInput`. Provider prose
-and claims remain `UNKNOWN` and cannot become a final conclusion without tool/evidence adjudication.
-Contexts are deep copies. The provider contract receives a cooperative deadline/cancellation control;
-the disabled external provider cannot bypass this boundary, and the local provider checks it. Each
-context is constructed and hashed for one provider call, but there is no versioned context-lifecycle
-contract covering expiry, retention, deletion, or cross-runtime lineage.
+Every provider receives a role-specific `AgentContext`, not the complete `CaseInput`. Before a call,
+the orchestrator builds and validates a strict versioned immutable attempt envelope covering exact
+top-level allowlist, UTC use-expiry, classification, canonical payload/policy/integrity hashes, and
+run/assignment/attempt/runtime lineage. A fresh `AgentContext` is materialized only for an allowed
+handoff. Provider prose and claims remain `UNKNOWN` and cannot become a final conclusion without
+tool/evidence adjudication. The provider contract receives a cooperative deadline/cancellation
+control; the disabled external provider cannot bypass this boundary, and the local provider checks
+it. See `docs/context-lifecycle.md` for the exact contract and explicit non-goals.
+
+The envelope is attempt-memory-only and is not a new artifact. Execution records preserve the exact
+legacy full-`AgentContext` hash calculation in `context_sha256` and add separate sparse payload/source
+and envelope audit metadata. Persistence, retention duration, deletion, cleanup, durable trust
+anchors, and cross-runtime execution remain outside P2-024A.
 
 ## Trust boundaries
 

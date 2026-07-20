@@ -133,10 +133,18 @@ def test_review_hand_and_show_cli(tmp_path: Path, monkeypatch, capsys) -> None: 
     report = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert report["tool_results"][0]["tool_name"] == "hand_validator"
+    assert report["agent_execution_records"]
+    assert all(
+        record["context_schema_version"] == "1.0.0"
+        and record["context_envelope_sha256"]
+        and record["context_payload_sha256"] == record["context_source_sha256"]
+        for record in report["agent_execution_records"]
+    )
     run_id = report["run_id"]
     assert main(["show", run_id, "--format", "json"]) == 0
     shown = json.loads(capsys.readouterr().out)
     assert shown["run_id"] == run_id
+    assert shown["agent_execution_records"] == report["agent_execution_records"]
 
 
 def test_review_hand_normalizes_documented_free_text(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
@@ -202,3 +210,4 @@ def test_approval_required_cli_uses_distinct_exit_code(tmp_path: Path, monkeypat
     resumed = json.loads(capsys.readouterr().out)
     assert resume_exit_code == 2
     assert resumed["run_status"] == "failed_with_limitations"
+    assert resumed["agent_execution_records"] == report["agent_execution_records"]

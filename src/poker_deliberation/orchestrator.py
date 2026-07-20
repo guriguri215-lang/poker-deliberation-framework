@@ -2,18 +2,29 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 import secrets
-from datetime import UTC, datetime
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from poker_deliberation.agents import select_roles
+from poker_deliberation.agents import ROLE_CATALOG, select_roles
 from poker_deliberation.approvals import ApprovalLedger, requires_human_approval
 from poker_deliberation.config import AppConfig
+from poker_deliberation.context_lifecycle import (
+    ContextEnvelope,
+    ContextHandoffRefused,
+    ContextLifecycleError,
+    build_context_envelope,
+    context_payload,
+    legacy_context_sha256,
+    new_attempt_id,
+    new_context_id,
+    validate_context_envelope,
+)
 from poker_deliberation.isolation import IsolationError, build_blind_decision_context
 from poker_deliberation.providers import AgentProvider, LocalProvider, ProviderControl
 from poker_deliberation.reporting import render_markdown
@@ -50,6 +61,13 @@ from poker_deliberation.tools import ToolRegistry, default_registry
 def new_run_id() -> str:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"run-{stamp}-{secrets.token_hex(4)}"
+
+
+def _constant_clock(value: datetime) -> Callable[[], datetime]:
+    def read() -> datetime:
+        return value
+
+    return read
 
 
 def _lookup_path(value: dict[str, Any], path: str) -> Any:
@@ -100,6 +118,8 @@ def _agent_context(
     role: str,
     registered_tools: frozenset[str],
 ) -> AgentContext:
+    if role not in ROLE_CATALOG:
+        raise ValueError("unknown agent role")
     common: dict[str, Any] = {"kind": case.kind, "objective": case.objective}
     if role == "intake":
         context = AgentContext(**common, raw_text=case.raw_text, hand=case.hand)
@@ -144,15 +164,25 @@ def _agent_context(
     return AgentContext.model_validate(isolate_prompt_injection(context))
 
 
-def _context_sha256(context: AgentContext) -> str:
-    serialized = json.dumps(
-        context.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+def _context_record_fields(
+    envelope: ContextEnvelope,
+    context: AgentContext,
+) -> dict[str, Any]:
+    return {
+        "context_sha256": legacy_context_sha256(context),
+        "context_id": envelope.lineage.context_id,
+        "context_attempt_id": envelope.lineage.attempt_id,
+        "parent_context_id": envelope.lineage.parent_context_id,
+        "context_schema_version": envelope.schema_version,
+        "context_classification": envelope.policy.classification.value,
+        "context_payload_sha256": envelope.payload_sha256,
+        "context_source_sha256": envelope.lineage.source_sha256,
+        "context_policy_sha256": envelope.policy_sha256,
+        "context_envelope_sha256": envelope.integrity_sha256,
+        "context_expires_at": envelope.policy.expires_at,
+        "context_producer_runtime": envelope.lineage.producer_runtime.value,
+        "context_consumer_runtime": envelope.lineage.consumer_runtime.value,
+    }
 
 
 def _analyze_with_timeout(
@@ -192,6 +222,7 @@ class Orchestrator:
         config: AppConfig | None = None,
         registry: ToolRegistry | None = None,
         provider: AgentProvider | None = None,
+        context_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config or AppConfig.from_env()
         self.registry = registry or default_registry(
@@ -200,6 +231,7 @@ class Orchestrator:
             max_duration_seconds=min(30.0, self.config.budgets.max_runtime_seconds),
         )
         self.provider = provider or LocalProvider()
+        self.context_clock = context_clock or (lambda: datetime.now(UTC))
         self.store = RunStore(
             self.config.runs_dir,
             max_artifact_bytes=self.config.budgets.max_output_bytes,
@@ -343,7 +375,7 @@ class Orchestrator:
         reports: list[AgentReport] = []
         if case.kind != "calculation":
             machine.transition(RunState.INDEPENDENT_ANALYSIS, "selected roles run independently")
-            for assignment in assignments:
+            for index, assignment in enumerate(assignments):
                 remaining_runtime = max(
                     0.001,
                     self.config.budgets.max_runtime_seconds - machine.elapsed_seconds,
@@ -376,17 +408,52 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                context_hash = _context_sha256(context)
+                assignment = AgentAssignment.model_validate(
+                    assignment.model_copy(
+                        update={"context_keys": sorted(context_payload(context))},
+                        deep=True,
+                    ).model_dump(mode="python")
+                )
+                assignments[index] = assignment
+                self.store.write_json(actual_run_id, "assignments.json", assignments)
+                provider_timeout = min(30.0, remaining_runtime)
+                lifecycle_now = self.context_clock()
+                expected_context_id = new_context_id()
+                expected_attempt_id = new_attempt_id()
+                envelope = build_context_envelope(
+                    context,
+                    assignment,
+                    run_id=actual_run_id,
+                    expires_at=lifecycle_now + timedelta(seconds=provider_timeout),
+                    clock=_constant_clock(lifecycle_now),
+                    context_id=expected_context_id,
+                    attempt_id=expected_attempt_id,
+                )
                 provider_info = self.provider.availability()
                 execution_status = AgentExecutionStatus.COMPLETED
                 execution_error: str | None = None
                 try:
+                    provider_context = validate_context_envelope(
+                        envelope,
+                        assignment,
+                        run_id=actual_run_id,
+                        expected_context_id=expected_context_id,
+                        attempt_id=expected_attempt_id,
+                        now=self.context_clock(),
+                    )
+                    if not provider_info.available:
+                        raise ContextHandoffRefused("provider is not available for context handoff")
                     agent_report = _analyze_with_timeout(
                         self.provider,
-                        context,
-                        assignment,
-                        min(30.0, remaining_runtime),
+                        provider_context,
+                        assignment.model_copy(deep=True),
+                        provider_timeout,
                     )
+                    if (
+                        agent_report.agent_role != assignment.agent_role
+                        or agent_report.task != assignment.task
+                    ):
+                        raise ContextLifecycleError("provider report correlation mismatch")
                 except TimeoutError as exc:
                     execution_records.append(
                         AgentExecutionRecord(
@@ -401,7 +468,7 @@ class Orchestrator:
                                 for name in context.requested_tools
                                 if name in self.registry.names()
                             ],
-                            context_sha256=context_hash,
+                            **_context_record_fields(envelope, context),
                             status=AgentExecutionStatus.FAILED,
                             started_at=started_at,
                             completed_at=datetime.now(UTC),
@@ -427,11 +494,33 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
+                except ContextHandoffRefused as exc:
+                    execution_status = AgentExecutionStatus.REFUSED
+                    execution_error = str(exc)
+                    data_quality.append(f"provider {assignment.agent_role} handoff refused: {exc}")
+                    agent_report = AgentReport(
+                        agent_role=assignment.agent_role,
+                        task=assignment.task,
+                        uncertainties=["Context handoff was refused by policy."],
+                        confidence=ConfidenceGrade.D,
+                    )
+                except ContextLifecycleError as exc:
+                    execution_status = AgentExecutionStatus.FAILED
+                    execution_error = str(exc)
+                    data_quality.append(f"provider {assignment.agent_role} context rejected: {exc}")
+                    agent_report = AgentReport(
+                        agent_role=assignment.agent_role,
+                        task=assignment.task,
+                        uncertainties=[
+                            "Context validation failed; no provider output was accepted."
+                        ],
+                        confidence=ConfidenceGrade.D,
+                    )
                 except Exception as exc:
                     execution_status = AgentExecutionStatus.FALLBACK
-                    execution_error = f"{type(exc).__name__}: {exc}"
+                    execution_error = f"{type(exc).__name__}: provider analyze failed"
                     data_quality.append(
-                        f"provider {assignment.agent_role} failed: {type(exc).__name__}: {exc}"
+                        f"provider {assignment.agent_role} failed: {type(exc).__name__}"
                     )
                     agent_report = AgentReport(
                         agent_role=assignment.agent_role,
@@ -472,7 +561,7 @@ class Orchestrator:
                             for name in context.requested_tools
                             if name in self.registry.names()
                         ],
-                        context_sha256=context_hash,
+                        **_context_record_fields(envelope, context),
                         status=execution_status,
                         started_at=started_at,
                         completed_at=datetime.now(UTC),

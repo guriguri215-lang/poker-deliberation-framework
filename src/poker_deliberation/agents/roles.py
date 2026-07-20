@@ -48,7 +48,6 @@ def select_roles(case: CaseInput) -> list[AgentAssignment]:
         AgentAssignment(
             agent_role=name,
             task=ROLE_CATALOG[name].purpose,
-            context_keys=["normalized_case", "assumptions", "tool_results"],
             read_only=ROLE_CATALOG[name].read_only,
         )
         for name in selected

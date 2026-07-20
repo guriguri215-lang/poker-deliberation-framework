@@ -1,4 +1,4 @@
-"""Exact small poker formulas with explicit toy-model assumptions."""
+"""Deterministic binary64 poker formulas with explicit toy-model assumptions."""
 
 from __future__ import annotations
 

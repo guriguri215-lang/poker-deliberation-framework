@@ -61,7 +61,18 @@ tool_result_schema:
       type: string
     TolerancePolicy:
       additionalProperties: false
-      description: Algorithm/field-specific tolerance; never a repository-wide epsilon.
+      description: 'Algorithm/field-specific comparison rule; never a repository-wide epsilon.
+
+
+        ``absolute`` is expressed in the named field unit, ``relative`` scales by
+
+        ``max(abs(actual), abs(expected))``, and ``ulps`` scales by the binary64
+
+        magnitude.  A caller-supplied policy records its resolved per-result bound
+
+        in ``absolute``.  No kind inherits ``math.isclose``''s default relative
+
+        tolerance.'
       properties:
         fields:
           items:
@@ -137,6 +148,11 @@ tool_result_schema:
             type: string
           minItems: 1
           title: Checks
+          type: array
+        observations:
+          items:
+            type: string
+          title: Observations
           type: array
         tolerance:
           $ref: '#/$defs/TolerancePolicy'
@@ -390,13 +406,17 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - percent/fraction identity
-  - final-pot rake identity
+  - formula identities
   - finite typed output
   tolerance:
     fields:
+    - pot_after_opponent_bet
+    - final_pot_before_rake
+    - expected_rake
     - required_equity
+    - required_equity_percent
     - final_pot_after_rake
+    - pot_odds_against
     kind: ulp
     absolute: null
     relative: null
@@ -484,7 +504,10 @@ tools:
   - frequency lies in [0,1]
   tolerance:
     fields:
+    - risk
+    - reward
     - break_even_fold_frequency
+    - break_even_fold_percent
     kind: ulp
     absolute: null
     relative: null
@@ -561,11 +584,12 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - frequency domain
-  - formula metadata
+  - frequency/percent identity
+  - frequency domain and formula metadata
   tolerance:
     fields:
     - minimum_defense_frequency
+    - minimum_defense_percent
     kind: ulp
     absolute: null
     relative: null
@@ -649,7 +673,7 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - non-negative ratio
+  - ratio identity
   - formula metadata
   tolerance:
     fields:
@@ -825,8 +849,7 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - cap bound
-  - non-negative rake
+  - rake/cap identities
   - formula metadata
   tolerance:
     fields:
@@ -936,12 +959,12 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - finite EV
-  - rake/final-pot bounds
+  - EV/rake identities
   - model and formula metadata
   tolerance:
     fields:
     - ev
+    - rake_amount
     - final_pot_after_rake
     kind: ulp
     absolute: null
@@ -1032,7 +1055,7 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - finite EV branches
+  - EV branch identities
   - model and formula metadata
   tolerance:
     fields:
@@ -1120,11 +1143,12 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - fraction/percent domain
+  - fraction/percent identity
   - model and formula metadata
   tolerance:
     fields:
     - bluff_fraction
+    - bluff_percent
     kind: ulp
     absolute: null
     relative: null
@@ -1210,8 +1234,8 @@ tools:
   - hard resource limit violation
   - strict output schema or invariant failure
   verification_checks:
-  - posterior/evidence domain
-  - formula metadata
+  - posterior/evidence identity
+  - probability domain and formula metadata
   tolerance:
     fields:
     - posterior
@@ -1439,7 +1463,7 @@ tools:
   contract_version: 2.0.0
   command: poker-deliberate calculate combos --analysis-scope retrospective --input INPUT.json
 - name: holdem_equity
-  purpose: Heads-up Hold'em equity by bounded enumeration or seeded Monte Carlo.
+  purpose: Heads-up Hold'em equity by bounded complete enumeration or seeded Monte Carlo.
   supported_games:
   - NLHE
   input_schema:
@@ -1800,9 +1824,10 @@ tools:
   verification_checks:
   - acyclic traversal
   - probability normalization
-  - finite node values
+  - node value identities
   tolerance:
     fields:
+    - branch probability sums
     - expected_value
     - node_values
     kind: ulp
@@ -2135,6 +2160,7 @@ tools:
   - best-response bounds
   tolerance:
     fields:
+    - strategy normalization
     - support feasibility
     - value
     - duality_gap
@@ -2142,8 +2168,8 @@ tools:
     absolute: null
     relative: null
     ulps: null
-    formula: input tolerance (default 1e-9 payoff units); support residual checks use documented bounded
-      multiples and report the chosen value
+    formula: max(input tolerance, 64 ULPs at matrix magnitude); support residual checks use documented
+      bounded multiples and report the applied value
     unit: caller payoff unit
     rationale: Matrix conditioning is input-dependent; a universal epsilon is unsound.
   model_qualifier: finite two-player zero-sum normal-form game
@@ -2381,10 +2407,13 @@ tools:
   - strict output schema or invariant failure
   verification_checks:
   - one responder action per information set
-  - fixed opponent distributions
+  - chance and fixed opponent distributions
+  - reported policy value
   - explicit non-equilibrium flag
   tolerance:
     fields:
+    - chance probability sums
+    - fixed strategy probability sums
     - value
     - player0_value
     kind: ulp
@@ -2765,7 +2794,8 @@ tools:
     absolute: null
     relative: null
     ulps: 32
-    formula: default tolerance is derived from max observed chip magnitude; caller override is explicit
+    formula: default applied ULP count is max(32, 4*(actions+players)); caller override is recorded as
+      an absolute bound
     unit: caller chip unit
     rationale: Chip comparison precision must scale with the supplied hand rather than a global epsilon.
   model_qualifier: declared canonical hand rules profile

@@ -7,7 +7,6 @@ objects; they are not independent sources of truth.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
@@ -40,6 +39,8 @@ from poker_deliberation.tools.matrix_game import (
     HARD_MAX_SUPPORT_CANDIDATES,
     HARD_MAX_SUPPORT_SIZE,
 )
+from poker_deliberation.tools.numeric import close_ulps
+from poker_deliberation.tools.verification import VerificationEvidence, verify_floating_result
 
 FiniteFloat = Annotated[float, Field(allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(ge=0, allow_inf_nan=False)]
@@ -49,8 +50,7 @@ PositiveInt = Annotated[int, Field(ge=1)]
 
 
 def _close_ulps(actual: float, expected: float, *, ulps: int) -> bool:
-    scale = max(abs(actual), abs(expected), 1.0)
-    return math.isclose(actual, expected, rel_tol=0.0, abs_tol=math.ulp(scale) * ulps)
+    return close_ulps(actual, expected, ulps=ulps)
 
 
 class PotOddsInput(StrictModel):
@@ -576,6 +576,21 @@ class ToolContract:
             raise ValueError(f"{self.name} resolved an undeclared numeric exactness: {resolved}")
         return resolved
 
+    def verify_floating(
+        self,
+        payload: dict[str, Any],
+        output: dict[str, Any],
+    ) -> VerificationEvidence:
+        if self.tolerance is None or not self.verification_checks:
+            raise ValueError("floating-verified result lacks a typed verification policy")
+        return verify_floating_result(
+            self.name,
+            payload,
+            output,
+            self.tolerance,
+            self.verification_checks,
+        )
+
     def manifest_entry(self) -> dict[str, object]:
         return {
             "name": self.name,
@@ -673,10 +688,15 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"amounts": "one caller-declared chip/currency unit", "required_equity": "fraction"},
             COMMON_FAILURES,
-            ("percent/fraction identity", "final-pot rake identity", "finite typed output"),
+            ("formula identities", "finite typed output"),
             _ulp_policy(
+                "pot_after_opponent_bet",
+                "final_pot_before_rake",
+                "expected_rake",
                 "required_equity",
+                "required_equity_percent",
                 "final_pot_after_rake",
+                "pot_odds_against",
                 ulps=16,
                 rationale=(
                     "Bounded O(1) IEEE-754 arithmetic; the bound scales with result magnitude."
@@ -697,7 +717,10 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             COMMON_FAILURES,
             ("frequency/percent identity", "frequency lies in [0,1]"),
             _ulp_policy(
+                "risk",
+                "reward",
                 "break_even_fold_frequency",
+                "break_even_fold_percent",
                 ulps=16,
                 rationale="One division and one addition in IEEE-754 binary64.",
             ),
@@ -714,9 +737,10 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"amounts": "one caller-declared unit", "frequency": "fraction"},
             COMMON_FAILURES,
-            ("frequency domain", "formula metadata"),
+            ("frequency/percent identity", "frequency domain and formula metadata"),
             _ulp_policy(
                 "minimum_defense_frequency",
+                "minimum_defense_percent",
                 ulps=16,
                 rationale="One division and one addition in IEEE-754 binary64.",
             ),
@@ -734,7 +758,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"effective_stack": "caller unit", "pot": "same unit", "spr": "ratio"},
             COMMON_FAILURES,
-            ("non-negative ratio", "formula metadata"),
+            ("ratio identity", "formula metadata"),
             _ulp_policy("spr", ulps=8, rationale="One IEEE-754 binary64 division."),
         ),
         ToolContract(
@@ -768,7 +792,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"pot/rake/cap": "one caller-declared unit", "rake_percent": "percentage points"},
             COMMON_FAILURES,
-            ("cap bound", "non-negative rake", "formula metadata"),
+            ("rake/cap identities", "formula metadata"),
             _ulp_policy(
                 "rake_amount",
                 "raw_rake",
@@ -788,9 +812,10 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"EV/amounts": "one caller-declared unit", "equity": "fraction"},
             COMMON_FAILURES,
-            ("finite EV", "rake/final-pot bounds", "model and formula metadata"),
+            ("EV/rake identities", "model and formula metadata"),
             _ulp_policy(
                 "ev",
+                "rake_amount",
                 "final_pot_after_rake",
                 ulps=32,
                 rationale="Bounded straight-line binary64 arithmetic with declared inputs.",
@@ -809,7 +834,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"EV/amounts": "one caller-declared unit", "frequencies": "fraction"},
             COMMON_FAILURES,
-            ("finite EV branches", "model and formula metadata"),
+            ("EV branch identities", "model and formula metadata"),
             _ulp_policy(
                 "ev",
                 "called_branch_ev",
@@ -830,9 +855,10 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"amounts": "one caller-declared unit", "bluff_fraction": "fraction"},
             COMMON_FAILURES,
-            ("fraction/percent domain", "model and formula metadata"),
+            ("fraction/percent identity", "model and formula metadata"),
             _ulp_policy(
                 "bluff_fraction",
+                "bluff_percent",
                 ulps=16,
                 rationale="One division and two bounded additions/multiplications.",
             ),
@@ -850,7 +876,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"time_complexity": "O(1)"},
             {"probabilities": "fraction"},
             COMMON_FAILURES,
-            ("posterior/evidence domain", "formula metadata"),
+            ("posterior/evidence identity", "probability domain and formula metadata"),
             _ulp_policy(
                 "posterior",
                 "evidence_probability",
@@ -907,7 +933,7 @@ def tool_contracts() -> tuple[ToolContract, ...]:
         ),
         ToolContract(
             "holdem_equity",
-            "Heads-up Hold'em equity by bounded enumeration or seeded Monte Carlo.",
+            "Heads-up Hold'em equity by bounded complete enumeration or seeded Monte Carlo.",
             ("NLHE",),
             HoldemEquityInput,
             HoldemEquityOutput,
@@ -950,8 +976,9 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             {"nodes": EV_TREE_MAX_NODES, "depth": EV_TREE_MAX_DEPTH},
             {"probability": "fraction", "payoff/expected_value": "caller value unit"},
             COMMON_FAILURES,
-            ("acyclic traversal", "probability normalization", "finite node values"),
+            ("acyclic traversal", "probability normalization", "node value identities"),
             _ulp_policy(
+                "branch probability sums",
                 "expected_value",
                 "node_values",
                 ulps=64,
@@ -1015,11 +1042,16 @@ def tool_contracts() -> tuple[ToolContract, ...]:
                 "best-response bounds",
             ),
             TolerancePolicy(
-                fields=["support feasibility", "value", "duality_gap"],
+                fields=[
+                    "strategy normalization",
+                    "support feasibility",
+                    "value",
+                    "duality_gap",
+                ],
                 kind="caller-supplied",
                 formula=(
-                    "input tolerance (default 1e-9 payoff units); support residual checks use "
-                    "documented bounded multiples and report the chosen value"
+                    "max(input tolerance, 64 ULPs at matrix magnitude); support residual "
+                    "checks use documented bounded multiples and report the applied value"
                 ),
                 unit="caller payoff unit",
                 rationale="Matrix conditioning is input-dependent; a universal epsilon is unsound.",
@@ -1049,10 +1081,13 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             COMMON_FAILURES,
             (
                 "one responder action per information set",
-                "fixed opponent distributions",
+                "chance and fixed opponent distributions",
+                "reported policy value",
                 "explicit non-equilibrium flag",
             ),
             _ulp_policy(
+                "chance probability sums",
+                "fixed strategy probability sums",
                 "value",
                 "player0_value",
                 ulps=64,
@@ -1086,8 +1121,8 @@ def tool_contracts() -> tuple[ToolContract, ...]:
                 "pot and stack comparisons",
                 ulps=32,
                 formula=(
-                    "default tolerance is derived from max observed chip magnitude; caller "
-                    "override is explicit"
+                    "default applied ULP count is max(32, 4*(actions+players)); caller "
+                    "override is recorded as an absolute bound"
                 ),
                 rationale=(
                     "Chip comparison precision must scale with the supplied hand rather than "

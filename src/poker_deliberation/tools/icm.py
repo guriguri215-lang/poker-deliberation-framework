@@ -24,7 +24,7 @@ def calculate_icm(stacks: list[float], payouts: list[float]) -> dict[str, object
     if not active:
         raise ValueError("at least one positive stack is required")
     if len(active) > 12:
-        raise ValueError("exact ICM is limited to 12 active players")
+        raise ValueError("complete ICM enumeration is limited to 12 active players")
     if any(payout > 0 for payout in payouts[len(active) :]):
         raise ValueError("non-zero payouts cannot be assigned beyond the active player count")
     effective_payouts = tuple(payouts[: len(active)])

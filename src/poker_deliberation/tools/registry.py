@@ -150,26 +150,6 @@ class ToolRegistry:
             if contract is not None:
                 contract.output_model.model_validate(output)
             duration = perf_counter() - started
-            if duration > self.max_duration_seconds:
-                return ToolResult(
-                    tool_name=name,
-                    input=payload,
-                    status=ToolStatus.FAILED,
-                    exactness=Exactness.UNAVAILABLE,
-                    numeric_exactness=NumericalExactness.UNAVAILABLE,
-                    contract_version=(
-                        definition.contract.contract_version
-                        if definition.contract is not None
-                        else "1.0.0"
-                    ),
-                    assumptions=list(definition.assumptions),
-                    version=definition.version,
-                    duration_seconds=duration,
-                    error=(
-                        "tool exceeded post-execution runtime limit "
-                        f"{self.max_duration_seconds} seconds"
-                    ),
-                )
             output_size = len(
                 json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
             )
@@ -214,7 +194,33 @@ class ToolRegistry:
             error = str(output.get("error")) if unavailable and output.get("error") else None
             confidence_interval = output.get("confidence_interval_95")
             approximate_metadata = _approximate_metadata(name, output, numeric_exactness)
-            verification = _verification_metadata(contract, numeric_exactness)
+            verification = _verification_metadata(
+                contract,
+                numeric_exactness,
+                normalized_payload,
+                output,
+            )
+            duration = perf_counter() - started
+            if duration > self.max_duration_seconds:
+                return ToolResult(
+                    tool_name=name,
+                    input=payload,
+                    status=ToolStatus.FAILED,
+                    exactness=Exactness.UNAVAILABLE,
+                    numeric_exactness=NumericalExactness.UNAVAILABLE,
+                    contract_version=(
+                        definition.contract.contract_version
+                        if definition.contract is not None
+                        else "1.0.0"
+                    ),
+                    assumptions=list(definition.assumptions),
+                    version=definition.version,
+                    duration_seconds=duration,
+                    error=(
+                        "tool plus verification exceeded post-execution runtime limit "
+                        f"{self.max_duration_seconds} seconds"
+                    ),
+                )
             return ToolResult(
                 tool_name=name,
                 input=payload,
@@ -305,15 +311,19 @@ def _legacy_exactness_projection(numeric: NumericalExactness) -> Exactness:
 def _verification_metadata(
     contract: ToolContract | None,
     numeric: NumericalExactness,
+    payload: dict[str, Any],
+    output: dict[str, Any],
 ) -> VerificationMetadata | None:
     if numeric is not NumericalExactness.FLOATING_VERIFIED:
         return None
-    if contract is None or contract.tolerance is None or not contract.verification_checks:
+    if contract is None:
         raise ValueError("floating-verified result lacks a typed verification policy")
+    evidence = contract.verify_floating(payload, output)
     return VerificationMetadata(
-        method="strict output schema plus declared tool invariants",
-        checks=list(contract.verification_checks),
-        tolerance=contract.tolerance,
+        method="executed tool-specific invariant checks",
+        checks=list(evidence.checks),
+        observations=list(evidence.observations),
+        tolerance=evidence.tolerance,
         passed=True,
     )
 
@@ -408,14 +418,14 @@ def default_registry(
         ToolDefinition(
             "pot_odds",
             "Pot odds and required equity after a bet and optional rake.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: pot_odds(**p),
         ),
         ToolDefinition(
             "break_even_fold",
             "Break-even fold frequency for a zero-equity bluff.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: break_even_fold_frequency(**p),
             ("Called branch has zero equity unless represented elsewhere in an EV tree.",),
@@ -423,7 +433,7 @@ def default_registry(
         ToolDefinition(
             "mdf",
             "Minimum defense frequency against one bet in the zero-equity-bluff toy model.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: minimum_defense_frequency(**p),
             ("Single bet; no future action; MDF is not a complete strategy prescription.",),
@@ -431,21 +441,21 @@ def default_registry(
         ToolDefinition(
             "spr",
             "Stack-to-pot ratio from a supplied effective stack and pot.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: stack_to_pot_ratio(**p),
         ),
         ToolDefinition(
             "effective_stack",
             "Effective stack as the minimum supplied remaining stack.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: effective_stack(**p),
         ),
         ToolDefinition(
             "rake_amount",
             "Declared percentage rake with an optional cap.",
-            "exact",
+            "floating-verified",
             ("cash", "generic"),
             lambda p: rake_amount(**p),
             ("rake_percent is expressed as percentage points, for example 5 for 5%.",),
@@ -453,7 +463,7 @@ def default_registry(
         ToolDefinition(
             "raked_call_ev",
             "Call EV with declared final-pot rake in a no-future-betting model.",
-            "exact",
+            "floating-verified",
             ("cash", "generic"),
             lambda p: raked_call_ev(**p),
             ("No future betting; equity is supplied; rake is taken from the final pot.",),
@@ -461,7 +471,7 @@ def default_registry(
         ToolDefinition(
             "bluff_ev",
             "Bet EV against a supplied fold frequency and called-branch equity.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: bluff_ev(**p),
             ("Single street; opponent calls or folds; no rake or future betting.",),
@@ -469,7 +479,7 @@ def default_registry(
         ToolDefinition(
             "polar_river_bluff_fraction",
             "Indifference bluff fraction for a polarized river toy model.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: polar_river_bluff_fraction(**p),
             ("River only; polarized value/bluff range versus a bluff-catcher; no rake.",),
@@ -477,7 +487,7 @@ def default_registry(
         ToolDefinition(
             "bayes_update",
             "Bayesian posterior from a supplied prior and likelihoods.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: bayes_update(**p),
             ("The supplied prior and likelihoods are assumptions, not inferred population data.",),
@@ -485,20 +495,20 @@ def default_registry(
         ToolDefinition(
             "pot_reconstruction",
             "Reconstruct a pot from incremental contributions.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: reconstruct_pot(**p),
         ),
         ToolDefinition(
             "combos",
             "Expand pairs, suited, offsuit, and weighted Hold'em ranges with blockers.",
-            "exact",
+            "mixed",
             ("NLHE",),
             _combo_tool,
         ),
         ToolDefinition(
             "holdem_equity",
-            "Heads-up Hold'em equity by exact enumeration or seeded Monte Carlo.",
+            "Heads-up Hold'em equity by complete enumeration or seeded Monte Carlo.",
             "mixed",
             ("NLHE",),
             _equity_tool,
@@ -507,14 +517,14 @@ def default_registry(
         ToolDefinition(
             "ev_tree",
             "Expected value of a finite tree with supplied branch probabilities.",
-            "exact",
+            "floating-verified",
             ("generic",),
             evaluate_ev_tree,
         ),
         ToolDefinition(
             "icm",
             "Independent Chip Model expected payouts.",
-            "exact",
+            "floating-verified",
             ("tournament",),
             lambda p: calculate_icm(list(map(float, p["stacks"])), list(map(float, p["payouts"]))),
             ("ICM independence assumption; no future-game simulation.",),
@@ -533,8 +543,8 @@ def default_registry(
         ),
         ToolDefinition(
             "fixed_strategy_best_response",
-            "Exact small-game best response with shared information-set actions.",
-            "exact",
+            "Exhaustive small-game best response with shared information-set actions.",
+            "floating-verified",
             ("finite_extensive_form",),
             lambda p: best_response_to_fixed_strategy(
                 p["game"],
@@ -547,14 +557,14 @@ def default_registry(
         ToolDefinition(
             "hand_validator",
             "Validate canonical hand cards, action order, stacks, and pots.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO"),
             _hand_validator_tool,
         ),
         ToolDefinition(
             "sensitivity",
             "Bounds and influence ranking over a supplied scenario grid.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: analyze_scenarios(
                 p["scenarios"], decision_threshold=float(p.get("decision_threshold", 0.0))

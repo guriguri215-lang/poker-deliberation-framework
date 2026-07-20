@@ -6,7 +6,12 @@ import math
 import pytest
 
 from poker_deliberation.normalization import normalize_hand_text
-from poker_deliberation.providers import OpenAIAgentsProvider, ProviderControl
+from poker_deliberation.providers import (
+    OpenAIAgentsProvider,
+    ProviderAvailability,
+    ProviderControl,
+    ProviderStatus,
+)
 from poker_deliberation.providers import openai_agents as openai_agents_module
 from poker_deliberation.research import EvidenceLedger
 from poker_deliberation.schemas import (
@@ -231,4 +236,25 @@ def test_openai_provider_missing_distribution_and_cancelled_boundary(
             AgentContext(kind="claim", objective="fixture"),
             AgentAssignment(agent_role="skeptic", task="fixture"),
             control,
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "available"),
+    [
+        (ProviderStatus.AVAILABLE, False),
+        (ProviderStatus.UNAVAILABLE, True),
+        (ProviderStatus.DISABLED, True),
+    ],
+)
+def test_provider_availability_rejects_status_boolean_contradictions(
+    status: ProviderStatus,
+    available: bool,
+) -> None:
+    with pytest.raises(ValueError, match="available must be true exactly"):
+        ProviderAvailability(
+            status=status,
+            available=available,
+            provider="fixture",
+            reason="known contradiction fixture",
         )

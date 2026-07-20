@@ -30,8 +30,8 @@ Pot odds and required equity after a bet and optional declared rake.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"amounts":"one caller-declared chip/currency unit","required_equity":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["percent/fraction identity","final-pot rake identity","finite typed output"]
-- Tolerance: {"absolute":null,"fields":["required_equity","final_pot_after_rake"],"formula":null,"kind":"ulp","rationale":"Bounded O(1) IEEE-754 arithmetic; the bound scales with result magnitude.","relative":null,"ulps":16,"unit":"output field unit"}
+- Verification checks: ["formula identities","finite typed output"]
+- Tolerance: {"absolute":null,"fields":["pot_after_opponent_bet","final_pot_before_rake","expected_rake","required_equity","required_equity_percent","final_pot_after_rake","pot_odds_against"],"formula":null,"kind":"ulp","rationale":"Bounded O(1) IEEE-754 arithmetic; the bound scales with result magnitude.","relative":null,"ulps":16,"unit":"output field unit"}
 - Model qualifier: null
 
 ## `break_even_fold`
@@ -51,7 +51,7 @@ Zero-equity bluff break-even fold frequency.
 - Units: {"frequency":"fraction","reward":"same value unit","risk":"one value unit"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
 - Verification checks: ["frequency/percent identity","frequency lies in [0,1]"]
-- Tolerance: {"absolute":null,"fields":["break_even_fold_frequency"],"formula":null,"kind":"ulp","rationale":"One division and one addition in IEEE-754 binary64.","relative":null,"ulps":16,"unit":"output field unit"}
+- Tolerance: {"absolute":null,"fields":["risk","reward","break_even_fold_frequency","break_even_fold_percent"],"formula":null,"kind":"ulp","rationale":"One division and one addition in IEEE-754 binary64.","relative":null,"ulps":16,"unit":"output field unit"}
 - Model qualifier: null
 
 ## `mdf`
@@ -70,8 +70,8 @@ One-bet toy-model minimum defense frequency.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"amounts":"one caller-declared unit","frequency":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["frequency domain","formula metadata"]
-- Tolerance: {"absolute":null,"fields":["minimum_defense_frequency"],"formula":null,"kind":"ulp","rationale":"One division and one addition in IEEE-754 binary64.","relative":null,"ulps":16,"unit":"output field unit"}
+- Verification checks: ["frequency/percent identity","frequency domain and formula metadata"]
+- Tolerance: {"absolute":null,"fields":["minimum_defense_frequency","minimum_defense_percent"],"formula":null,"kind":"ulp","rationale":"One division and one addition in IEEE-754 binary64.","relative":null,"ulps":16,"unit":"output field unit"}
 - Model qualifier: "one-bet zero-equity-bluff indifference model"
 
 ## `spr`
@@ -90,7 +90,7 @@ Stack-to-pot ratio at one supplied decision point.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"effective_stack":"caller unit","pot":"same unit","spr":"ratio"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["non-negative ratio","formula metadata"]
+- Verification checks: ["ratio identity","formula metadata"]
 - Tolerance: {"absolute":null,"fields":["spr"],"formula":null,"kind":"ulp","rationale":"One IEEE-754 binary64 division.","relative":null,"ulps":8,"unit":"output field unit"}
 - Model qualifier: null
 
@@ -130,7 +130,7 @@ Declared percentage rake with an optional cap.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"pot/rake/cap":"one caller-declared unit","rake_percent":"percentage points"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["cap bound","non-negative rake","formula metadata"]
+- Verification checks: ["rake/cap identities","formula metadata"]
 - Tolerance: {"absolute":null,"fields":["rake_amount","raw_rake"],"formula":null,"kind":"ulp","rationale":"One multiplication and one division plus an exact minimum selection.","relative":null,"ulps":16,"unit":"output field unit"}
 - Model qualifier: null
 
@@ -150,8 +150,8 @@ Call EV with declared final-pot rake and no future betting.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"EV/amounts":"one caller-declared unit","equity":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["finite EV","rake/final-pot bounds","model and formula metadata"]
-- Tolerance: {"absolute":null,"fields":["ev","final_pot_after_rake"],"formula":null,"kind":"ulp","rationale":"Bounded straight-line binary64 arithmetic with declared inputs.","relative":null,"ulps":32,"unit":"output field unit"}
+- Verification checks: ["EV/rake identities","model and formula metadata"]
+- Tolerance: {"absolute":null,"fields":["ev","rake_amount","final_pot_after_rake"],"formula":null,"kind":"ulp","rationale":"Bounded straight-line binary64 arithmetic with declared inputs.","relative":null,"ulps":32,"unit":"output field unit"}
 - Model qualifier: "single decision, no future betting, declared final-pot rake"
 
 ## `bluff_ev`
@@ -170,7 +170,7 @@ Single-street bluff or semi-bluff EV.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"EV/amounts":"one caller-declared unit","frequencies":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["finite EV branches","model and formula metadata"]
+- Verification checks: ["EV branch identities","model and formula metadata"]
 - Tolerance: {"absolute":null,"fields":["ev","called_branch_ev"],"formula":null,"kind":"ulp","rationale":"Bounded straight-line binary64 arithmetic.","relative":null,"ulps":32,"unit":"output field unit"}
 - Model qualifier: "single-street call-or-fold response"
 
@@ -190,8 +190,8 @@ Polarized river bluff fraction against a bluff-catcher.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"amounts":"one caller-declared unit","bluff_fraction":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["fraction/percent domain","model and formula metadata"]
-- Tolerance: {"absolute":null,"fields":["bluff_fraction"],"formula":null,"kind":"ulp","rationale":"One division and two bounded additions/multiplications.","relative":null,"ulps":16,"unit":"output field unit"}
+- Verification checks: ["fraction/percent identity","model and formula metadata"]
+- Tolerance: {"absolute":null,"fields":["bluff_fraction","bluff_percent"],"formula":null,"kind":"ulp","rationale":"One division and two bounded additions/multiplications.","relative":null,"ulps":16,"unit":"output field unit"}
 - Model qualifier: "polarized river bettor versus bluff-catcher"
 
 ## `bayes_update`
@@ -210,7 +210,7 @@ Bayesian posterior from supplied prior and likelihoods.
 - Limits: {"time_complexity":"O(1)"}
 - Units: {"probabilities":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["posterior/evidence domain","formula metadata"]
+- Verification checks: ["posterior/evidence identity","probability domain and formula metadata"]
 - Tolerance: {"absolute":null,"fields":["posterior","evidence_probability"],"formula":null,"kind":"ulp","rationale":"Bounded straight-line binary64 probability arithmetic.","relative":null,"ulps":32,"unit":"output field unit"}
 - Model qualifier: "Bayes rule conditional on supplied prior and likelihoods"
 
@@ -256,7 +256,7 @@ Hold'em combo expansion, weights, and blocker removal.
 
 ## `holdem_equity`
 
-Heads-up Hold'em equity by bounded enumeration or seeded Monte Carlo.
+Heads-up Hold'em equity by bounded complete enumeration or seeded Monte Carlo.
 
 - Tool version: `1.0.0`
 - Contract version: `2.0.0`
@@ -290,8 +290,8 @@ Expected value of a fully supplied finite probability tree.
 - Limits: {"depth":256,"nodes":10000}
 - Units: {"payoff/expected_value":"caller value unit","probability":"fraction"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["acyclic traversal","probability normalization","finite node values"]
-- Tolerance: {"absolute":null,"fields":["expected_value","node_values"],"formula":"Bound scales with tree depth and branch accumulation; Fraction oracle cases are tested.","kind":"ulp","rationale":"Finite binary64 weighted sums over a bounded tree.","relative":null,"ulps":64,"unit":"output field unit"}
+- Verification checks: ["acyclic traversal","probability normalization","node value identities"]
+- Tolerance: {"absolute":null,"fields":["branch probability sums","expected_value","node_values"],"formula":"Bound scales with tree depth and branch accumulation; Fraction oracle cases are tested.","kind":"ulp","rationale":"Finite binary64 weighted sums over a bounded tree.","relative":null,"ulps":64,"unit":"output field unit"}
 - Model qualifier: null
 
 ## `icm`
@@ -331,7 +331,7 @@ Small two-player zero-sum matrix solution with a verified duality gap.
 - Units: {"payoff/value/duality_gap":"caller payoff unit","strategy":"probability"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
 - Verification checks: ["strategy normalization","support feasibility","duality gap","best-response bounds"]
-- Tolerance: {"absolute":null,"fields":["support feasibility","value","duality_gap"],"formula":"input tolerance (default 1e-9 payoff units); support residual checks use documented bounded multiples and report the chosen value","kind":"caller-supplied","rationale":"Matrix conditioning is input-dependent; a universal epsilon is unsound.","relative":null,"ulps":null,"unit":"caller payoff unit"}
+- Tolerance: {"absolute":null,"fields":["strategy normalization","support feasibility","value","duality_gap"],"formula":"max(input tolerance, 64 ULPs at matrix magnitude); support residual checks use documented bounded multiples and report the applied value","kind":"caller-supplied","rationale":"Matrix conditioning is input-dependent; a universal epsilon is unsound.","relative":null,"ulps":null,"unit":"caller payoff unit"}
 - Model qualifier: "finite two-player zero-sum normal-form game"
 
 ## `fixed_strategy_best_response`
@@ -350,8 +350,8 @@ Best response to a fully fixed opponent strategy in a bounded finite game.
 - Limits: {"depth":256,"nodes":10000,"policy_node_work":5000000,"pure_policies":1000000}
 - Units: {"probability":"fraction","value/payoff":"caller payoff unit"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
-- Verification checks: ["one responder action per information set","fixed opponent distributions","explicit non-equilibrium flag"]
-- Tolerance: {"absolute":null,"fields":["value","player0_value"],"formula":"Bound scales with chance/opponent weighted-sum depth.","kind":"ulp","rationale":"Exhaustive policy selection is discrete; policy values use binary64 arithmetic.","relative":null,"ulps":64,"unit":"output field unit"}
+- Verification checks: ["one responder action per information set","chance and fixed opponent distributions","reported policy value","explicit non-equilibrium flag"]
+- Tolerance: {"absolute":null,"fields":["chance probability sums","fixed strategy probability sums","value","player0_value"],"formula":"Bound scales with chance/opponent weighted-sum depth.","kind":"ulp","rationale":"Exhaustive policy selection is discrete; policy values use binary64 arithmetic.","relative":null,"ulps":64,"unit":"output field unit"}
 - Model qualifier: "best response to one fully fixed opponent strategy"
 
 ## `hand_validator`
@@ -371,7 +371,7 @@ Canonical card, action, stack, and pot validation for declared rules.
 - Units: {"pots/stacks/actions":"one caller-declared chip unit"}
 - Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure"]
 - Verification checks: ["card uniqueness","stack/pot reconstruction","action legality","limitation disclosure"]
-- Tolerance: {"absolute":null,"fields":["pot and stack comparisons"],"formula":"default tolerance is derived from max observed chip magnitude; caller override is explicit","kind":"ulp","rationale":"Chip comparison precision must scale with the supplied hand rather than a global epsilon.","relative":null,"ulps":32,"unit":"caller chip unit"}
+- Tolerance: {"absolute":null,"fields":["pot and stack comparisons"],"formula":"default applied ULP count is max(32, 4*(actions+players)); caller override is recorded as an absolute bound","kind":"ulp","rationale":"Chip comparison precision must scale with the supplied hand rather than a global epsilon.","relative":null,"ulps":32,"unit":"caller chip unit"}
 - Model qualifier: "declared canonical hand rules profile"
 
 ## `sensitivity`

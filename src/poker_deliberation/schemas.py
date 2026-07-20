@@ -354,7 +354,14 @@ class ToolRequest(StrictModel):
 
 
 class TolerancePolicy(StrictModel):
-    """Algorithm/field-specific tolerance; never a repository-wide epsilon."""
+    """Algorithm/field-specific comparison rule; never a repository-wide epsilon.
+
+    ``absolute`` is expressed in the named field unit, ``relative`` scales by
+    ``max(abs(actual), abs(expected))``, and ``ulps`` scales by the binary64
+    magnitude.  A caller-supplied policy records its resolved per-result bound
+    in ``absolute``.  No kind inherits ``math.isclose``'s default relative
+    tolerance.
+    """
 
     fields: list[str] = Field(min_length=1)
     kind: Literal["absolute", "relative", "absolute-or-relative", "ulp", "caller-supplied"]
@@ -383,6 +390,7 @@ class TolerancePolicy(StrictModel):
 class VerificationMetadata(StrictModel):
     method: str = Field(min_length=1)
     checks: list[str] = Field(min_length=1)
+    observations: list[str] = Field(default_factory=list)
     tolerance: TolerancePolicy
     passed: bool
 

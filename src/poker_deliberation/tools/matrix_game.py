@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from itertools import combinations
 
+from poker_deliberation.tools.numeric import effective_matrix_tolerance
+
 HARD_MAX_DIMENSION = 32
 HARD_MAX_SUPPORT_SIZE = 8
 HARD_MAX_FALLBACK_ITERATIONS = 1_000_000
@@ -163,6 +165,7 @@ def solve_zero_sum_matrix(
     if not math.isfinite(tolerance) or tolerance < 0:
         raise ValueError("tolerance must be finite and non-negative")
     rows, columns = _validate_matrix(matrix)
+    tolerance = effective_matrix_tolerance(matrix, tolerance)
     if rows > HARD_MAX_DIMENSION or columns > HARD_MAX_DIMENSION:
         raise ValueError(
             f"matrix dimensions are limited to {HARD_MAX_DIMENSION} x {HARD_MAX_DIMENSION}"

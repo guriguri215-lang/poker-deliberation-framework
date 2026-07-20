@@ -227,6 +227,8 @@ def test_icm_model_invariants_and_scale_relations() -> None:
     stack_scaled = registry.execute("icm", {"stacks": [700, 700, 700], "payouts": [60, 30, 10]})
     payout_scaled = registry.execute("icm", {"stacks": [100, 100, 100], "payouts": [420, 210, 70]})
     assert base.model_qualifier == "Independent Chip Model"
+    assert base.verification is not None
+    assert base.verification.tolerance.absolute == base.output["verification_tolerance"]
     assert base.output["equities"] == stack_scaled.output["equities"]
     assert all(
         abs(7 * value - scaled) <= payout_scaled.output["verification_tolerance"]
@@ -235,6 +237,10 @@ def test_icm_model_invariants_and_scale_relations() -> None:
         )
     )
     assert abs(base.output["sum_error"]) <= base.output["verification_tolerance"]
+    assert (
+        max(base.output["equities"]) - min(base.output["equities"])
+        <= base.output["verification_tolerance"]
+    )
 
 
 def test_matrix_tolerance_sensitivity_and_payoff_scaling() -> None:
@@ -249,9 +255,35 @@ def test_matrix_tolerance_sensitivity_and_payoff_scaling() -> None:
         assert result.status is ToolStatus.SUCCESS
         assert result.numeric_exactness is NumericalExactness.FLOATING_VERIFIED
         assert result.output["duality_gap"] <= result.input.get("tolerance", 1e-9) * 20
+        assert result.verification is not None
+        assert result.verification.tolerance.kind == "caller-supplied"
+        assert result.verification.tolerance.absolute == result.output["verification_tolerance"]
+    row_strategy = list(map(float, default.output["row_strategy"]))
+    column_strategy = list(map(float, default.output["column_strategy"]))
+    lower = min(
+        sum(row_strategy[row] * matrix[row][column] for row in range(len(matrix)))
+        for column in range(len(matrix[0]))
+    )
+    upper = max(
+        sum(matrix[row][column] * column_strategy[column] for column in range(len(matrix[0])))
+        for row in range(len(matrix))
+    )
+    assert lower <= default.output["value"] <= upper
+    assert upper - lower == default.output["duality_gap"]
     assert tight.output["row_strategy"] == default.output["row_strategy"]
     assert scaled.output["row_strategy"] == default.output["row_strategy"]
     assert scaled.output["value"] == 7 * default.output["value"]
+
+    zero_requested = registry.execute(
+        "matrix_game",
+        {"matrix": [[1.0]], "tolerance": 0.0},
+    )
+    assert zero_requested.verification is not None
+    assert zero_requested.output["verification_tolerance"] > 0.0
+    assert (
+        zero_requested.verification.tolerance.absolute
+        == zero_requested.output["verification_tolerance"]
+    )
 
 
 def test_best_response_sensitivity_and_non_equilibrium_contract() -> None:
@@ -284,6 +316,41 @@ def test_best_response_sensitivity_and_non_equilibrium_contract() -> None:
     assert base.output["pure_policy"] == scaled.output["pure_policy"] == {"hero": "a"}
     assert scaled.output["value"] == 5 * base.output["value"]
     assert base.output["equilibrium_claim"] is False
+
+    fixed_game = {
+        "root": "hero",
+        "nodes": {
+            "hero": {
+                "type": "player",
+                "player": 0,
+                "information_set": "hero",
+                "actions": {"safe": "safe", "play": "villain"},
+            },
+            "villain": {
+                "type": "player",
+                "player": 1,
+                "information_set": "villain",
+                "actions": {"win": "win", "lose": "lose"},
+            },
+            "safe": {"type": "terminal", "payoff": 0},
+            "win": {"type": "terminal", "payoff": 2},
+            "lose": {"type": "terminal", "payoff": -1},
+        },
+    }
+    versus_fixed = registry.execute(
+        "fixed_strategy_best_response",
+        {
+            "game": fixed_game,
+            "fixed_strategy": {"villain": {"win": 0.75, "lose": 0.25}},
+        },
+    )
+    assert versus_fixed.output["pure_policy"] == {"hero": "play"}
+    _assert_fraction_oracle(
+        "fixed_strategy_best_response",
+        versus_fixed.output["value"],
+        Fraction(5, 4),
+    )
+    assert versus_fixed.output["equilibrium_claim"] is False
 
 
 def test_sensitivity_ordering_and_affine_value_metamorphism() -> None:

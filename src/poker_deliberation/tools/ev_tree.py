@@ -1,9 +1,14 @@
-"""Exact expectation over a finite, fully specified action tree."""
+"""Binary64 expectation over a finite, fully specified action tree."""
 
 from __future__ import annotations
 
 import math
 from typing import Any
+
+from poker_deliberation.tools.numeric import (
+    EV_TREE_VERIFICATION_ULPS,
+    normalized_probability_sum,
+)
 
 HARD_MAX_NODES = 10_000
 HARD_MAX_DEPTH = 256
@@ -40,8 +45,11 @@ def evaluate_ev_tree(tree: dict[str, Any]) -> dict[str, Any]:
             branches = node.get("branches")
             if not isinstance(branches, list) or not branches:
                 raise ValueError(f"node {node_id} requires payoff or non-empty branches")
-            probability_sum = sum(float(branch.get("probability", -1)) for branch in branches)
-            if not math.isclose(probability_sum, 1.0, abs_tol=1e-9):
+            probabilities = [float(branch.get("probability", -1)) for branch in branches]
+            if not normalized_probability_sum(
+                probabilities,
+                ulps=EV_TREE_VERIFICATION_ULPS,
+            ):
                 raise ValueError(f"branch probabilities at {node_id} must sum to 1")
             details: list[dict[str, float | str]] = []
             value = 0.0

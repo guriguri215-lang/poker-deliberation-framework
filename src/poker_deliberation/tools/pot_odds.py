@@ -1,4 +1,4 @@
-"""Exact pot-odds and break-even calculations."""
+"""Deterministic binary64 pot-odds and break-even calculations."""
 
 from __future__ import annotations
 

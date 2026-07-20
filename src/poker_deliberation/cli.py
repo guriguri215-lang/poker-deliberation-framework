@@ -52,11 +52,11 @@ def _emit(value: Any, format_name: str) -> None:
             value = value.model_dump(mode="json")
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False))
     else:
-        print(
-            value
-            if isinstance(value, str)
-            else json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
-        )
+        if isinstance(value, str):
+            print(value)
+        else:
+            serialized = json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False)
+            print(f"```json\n{serialized}\n```")
 
 
 def doctor() -> dict[str, Any]:

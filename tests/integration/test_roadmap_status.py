@@ -72,11 +72,17 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert set(items) == EXPECTED_RM_IDS
 
     completed = {rm_id for rm_id, item in items.items() if item["status"] == "completed"}
-    assert completed == {f"RM-{number:03d}" for number in range(1, 10)} | {"RM-023"}
+    assert completed == {f"RM-{number:03d}" for number in range(1, 10)} | {
+        "RM-023",
+        "RM-024",
+    }
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(10, 18))
-    assert items["RM-024"]["status"] == "in_progress"
+    assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in range(25, 29))
     assert items["RM-023"]["completion_evidence"]
+    assert items["RM-024"]["completion_evidence"]["commits"] == [
+        "fc2e41dd4fbde2962373ff7ea29019bff2999505"
+    ]
 
 
 def test_status_vocabulary_and_legal_transitions_are_explicit() -> None:
@@ -425,7 +431,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "in_progress": 1,
+        "completed": 1,
         "not_started": 11,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

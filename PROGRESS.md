@@ -3,6 +3,24 @@
 このファイルは実行履歴であり、RMの現在状態を再定義しない。canonical statusは
 `src/poker_deliberation/roadmap_status.json`、人間向けprojectionは`docs/roadmap-status.md`を参照する。
 
+## 2026-07-20 — RM-024 / P2-024A completion
+
+- **FACT**: implementation commitは`fc2e41dd4fbde2962373ff7ea29019bff2999505`。versioned
+  `ContextPolicy`、immutable attempt `ContextEnvelope`、4分類、UTC expiry、exact allowlist、
+  canonical payload/policy/integrity hash、run/assignment/context/attempt/parent/source/runtime lineageを
+  Python-local provider実経路へ接続した。
+- **FACT**: 既存`AgentContext`とprovider 3引数signature、LocalProvider、calculation非provider経路、
+  blind isolation、CLI exit code、run/resume/show、既存artifact名とlegacy `context_sha256`計算を維持した。
+- **FACT**: restricted credential、unknown schema/runtime、tamper、別run/assignment/context/attempt replay、
+  forged/expired/reverse-clock parent、unavailable provider、report相関不一致はfail closedである。
+- **CALCULATED**: implementation candidateのfull pytestは374件成功し、Ruff lint、82 filesのformat、
+  mypy 46 source files、roadmap tracked check、Git diff checkが成功した。
+- **FACT**: 変更後3系統のread-only再レビューは、具体的反例を修正後に全てHigh 0 / Medium 0となった。
+  残るLowは完全な旧run fixtureによるE2Eがない点で、旧record parseと現行run/show/resumeは成功した。
+- **FACT**: RM-024とP2-024Aは同一implementation evidenceでappend-onlyに`completed`へ進めた。
+  persistence、retention期間、cleanup、external runtime、RM-010〜013、RM-027本体は実装していない。
+- **FACT**: `user_materials/`、runs、cache、pytest tempはstage/commit対象にしていない。
+
 ## 2026-07-20 — RM-024 / P2-024A scope approval
 
 - **FACT**: 開始branch/HEADは`codex/phase1-math-contracts` /

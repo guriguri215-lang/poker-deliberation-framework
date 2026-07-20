@@ -21,6 +21,8 @@ allowlist、UTC期限、classification、integrity、run/assignment/attempt/runt
 `AgentContext`として渡します。envelope/payloadの新規永続化、retention期間、削除、cleanup、外部送信、
 Codex/Python bridgeは追加していません。
 
+**FACT**: canonical SSOTではRM-024とP2-024Aをimplementation commitへbindingして`completed`としている。
+
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
 動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。

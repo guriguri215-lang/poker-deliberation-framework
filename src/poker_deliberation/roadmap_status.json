@@ -135,7 +135,7 @@
     "RM-021": ["proposed", "planned"],
     "RM-022": ["proposed", "planned"],
     "RM-023": ["proposed", "planned", "completed"],
-    "RM-024": ["proposed", "planned", "in_progress"],
+    "RM-024": ["proposed", "planned", "in_progress", "completed"],
     "RM-025": ["proposed"],
     "RM-026": ["proposed"],
     "RM-027": ["proposed"],
@@ -156,7 +156,7 @@
     {"id": "P2-028A", "rm_id": "RM-028", "dependencies": ["P2-011B", "P2-012B", "P2-013B", "P2-027B"], "scope": "Approved isolation boundary, durable external-effect state, cancellation, and reconciliation."}
   ],
   "milestone_progress": {
-    "P2-024A": {"state": "in_progress", "history": ["not_started", "in_progress"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
+    "P2-024A": {"state": "completed", "history": ["not_started", "in_progress", "completed"], "completion_evidence": {"commits": ["fc2e41dd4fbde2962373ff7ea29019bff2999505"], "paths": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"], "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"]}},
     "P2-010A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
     "P2-011A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
     "P2-027A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
@@ -568,7 +568,7 @@
       "title": "Context lifecycle contract",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": ["RM-006", "RM-023"],
       "capabilities": [],
       "objective": "Implement the approved P2-024A attempt-scoped context policy, immutable envelope, lineage, expiry, integrity, and provider allowlist contract without persistence, cleanup, external runtime, or later Phase 2 work.",
@@ -577,9 +577,9 @@
       "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"],
       "entry_milestone": "P2-024A",
       "completion_milestone": "P2-024A",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
+      "completion_evidence": {"commits": ["fc2e41dd4fbde2962373ff7ea29019bff2999505"], "paths": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"], "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"]},
       "human_approval": {"required": true, "state": "approved_scope", "topics": ["Implement RM-024 milestone P2-024A only.", "Use context classifications public, internal by default, sensitive, and restricted.", "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.", "Create a fresh immutable ContextEnvelope for every attempt.", "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.", "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.", "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.", "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.", "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.", "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.", "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."], "approval_reference": "goal-rm024-p2-024a-2026-07-20"},
-      "status_reason": "The attached human-approved scope is frozen and P2-024A implementation is in progress.",
+      "status_reason": "P2-024A is implemented on the Python-local provider path with versioned policy, immutable attempt envelopes, exact allowlists, expiry, integrity, and lineage; persistence, cleanup, external runtimes, and later milestones remain out of scope.",
       "relations": ["Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance."]
     },
     {

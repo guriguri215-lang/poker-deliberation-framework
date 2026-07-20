@@ -9,9 +9,10 @@
   canonical implementation scope digestは
   `03bd675003b31ab0861ac196bd3b79229b863dca3ce15d555f76fb2f3e8a6f89`である。
 - **FACT**: roadmap schema 1.1は承認をマイルストーン単位でappend-onlyにbindingする。
-  P2-010Aだけを`in_progress`とし、P2-010Bは別承認がないため`not_started`のまま保つ。
-- **FACT**: 実装対象はstrict versioned phase contract、決定論的pure phase service、serialな
-  Analysis/ToolResearch executor境界、現行orchestratorへの最小統合、互換性・securityテストである。
+  P2-010Aは`completed`、P2-010Bは別承認がないため`not_started`であり、RM-010は
+  completion milestone待ちの`in_progress`に保つ。
+- **FACT**: strict versioned phase contract、決定論的pure phase service、serialな
+  Analysis/ToolResearch executor境界、現行orchestratorへの最小統合、互換性・securityテストを実装した。
 - **NON-GOAL**: persistence transaction、manifest revision、lock/recovery/CAS、自動retry、parallel、
   budget、timeout/cancellation再設計、durable resume、cleanup、external provider/solverは実装しない。
 

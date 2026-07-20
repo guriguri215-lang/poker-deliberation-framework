@@ -3,6 +3,27 @@
 このファイルは実行履歴であり、RMの現在状態を再定義しない。canonical statusは
 `src/poker_deliberation/roadmap_status.json`、人間向けprojectionは`docs/roadmap-status.md`を参照する。
 
+## 2026-07-20 — RM-010 / P2-010A completion
+
+- **FACT**: typed phase実装は`c2524132cebde56a5d3fbd1f79908419a0bcfbc8`、境界修正は
+  `2ef186cec715046f386bd9a72db460a5f9a99a25`と
+  `c0bb76b982250ac5ace85ac122be4479d568b242`である。governance証跡完全性は
+  `c97028df5f7408aa171ebfced6863def7b321605`でfail closed化した。
+- **FACT**: strict `PhaseRequest` / `PhaseOutcome`、7 pure services、serialなAnalysis/ToolResearch
+  executor、ContextEnvelopeとassignment/payloadの相関、materialization前のAnalysis/Tool binding検証を
+  実際の`Orchestrator.run`経路へ接続した。state transitionとartifact writeはOrchestratorだけが所有する。
+- **FACT**: 変更後read-only再監査はArchitecture/API、purity/context/tool correlation、
+  governance/security/testsの全3系統で、具体的反例の修正後High 0 / Medium 0 / Low 0となった。
+- **CALCULATED**: 最終worktreeで426 tests、Ruff lint、94 filesのformat check、mypy 51 source files、
+  roadmap `--check --require-tracked`、Git diff checkが成功した。
+- **FACT**: CLI smokeはdoctor、20 tools、7 agents、review-hand/showをexit 0で確認した。
+  approval-requiredはexit 3、resume後failed-with-limitationsとsolver unavailableはexit 2を維持した。
+- **FACT**: P2-010Aは承認済み5 target・12 testと3 implementation/fix commitへbindingして
+  `completed`へ進めた。RM-010はP2-010B待ちの`in_progress`、P2-010Bは別承認がないため
+  `not_started`のままである。
+- **NON-GOAL**: P2-010Bのwhole-run atomicity、RM-011のbudget/retry/concurrency、RM-012の
+  manifest/transaction/recovery、RM-027 cleanup、external provider/solverは実装していない。
+
 ## 2026-07-20 — RM-010 / P2-010A scope approval
 
 - **FACT**: baseline `875e88d994f4abd3daf6081d578f73d0aef850eb`をfetch/pullなしで検証し、

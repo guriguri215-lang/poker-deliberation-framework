@@ -15,14 +15,19 @@ source/editable checkoutでの読込はcontract test対象ですが、wheel/sdis
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
 `user_materials/ROADMAP.md`は承認方針・背景説明であり、runtimeやdoctorの入力ではありません。
 
+P2-010AのPython run経路は、strict versioned request/outcomeを使うpure phaseとserialな
+Analysis/ToolResearch effect境界へ分割されています。state transitionとartifact writeは引き続き
+Orchestratorだけが所有します。内部contractと非目標は
+[`docs/phase-services.md`](docs/phase-services.md)を参照してください。
+
 Python providerへのrole別contextは、P2-024Aの
 [`Context lifecycle contract`](docs/context-lifecycle.md)に従い、試行ごとのstrict immutable envelopeで
 allowlist、UTC期限、classification、integrity、run/assignment/attempt/runtime系譜を検証してからfresh
 `AgentContext`として渡します。envelope/payloadの新規永続化、retention期間、削除、cleanup、外部送信、
 Codex/Python bridgeは追加していません。
 
-**FACT**: canonical SSOTではRM-024/P2-024Aを`completed`、承認済みRM-010/P2-010Aを
-`in_progress`としている。P2-010Bは別承認がないため`not_started`である。
+**FACT**: canonical SSOTではRM-024/P2-024AとP2-010Aを`completed`としている。
+RM-010はP2-010B待ちの`in_progress`、P2-010Bは別承認がないため`not_started`である。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが

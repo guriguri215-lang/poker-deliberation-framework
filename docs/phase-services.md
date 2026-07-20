@@ -55,7 +55,9 @@ Analysis validates the context envelope and run/assignment/context/attempt linea
 handoff. It checks role/task correlation, output size, and portable unique report IDs. Unsafe or
 duplicate IDs cannot select an artifact path and become safe fallback reports. Provider-supplied
 epistemic labels are untrusted and normalized to `USER_CLAIM`/at most confidence C; synthesis exposes
-unadjudicated provider sections as `UNKNOWN`.
+unadjudicated provider sections as `UNKNOWN`. The executor and orchestrator both bind the returned
+assignment, context, envelope, report, execution record, context hashes, and report ID back to the
+exact Analysis request before any artifact path is selected.
 
 ToolResearch binds the full original `ToolRequest`, ordinal, run/phase attempt, canonical input hash,
 requested/supported/result contract versions, validated/materialized input hashes, and complete

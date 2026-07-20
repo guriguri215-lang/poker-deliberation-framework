@@ -347,8 +347,6 @@ def test_milestone_approval_binding_is_append_only() -> None:
 def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -> None:
     counterexample = deepcopy(load_roadmap())
     progress = counterexample["milestone_progress"]["P2-010A"]
-    progress["state"] = "completed"
-    progress["history"].append("completed")
     progress["completion_evidence"] = {
         "commits": ["a" * 40],
         "paths": ["future phase service modules"],
@@ -449,6 +447,12 @@ def test_completed_evidence_is_repository_validated_separately() -> None:
         if item["status"] == "completed"
         for field in ("paths", "tests")
         for reference in item["completion_evidence"][field]
+    } | {
+        reference.split("::", 1)[0]
+        for progress in document["milestone_progress"].values()
+        if progress["state"] == "completed"
+        for field in ("paths", "tests")
+        for reference in progress["completion_evidence"][field]
     }
     validate_repository_evidence(document, ROOT, tracked_paths=all_references)
     directory_prefix_paths = set(all_references)
@@ -460,6 +464,10 @@ def test_completed_evidence_is_repository_validated_separately() -> None:
 
     known_commits = {
         commit for item in document["items"] for commit in item["completion_evidence"]["commits"]
+    } | {
+        commit
+        for progress in document["milestone_progress"].values()
+        for commit in progress["completion_evidence"]["commits"]
     }
     validate_repository_evidence(document, ROOT, known_commits=known_commits)
     with pytest.raises(ValueError, match="commit does not exist"):
@@ -508,8 +516,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 1,
-        "in_progress": 1,
+        "completed": 2,
         "not_started": 10,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

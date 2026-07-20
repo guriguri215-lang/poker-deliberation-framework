@@ -6,8 +6,9 @@
   immutable scopeと11件のpolicy decisionをcanonical approval scopeへbindingした。
 - **CALCULATED**: approval scope digestはcanonical JSONからコードで算出した
   `50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069`である。
-- **FACT**: RM-024は`proposed -> planned`、P2-024Aは`not_started`である。次の独立commitで
-  RM-024とP2-024Aを`in_progress`へ進めてから、実装・レビュー・completion evidenceを行う。
+- **FACT**: RM-024は`proposed -> planned -> in_progress`、P2-024Aは
+  `not_started -> in_progress`である。現在は実装・テスト工程で、その後に独立レビューと
+  completion evidenceを行う。
 - **FACT**: governance validatorは、承認済み`proposed -> planned`時の一度限りのscope freeze、
   HEAD ancestor/tree/change-bound evidence、1対1 RM/milestone evidence parityを要求する。
 - **NON-GOAL**: persistence、retention期間の決定、cleanup executor、external provider/solver、

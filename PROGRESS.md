@@ -17,6 +17,8 @@
   `proposed -> planned`へ進め、P2-024Aは`not_started`のまま保持した。
 - **CALCULATED**: full approval scope digestはcanonical JSONからコードで算出した
   `50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069`である。
+- **FACT**: approval commitは`44096d36885ce8681f37c9327873faed900905a3`。その後、RM-024を
+  `planned -> in_progress`、P2-024Aを`not_started -> in_progress`へappend-onlyで進めた。
 - **FACT**: `user_materials/`はruntime、stage、commit対象にしていない。
 
 ## 2026-07-20 — Phase 2 readiness

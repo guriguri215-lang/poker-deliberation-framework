@@ -19,6 +19,13 @@
   Strings matched by deterministic prompt-injection rules are replaced by hash-tagged removal
   markers before any provider call. This is best-effort lexical detection, not a semantic guarantee.
   The only outbound provider is disabled; no external/untrusted executable is run.
+- P2-010A phase requests/outcomes bind schema, run, phase attempt, canonical input/policy hashes, and
+  context IDs. Missing/extra/unknown-version or mismatched values fail closed. Provider output cannot
+  request state or choose artifact paths. Report and tool-result IDs must be portable and unique
+  before the orchestrator materializes fixed paths; unsafe/duplicate IDs become safe failures.
+- Pure phases receive time, IDs, policy, and capability snapshots as values and have no storage,
+  workflow-state, provider, tool-registry, network, approval-ledger, ambient-clock, or random access.
+  Analysis and ToolResearch are serial effect boundaries without write/transition authority.
 - Context classification is `public`, `internal` by default, `sensitive`, or `restricted`. Detected
   credentials force `restricted` and never cross the provider boundary. Redaction is artifact defense
   in depth, not authorization. Raw envelopes and canonical context payloads are not persisted as new
@@ -49,7 +56,9 @@
 - Reproduction instructions are stored as JSON argv, and unknown tool names never produce a shell
   command.
 
-Adversarial tests also cover blind-context invariance, context tampering/replay/expiry/unknown runtime,
+Adversarial tests also cover phase schema/correlation and artifact-intent forgery, unsafe/duplicate
+report and result IDs, provider state/path injection, blind-context invariance,
+context tampering/replay/expiry/unknown runtime,
 restricted and unavailable provider call suppression, prohibited-use refusal, prompt-injection event
 recording, pre-approved injection, fake provider claims, secret canaries, command injection names,
 hard compute limits, runtime overruns, duplicate run IDs, and outside-root config.

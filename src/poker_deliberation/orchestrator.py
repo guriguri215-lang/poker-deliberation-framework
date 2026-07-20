@@ -2,57 +2,74 @@
 
 from __future__ import annotations
 
-import json
-import math
 import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Thread
-from typing import Any
 
-from poker_deliberation.agents import ROLE_CATALOG, select_roles
-from poker_deliberation.approvals import ApprovalLedger, requires_human_approval
+from poker_deliberation.agents import select_roles
+from poker_deliberation.approvals import ApprovalLedger
 from poker_deliberation.config import AppConfig
 from poker_deliberation.context_lifecycle import (
-    ContextEnvelope,
-    ContextHandoffRefused,
-    ContextLifecycleError,
-    build_context_envelope,
-    context_payload,
-    legacy_context_sha256,
     new_attempt_id,
     new_context_id,
-    validate_context_envelope,
 )
 from poker_deliberation.isolation import IsolationError, build_blind_decision_context
-from poker_deliberation.providers import AgentProvider, LocalProvider, ProviderControl
+from poker_deliberation.phases import (
+    AdjudicationService,
+    AnalysisExecutor,
+    ContextBuildService,
+    CritiqueService,
+    IntakeValidationService,
+    NormalizationService,
+    PhaseContractError,
+    PhaseId,
+    RoutingService,
+    SynthesisService,
+    ToolResearchExecutor,
+    canonical_sha256,
+    make_phase_request,
+    revalidate_outcome,
+)
+from poker_deliberation.phases.models import (
+    AdjudicationInput,
+    AdjudicationOutput,
+    AnalysisInput,
+    AnalysisOutput,
+    ContextBuildInput,
+    ContextBuildOutput,
+    CritiqueInput,
+    CritiqueOutput,
+    IntakeValidationInput,
+    IntakeValidationOutput,
+    NormalizationInput,
+    NormalizationOutput,
+    ProviderSnapshot,
+    RoutingInput,
+    RoutingOutput,
+    SynthesisInput,
+    SynthesisOutput,
+    ToolResearchInput,
+    ToolResearchOutput,
+)
+from poker_deliberation.providers import AgentProvider, LocalProvider
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.research import EvidenceLedger
-from poker_deliberation.results_orientation import detect_results_orientation
 from poker_deliberation.schemas import (
-    AgentAssignment,
-    AgentContext,
     AgentExecutionRecord,
-    AgentExecutionStatus,
     AgentReport,
-    ApprovalProposal,
     ApprovalRequest,
     ApprovalStatus,
     CaseInput,
     Claim,
-    ClaimCheck,
-    ConfidenceGrade,
     Dispute,
-    EpistemicLabel,
     EvidenceRecord,
     FinalReport,
-    NumericalExactness,
     SecurityEvent,
+    ToolRequest,
     ToolResult,
-    ToolStatus,
 )
-from poker_deliberation.security import isolate_prompt_injection, redact_sensitive, screen_case
+from poker_deliberation.security import redact_sensitive, screen_case
 from poker_deliberation.state_machine import RunState, WorkflowStateMachine
 from poker_deliberation.storage import RunStore
 from poker_deliberation.tools import ToolRegistry, default_registry
@@ -63,157 +80,12 @@ def new_run_id() -> str:
     return f"run-{stamp}-{secrets.token_hex(4)}"
 
 
-def _constant_clock(value: datetime) -> Callable[[], datetime]:
-    def read() -> datetime:
-        return value
-
-    return read
+def _new_phase_attempt_id(phase_id: PhaseId) -> str:
+    return f"phase-{phase_id.value}-{secrets.token_hex(8)}"
 
 
-def _lookup_path(value: dict[str, Any], path: str) -> Any:
-    current: Any = value
-    for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            raise KeyError(path)
-        current = current[part]
-    return current
-
-
-def _tool_comparison_tolerance(
-    result: ToolResult,
-    claimed: float,
-    calculated: float,
-    requested: float | None,
-) -> float:
-    if requested is not None:
-        return requested
-    numeric = result.numeric_exactness
-    if numeric in {NumericalExactness.EXACT, NumericalExactness.EXACT_UNDER_MODEL}:
-        return 0.0
-    if numeric is NumericalExactness.APPROXIMATE:
-        return 0.0
-    if numeric is not NumericalExactness.FLOATING_VERIFIED or result.verification is None:
-        raise ValueError("no comparison tolerance is available for this result")
-    policy = result.verification.tolerance
-    scale = max(abs(claimed), abs(calculated), 1.0)
-    if policy.kind == "absolute" and policy.absolute is not None:
-        return policy.absolute
-    if policy.kind == "relative" and policy.relative is not None:
-        return policy.relative * scale
-    if policy.kind == "absolute-or-relative":
-        if policy.absolute is None or policy.relative is None:
-            raise ValueError("incomplete absolute-or-relative tolerance policy")
-        return max(policy.absolute, policy.relative * scale)
-    if policy.kind == "ulp" and policy.ulps is not None:
-        return math.ulp(scale) * policy.ulps
-    if policy.kind == "caller-supplied":
-        value = result.input.get("tolerance", result.output.get("verification_tolerance"))
-        if isinstance(value, (int, float)) and math.isfinite(float(value)) and value >= 0:
-            return float(value)
-    raise ValueError("the tool-specific tolerance cannot be resolved")
-
-
-def _agent_context(
-    case: CaseInput,
-    role: str,
-    registered_tools: frozenset[str],
-) -> AgentContext:
-    if role not in ROLE_CATALOG:
-        raise ValueError("unknown agent role")
-    common: dict[str, Any] = {"kind": case.kind, "objective": case.objective}
-    if role == "intake":
-        context = AgentContext(**common, raw_text=case.raw_text, hand=case.hand)
-        return AgentContext.model_validate(isolate_prompt_injection(context))
-    if role == "math-auditor":
-        raw_tool_inputs = case.metadata.get("tool_inputs", {})
-        requested_tools = [name for name in case.requested_tools if name in registered_tools]
-        tool_inputs = (
-            {name: raw_tool_inputs[name] for name in requested_tools if name in raw_tool_inputs}
-            if isinstance(raw_tool_inputs, dict)
-            else {}
-        )
-        context = AgentContext(
-            **common,
-            hand=case.hand,
-            claims=case.claims,
-            assumptions=case.assumptions,
-            requested_tools=requested_tools,
-            tool_inputs=tool_inputs,
-        )
-        return AgentContext.model_validate(isolate_prompt_injection(context))
-    if role == "evidence-researcher":
-        context = AgentContext(**common, claims=case.claims, evidence=case.evidence)
-        return AgentContext.model_validate(isolate_prompt_injection(context))
-    if case.kind == "hand" and role == "strategy-analyst":
-        context = AgentContext(
-            kind=case.kind,
-            objective="decision_quality_baseline",
-            blind_decision_context=build_blind_decision_context(case),
-        )
-        return AgentContext.model_validate(isolate_prompt_injection(context))
-    strategy_text = None
-    if case.kind == "strategy" and role in {"strategy-analyst", "skeptic", "adjudicator"}:
-        strategy_text = "\n".join(line.rstrip() for line in (case.raw_text or "").splitlines())
-    context = AgentContext(
-        **common,
-        strategy_text=strategy_text,
-        hand=case.hand,
-        claims=case.claims,
-        assumptions=case.assumptions,
-    )
-    return AgentContext.model_validate(isolate_prompt_injection(context))
-
-
-def _context_record_fields(
-    envelope: ContextEnvelope,
-    context: AgentContext,
-) -> dict[str, Any]:
-    return {
-        "context_sha256": legacy_context_sha256(context),
-        "context_id": envelope.lineage.context_id,
-        "context_attempt_id": envelope.lineage.attempt_id,
-        "parent_context_id": envelope.lineage.parent_context_id,
-        "context_schema_version": envelope.schema_version,
-        "context_classification": envelope.policy.classification.value,
-        "context_payload_sha256": envelope.payload_sha256,
-        "context_source_sha256": envelope.lineage.source_sha256,
-        "context_policy_sha256": envelope.policy_sha256,
-        "context_envelope_sha256": envelope.integrity_sha256,
-        "context_expires_at": envelope.policy.expires_at,
-        "context_producer_runtime": envelope.lineage.producer_runtime.value,
-        "context_consumer_runtime": envelope.lineage.consumer_runtime.value,
-    }
-
-
-def _analyze_with_timeout(
-    provider: AgentProvider,
-    context: AgentContext,
-    assignment: AgentAssignment,
-    timeout_seconds: float,
-) -> AgentReport:
-    results: list[AgentReport] = []
-    errors: list[Exception] = []
-    control = ProviderControl(timeout_seconds=timeout_seconds)
-
-    def invoke() -> None:
-        try:
-            results.append(provider.analyze(context, assignment, control))
-        except Exception as exc:  # provider boundary converts failures to structured limitations
-            errors.append(exc)
-
-    thread = Thread(target=invoke, daemon=True, name=f"provider-{assignment.agent_role}")
-    thread.start()
-    thread.join(timeout_seconds)
-    if thread.is_alive():
-        control.cancel()
-        thread.join(min(0.5, max(0.05, timeout_seconds)))
-        suffix = " and ignored cancellation" if thread.is_alive() else " and was cancelled"
-        raise TimeoutError(f"provider exceeded deadline {timeout_seconds} seconds{suffix}")
-    if errors:
-        raise errors[0]
-    if not results:
-        raise RuntimeError("provider returned no report")
-    return results[0]
+def _new_internal_id(prefix: str) -> str:
+    return f"{prefix}-{secrets.token_hex(12)}"
 
 
 class Orchestrator:
@@ -223,6 +95,16 @@ class Orchestrator:
         registry: ToolRegistry | None = None,
         provider: AgentProvider | None = None,
         context_clock: Callable[[], datetime] | None = None,
+        *,
+        intake_service: IntakeValidationService | None = None,
+        normalization_service: NormalizationService | None = None,
+        routing_service: RoutingService | None = None,
+        context_build_service: ContextBuildService | None = None,
+        analysis_executor: AnalysisExecutor | None = None,
+        tool_research_executor: ToolResearchExecutor | None = None,
+        critique_service: CritiqueService | None = None,
+        adjudication_service: AdjudicationService | None = None,
+        synthesis_service: SynthesisService | None = None,
     ) -> None:
         self.config = config or AppConfig.from_env()
         self.registry = registry or default_registry(
@@ -232,6 +114,32 @@ class Orchestrator:
         )
         self.provider = provider or LocalProvider()
         self.context_clock = context_clock or (lambda: datetime.now(UTC))
+        self.intake_service = intake_service or IntakeValidationService()
+        self.normalization_service = normalization_service or NormalizationService()
+        self.routing_service = routing_service or RoutingService()
+        self.context_build_service = context_build_service or ContextBuildService(
+            blind_context_builder=build_blind_decision_context
+        )
+        self.analysis_executor = analysis_executor or AnalysisExecutor(
+            self.provider,
+            context_clock=self.context_clock,
+            record_clock=lambda: datetime.now(UTC),
+        )
+        self.tool_research_executor = tool_research_executor or ToolResearchExecutor(
+            self.registry,
+            record_sensitive_data=self.config.record_sensitive_data,
+        )
+        self.critique_service = critique_service or CritiqueService()
+        self.adjudication_service = adjudication_service or AdjudicationService()
+        self.synthesis_service = synthesis_service or SynthesisService()
+        self.phase_policy_snapshot_hash = canonical_sha256(
+            {
+                "record_sensitive_data": self.config.record_sensitive_data,
+                "registered_tools": self.registry.names(),
+                "context_retention_policy": "attempt-memory-only-v1",
+                "execution": "serial",
+            }
+        )
         self.store = RunStore(
             self.config.runs_dir,
             max_artifact_bytes=self.config.budgets.max_output_bytes,
@@ -252,69 +160,75 @@ class Orchestrator:
         evidence = EvidenceLedger()
         self.store.ensure_directory(actual_run_id, "agent_reports")
         self.store.ensure_directory(actual_run_id, "tool_results")
-        safe_case = redact_sensitive(case, enabled=not self.config.record_sensitive_data)
+        raw_approvals = case.metadata.get("approval_requests", [])
+        fallback_approval_ids = (
+            tuple(_new_internal_id("approval") for _ in raw_approvals)
+            if isinstance(raw_approvals, list)
+            else ()
+        )
+        intake_request = make_phase_request(
+            run_id=actual_run_id,
+            phase_id=PhaseId.INTAKE_VALIDATION,
+            attempt_id=_new_phase_attempt_id(PhaseId.INTAKE_VALIDATION),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=IntakeValidationInput(
+                case=case,
+                record_sensitive_data=self.config.record_sensitive_data,
+                fallback_approval_ids=fallback_approval_ids,
+            ),
+        )
+        intake_outcome = revalidate_outcome(
+            intake_request,
+            self.intake_service.run(intake_request),
+            output_type=IntakeValidationOutput,
+        )
+        if intake_outcome.output is None:
+            raise PhaseContractError("intake validation returned no output")
+        intake = intake_outcome.output
+        case = intake.case
+        safe_case = intake.safe_case
+        data_quality.extend(intake.data_quality)
         self.store.write_json(actual_run_id, "input.json", safe_case)
         self.store.write_text(actual_run_id, "evidence.jsonl", "")
-        known_claim_ids = {claim.claim_id for claim in case.claims}
-        for record in case.evidence:
-            unknown_claims = set(record.supported_claim_ids) - known_claim_ids
-            if unknown_claims:
-                data_quality.append(
-                    f"{record.evidence_id}: unknown supported claim IDs: {sorted(unknown_claims)}"
-                )
-                continue
+        for record in intake.accepted_evidence:
             evidence.add(record)
             self.store.append_jsonl(
                 actual_run_id,
                 "evidence.jsonl",
                 redact_sensitive(record, enabled=not self.config.record_sensitive_data),
             )
-        raw_approvals = case.metadata.get("approval_requests", [])
-        if isinstance(raw_approvals, list):
-            for raw_approval in raw_approvals:
-                if isinstance(raw_approval, dict):
-                    proposal_fields = ApprovalProposal.model_fields
-                    injected_fields = set(raw_approval) - set(proposal_fields)
-                    proposal_payload = {
-                        key: value for key, value in raw_approval.items() if key in proposal_fields
-                    }
-                    try:
-                        proposal = ApprovalProposal.model_validate(proposal_payload)
-                    except ValueError as exc:
-                        data_quality.append(f"invalid approval proposal: {exc}")
-                        proposal = ApprovalProposal(
-                            requested_action="review malformed external-action request",
-                            reason="approval metadata was malformed and must fail closed",
-                            expected_benefit="preserve approval integrity",
-                            risks=["untrusted approval metadata"],
-                            cost_or_resource_estimate="unknown",
-                            alternatives=["reject the malformed request"],
-                            effect_of_declining="no external action is performed",
-                        )
-                    if injected_fields:
-                        data_quality.append(
-                            "input-supplied approval decision fields were ignored: "
-                            f"{sorted(injected_fields)}"
-                        )
-                    if not requires_human_approval(proposal.action_category):
-                        raise ValueError("approval proposal category is not a sensitive action")
-                    approval_request = ApprovalRequest.model_validate(proposal.model_dump())
-                    approvals.add(
-                        ApprovalRequest.model_validate(
-                            redact_sensitive(
-                                approval_request,
-                                enabled=not self.config.record_sensitive_data,
-                            )
-                        )
+        for proposal in intake.approval_proposals:
+            approval_request = ApprovalRequest.model_validate(proposal.model_dump())
+            approvals.add(
+                ApprovalRequest.model_validate(
+                    redact_sensitive(
+                        approval_request,
+                        enabled=not self.config.record_sensitive_data,
                     )
-        elif raw_approvals:
-            data_quality.append("metadata.approval_requests must be a list")
-        normalization_warnings = case.metadata.get("normalization_warnings", [])
-        if isinstance(normalization_warnings, list):
-            data_quality.extend(str(item) for item in normalization_warnings)
+                )
+            )
 
         machine.transition(RunState.NORMALIZE, "input parsed into CaseInput")
-        normalized = safe_case
+        normalization_request = make_phase_request(
+            run_id=actual_run_id,
+            phase_id=PhaseId.NORMALIZATION,
+            attempt_id=_new_phase_attempt_id(PhaseId.NORMALIZATION),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=NormalizationInput(
+                safe_case=safe_case,
+                assumptions=tuple(
+                    assumption.model_dump(mode="json") for assumption in case.assumptions
+                ),
+            ),
+        )
+        normalization_outcome = revalidate_outcome(
+            normalization_request,
+            self.normalization_service.run(normalization_request),
+            output_type=NormalizationOutput,
+        )
+        if normalization_outcome.output is None:
+            raise PhaseContractError("normalization returned no output")
+        normalized = normalization_outcome.output.normalized_case
         self.store.write_json(actual_run_id, "normalized_case.json", normalized)
         self.store.write_json(
             actual_run_id,
@@ -356,12 +270,30 @@ class Orchestrator:
                     "自由文だけでは正確なポット・スタック・合法性を確定できません。CanonicalHandが必要です。"
                 )
             else:
-                validation = self.registry.execute(
-                    "hand_validator", case.hand.model_dump(mode="json")
+                hand_request = ToolRequest(
+                    request_id=_new_internal_id("tool-request"),
+                    tool_name="hand_validator",
+                    input=case.hand.model_dump(mode="json"),
                 )
-                validation = ToolResult.model_validate(
-                    redact_sensitive(validation, enabled=not self.config.record_sensitive_data)
+                tool_phase_request = make_phase_request(
+                    run_id=actual_run_id,
+                    phase_id=PhaseId.TOOL_RESEARCH,
+                    attempt_id=_new_phase_attempt_id(PhaseId.TOOL_RESEARCH),
+                    policy_snapshot_hash=self.phase_policy_snapshot_hash,
+                    input_value=ToolResearchInput(
+                        requests=(hand_request,),
+                        fallback_result_ids=(_new_internal_id("tool-result"),),
+                    ),
                 )
+                tool_phase_outcome = revalidate_outcome(
+                    tool_phase_request,
+                    self.tool_research_executor.run(tool_phase_request),
+                    output_type=ToolResearchOutput,
+                )
+                if tool_phase_outcome.output is None:
+                    raise PhaseContractError("hand validation returned no output")
+                data_quality.extend(tool_phase_outcome.output.data_quality)
+                validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
                 if not validation.output.get("valid", False):
                     data_quality.extend(map(str, validation.output.get("errors", [])))
@@ -370,22 +302,62 @@ class Orchestrator:
             data_quality.append("不足情報を捏造せず、自由文を未正規化入力として保存しました。")
 
         machine.transition(RunState.TASK_ROUTING, "roles selected by case kind")
-        assignments = select_roles(case)
+        registered_tools = tuple(self.registry.names())
+        routing_request = make_phase_request(
+            run_id=actual_run_id,
+            phase_id=PhaseId.ROUTING,
+            attempt_id=_new_phase_attempt_id(PhaseId.ROUTING),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=RoutingInput(
+                case_kind=case.kind,
+                role_snapshot=tuple(select_roles(case)),
+                registered_tools=registered_tools,
+            ),
+        )
+        routing_outcome = revalidate_outcome(
+            routing_request,
+            self.routing_service.run(routing_request),
+            output_type=RoutingOutput,
+        )
+        if routing_outcome.output is None:
+            raise PhaseContractError("routing returned no output")
+        assignments = list(routing_outcome.output.assignments)
         self.store.write_json(actual_run_id, "assignments.json", assignments)
         reports: list[AgentReport] = []
         if case.kind != "calculation":
             machine.transition(RunState.INDEPENDENT_ANALYSIS, "selected roles run independently")
+            report_ids: set[str] = set()
             for index, assignment in enumerate(assignments):
                 remaining_runtime = max(
                     0.001,
                     self.config.budgets.max_runtime_seconds - machine.elapsed_seconds,
                 )
                 started_at = datetime.now(UTC)
+                provider_timeout = min(30.0, remaining_runtime)
+                lifecycle_now = self.context_clock()
+                expected_context_id = new_context_id()
+                expected_attempt_id = new_attempt_id()
+                context_request = make_phase_request(
+                    run_id=actual_run_id,
+                    phase_id=PhaseId.CONTEXT_BUILD,
+                    attempt_id=_new_phase_attempt_id(PhaseId.CONTEXT_BUILD),
+                    policy_snapshot_hash=self.phase_policy_snapshot_hash,
+                    context_ids=(expected_context_id,),
+                    input_value=ContextBuildInput(
+                        case=case,
+                        assignment=assignment,
+                        registered_tools=registered_tools,
+                        created_at=lifecycle_now,
+                        expires_at=lifecycle_now + timedelta(seconds=provider_timeout),
+                        context_id=expected_context_id,
+                        context_attempt_id=expected_attempt_id,
+                    ),
+                )
                 try:
-                    context = _agent_context(
-                        case,
-                        assignment.agent_role,
-                        frozenset(self.registry.names()),
+                    context_outcome = revalidate_outcome(
+                        context_request,
+                        self.context_build_service.run(context_request),
+                        output_type=ContextBuildOutput,
                     )
                 except IsolationError as exc:
                     data_quality.append(f"blind decision isolation failed: {exc}")
@@ -408,76 +380,43 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                assignment = AgentAssignment.model_validate(
-                    assignment.model_copy(
-                        update={"context_keys": sorted(context_payload(context))},
-                        deep=True,
-                    ).model_dump(mode="python")
-                )
-                assignments[index] = assignment
+                if context_outcome.output is None or len(context_outcome.output.dispatches) != 1:
+                    raise PhaseContractError("context build returned an invalid dispatch batch")
+                dispatch = context_outcome.output.dispatches[0]
+                assignments[index] = dispatch.assignment
                 self.store.write_json(actual_run_id, "assignments.json", assignments)
-                provider_timeout = min(30.0, remaining_runtime)
-                lifecycle_now = self.context_clock()
-                expected_context_id = new_context_id()
-                expected_attempt_id = new_attempt_id()
-                envelope = build_context_envelope(
-                    context,
-                    assignment,
+                analysis_request = make_phase_request(
                     run_id=actual_run_id,
-                    expires_at=lifecycle_now + timedelta(seconds=provider_timeout),
-                    clock=_constant_clock(lifecycle_now),
-                    context_id=expected_context_id,
-                    attempt_id=expected_attempt_id,
+                    phase_id=PhaseId.ANALYSIS,
+                    attempt_id=_new_phase_attempt_id(PhaseId.ANALYSIS),
+                    policy_snapshot_hash=self.phase_policy_snapshot_hash,
+                    context_ids=(expected_context_id,),
+                    input_value=AnalysisInput(
+                        dispatch=dispatch,
+                        provider_timeout_seconds=provider_timeout,
+                        registered_tools=registered_tools,
+                        max_output_bytes=self.config.budgets.max_output_bytes,
+                        record_sensitive_data=self.config.record_sensitive_data,
+                        started_at=started_at,
+                        execution_id=_new_internal_id("execution"),
+                        fallback_report_id=_new_internal_id("report"),
+                        existing_report_ids=tuple(sorted(report_ids)),
+                    ),
                 )
-                provider_info = self.provider.availability()
-                execution_status = AgentExecutionStatus.COMPLETED
-                execution_error: str | None = None
-                try:
-                    provider_context = validate_context_envelope(
-                        envelope,
-                        assignment,
-                        run_id=actual_run_id,
-                        expected_context_id=expected_context_id,
-                        attempt_id=expected_attempt_id,
-                        now=self.context_clock(),
-                    )
-                    if not provider_info.available:
-                        raise ContextHandoffRefused("provider is not available for context handoff")
-                    agent_report = _analyze_with_timeout(
-                        self.provider,
-                        provider_context,
-                        assignment.model_copy(deep=True),
-                        provider_timeout,
-                    )
-                    if (
-                        agent_report.agent_role != assignment.agent_role
-                        or agent_report.task != assignment.task
-                    ):
-                        raise ContextLifecycleError("provider report correlation mismatch")
-                except TimeoutError as exc:
-                    execution_records.append(
-                        AgentExecutionRecord(
-                            assignment_id=assignment.assignment_id,
-                            agent_role=assignment.agent_role,
-                            provider=provider_info.provider,
-                            provider_version=provider_info.version,
-                            model=getattr(self.provider, "model", None),
-                            reasoning_effort=getattr(self.provider, "reasoning_effort", None),
-                            allowed_tools=[
-                                name
-                                for name in context.requested_tools
-                                if name in self.registry.names()
-                            ],
-                            **_context_record_fields(envelope, context),
-                            status=AgentExecutionStatus.FAILED,
-                            started_at=started_at,
-                            completed_at=datetime.now(UTC),
-                            error=str(exc),
-                        )
-                    )
-                    data_quality.append(str(exc))
+                analysis_outcome = revalidate_outcome(
+                    analysis_request,
+                    self.analysis_executor.run(analysis_request),
+                    output_type=AnalysisOutput,
+                )
+                if analysis_outcome.output is None:
+                    raise PhaseContractError("analysis returned no output")
+                analysis = analysis_outcome.output
+                execution_records.append(analysis.execution_record)
+                data_quality.extend(analysis.data_quality)
+                if analysis.timed_out:
                     machine.transition(
-                        RunState.FAILED_WITH_LIMITATIONS, "provider deadline exceeded"
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "provider deadline exceeded",
                     )
                     return self._synthesize(
                         actual_run_id,
@@ -494,96 +433,13 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                except ContextHandoffRefused as exc:
-                    execution_status = AgentExecutionStatus.REFUSED
-                    execution_error = str(exc)
-                    data_quality.append(f"provider {assignment.agent_role} handoff refused: {exc}")
-                    agent_report = AgentReport(
-                        agent_role=assignment.agent_role,
-                        task=assignment.task,
-                        uncertainties=["Context handoff was refused by policy."],
-                        confidence=ConfidenceGrade.D,
-                    )
-                except ContextLifecycleError as exc:
-                    execution_status = AgentExecutionStatus.FAILED
-                    execution_error = str(exc)
-                    data_quality.append(f"provider {assignment.agent_role} context rejected: {exc}")
-                    agent_report = AgentReport(
-                        agent_role=assignment.agent_role,
-                        task=assignment.task,
-                        uncertainties=[
-                            "Context validation failed; no provider output was accepted."
-                        ],
-                        confidence=ConfidenceGrade.D,
-                    )
-                except Exception as exc:
-                    execution_status = AgentExecutionStatus.FALLBACK
-                    execution_error = f"{type(exc).__name__}: provider analyze failed"
-                    data_quality.append(
-                        f"provider {assignment.agent_role} failed: {type(exc).__name__}"
-                    )
-                    agent_report = AgentReport(
-                        agent_role=assignment.agent_role,
-                        task=assignment.task,
-                        uncertainties=["Provider failed; no specialist conclusion was accepted."],
-                        confidence=ConfidenceGrade.D,
-                    )
-                agent_report = AgentReport.model_validate(
-                    redact_sensitive(agent_report, enabled=not self.config.record_sensitive_data)
-                )
-                report_size = len(
-                    json.dumps(agent_report.model_dump(mode="json"), ensure_ascii=False).encode(
-                        "utf-8"
-                    )
-                )
-                if report_size > self.config.budgets.max_output_bytes:
-                    data_quality.append(
-                        f"provider {assignment.agent_role} output exceeded the hard byte limit"
-                    )
-                    agent_report = AgentReport(
-                        agent_role=assignment.agent_role,
-                        task=assignment.task,
-                        uncertainties=["Oversized provider output was rejected."],
-                        confidence=ConfidenceGrade.D,
-                    )
-                    execution_status = AgentExecutionStatus.FAILED
-                    execution_error = "provider output exceeded the hard byte limit"
-                execution_records.append(
-                    AgentExecutionRecord(
-                        assignment_id=assignment.assignment_id,
-                        agent_role=assignment.agent_role,
-                        provider=provider_info.provider,
-                        provider_version=provider_info.version,
-                        model=getattr(self.provider, "model", None),
-                        reasoning_effort=getattr(self.provider, "reasoning_effort", None),
-                        allowed_tools=[
-                            name
-                            for name in context.requested_tools
-                            if name in self.registry.names()
-                        ],
-                        **_context_record_fields(envelope, context),
-                        status=execution_status,
-                        started_at=started_at,
-                        completed_at=datetime.now(UTC),
-                        error=execution_error,
-                    )
-                )
-                reports.append(agent_report)
+                reports.append(analysis.report)
+                report_ids.add(analysis.report.report_id)
                 self.store.write_json(
                     actual_run_id,
-                    f"agent_reports/{agent_report.report_id}.json",
-                    agent_report,
+                    f"agent_reports/{analysis.report.report_id}.json",
+                    analysis.report,
                 )
-                for objection in agent_report.objections:
-                    if case.claims:
-                        disputes.append(
-                            Dispute(
-                                claim_ids=[case.claims[0].claim_id],
-                                issue=objection,
-                                positions=[objection],
-                                unresolved=True,
-                            )
-                        )
             if not machine.enforce_runtime():
                 data_quality.append("maximum runtime exceeded after provider analysis")
                 return self._synthesize(
@@ -606,7 +462,6 @@ class Orchestrator:
             machine.transition(
                 RunState.TOOL_AND_RESEARCH, "calculation case routes directly to tools"
             )
-
         tool_inputs = case.metadata.get("tool_inputs", {})
         if not isinstance(tool_inputs, dict):
             data_quality.append(
@@ -614,71 +469,48 @@ class Orchestrator:
             )
             tool_inputs = {}
         already_run = {result.tool_name for result in tool_results}
+        requested_tool_calls: list[ToolRequest] = []
         for tool_name in case.requested_tools:
             if tool_name in already_run and tool_name == "hand_validator":
                 continue
             payload = tool_inputs.get(tool_name, {})
             if not isinstance(payload, dict):
                 payload = {}
-            result = self.registry.execute(tool_name, payload)
-            result = ToolResult.model_validate(
-                redact_sensitive(result, enabled=not self.config.record_sensitive_data)
+            requested_tool_calls.append(
+                ToolRequest(
+                    request_id=_new_internal_id("tool-request"),
+                    tool_name=tool_name,
+                    input=payload,
+                )
             )
-            tool_results.append(result)
+        requested_tools_request = make_phase_request(
+            run_id=actual_run_id,
+            phase_id=PhaseId.TOOL_RESEARCH,
+            attempt_id=_new_phase_attempt_id(PhaseId.TOOL_RESEARCH),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=ToolResearchInput(
+                requests=tuple(requested_tool_calls),
+                start_ordinal=len(tool_results),
+                existing_result_ids=tuple(result.result_id for result in tool_results),
+                fallback_result_ids=tuple(
+                    _new_internal_id("tool-result") for _ in requested_tool_calls
+                ),
+            ),
+        )
+        requested_tools_outcome = revalidate_outcome(
+            requested_tools_request,
+            self.tool_research_executor.run(requested_tools_request),
+            output_type=ToolResearchOutput,
+        )
+        if requested_tools_outcome.output is None:
+            raise PhaseContractError("tool research returned no output")
+        data_quality.extend(requested_tools_outcome.output.data_quality)
+        tool_results.extend(binding.result for binding in requested_tools_outcome.output.bindings)
         for result in tool_results:
             self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
             self.store.write_json(
                 actual_run_id, f"tool_results/{result.result_id}.input.json", result.input
             )
-        valid_evidence_ids = {record.evidence_id for record in evidence.all()}
-        valid_tool_result_ids = {
-            result.result_id for result in tool_results if result.status is ToolStatus.SUCCESS
-        }
-        for agent_report in reports:
-            report_evidence_ids = set(agent_report.evidence_ids)
-            report_tool_ids = set(agent_report.tool_result_ids)
-            invalid_refs = (report_evidence_ids - valid_evidence_ids) | (
-                report_tool_ids - valid_tool_result_ids
-            )
-            if invalid_refs:
-                data_quality.append(
-                    f"{agent_report.report_id}: unknown provider evidence/tool IDs: "
-                    f"{sorted(invalid_refs)}"
-                )
-            for provider_claim in agent_report.claims:
-                claim_refs = (
-                    set(provider_claim.evidence_ids) | report_evidence_ids | report_tool_ids
-                )
-                valid_refs = claim_refs & (valid_evidence_ids | valid_tool_result_ids)
-                if valid_refs and not invalid_refs:
-                    disputes.append(
-                        Dispute(
-                            claim_ids=[provider_claim.claim_id],
-                            issue=(
-                                "Provider claim references valid artifacts but lacks "
-                                "typed adjudication"
-                            ),
-                            positions=[provider_claim.text],
-                            resolution_basis=[f"valid references: {sorted(valid_refs)}"],
-                            unresolved=True,
-                        )
-                    )
-                else:
-                    disputes.append(
-                        Dispute(
-                            claim_ids=[provider_claim.claim_id],
-                            issue=(
-                                "Provider claim lacks valid claim-level evidence or "
-                                "tool verification"
-                            ),
-                            positions=[provider_claim.text],
-                            resolution=(
-                                "Rejected from the adjudicated conclusion and labeled UNKNOWN"
-                            ),
-                            resolution_basis=["provider output is untrusted input"],
-                            unresolved=False,
-                        )
-                    )
         if not machine.enforce_runtime():
             data_quality.append("maximum runtime exceeded after tool execution")
             return self._synthesize(
@@ -698,37 +530,49 @@ class Orchestrator:
             )
 
         machine.transition(RunState.CRITIQUE, "tool failures and unsupported claims checked")
-        for result in tool_results:
-            if result.status is ToolStatus.FAILED:
-                data_quality.append(f"{result.tool_name} failed: {result.error}")
-            if result.status is ToolStatus.UNAVAILABLE:
-                data_quality.append(f"{result.tool_name} unavailable: {result.error}")
-        rationale_sources: list[tuple[str, str]] = []
-        if case.raw_text:
-            rationale_sources.append(("input-raw", case.raw_text))
-        rationale_sources.extend((claim.claim_id, claim.text) for claim in case.claims)
-        for agent_report in reports:
-            rationale_sources.extend((claim.claim_id, claim.text) for claim in agent_report.claims)
-            rationale_sources.extend(
-                (f"{agent_report.report_id}-conclusion", text) for text in agent_report.conclusions
-            )
-        for source_id, text in rationale_sources:
-            for finding in detect_results_orientation(text):
-                disputes.append(
-                    Dispute(
-                        claim_ids=[source_id],
-                        issue="結果論を意思決定の正しさの根拠として使用しています。",
-                        positions=[text],
-                        resolution=finding.correction,
-                        resolution_basis=[f"deterministic rule: {finding.rule_id}"],
-                        unresolved=False,
-                    )
-                )
-                data_quality.append(
-                    f"{source_id}: 結果論の論拠を棄却し、意思決定時点の情報で再評価が必要です。"
-                )
+        critique_request = make_phase_request(
+            run_id=actual_run_id,
+            phase_id=PhaseId.CRITIQUE,
+            attempt_id=_new_phase_attempt_id(PhaseId.CRITIQUE),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=CritiqueInput(
+                case=case,
+                reports=tuple(reports),
+                tool_results=tuple(tool_results),
+                evidence_ids=tuple(record.evidence_id for record in evidence.all()),
+                existing_disputes=tuple(disputes),
+            ),
+        )
+        critique_outcome = revalidate_outcome(
+            critique_request,
+            self.critique_service.run(critique_request),
+            output_type=CritiqueOutput,
+        )
+        if critique_outcome.output is None:
+            raise PhaseContractError("critique returned no output")
+        disputes = list(critique_outcome.output.disputes)
+        data_quality.extend(critique_outcome.output.data_quality)
+
         machine.transition(RunState.ADJUDICATION, "evidence strength, not vote count, used")
-        claim_assessments = self._adjudicate_claims(case, tool_results, data_quality)
+        adjudication_request = make_phase_request(
+            run_id=actual_run_id,
+            phase_id=PhaseId.ADJUDICATION,
+            attempt_id=_new_phase_attempt_id(PhaseId.ADJUDICATION),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=AdjudicationInput(
+                case=case,
+                tool_results=tuple(tool_results),
+            ),
+        )
+        adjudication_outcome = revalidate_outcome(
+            adjudication_request,
+            self.adjudication_service.run(adjudication_request),
+            output_type=AdjudicationOutput,
+        )
+        if adjudication_outcome.output is None:
+            raise PhaseContractError("adjudication returned no output")
+        claim_assessments = list(adjudication_outcome.output.claim_assessments)
+        data_quality.extend(adjudication_outcome.output.data_quality)
         known_evidence_ids = {record.evidence_id for record in evidence.all()}
         for claim in case.claims:
             missing_evidence = set(claim.evidence_ids) - known_evidence_ids
@@ -773,122 +617,6 @@ class Orchestrator:
         )
         return final_report
 
-    def _adjudicate_claims(
-        self,
-        case: CaseInput,
-        tool_results: list[ToolResult],
-        data_quality: list[str],
-    ) -> list[Claim]:
-        assessments = list(case.claims)
-        checks = case.metadata.get("claim_checks", [])
-        if not isinstance(checks, list):
-            data_quality.append("metadata.claim_checks must be a list")
-            return assessments
-        by_tool: dict[str, list[ToolResult]] = {}
-        for result in tool_results:
-            by_tool.setdefault(result.tool_name, []).append(result)
-        known_claim_ids = {claim.claim_id for claim in case.claims}
-        for raw_check in checks:
-            if not isinstance(raw_check, dict):
-                data_quality.append("a claim check was not an object")
-                continue
-            try:
-                check = ClaimCheck.model_validate(raw_check)
-            except ValueError as exc:
-                data_quality.append(f"invalid claim check: {exc}")
-                continue
-            claim_id = check.claim_id
-            if claim_id not in known_claim_ids:
-                data_quality.append(f"{claim_id}: claim check references an unknown claim")
-                continue
-            tool_name = check.tool_name
-            candidates = by_tool.get(tool_name, [])
-            if not candidates or candidates[-1].status is not ToolStatus.SUCCESS:
-                data_quality.append(f"{claim_id}: verification tool {tool_name!r} did not succeed")
-                continue
-            result = candidates[-1]
-            try:
-                calculated = float(_lookup_path(result.output, check.output_path))
-                claimed = check.claimed_value
-                tolerance = _tool_comparison_tolerance(
-                    result,
-                    check.claimed_value,
-                    calculated,
-                    check.tolerance,
-                )
-            except (KeyError, TypeError, ValueError) as exc:
-                data_quality.append(f"{claim_id}: invalid claim check: {exc}")
-                continue
-            if not math.isfinite(calculated):
-                data_quality.append(f"{claim_id}: calculated claim value is not finite")
-                continue
-            verified_result = result.numeric_exactness in {
-                NumericalExactness.EXACT,
-                NumericalExactness.EXACT_UNDER_MODEL,
-                NumericalExactness.FLOATING_VERIFIED,
-            }
-            if verified_result:
-                agrees = abs(calculated - claimed) <= tolerance
-                verdict = "一致します" if agrees else "一致せず、訂正が必要です"
-                text = f"{claim_id}: USER_CLAIM={claimed} は CALCULATED={calculated} と{verdict}。"
-                label = EpistemicLabel.CALCULATED
-                confidence = ConfidenceGrade.A
-                approximation_limits = [
-                    f"numeric_exactness: {result.numeric_exactness.value}",
-                    f"comparison tolerance: {tolerance}",
-                    *(
-                        [f"model qualifier: {result.model_qualifier}"]
-                        if result.model_qualifier
-                        else []
-                    ),
-                ]
-            else:
-                interval = result.confidence_interval
-                if (
-                    interval is not None
-                    and all(math.isfinite(bound) for bound in interval)
-                    and interval[0] <= interval[1]
-                ):
-                    in_interval = interval[0] - tolerance <= claimed <= interval[1] + tolerance
-                    verdict = (
-                        f"95%信頼区間[{interval[0]}, {interval[1]}]内です"
-                        if in_interval
-                        else f"95%信頼区間[{interval[0]}, {interval[1]}]外です"
-                    )
-                    interval_limit = "信頼区間はツールが報告した近似誤差範囲です。"
-                else:
-                    agrees = abs(calculated - claimed) <= tolerance
-                    verdict = "点推定と一致します" if agrees else "点推定と一致しません"
-                    interval_limit = "この近似結果には利用可能な信頼区間がありません。"
-                text = (
-                    f"{claim_id}: USER_CLAIM={claimed} は ESTIMATE(point)={calculated}について"
-                    f"{verdict}。近似値のためexactな訂正とは扱いません。"
-                )
-                label = EpistemicLabel.ESTIMATE
-                confidence = ConfidenceGrade.C
-                approximation_limits = [
-                    f"{tool_name} のnumeric_exactnessは {result.numeric_exactness.value} です。",
-                    interval_limit,
-                ]
-            assessments.append(
-                Claim(
-                    claim_id=f"adjudication-{claim_id}",
-                    text=text,
-                    label=label,
-                    confidence=confidence,
-                    limitations=[
-                        f"検証範囲は {tool_name}.{check.output_path} の数値比較です。",
-                        *([f"単位: {check.unit}"] if check.unit else []),
-                        *approximation_limits,
-                    ],
-                )
-            )
-        if case.claims and not checks:
-            data_quality.append(
-                "ユーザー主張は入力として保存しましたが、検証条件がないため真偽未判定です。"
-            )
-        return assessments
-
     def _write_common_artifacts(
         self,
         run_id: str,
@@ -921,149 +649,73 @@ class Orchestrator:
         completed: bool,
         machine: WorkflowStateMachine,
     ) -> FinalReport:
-        corrections = [claim for claim in claim_assessments if "訂正が必要" in claim.text]
-        failed = [result for result in tool_results if result.status is ToolStatus.FAILED]
-        successes = [result for result in tool_results if result.status is ToolStatus.SUCCESS]
-        if any(event.blocked for event in security_events):
-            conclusion = "".join(
-                (
-                    "このフレームワークは事後検討専用です。",
-                    "禁止用途に該当するため分析を実行しませんでした。",
-                )
-            )
-        elif machine.state is RunState.HUMAN_REVIEW_REQUIRED:
-            conclusion = "外部操作は未実行です。人間の承認または拒否を待っています。"
-        elif machine.state is RunState.FAILED_WITH_LIMITATIONS:
-            conclusion = "実行予算または安全上の制限に達したため、制限付きで終了しました。"
-        elif corrections:
-            conclusion = "ユーザー主張に、再現可能なローカル計算に基づく訂正が必要です。"
-        elif case.kind == "hand" and data_quality:
-            conclusion = "ハンド入力に矛盾または不足があるため、戦略結論を断定しません。"
-        elif failed:
-            conclusion = "一部の計算が失敗したため、利用可能な結果と制限だけを返します。"
-        elif successes:
-            conclusion = "指定されたローカル検証・計算を完了しました。"
-        else:
-            conclusion = "正確な結論に必要な検証入力が不足しているため、断定を保留します。"
-        verified_successes = [
-            result
-            for result in successes
-            if result.numeric_exactness
-            in {
-                NumericalExactness.EXACT,
-                NumericalExactness.EXACT_UNDER_MODEL,
-                NumericalExactness.FLOATING_VERIFIED,
-            }
-        ]
-        adjudicated_claim_ids = {
-            claim.claim_id.removeprefix("adjudication-")
-            for claim in claim_assessments
-            if claim.claim_id.startswith("adjudication-")
-            and claim.label is EpistemicLabel.CALCULATED
-            and claim.confidence is ConfidenceGrade.A
-        }
-        has_unverified_material_claim = any(
-            claim.claim_id not in adjudicated_claim_ids for claim in case.claims
+        provider_info = self.provider.availability()
+        provider_reason = (
+            self.provider.availability().reason
+            if not provider_info.available
+            else provider_info.reason
         )
-        if machine.state is RunState.HUMAN_REVIEW_REQUIRED:
-            confidence = ConfidenceGrade.D
-        elif (
-            successes
-            and len(verified_successes) == len(successes)
-            and not failed
-            and not data_quality
-            and not has_unverified_material_claim
-            and not any(dispute.unresolved for dispute in disputes)
-        ):
-            confidence = ConfidenceGrade.A
-        elif (
-            successes
-            and not failed
-            and not data_quality
-            and not has_unverified_material_claim
-            and not any(dispute.unresolved for dispute in disputes)
-        ):
-            confidence = ConfidenceGrade.B
-        else:
-            confidence = ConfidenceGrade.C
-        analysis_sections = [
-            {
-                "title": report.agent_role,
-                "epistemic_status": EpistemicLabel.UNKNOWN.value,
-                "unverified_conclusions": report.conclusions,
-                "unverified_claims": [claim.text for claim in report.claims],
-                "uncertainties": report.uncertainties,
-                "objections": report.objections,
-                "unresolved_questions": report.unresolved_questions,
-            }
-            for report in reports
-        ]
-        reproduction_steps = [
-            "argv-json: "
-            + json.dumps(
-                [
-                    "poker-deliberate",
-                    "calculate",
-                    result.tool_name,
-                    "--analysis-scope",
-                    "retrospective",
-                    "--input",
+        synthesis_request = make_phase_request(
+            run_id=run_id,
+            phase_id=PhaseId.SYNTHESIS,
+            attempt_id=_new_phase_attempt_id(PhaseId.SYNTHESIS),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=SynthesisInput(
+                run_id=run_id,
+                machine_state=machine.state.value,
+                completed=completed,
+                case=case,
+                data_quality=tuple(data_quality),
+                claim_assessments=tuple(claim_assessments),
+                reports=tuple(reports),
+                execution_records=tuple(execution_records),
+                tool_results=tuple(tool_results),
+                disputes=tuple(disputes),
+                evidence_records=tuple(evidence_records),
+                approvals=tuple(ApprovalRequest.model_validate(item) for item in approvals.all()),
+                security_events=tuple(security_events),
+                provider_snapshot=ProviderSnapshot(
+                    available=provider_info.available,
+                    reason=provider_reason,
+                ),
+                tool_input_artifact_paths=tuple(
                     str(
                         self.store.run_dir(run_id)
                         / "tool_results"
                         / f"{result.result_id}.input.json"
-                    ),
-                ],
-                ensure_ascii=False,
-            )
-            for result in tool_results
-            if result.reproduce_command is not None
-        ]
-        limitations = list(dict.fromkeys(data_quality))
-        if not self.provider.availability().available:
-            limitations.append(self.provider.availability().reason)
-        if case.kind in {"hand", "strategy"}:
-            limitations.append(
-                "外部ソルバーの実行・収束確認なしにGTOまたは均衡を主張していません。"
-            )
-        report = FinalReport(
-            run_id=run_id,
-            run_status=(
-                "approval_required"
-                if machine.state is RunState.HUMAN_REVIEW_REQUIRED
-                else "failed_with_limitations"
-                if machine.state is RunState.FAILED_WITH_LIMITATIONS
-                else "completed"
+                    )
+                    for result in tool_results
+                ),
+                record_sensitive_data=self.config.record_sensitive_data,
+                generated_at=datetime.now(UTC),
             ),
-            conclusion=conclusion,
-            reconstructed_input=redact_sensitive(
-                case, enabled=not self.config.record_sensitive_data
-            ),
-            data_quality=list(dict.fromkeys(data_quality)),
-            claim_assessments=claim_assessments,
-            analysis_sections=analysis_sections,
-            agent_execution_records=execution_records,
-            security_events=security_events,
-            tool_results=tool_results,
-            alternatives=[],
-            sensitivity=[
-                result.output for result in tool_results if result.tool_name == "sensitivity"
-            ],
-            disputes=disputes,
-            evidence=evidence_records,
-            reproduction_steps=reproduction_steps,
-            approvals=[
-                ApprovalRequest.model_validate(item)
-                for item in redact_sensitive(
-                    approvals.all(), enabled=not self.config.record_sensitive_data
-                )
-            ],
-            confidence=confidence,
-            limitations=list(dict.fromkeys(limitations)),
         )
-        report = FinalReport.model_validate(
-            redact_sensitive(report, enabled=not self.config.record_sensitive_data)
+        synthesis_outcome = revalidate_outcome(
+            synthesis_request,
+            self.synthesis_service.run(synthesis_request),
+            output_type=SynthesisOutput,
         )
+        if synthesis_outcome.output is None:
+            raise PhaseContractError("synthesis returned no output")
+        expected_intents = (
+            ("agent_execution_records", "agent_execution_records.json", "application/json"),
+            ("security_events", "security_events.json", "application/json"),
+            ("state", "state.json", "application/json"),
+            ("approvals", "approvals.json", "application/json"),
+            ("disputes", "disputes.json", "application/json"),
+            ("final_report_json", "final_report.json", "application/json"),
+            ("final_report_markdown", "final_report.md", "text/markdown"),
+        )
+        actual_intents = tuple(
+            (intent.kind.value, intent.relative_path, intent.media_type)
+            for intent in synthesis_outcome.artifact_intents
+        )
+        if actual_intents != expected_intents:
+            raise PhaseContractError("synthesis artifact intent allowlist mismatch")
+        expected_next_state = "completed" if completed else None
+        if synthesis_outcome.requested_next_state != expected_next_state:
+            raise PhaseContractError("synthesis requested an illegal next state")
+        report = synthesis_outcome.output.report
         self.store.write_json(run_id, "agent_execution_records.json", execution_records)
         self.store.write_json(run_id, "security_events.json", security_events)
         if completed and not machine.terminal:

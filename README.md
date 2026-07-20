@@ -15,6 +15,11 @@ source/editable checkoutでの読込はcontract test対象ですが、wheel/sdis
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
 `user_materials/ROADMAP.md`は承認方針・背景説明であり、runtimeやdoctorの入力ではありません。
 
+P2-010AのPython run経路は、strict versioned request/outcomeを使うpure phaseとserialな
+Analysis/ToolResearch effect境界へ分割されています。state transitionとartifact writeは引き続き
+Orchestratorだけが所有します。内部contractと非目標は
+[`docs/phase-services.md`](docs/phase-services.md)を参照してください。
+
 Python providerへのrole別contextは、P2-024Aの
 [`Context lifecycle contract`](docs/context-lifecycle.md)に従い、試行ごとのstrict immutable envelopeで
 allowlist、UTC期限、classification、integrity、run/assignment/attempt/runtime系譜を検証してからfresh

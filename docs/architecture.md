@@ -11,6 +11,8 @@ Python `AgentExecutionRecord` entries or run artifacts.
 - `schemas.py`: strict Pydantic contracts.
 - `state_machine.py`: legal bounded transitions and budget counters.
 - `orchestrator.py`: routing, provider calls, tools, adjudication inputs, synthesis, artifacts.
+- `phases/`: strict internal phase contracts, deterministic pure services, and serial Analysis /
+  ToolResearch effect adapters. See `docs/phase-services.md`.
 - `context_lifecycle.py`: attempt-scoped policy, immutable envelope, integrity, expiry, and lineage.
 - `normalization.py`: conservative documented free-text hand format to canonical schema.
 - `approvals.py`: explicit pending/approved/rejected ledger.
@@ -51,6 +53,20 @@ The envelope is attempt-memory-only and is not a new artifact. Execution records
 legacy full-`AgentContext` hash calculation in `context_sha256` and add separate sparse payload/source
 and envelope audit metadata. Persistence, retention duration, deletion, cleanup, durable trust
 anchors, and cross-runtime execution remain outside P2-024A.
+
+## P2-010A phase boundary
+
+`Orchestrator.run` invokes IntakeValidation, Normalization, Routing, ContextBuild, Analysis,
+ToolResearch, Critique, Adjudication, and Synthesis through strict versioned request/outcome values.
+The seven compute phases are deterministic and have no filesystem, state, provider, registry,
+network, approval-ledger, ambient-time, or ambient-random ownership. Analysis and ToolResearch are
+the only effect adapters; they remain serial and cannot write artifacts or transition state.
+
+The orchestrator validates request/outcome correlation, exact synthesis artifact intents, and the
+only permitted requested terminal state before performing the existing fixed writes/transitions.
+Calculation still assigns `math-auditor` and `report-writer` without executing either provider role.
+Phase values are internal and are not persisted as new artifacts. P2-010A does not change the known
+whole-run atomicity limitation; durable transition ordering belongs to P2-012A/P2-010B.
 
 ## Trust boundaries
 

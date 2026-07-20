@@ -198,6 +198,8 @@ class ToolExecutionBinding(PhasePayload):
             raise ValueError("materialized tool result input hash mismatch")
         if self.result_contract_version != self.result.contract_version:
             raise ValueError("tool result contract version binding mismatch")
+        if self.supported_contract_version != self.result_contract_version:
+            raise ValueError("tool supported contract version binding mismatch")
         if (
             self.result.status.value == "success"
             and self.requested_contract_version is not None

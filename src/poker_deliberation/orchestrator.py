@@ -30,6 +30,7 @@ from poker_deliberation.phases import (
     canonical_sha256,
     make_phase_request,
     revalidate_outcome,
+    validate_analysis_output,
     validate_tool_research_output,
 )
 from poker_deliberation.phases.models import (
@@ -115,6 +116,7 @@ class Orchestrator:
         )
         self.provider = provider or LocalProvider()
         self.context_clock = context_clock or (lambda: datetime.now(UTC))
+        self.sensitive_action_categories = tuple(sorted(SENSITIVE_ACTIONS))
         self.tool_contract_versions = {
             str(description["name"]): str(description["contract_version"])
             for description in self.registry.describe()
@@ -144,7 +146,7 @@ class Orchestrator:
                 "record_sensitive_data": self.config.record_sensitive_data,
                 "registered_tools": self.registry.names(),
                 "tool_contract_versions": self.tool_contract_versions,
-                "sensitive_action_categories": sorted(SENSITIVE_ACTIONS),
+                "sensitive_action_categories": self.sensitive_action_categories,
                 "context_retention_policy": "attempt-memory-only-v1",
                 "execution": "serial",
             }
@@ -183,7 +185,7 @@ class Orchestrator:
             input_value=IntakeValidationInput(
                 case=case,
                 record_sensitive_data=self.config.record_sensitive_data,
-                sensitive_action_categories=tuple(sorted(SENSITIVE_ACTIONS)),
+                sensitive_action_categories=self.sensitive_action_categories,
                 fallback_approval_ids=fallback_approval_ids,
             ),
         )
@@ -422,6 +424,7 @@ class Orchestrator:
                 )
                 if analysis_outcome.output is None:
                     raise PhaseContractError("analysis returned no output")
+                validate_analysis_output(analysis_request, analysis_outcome.output)
                 analysis = analysis_outcome.output
                 execution_records.append(analysis.execution_record)
                 data_quality.extend(analysis.data_quality)

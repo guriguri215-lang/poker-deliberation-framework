@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+import poker_deliberation.orchestrator as orchestrator_module
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.schemas import CaseInput
@@ -185,3 +186,35 @@ def test_orchestrator_public_methods_and_positional_constructor_remain_compatibl
     ]
     for method in ("run", "resume", "load_report", "report_path"):
         assert callable(getattr(Orchestrator, method))
+
+
+def test_sensitive_action_policy_uses_one_init_time_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"))
+    assert "external_service" in orchestrator.sensitive_action_categories
+    monkeypatch.setattr(orchestrator_module, "SENSITIVE_ACTIONS", set())
+    report = orchestrator.run(
+        CaseInput(
+            kind="strategy",
+            raw_text="external solver",
+            analysis_scope="retrospective",
+            metadata={
+                "approval_requests": [
+                    {
+                        "approval_id": "approval-snapshot",
+                        "requested_action": "external solver",
+                        "reason": "verify immutable policy snapshot",
+                        "expected_benefit": "test",
+                        "risks": ["external execution"],
+                        "cost_or_resource_estimate": "unknown",
+                        "alternatives": ["decline"],
+                        "effect_of_declining": "no external action",
+                    }
+                ]
+            },
+        ),
+        run_id="run-policy-snapshot",
+    )
+    assert report.run_status == "approval_required"

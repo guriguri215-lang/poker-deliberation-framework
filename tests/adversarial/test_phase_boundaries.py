@@ -12,6 +12,7 @@ from poker_deliberation.config import AppConfig
 from poker_deliberation.context_lifecycle import build_context_envelope, context_payload
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases import (
+    AnalysisExecutor,
     ArtifactIntent,
     ArtifactKind,
     PhaseContractError,
@@ -19,6 +20,7 @@ from poker_deliberation.phases import (
     make_phase_request,
     validate_tool_research_output,
 )
+from poker_deliberation.phases.contracts import successful_outcome
 from poker_deliberation.phases.executors import ToolResearchExecutor
 from poker_deliberation.phases.models import ContextDispatch, ToolResearchInput
 from poker_deliberation.phases.services import SynthesisService
@@ -27,6 +29,7 @@ from poker_deliberation.providers.base import (
     ProviderControl,
     ProviderStatus,
 )
+from poker_deliberation.providers.local import LocalProvider
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentContext,
@@ -72,6 +75,21 @@ class MaliciousReportProvider:
                 }
             )
         return payload
+
+
+class ForgedAnalysisExecutor(AnalysisExecutor):
+    def run(self, request):  # type: ignore[no-untyped-def]
+        outcome = super().run(request)
+        assert outcome.output is not None
+        forged_report = outcome.output.report.model_copy(
+            update={"report_id": "../state"},
+            deep=True,
+        )
+        forged_output = outcome.output.model_copy(
+            update={"report": forged_report},
+            deep=True,
+        )
+        return successful_outcome(request, forged_output)
 
 
 def test_unsafe_provider_report_id_cannot_overwrite_run_artifacts(tmp_path: Path) -> None:
@@ -137,6 +155,27 @@ def test_provider_cannot_inject_state_or_artifact_fields(tmp_path: Path) -> None
     assert report.run_status == "completed"
     assert all(record.status.value == "failed" for record in report.agent_execution_records)
     assert not (tmp_path / "runs" / "state.json").exists()
+
+
+def test_forged_analysis_output_fails_before_report_materialization(tmp_path: Path) -> None:
+    fixed = datetime(2026, 7, 20, 23, 59, tzinfo=UTC)
+    executor = ForgedAnalysisExecutor(
+        LocalProvider(),
+        context_clock=lambda: fixed,
+        record_clock=lambda: fixed,
+    )
+    run_id = "run-forged-analysis"
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        context_clock=lambda: fixed,
+        analysis_executor=executor,
+    )
+    with pytest.raises(PhaseContractError, match="analysis output report ID"):
+        orchestrator.run(
+            CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
+            run_id=run_id,
+        )
+    assert not list((tmp_path / "runs" / run_id / "agent_reports").glob("*.json"))
 
 
 class UnsafeResultRegistry:

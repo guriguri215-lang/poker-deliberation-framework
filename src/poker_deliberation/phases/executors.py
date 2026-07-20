@@ -141,6 +141,46 @@ def validate_tool_research_output(
         seen_result_ids.add(binding.result.result_id)
 
 
+def validate_analysis_output(
+    request: PhaseRequest[AnalysisInput],
+    output: AnalysisOutput,
+) -> None:
+    """Bind a provider result to its exact dispatch before materialization."""
+
+    value = request.input
+    dispatch = value.dispatch
+    assignment = dispatch.assignment
+    context = dispatch.context
+    envelope = dispatch.envelope
+    if (
+        output.assignment != assignment
+        or output.context != context
+        or output.envelope != envelope
+        or output.report.agent_role != assignment.agent_role
+        or output.report.task != assignment.task
+    ):
+        raise PhaseContractError("analysis output dispatch correlation mismatch")
+    _safe_unique_id(
+        output.report.report_id,
+        set(value.existing_report_ids),
+        "analysis output report ID",
+    )
+    record = output.execution_record
+    if (
+        record.execution_id != value.execution_id
+        or record.assignment_id != assignment.assignment_id
+        or record.agent_role != assignment.agent_role
+        or record.allowed_tools
+        != [name for name in context.requested_tools if name in value.registered_tools]
+    ):
+        raise PhaseContractError("analysis execution record correlation mismatch")
+    for field, expected in _context_record_fields(envelope, context).items():
+        if getattr(record, field) != expected:
+            raise PhaseContractError("analysis execution context correlation mismatch")
+    if output.timed_out and record.status is not AgentExecutionStatus.FAILED:
+        raise PhaseContractError("timed-out analysis must have a failed execution record")
+
+
 class AnalysisExecutor:
     """Run exactly one provider assignment without owning state or persistence."""
 
@@ -346,6 +386,7 @@ class AnalysisExecutor:
             data_quality=tuple(warnings),
             timed_out=timed_out,
         )
+        validate_analysis_output(isolated, output)
         return successful_outcome(
             isolated,
             output,

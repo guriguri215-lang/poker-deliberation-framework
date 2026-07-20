@@ -18,6 +18,7 @@ from poker_deliberation.phases.contracts import (
 from poker_deliberation.phases.executors import (
     AnalysisExecutor,
     ToolResearchExecutor,
+    validate_analysis_output,
     validate_tool_research_output,
 )
 from poker_deliberation.phases.services import (
@@ -53,5 +54,6 @@ __all__ = [
     "canonical_sha256",
     "make_phase_request",
     "revalidate_outcome",
+    "validate_analysis_output",
     "validate_tool_research_output",
 ]

@@ -34,6 +34,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+poker_deliberation = ["roadmap_status.json"]
+
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers --disable-warnings"
 testpaths = ["tests"]

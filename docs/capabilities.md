@@ -2,6 +2,8 @@
 
 この文書は Phase 0/1 完了後の能力表示契約です。`poker-deliberate doctor --format json` の
 `capabilities`、provider health、登録済みtool、追跡済みエージェント定義と照合します。
+能力状態の正は`capabilities.py`、RM作業状態の正は`roadmap_status.json`であり、doctorは両者を
+別fieldとして表示します。RM completedをruntime capability availableと同一視しません。
 
 ## 状態の定義
 

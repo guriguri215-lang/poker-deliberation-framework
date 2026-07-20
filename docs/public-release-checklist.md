@@ -59,9 +59,14 @@ scan不完全として扱います。候補を含むref/tag名は一覧にも平
 - supported OS/Python、coverage threshold、wheel/sdist内容、version/tag/changelog方針。
 - 履歴書換えが必要か。preflight自身は書換えない。
 
-Phase 0完了後も、ソース公開は人間の別判断です。承認済み方針はPhase 0+1後にpre-release tag、
-Phase 2後にstable tagを検討するものですが、現在の承認済みロードマップはRM-018 release engineeringを
-Phase 5へ配置しています。この順序では両tagの事前条件を満たせないため、RM-018のCI、clean build/install、
-wheel/sdist smoke、license inventory、artifact hash、supported matrixをpre-release前へ移す人間承認が
-必要です。承認と実測が終わるまで、pre-release/stableのいずれも準備完了とは扱いません。このchecklistは
-tagやreleaseを実行しません。
+Phase 0完了後も、ソース公開は人間の別判断です。2026-07-20の承認方針ではRM-018を2段階へ分割します。
+
+- `RM-018A`はPhase 1直後かつpre-release tag前に置き、CI、承認済みsupported matrix、clean
+  build/install、wheel/sdist smoke、package data/CLI、license inventory、artifact SHA-256、offline
+  preflightをcandidate commitへ結び付けます。
+- `RM-018B`はPhase 2完了後かつstable tag前に置き、SemVer、version/tag/changelog、migration、
+  deprecation、stable matrix、artifact/source commit mappingを検証します。
+
+RM itemの完了と特定candidateのrelease readinessは別です。candidate固有のbuild/hash/matrix証拠と
+人間承認が終わるまでpre-release/stableのいずれも準備完了とは扱いません。このchecklistはtagや
+releaseを実行しません。

@@ -8,6 +8,13 @@
 Codexネイティブ層とPythonオーケストレーター層は別実行面です。Python CLIがCodexのsub-agentを
 起動したり、Codexでの実行をPythonのrun artifactsへ自動記録したりする統合bridgeはありません。
 
+RM実装状態の正はpackage resourceとして設定したtracked JSON
+[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+source/editable checkoutでの読込はcontract test対象ですが、wheel/sdist同梱はRM-018Aまで`UNKNOWN`です。
+人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
+[`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
+`user_materials/ROADMAP.md`は承認方針・背景説明であり、runtimeやdoctorの入力ではありません。
+
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
 動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。
@@ -242,6 +249,8 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
 - [Offline public release checklist](docs/public-release-checklist.md)
+- [RM status projection](docs/roadmap-status.md)
+- [Phase 2 readiness contracts](docs/phase2-readiness-contracts.md)
 - [Independent review remediation](docs/review-remediation.md)
 
 ## ライセンス

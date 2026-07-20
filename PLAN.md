@@ -1,6 +1,23 @@
 # 実装計画
 
-## 現在の基準
+## Phase 2 readiness（2026-07-20）
+
+- **FACT**: RM実装状態のsingle source of truthは
+  `src/poker_deliberation/roadmap_status.json`とする。生成projectionは
+  `docs/roadmap-status.md`、doctorはpackage resourceとして設定したJSONからsummaryを計算する。
+  source/editable checkoutは検証対象だが、wheel/sdist同梱はRM-018Aまで`UNKNOWN`とする。
+- **FACT**: RM-010〜013本体は今回実装せず、`docs/phase2-readiness-contracts.md`で
+  phase/budget/run/approvalの実装前contractを、人間承認事項を条件としてfreezeする。
+- **FACT**: RM-018はpre-release前の`RM-018A`とPhase 2後stable tag前の`RM-018B`へ分割する。
+- **FACT**: RM-023は今回実装し、RM-024〜028は候補として`proposed`に保つ。
+- **FACT**: `user_materials/ROADMAP.md`は承認方針・説明文書であり、runtime、doctor、
+  generated docsの入力にしない。編集案はGitへstage/commitしない。
+- **NON-GOAL**: Phase 2本体、external provider/solver、dependency追加、fetch、PR、tag、release、
+  repository公開は行わない。
+
+現在の工程はこのfileのchecklistではなくgoal planで管理する。RMの現在状態はcanonical JSONを参照する。
+
+## Phase 1再監査時の基準（履歴）
 
 - **FACT**: 再監査開始時のbranchは`codex/phase1-math-contracts`、HEADは
   `ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976`で、ローカルupstreamとの差は0/0、
@@ -10,9 +27,11 @@
   実装済みである。`user_materials/ROADMAP.md`の全項目PROPOSED表示はこの状態へ未同期である。
 - **FACT**: 今回のscopeは、push後HEADに対する能力・文書・CLI・Git状態の再監査と、確認できた
   表示矛盾の最小修正だけである。
-- **FACT**: 外部通信、依存追加、solver/API実行、commit、tag、push、PR、release、公開は行わない。
+- **FACT**: この節が記録するPhase 1再監査scopeでは、外部通信、依存追加、solver/API実行、
+  commit、tag、push、PR、release、公開を行わない方針だった。現在のreadiness goalでは承認済みの
+  独立commit/pushだけを別工程として行う。
 
-## Phase 0/1実装状態
+## Phase 0/1実装状態（履歴）
 
 - [x] Phase 0: capability truthfulness、provider境界、canonical quality gate、offline public
   preflight、Markdown ToolResult metadataを実装した。
@@ -21,7 +40,7 @@
 - [x] Codex 9定義とPython 7役を別一覧として表示した。
 - [ ] Codex実行とPython orchestrator/run artifactsを接続するruntime bridgeは未実装である。
 
-## Phase 1後の再監査
+## Phase 1後の再監査（履歴）
 
 - [x] Git基準点、最終Phase 1 commit、tracked/untracked/ignored状態を確認する。
 - [x] PLAN/PROGRESS/README/docs、capability/doctor、orchestrator/config/schema/run store、

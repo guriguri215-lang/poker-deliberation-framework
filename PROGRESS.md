@@ -1,5 +1,36 @@
 # Progress
 
+このファイルは実行履歴であり、RMの現在状態を再定義しない。canonical statusは
+`src/poker_deliberation/roadmap_status.json`、人間向けprojectionは`docs/roadmap-status.md`を参照する。
+
+## 2026-07-20 — Phase 2 readiness
+
+- **FACT**: 開始branchは`codex/phase1-math-contracts`、開始HEADは
+  `ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976`、upstream差は0/0、未コミットはtracked 10 files、
+  untracked non-ignored 0だった。fetchは実行していない。
+- **FACT**: 既存Phase 1整合性差分は複数の独立sub-agentとmain agentが再監査し、再現可能な
+  Medium指摘3件を修正した後、`87e0dc4`へ独立commitした。
+- **CALCULATED**: Phase B最終worktreeでpytest 314件、Ruff lint、74 filesのformat check、
+  mypy 44 source filesが成功した。
+- **FACT**: tracked JSONをpackage resourceとして設定してRM statusの正とし、ignoredの
+  `user_materials/ROADMAP.md`をruntime/doctor依存から分離した。wheel/sdist同梱はRM-018Aまで
+  `UNKNOWN`と明記した。
+- **FACT**: RM-010〜013本体は未実装のまま、phase ownership、budget accounting、completion
+  protocol、approval CAS/idempotency/action bindingの実装前contractを文書化した。
+- **FACT**: RM-018をpre-release readinessとstable release gateへ分け、RM-023〜028を整理した。
+- **CALCULATED**: readiness最終worktreeでpytest 336件、Ruff lint、77 filesのformat check、
+  mypy 45 source filesが成功した。roadmap targeted 22件、生成projection check、Git diff checkも成功した。
+- **FACT**: doctorはRM 29件（completed 10 / planned 14 / proposed 5）、Phase 2 milestone 12件
+  `not_started`、`implementation_ready_ids=[]`、`milestone_ready_ids=[]`、RM-018A/B candidate evidence
+  `not_evaluated`を返した。CLIは20 toolsのcontract v2、Python 7 roles、pot odds検証成功、solver
+  `unavailable`を再確認した。
+- **FACT**: 変更後のArchitecture/API、Storage/atomicity/security、Test/CLI/docs/statusの独立レビューは、
+  再現反例を修正後の最終版でHigh 0 / Medium 0と判定した。
+- **FACT**: ignoredの`user_materials/ROADMAP.md`へ承認済みamendment案を反映したが、runtime入力、
+  stage、commit対象にはしない。
+- **UNKNOWN**: approved OS/Python matrix、wheel/sdist、remote Actions、release candidate artifactは未評価。
+  readiness commit/push結果はcommit後にGit履歴を正とする。
+
 ## 2026-07-20 — Phase 1 push後再監査
 
 - **FACT**: 再監査開始時は`codex/phase1-math-contracts` / `ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976`、

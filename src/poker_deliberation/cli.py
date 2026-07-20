@@ -22,6 +22,7 @@ from poker_deliberation.normalization import normalize_hand_text
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
 from poker_deliberation.reporting import render_markdown
+from poker_deliberation.roadmap import roadmap_summary
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools import default_registry
@@ -83,9 +84,11 @@ def doctor() -> dict[str, Any]:
         "pytest_installed": importlib.util.find_spec("pytest") is not None,
         "ruff_installed": importlib.util.find_spec("ruff") is not None,
         "mypy_installed": importlib.util.find_spec("mypy") is not None,
+        "project_files_scope": "current_working_directory",
         "project_files": {path: Path(path).exists() for path in project_files},
         "local_calculators": default_registry().names(),
         "capabilities": capability_snapshot(),
+        "roadmap": roadmap_summary(),
         "external_solver": "unavailable",
         "notes": [
             "Doctor status 'ok' means diagnostics completed; disabled or unavailable "

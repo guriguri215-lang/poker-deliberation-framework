@@ -2,8 +2,11 @@
 
 ## Components
 
-The Codex-native layer provides durable repository instructions, project configuration, specialist
-definitions, and reusable skills. The Python layer owns all deterministic state and audit records.
+The Codex-native layer and the Python orchestrator are separate execution surfaces. The Codex-native
+surface provides durable repository instructions, project configuration, specialist definitions,
+and reusable skills. The Python surface owns its deterministic state and audit records. Python does
+not launch `.codex/agents/*.toml`, and Codex sub-agent executions are not automatically converted into
+Python `AgentExecutionRecord` entries or run artifacts.
 
 - `schemas.py`: strict Pydantic contracts.
 - `state_machine.py`: legal bounded transitions and budget counters.
@@ -37,7 +40,9 @@ data is sent.
 Every provider receives a role-specific `AgentContext`, not the complete `CaseInput`. Provider prose
 and claims remain `UNKNOWN` and cannot become a final conclusion without tool/evidence adjudication.
 Contexts are deep copies. The provider contract receives a cooperative deadline/cancellation control;
-the disabled external provider cannot bypass this boundary, and the local provider checks it.
+the disabled external provider cannot bypass this boundary, and the local provider checks it. Each
+context is constructed and hashed for one provider call, but there is no versioned context-lifecycle
+contract covering expiry, retention, deletion, or cross-runtime lineage.
 
 ## Trust boundaries
 

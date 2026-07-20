@@ -2,22 +2,34 @@
 
 ## 現在の基準
 
-- **FACT**: Phase 0着手時の基準は`main`、HEAD
-  `b149600e422ad2404a74348650a234f9b8de03bb`、tracked/untracked差分なし。
+- **FACT**: 再監査開始時のbranchは`codex/phase1-math-contracts`、HEADは
+  `ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976`で、ローカルupstreamとの差は0/0、
+  tracked/untracked差分はなかった。Git fetchは実行していない。
 - **USER_CLAIM**: `user_materials/ROADMAP.md`は2026-07-19 JSTに人間承認済み。
-- **FACT**: 今回のscopeはRM-001、RM-002、RM-003、RM-008、RM-009だけ。
+- **FACT**: tracked実装ではPhase 0のRM-001〜003・008〜009と、Phase 1のRM-004〜007が
+  実装済みである。`user_materials/ROADMAP.md`の全項目PROPOSED表示はこの状態へ未同期である。
+- **FACT**: 今回のscopeは、push後HEADに対する能力・文書・CLI・Git状態の再監査と、確認できた
+  表示矛盾の最小修正だけである。
 - **FACT**: 外部通信、依存追加、solver/API実行、commit、tag、push、PR、release、公開は行わない。
 
-## Phase 0作業順
+## Phase 0/1実装状態
 
-- [x] AGENTS.md、承認済みroadmap、Git初期状態を確認し、既存差分がないことを確認する。
-- [x] RM-001: capability stateをコード/doctor/docsへ集約し、20 tools・Codex 9役・Python 7役を区別する。
-- [x] RM-002: providerのavailable/unavailable/disabled契約とSDK/key 4組合せをテストする。
-- [x] RM-003: pytest tempをworkspace-localかつsession固有にし、4 quality gateを統一する。
-- [x] RM-008: tracked/public候補/historyを対象とするoffline preflightと安全境界テストを追加する。
-- [x] RM-009: MarkdownへToolResult metadataを欠落なく表示し、4状態のgolden testを追加する。
-- [x] targeted/full pytest、Ruff lint/format、mypy、CLI smoke、実repository preflightを完走する。
-- [x] 最終Git状態とignored成果物を確認し、Phase 0完了可否を判定する。
+- [x] Phase 0: capability truthfulness、provider境界、canonical quality gate、offline public
+  preflight、Markdown ToolResult metadataを実装した。
+- [x] Phase 1: 重要数学分岐、contract v2の`numeric_exactness`とtolerance、20 toolのtyped
+  definition/manifest parity、ローカルoracle/metamorphic testsを実装した。
+- [x] Codex 9定義とPython 7役を別一覧として表示した。
+- [ ] Codex実行とPython orchestrator/run artifactsを接続するruntime bridgeは未実装である。
+
+## Phase 1後の再監査
+
+- [x] Git基準点、最終Phase 1 commit、tracked/untracked/ignored状態を確認する。
+- [x] PLAN/PROGRESS/README/docs、capability/doctor、orchestrator/config/schema/run store、
+  agent/Skill定義、tests、evals、関連する承認済みroadmap範囲を照合する。
+- [x] 修正前HEADで4品質ゲートとCLI smokeを実測する。
+- [x] `phase_1_hardening=planned`等、現在実装と矛盾する表示だけを修正する。
+- [x] 修正後の4品質ゲート、CLI、Git差分を再確認する。
+- [x] roadmap本文は編集せず、status/release順序/新規候補の変更案を人間へ提示する。
 
 ## 品質ゲート
 
@@ -28,8 +40,10 @@ ruff format --check .
 mypy src
 ```
 
-追加でprovider/doctor、capability contract、pytest temp、public preflight、Markdown rendererの
-targeted tests、doctor/list-tools/pot_odds/reviewのCLI smoke、offline preflightを実行する。
+bare commandは開発用venvを有効化して実行する。venvを有効化しない場合は
+`.\.venv\Scripts\python.exe -m pytest`、`.\.venv\Scripts\ruff.exe`、
+`.\.venv\Scripts\mypy.exe`を使用する。追加でdoctor/list-tools/list-agents、contract v2の
+pot-odds、unavailable solverのCLI smokeを実行する。
 
 **ASSUMPTION**: supported候補は`requires-python >=3.11`に基づくCPython 3.11-3.13、Windowsと
 Ubuntu。今回実行しないmatrix行は`UNKNOWN`であり、成功扱いにしない。coverage thresholdは
@@ -37,10 +51,12 @@ Ubuntu。今回実行しないmatrix行は`UNKNOWN`であり、成功扱いに�
 
 ## 非目標
 
-Phase 1以降、full NLHE solver/CFR、multiway/PLO equity、外部provider/solver、dependency変更、
-履歴書換え、公開操作は対象外。実装に不可欠でない変更はPhase 1候補として残す。
+Phase 2以降のorchestrator分割、context lifecycle、Codex/Python runtime bridge、extension SPI、
+local data lifecycle、外部provider/solverのprocess隔離、full NLHE solver/CFR、multiway/PLO equity、
+dependency変更、履歴書換え、公開操作は対象外とする。
 
 ## 履歴の扱い
 
-2026-07-17の初期構築計画は当時の履歴であり、現在の能力判断にはコード、doctor、contract test、
-今回の実行結果を優先する。過去のtest数やcoverage値を現在の成功としてコピーしない。
+2026-07-17の初期構築計画とPhase 0/1の過去結果は履歴であり、現在の能力判断には現HEADのコード、
+doctor、contract test、今回の実行結果を優先する。過去のtest数やcoverage値を現在の成功として
+コピーしない。

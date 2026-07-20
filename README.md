@@ -5,6 +5,9 @@
 ローカル計算、承認台帳、run artifactsを組み合わせます。既定の`LocalProvider`は文章的な
 専門分析やモデル推論を生成しません。
 
+Codexネイティブ層とPythonオーケストレーター層は別実行面です。Python CLIがCodexのsub-agentを
+起動したり、Codexでの実行をPythonのrun artifactsへ自動記録したりする統合bridgeはありません。
+
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
 動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。
@@ -142,6 +145,9 @@ FACT / CALCULATED / INFERENCE / ESTIMATE / ASSUMPTION / USER_CLAIM / UNKNOWNを�
 | `report-writer` | `report-writer` | レポート生成 |
 | `calculator-builder` | なし | 開発時だけ使うコード変更役 |
 
+この表は役割名の対応であり、同一ランタイムの証明ではありません。Codex側はCodexのagent機構で、
+Python側は`AgentProvider`境界でそれぞれ実行されます。現在のPython既定経路は`LocalProvider`です。
+
 Python MVPは常に`LocalProvider`を使い、モデルへ外部送信せず、文章的な専門分析を生成しません。
 `POKER_DELIBERATION_PROVIDER`は`local`だけを許可し、モデル名・推論強度の環境設定は未対応として
 エラーにします。外部providerは、承認と統合テスト後に`Orchestrator(provider=...)`へ明示注入します。
@@ -177,6 +183,9 @@ runs/<run_id>/
 ものではないため、入力へ秘密情報を含めないでください。
 
 ## 品質チェック
+
+次のbare commandは開発用venvを有効化してから実行します。venvを有効化しない場合は、READMEの
+セットアップ例と同様に`.\.venv\Scripts\python.exe`等の明示パスを使用してください。
 
 ```text
 python -m pytest

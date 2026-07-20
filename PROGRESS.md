@@ -1,5 +1,34 @@
 # Progress
 
+## 2026-07-20 — Phase 1 push後再監査
+
+- **FACT**: 再監査開始時は`codex/phase1-math-contracts` / `ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976`、
+  `origin/codex/phase1-math-contracts`との差0/0、tracked/untracked差分なしだった。Git fetchは
+  実行していない。
+- **FACT**: 修正前の`.venv` / CPython 3.12.13でfull pytestは312件成功、Ruff lint、74 filesの
+  format check、mypy 44 source filesが成功した。
+- **FACT**: bare `python`、`ruff`、`mypy`、`poker-deliberate`は今回のshellのPATHに存在せず失敗した。
+  workspaceの`.venv\Scripts`を明示した同一entry pointでは4 gateとCLIが成功した。
+- **FACT**: 修正前doctorは`phase_1_hardening=planned`を返したが、20 tool全ての
+  `contract_version=2.0.0`、typed input/output、runtime verification、Phase 1 oracle/property testsが
+  現HEADに存在したため、能力表示は実装と矛盾していた。
+- **FACT**: Codexの9 agent定義とPythonの7 roleは別実行面であり、PythonがCodex agentを起動する
+  runtime bridgeやCodex実行をPython runへ同期する実装は存在しない。
+- **FACT**: `user_materials/ROADMAP.md`はignore対象の未検証ユーザー資料として必要箇所だけ参照し、
+  編集していない。本文の全RM PROPOSED表示、旧HEAD、Phase 5のRM-018は現実装・承認済みtag順序と
+  未同期である。
+- **INFERENCE**: RM-018のrelease readiness部分はpre-release前へ移し、stable release部分は
+  Phase 2完了ゲートへ置く必要がある。context/data lifecycle、runtime conformance、extension SPI、
+  isolated job controlは別roadmap項目または既存RMの明示的な拡張が必要である。
+- **FACT**: 能力・文書・contract test修正後のfull pytestは314件成功、Ruff lint、74 filesの
+  format check、mypy 44 source filesが成功した。doctorは`phase_1_hardening=implemented`、
+  `codex_python_runtime_bridge=unavailable`、全体`status=ok`を返した。
+- **FACT**: 修正後CLIは20 tools全て`contract_version=2.0.0`、Python 7 roles、pot oddsの
+  `required_equity=0.25` / `numeric_exactness=floating-verified` / verification成功、solverの
+  `unavailable` / `available=false`を返した。
+- **USER_CLAIM**: この未コミット修正を作成した前セッションでは、外部通信、依存追加、
+  外部solver/API、sub-agent、commit、push、PR、tag、release、公開は実行していない。
+
 ## 2026-07-19 — Phase 1
 
 - **FACT**: `origin/main`のmerge commit `2a62e5cc6b7b8df8ae93e8efd638d80a0db217fd`、

@@ -2,6 +2,9 @@
 
 - `OpenAIAgentsProvider` outbound analyze is not implemented. It reports `disabled` and `available=false`
   whether the optional SDK/API key is absent or present; the probes never imply outbound capability.
+- Codex-native agents/Skills and the Python role/provider catalog are separate execution surfaces.
+  Python does not launch Codex agents, and Codex execution is not automatically captured in Python
+  state, approvals, `AgentExecutionRecord`, or run artifacts.
 - The workspace is an initialized Git repository. Local history can be audited offline, but remote
   repository visibility, branch protection, and Actions logs remain UNKNOWN without an approved
   external check.
@@ -26,6 +29,12 @@
   but the MVP has no OS-level preemptive CPU or memory sandbox. Providers must honor the cooperative
   cancellation contract. Any future external-code executor must use process isolation and true
   time/memory limits.
+- Role-specific provider contexts are deep-copied and hashed per call, but there is no versioned
+  lifecycle contract for context provenance, expiry, retention/deletion, or Codex/Python lineage.
+- Run artifacts are confined. JSON and text replacement writes use a temporary file per artifact,
+  but JSONL evidence is appended directly and is not crash-atomic. There is no versioned run
+  manifest, whole-run atomic completion protocol, retention/deletion policy, migration contract, or
+  at-rest encryption.
 - Budget fields for deliberation rounds, tool retries, and concurrency are not executed by the ordinary
   orchestrator path. They are disabled capability declarations, not enforced runtime guarantees.
 - Redaction covers common structured keys and token forms, not arbitrary personal information or
@@ -46,4 +55,5 @@
 - Pytest may leave empty session directories after its own retention cleanup. The repository does not
   recursively remove the shared temp root or other sessions because hook ordering and concurrent runs
   make such cleanup unsafe; empty ignored directories are an intentional local-only trade-off.
-- Wheel/sdist contents, clean install, remote CI, and a coverage threshold are not asserted in Phase 0.
+- Wheel/sdist contents, clean install, remote CI, and a coverage threshold are not asserted by the
+  current Phase 0/1 baseline.

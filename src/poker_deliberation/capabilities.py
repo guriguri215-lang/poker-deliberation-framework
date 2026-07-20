@@ -72,9 +72,16 @@ CAPABILITIES: tuple[Capability, ...] = (
         "Budget fields exist, but ordinary orchestration does not run parallel rounds or retries.",
     ),
     Capability(
+        "codex_python_runtime_bridge",
+        "unavailable",
+        "Codex-native agents and the Python orchestrator are separate execution surfaces; "
+        "no runtime bridge records Codex executions in Python run artifacts.",
+    ),
+    Capability(
         "phase_1_hardening",
-        "planned",
-        "Phase 1 contracts remain roadmap work and are not implemented by Phase 0.",
+        "implemented",
+        "Phase 1 typed tool contracts, numeric exactness, executable verification, and local "
+        "oracle/metamorphic tests are implemented.",
     ),
 )
 

@@ -11,8 +11,10 @@ import pytest
 from poker_deliberation.capabilities import CAPABILITIES
 from poker_deliberation.cli import doctor
 from poker_deliberation.roadmap import (
+    APPROVAL_SCOPE_SCHEMA_VERSION,
     EXPECTED_PHASE_2_MILESTONES,
     EXPECTED_RM_IDS,
+    IMMUTABLE_ITEM_CONTRACT_FIELDS,
     ROADMAP_RESOURCE,
     load_roadmap,
     render_roadmap_markdown,
@@ -30,6 +32,27 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _by_id() -> dict[str, dict[str, object]]:
     return {str(item["id"]): item for item in roadmap_items()}
+
+
+def _scoped_approval_record(item: dict[str, object], topics: list[str]) -> dict[str, object]:
+    scope = {
+        "schema_version": APPROVAL_SCOPE_SCHEMA_VERSION,
+        "rm_id": item["id"],
+        "milestone_id": item["entry_milestone"],
+        "item_contract": {
+            field: deepcopy(item.get(field)) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
+        },
+        "policy_decisions": topics,
+    }
+    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return {
+        "source_label": "test external approval",
+        "topics": topics,
+        "scope": scope,
+        "scope_digest": hashlib.sha256(canonical).hexdigest(),
+    }
 
 
 def test_packaged_roadmap_loads_outside_repository_cwd(
@@ -133,6 +156,41 @@ def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> N
     validate_roadmap(remapped)
     with pytest.raises(ValueError, match="RM contract field requires a schema amendment"):
         validate_roadmap_update(previous, remapped)
+
+
+def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
+    previous = load_roadmap()
+    planned = deepcopy(previous)
+    rm_024 = next(item for item in planned["items"] if item["id"] == "RM-024")
+    rm_024["status"] = "planned"
+    rm_024["targets"] = [
+        "src/poker_deliberation/context_lifecycle.py",
+        "src/poker_deliberation/orchestrator.py",
+    ]
+    rm_024["tests"] = [
+        "tests/unit/test_context_lifecycle.py",
+        "tests/integration/test_context_lifecycle.py",
+    ]
+    planned["status_history"]["RM-024"].append("planned")
+    topics = ["test-approved P2-024A scope"]
+    reference = "test-rm024-scope-freeze"
+    planned["approval_records"][reference] = _scoped_approval_record(rm_024, topics)
+    rm_024["human_approval"] = {
+        "required": True,
+        "state": "approved_scope",
+        "topics": topics,
+        "approval_reference": reference,
+    }
+
+    validate_roadmap_update(previous, planned, {reference})
+    with pytest.raises(ValueError, match="approval change was not externally authorized"):
+        validate_roadmap_update(previous, planned)
+
+    mutated_after_freeze = deepcopy(planned)
+    mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-024")
+    mutated["targets"].append("src/poker_deliberation/security.py")
+    with pytest.raises(ValueError, match="approval scope contract does not match item"):
+        validate_roadmap(mutated_after_freeze)
 
 
 def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
@@ -322,6 +380,30 @@ def test_completed_evidence_is_repository_validated_separately() -> None:
     validate_repository_evidence(document, ROOT, known_commits=known_commits)
     with pytest.raises(ValueError, match="commit does not exist"):
         validate_repository_evidence(document, ROOT, known_commits=set())
+
+    all_commit_paths = {commit: set(all_references) for commit in known_commits}
+    validate_repository_evidence(
+        document,
+        ROOT,
+        known_commits=known_commits,
+        commit_paths=all_commit_paths,
+        changed_paths=all_commit_paths,
+    )
+    with pytest.raises(ValueError, match="absent from cited commits"):
+        validate_repository_evidence(
+            document,
+            ROOT,
+            known_commits=known_commits,
+            commit_paths={commit: set() for commit in known_commits},
+        )
+    with pytest.raises(ValueError, match="did not change cited scope"):
+        validate_repository_evidence(
+            document,
+            ROOT,
+            known_commits=known_commits,
+            commit_paths=all_commit_paths,
+            changed_paths={commit: set() for commit in known_commits},
+        )
 
 
 def test_capability_references_match_the_capability_catalog() -> None:

@@ -13,6 +13,7 @@ from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
 ROADMAP_SCHEMA_VERSION = "1.0.0"
+APPROVAL_SCOPE_SCHEMA_VERSION = "1.0.0"
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
 MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -97,6 +98,58 @@ def _topic_digest(topics: list[str]) -> str:
         topics, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def _item_contract_snapshot(item: dict[str, Any]) -> dict[str, Any]:
+    return {field: item.get(field) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)}
+
+
+def _validate_scoped_approval_record(
+    reference: str,
+    record: dict[str, Any],
+    *,
+    rm_id: str | None = None,
+    item: dict[str, Any] | None = None,
+) -> None:
+    scope = _require_dict(record.get("scope"), f"approval_records.{reference}.scope")
+    expected_fields = {
+        "schema_version",
+        "rm_id",
+        "milestone_id",
+        "item_contract",
+        "policy_decisions",
+    }
+    if set(scope) != expected_fields:
+        raise ValueError(f"invalid approval scope fields: {reference}")
+    if scope.get("schema_version") != APPROVAL_SCOPE_SCHEMA_VERSION:
+        raise ValueError(f"unsupported approval scope schema: {reference}")
+    if not isinstance(scope.get("rm_id"), str) or not RM_ID_PATTERN.fullmatch(scope["rm_id"]):
+        raise ValueError(f"invalid approval scope RM: {reference}")
+    if not isinstance(scope.get("milestone_id"), str) or not MILESTONE_ID_PATTERN.fullmatch(
+        scope["milestone_id"]
+    ):
+        raise ValueError(f"invalid approval scope milestone: {reference}")
+    decisions = _require_string_list(
+        scope.get("policy_decisions"), f"approval_records.{reference}.policy_decisions"
+    )
+    if decisions != _require_string_list(record["topics"], f"{reference}.topics"):
+        raise ValueError(f"approval scope decisions do not match topics: {reference}")
+    contract = _require_dict(
+        scope.get("item_contract"), f"approval_records.{reference}.item_contract"
+    )
+    if set(contract) != IMMUTABLE_ITEM_CONTRACT_FIELDS:
+        raise ValueError(f"approval scope item contract is incomplete: {reference}")
+    if rm_id is None or item is None:
+        return
+    if scope["rm_id"] != rm_id:
+        raise ValueError(f"approval scope RM does not match item: {rm_id}")
+    if scope["milestone_id"] not in {
+        item.get("entry_milestone"),
+        item.get("completion_milestone"),
+    }:
+        raise ValueError(f"approval scope milestone does not match item: {rm_id}")
+    if contract != _item_contract_snapshot(item):
+        raise ValueError(f"approval scope contract does not match item: {rm_id}")
 
 
 def _evidence_is_contract_bound(reference: str, declared: list[str]) -> bool:
@@ -264,6 +317,16 @@ def _validate_milestones(document: dict[str, Any], items: dict[str, dict[str, An
             and progress[completion_milestone]["state"] != "completed"
         ):
             raise ValueError(f"completed RM lacks completed gate milestone: {rm_id}")
+        if items[rm_id]["status"] == "completed" and entry_milestone == completion_milestone:
+            parent_evidence = _require_dict(
+                items[rm_id]["completion_evidence"], f"{rm_id}.completion_evidence"
+            )
+            milestone_evidence = _require_dict(
+                progress[completion_milestone]["completion_evidence"],
+                f"{completion_milestone}.completion_evidence",
+            )
+            if parent_evidence != milestone_evidence:
+                raise ValueError(f"single-milestone RM evidence differs from milestone: {rm_id}")
         owned_states = [
             progress[milestone_id]["state"]
             for milestone_id, milestone in milestones.items()
@@ -306,13 +369,24 @@ def validate_roadmap(document: dict[str, Any]) -> None:
         if not re.fullmatch(r"[a-z0-9][a-z0-9._:-]+", reference):
             raise ValueError(f"invalid approval record reference: {reference}")
         record = _require_dict(raw_record, f"approval_records.{reference}")
-        if set(record) != {"source_label", "topics", "scope_digest"}:
+        legacy_fields = {"source_label", "topics", "scope_digest"}
+        scoped_fields = legacy_fields | {"scope"}
+        if frozenset(record) not in {frozenset(legacy_fields), frozenset(scoped_fields)}:
             raise ValueError(f"invalid approval record fields: {reference}")
         if not isinstance(record["source_label"], str) or not record["source_label"].strip():
             raise ValueError(f"invalid approval source label: {reference}")
         record_topics = _require_string_list(record["topics"], f"{reference}.topics")
-        if not record_topics or record["scope_digest"] != _topic_digest(record_topics):
+        if not record_topics:
+            raise ValueError(f"approval record topics are empty: {reference}")
+        expected_digest = (
+            _document_digest(_require_dict(record["scope"], f"{reference}.scope"))
+            if "scope" in record
+            else _topic_digest(record_topics)
+        )
+        if record["scope_digest"] != expected_digest:
             raise ValueError(f"approval record digest mismatch: {reference}")
+        if "scope" in record:
+            _validate_scoped_approval_record(reference, record)
         approval_records[reference] = record
 
     vocabulary = _require_dict(document.get("status_vocabulary"), "status_vocabulary")
@@ -400,6 +474,15 @@ def validate_roadmap(document: dict[str, Any]) -> None:
             )
             if not set(topics) <= set(approved_topics):
                 raise ValueError(f"approval topics exceed tracked scope: {rm_id}")
+            if "scope" in approval_records[approval_reference]:
+                if topics != approved_topics:
+                    raise ValueError(f"scoped approval topics must match exactly: {rm_id}")
+                _validate_scoped_approval_record(
+                    approval_reference,
+                    approval_records[approval_reference],
+                    rm_id=rm_id,
+                    item=item,
+                )
         if (
             item["status"] == "completed"
             and approval["required"]
@@ -519,11 +602,39 @@ def validate_roadmap_update(
     for reference, record in old_records.items():
         if new_records.get(reference) != record:
             raise ValueError(f"approval record was deleted or rewritten: {reference}")
+    for reference in set(new_records) - set(old_records):
+        if reference not in authorized:
+            raise ValueError(f"approval change was not externally authorized: {reference}")
 
     for rm_id in sorted(EXPECTED_RM_IDS):
-        for field in IMMUTABLE_ITEM_CONTRACT_FIELDS:
-            if previous_items[rm_id].get(field) != current_items[rm_id].get(field):
+        changed_contract_fields = {
+            field
+            for field in IMMUTABLE_ITEM_CONTRACT_FIELDS
+            if previous_items[rm_id].get(field) != current_items[rm_id].get(field)
+        }
+        if changed_contract_fields:
+            new_approval = _require_dict(current_items[rm_id]["human_approval"], "approval")
+            new_reference = new_approval.get("approval_reference")
+            scope_freeze = (
+                previous_items[rm_id]["status"] == "proposed"
+                and current_items[rm_id]["status"] == "planned"
+                and new_approval.get("state") == "approved_scope"
+                and isinstance(new_reference, str)
+                and new_reference in authorized
+                and new_reference in new_records
+                and "scope" in _require_dict(new_records[new_reference], new_reference)
+            )
+            if not scope_freeze:
+                field = sorted(changed_contract_fields)[0]
                 raise ValueError(f"RM contract field requires a schema amendment: {rm_id}.{field}")
+            if not isinstance(new_reference, str):
+                raise ValueError(f"approved scope lacks reference: {rm_id}")
+            _validate_scoped_approval_record(
+                new_reference,
+                _require_dict(new_records[new_reference], new_reference),
+                rm_id=rm_id,
+                item=current_items[rm_id],
+            )
         old_history = _require_string_list(previous_history[rm_id], f"previous.{rm_id}")
         new_history = _require_string_list(current_history[rm_id], f"current.{rm_id}")
         if new_history[: len(old_history)] != old_history:
@@ -627,6 +738,8 @@ def validate_repository_evidence(
     repository_root: Path,
     tracked_paths: set[str] | None = None,
     known_commits: set[str] | None = None,
+    commit_paths: dict[str, set[str]] | None = None,
+    changed_paths: dict[str, set[str]] | None = None,
 ) -> None:
     """Validate completed evidence against a repository checkout, optionally including tracking."""
 
@@ -679,6 +792,33 @@ def validate_repository_evidence(
                 node = reference.split("::", 1)[1]
                 if candidate.is_dir() or node not in candidate.read_text(encoding="utf-8"):
                     raise ValueError(f"evidence test node does not exist: {reference}")
+            if commit_paths is not None and commits:
+                present_in_tree = any(
+                    relative in commit_paths.get(commit, set())
+                    or any(
+                        path.startswith(f"{relative.rstrip('/')}/")
+                        for path in commit_paths.get(commit, set())
+                    )
+                    for commit in commits
+                )
+                if not present_in_tree:
+                    raise ValueError(
+                        f"completion evidence path is absent from cited commits: {evidence_id}"
+                    )
+        if changed_paths is not None and commits and references:
+            normalized_references = [
+                reference.split("::", 1)[0].replace("\\", "/").rstrip("/")
+                for reference in references
+            ]
+            changed = set().union(*(changed_paths.get(commit, set()) for commit in commits))
+            if not any(
+                path == reference or path.startswith(f"{reference}/")
+                for reference in normalized_references
+                for path in changed
+            ):
+                raise ValueError(
+                    f"completion evidence commit did not change cited scope: {evidence_id}"
+                )
 
 
 def roadmap_items(document: dict[str, Any] | None = None) -> list[dict[str, Any]]:

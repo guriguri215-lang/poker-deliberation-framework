@@ -354,13 +354,16 @@ def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -
         "paths": ["future phase service modules"],
         "tests": ["phase unit/property tests"],
     }
-    with pytest.raises(ValueError, match="milestone evidence is not contract-bound"):
+    with pytest.raises(ValueError, match="milestone evidence does not cover approved scope"):
         validate_roadmap(counterexample)
 
+    approved_scope = counterexample["approval_records"]["goal-rm010-p2-010a-2026-07-20"]["scope"][
+        "milestone_implementation_scope"
+    ]
     counterexample["milestone_progress"]["P2-010A"]["completion_evidence"] = {
         "commits": ["a" * 40],
-        "paths": ["src/poker_deliberation/phases"],
-        "tests": ["tests/unit/test_phase_contracts.py"],
+        "paths": approved_scope["targets"],
+        "tests": approved_scope["tests"],
     }
     validate_roadmap(counterexample)
 

@@ -416,9 +416,18 @@ def _validate_milestones(
                     ],
                     "milestone implementation scope",
                 )
-                declared = _require_string_list(
-                    implementation_scope["targets"], "targets"
-                ) + _require_string_list(implementation_scope["tests"], "tests")
+                declared_targets = _require_string_list(implementation_scope["targets"], "targets")
+                declared_tests = _require_string_list(implementation_scope["tests"], "tests")
+                if (
+                    len(evidence_lists["paths"]) != len(declared_targets)
+                    or set(evidence_lists["paths"]) != set(declared_targets)
+                    or len(evidence_lists["tests"]) != len(declared_tests)
+                    or set(evidence_lists["tests"]) != set(declared_tests)
+                ):
+                    raise ValueError(
+                        f"milestone evidence does not cover approved scope: {milestone_id}"
+                    )
+                declared = declared_targets + declared_tests
             else:
                 declared = _require_string_list(
                     parent["targets"], "targets"

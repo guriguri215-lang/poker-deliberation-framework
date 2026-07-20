@@ -17,8 +17,10 @@ Private chain-of-thought is neither requested nor stored.
 Provider conclusions are untrusted arguments: the final report labels them UNKNOWN, records disputes,
 and excludes them from the adjudicated conclusion until evidence or tools support them.
 
-Every Markdown tool section faithfully exposes the structured `ToolResult` fields `status`,
-`exactness`, `assumptions`, `warnings`, `seed`, `samples`, `confidence_interval`, `version`,
+Every Markdown tool section faithfully exposes the structured `ToolResult` fields `status`, legacy
+`exactness`, authoritative `numeric_exactness`, `contract_version`, `assumptions`, `warnings`,
+`model_qualifier`, `method`, `stochastic`, `seed`, `samples`, `iterations`, `confidence_interval`,
+`confidence_level`, `error_metadata`, `stopping_condition`, `verification`, tool `version`,
 `duration_seconds`, `error`, and `reproduce_command`, in addition to `output`. Missing optional values
 are shown as JSON `null` or an empty list rather than omitted. The renderer does not infer new values.
 `failed` and `unavailable` remain explicit statuses and are never presented as successful calculations.

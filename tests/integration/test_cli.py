@@ -17,6 +17,28 @@ def test_doctor_without_api_key(capsys) -> None:  # type: ignore[no-untyped-def]
     assert payload["providers"]["openai_agents"]["available"] is False
 
 
+def test_doctor_markdown_is_fenced_json(capsys) -> None:  # type: ignore[no-untyped-def]
+    exit_code = main(["doctor", "--format", "markdown"])
+    rendered = capsys.readouterr().out
+    assert exit_code == 0
+    assert rendered.startswith("```json\n")
+    assert rendered.endswith("```\n")
+    payload = json.loads(rendered.removeprefix("```json\n").removesuffix("```\n"))
+    assert payload["status"] == "ok"
+
+
+def test_list_tools_json_and_markdown_have_twenty_canonical_tools(capsys) -> None:  # type: ignore[no-untyped-def]
+    assert main(["list-tools", "--format", "json"]) == 0
+    json_payload = json.loads(capsys.readouterr().out)
+    assert len(json_payload) == 20
+
+    assert main(["list-tools", "--format", "markdown"]) == 0
+    rendered = capsys.readouterr().out
+    assert rendered.startswith("```json\n")
+    markdown_payload = json.loads(rendered.removeprefix("```json\n").removesuffix("```\n"))
+    assert markdown_payload == json_payload
+
+
 def test_calculate_cli(capsys) -> None:  # type: ignore[no-untyped-def]
     exit_code = main(
         [
@@ -34,6 +56,30 @@ def test_calculate_cli(capsys) -> None:  # type: ignore[no-untyped-def]
     assert exit_code == 0
     assert payload["output"]["required_equity"] == 0.25
     assert payload["exactness"] == "exact"
+    assert payload["numeric_exactness"] == "floating-verified"
+    assert payload["contract_version"] == "2.0.0"
+    assert payload["verification"]["passed"] is True
+
+
+def test_calculate_cli_markdown_has_v2_json_parity_fields(capsys) -> None:  # type: ignore[no-untyped-def]
+    exit_code = main(
+        [
+            "calculate",
+            "pot_odds",
+            "--analysis-scope",
+            "retrospective",
+            "--input",
+            str(ROOT / "examples" / "pot_odds_input.json"),
+            "--format",
+            "markdown",
+        ]
+    )
+    rendered = capsys.readouterr().out
+    assert exit_code == 0
+    assert "- 数値区分: `floating-verified`" in rendered
+    assert '- 契約バージョン: `"2.0.0"`' in rendered
+    assert '"passed": true' in rendered
+    assert '"required_equity": 0.25' in rendered
 
 
 def test_cli_rejects_non_finite_json_numbers(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]

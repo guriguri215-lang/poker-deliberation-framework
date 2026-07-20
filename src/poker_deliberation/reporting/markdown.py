@@ -84,19 +84,35 @@ def render_markdown(report: FinalReport) -> str:
     lines.extend(["## 6. 数学的計算", ""])
     if report.tool_results:
         for result in report.tool_results:
+            error_metadata = (
+                result.error_metadata.model_dump(mode="json") if result.error_metadata else None
+            )
+            verification = (
+                result.verification.model_dump(mode="json") if result.verification else None
+            )
             lines.extend(
                 [
                     f"### `{result.tool_name}`",
                     "",
                     f"- 状態: `{result.status.value}`",
                     f"- 区分: `{result.exactness.value}`",
+                    f"- 数値区分: `{result.numeric_exactness.value}`",
+                    f"- 契約バージョン: {_inline_json(result.contract_version)}",
                     f"- バージョン: {_inline_json(result.version)}",
                     f"- 実行時間(秒): {_inline_json(result.duration_seconds)}",
                     f"- 仮定: {_inline_json(result.assumptions)}",
                     f"- 警告: {_inline_json(result.warnings)}",
+                    f"- モデル条件: {_inline_json(result.model_qualifier)}",
+                    f"- method: {_inline_json(result.method)}",
+                    f"- stochastic: {_inline_json(result.stochastic)}",
                     f"- seed: {_inline_json(result.seed)}",
                     f"- samples: {_inline_json(result.samples)}",
+                    f"- iterations: {_inline_json(result.iterations)}",
                     f"- 信頼区間: {_inline_json(result.confidence_interval)}",
+                    f"- 信頼水準: {_inline_json(result.confidence_level)}",
+                    f"- 誤差metadata: {_inline_json(error_metadata)}",
+                    f"- 停止条件: {_inline_json(result.stopping_condition)}",
+                    f"- 検証metadata: {_inline_json(verification)}",
                     f"- エラー: {_inline_json(result.error)}",
                     f"- 再現コマンド: {_inline_json(result.reproduce_command)}",
                     "- 出力:",
@@ -115,7 +131,8 @@ def render_markdown(report: FinalReport) -> str:
             "",
             *(
                 [
-                    f"- `{item.tool_name}` `{item.version}` ({item.exactness.value})"
+                    f"- `{item.tool_name}` `{item.version}` ({item.numeric_exactness.value}; "
+                    f"legacy={item.exactness.value})"
                     for item in report.tool_results
                 ]
                 or ["- なし"]

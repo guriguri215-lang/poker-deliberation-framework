@@ -1,10 +1,15 @@
-"""Exact best response to a fixed strategy in a small finite extensive-form game."""
+"""Exhaustive pure-policy best response in a small finite extensive-form game."""
 
 from __future__ import annotations
 
 import math
 from itertools import product
 from typing import Any
+
+from poker_deliberation.tools.numeric import (
+    BEST_RESPONSE_VERIFICATION_ULPS,
+    normalized_probability_sum,
+)
 
 HARD_MAX_PURE_POLICIES = 1_000_000
 HARD_MAX_NODES = 10_000
@@ -53,8 +58,11 @@ def best_response_to_fixed_strategy(
             actions = node.get("actions")
             if not isinstance(actions, dict) or not actions:
                 raise ValueError("chance node requires actions")
-            probability_sum = sum(float(item.get("probability", -1)) for item in actions.values())
-            if not math.isclose(probability_sum, 1.0, abs_tol=1e-9):
+            probabilities = [float(item.get("probability", -1)) for item in actions.values()]
+            if not normalized_probability_sum(
+                probabilities,
+                ulps=BEST_RESPONSE_VERIFICATION_ULPS,
+            ):
                 raise ValueError("chance probabilities must sum to 1")
             for item in actions.values():
                 if float(item.get("probability", -1)) < 0:
@@ -112,7 +120,10 @@ def best_response_to_fixed_strategy(
             for probability in probabilities.values()
         ):
             raise ValueError("fixed strategy probabilities must be finite and non-negative")
-        if not math.isclose(sum(map(float, probabilities.values())), 1.0, abs_tol=1e-9):
+        if not normalized_probability_sum(
+            map(float, probabilities.values()),
+            ulps=BEST_RESPONSE_VERIFICATION_ULPS,
+        ):
             raise ValueError("fixed strategy probabilities must sum to 1")
 
     def evaluate(node_id: str, policy: dict[str, str], memo: dict[str, float]) -> float:

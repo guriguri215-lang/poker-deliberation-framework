@@ -35,8 +35,8 @@ from poker_deliberation.schemas import (
     Dispute,
     EpistemicLabel,
     EvidenceRecord,
-    Exactness,
     FinalReport,
+    NumericalExactness,
     SecurityEvent,
     ToolResult,
     ToolStatus,
@@ -59,6 +59,40 @@ def _lookup_path(value: dict[str, Any], path: str) -> Any:
             raise KeyError(path)
         current = current[part]
     return current
+
+
+def _tool_comparison_tolerance(
+    result: ToolResult,
+    claimed: float,
+    calculated: float,
+    requested: float | None,
+) -> float:
+    if requested is not None:
+        return requested
+    numeric = result.numeric_exactness
+    if numeric in {NumericalExactness.EXACT, NumericalExactness.EXACT_UNDER_MODEL}:
+        return 0.0
+    if numeric is NumericalExactness.APPROXIMATE:
+        return 0.0
+    if numeric is not NumericalExactness.FLOATING_VERIFIED or result.verification is None:
+        raise ValueError("no comparison tolerance is available for this result")
+    policy = result.verification.tolerance
+    scale = max(abs(claimed), abs(calculated), 1.0)
+    if policy.kind == "absolute" and policy.absolute is not None:
+        return policy.absolute
+    if policy.kind == "relative" and policy.relative is not None:
+        return policy.relative * scale
+    if policy.kind == "absolute-or-relative":
+        if policy.absolute is None or policy.relative is None:
+            raise ValueError("incomplete absolute-or-relative tolerance policy")
+        return max(policy.absolute, policy.relative * scale)
+    if policy.kind == "ulp" and policy.ulps is not None:
+        return math.ulp(scale) * policy.ulps
+    if policy.kind == "caller-supplied":
+        value = result.input.get("tolerance", result.output.get("verification_tolerance"))
+        if isinstance(value, (int, float)) and math.isfinite(float(value)) and value >= 0:
+            return float(value)
+    raise ValueError("the tool-specific tolerance cannot be resolved")
 
 
 def _agent_context(
@@ -687,21 +721,38 @@ class Orchestrator:
             try:
                 calculated = float(_lookup_path(result.output, check.output_path))
                 claimed = check.claimed_value
-                tolerance = check.tolerance
+                tolerance = _tool_comparison_tolerance(
+                    result,
+                    check.claimed_value,
+                    calculated,
+                    check.tolerance,
+                )
             except (KeyError, TypeError, ValueError) as exc:
                 data_quality.append(f"{claim_id}: invalid claim check: {exc}")
                 continue
             if not math.isfinite(calculated):
                 data_quality.append(f"{claim_id}: calculated claim value is not finite")
                 continue
-            exact_result = result.exactness is Exactness.EXACT
-            if exact_result:
+            verified_result = result.numeric_exactness in {
+                NumericalExactness.EXACT,
+                NumericalExactness.EXACT_UNDER_MODEL,
+                NumericalExactness.FLOATING_VERIFIED,
+            }
+            if verified_result:
                 agrees = abs(calculated - claimed) <= tolerance
                 verdict = "一致します" if agrees else "一致せず、訂正が必要です"
                 text = f"{claim_id}: USER_CLAIM={claimed} は CALCULATED={calculated} と{verdict}。"
                 label = EpistemicLabel.CALCULATED
                 confidence = ConfidenceGrade.A
-                approximation_limits: list[str] = []
+                approximation_limits = [
+                    f"numeric_exactness: {result.numeric_exactness.value}",
+                    f"comparison tolerance: {tolerance}",
+                    *(
+                        [f"model qualifier: {result.model_qualifier}"]
+                        if result.model_qualifier
+                        else []
+                    ),
+                ]
             else:
                 interval = result.confidence_interval
                 if (
@@ -727,7 +778,7 @@ class Orchestrator:
                 label = EpistemicLabel.ESTIMATE
                 confidence = ConfidenceGrade.C
                 approximation_limits = [
-                    f"{tool_name} のexactnessは {result.exactness.value} です。",
+                    f"{tool_name} のnumeric_exactnessは {result.numeric_exactness.value} です。",
                     interval_limit,
                 ]
             assessments.append(
@@ -805,7 +856,16 @@ class Orchestrator:
             conclusion = "指定されたローカル検証・計算を完了しました。"
         else:
             conclusion = "正確な結論に必要な検証入力が不足しているため、断定を保留します。"
-        exact_successes = [r for r in successes if r.exactness is Exactness.EXACT]
+        verified_successes = [
+            result
+            for result in successes
+            if result.numeric_exactness
+            in {
+                NumericalExactness.EXACT,
+                NumericalExactness.EXACT_UNDER_MODEL,
+                NumericalExactness.FLOATING_VERIFIED,
+            }
+        ]
         adjudicated_claim_ids = {
             claim.claim_id.removeprefix("adjudication-")
             for claim in claim_assessments
@@ -820,7 +880,7 @@ class Orchestrator:
             confidence = ConfidenceGrade.D
         elif (
             successes
-            and len(exact_successes) == len(successes)
+            and len(verified_successes) == len(successes)
             and not failed
             and not data_quality
             and not has_unverified_material_claim

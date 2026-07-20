@@ -6,6 +6,7 @@ import math
 
 from poker_deliberation.schemas import CanonicalHand, Street
 from poker_deliberation.tools.cards import normalize_cards
+from poker_deliberation.tools.numeric import close_absolute
 
 STREET_ORDER = {
     Street.PREFLOP: 0,
@@ -44,9 +45,28 @@ def _contestable_pot_before_short_call(
     return prior_street_and_antes + current_street_contestable
 
 
-def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, object]:
-    if not math.isfinite(tolerance) or tolerance < 0:
+def _derived_chip_tolerance(hand: CanonicalHand) -> float:
+    magnitudes = [
+        hand.small_blind,
+        hand.big_blind,
+        hand.ante,
+        *(player.starting_stack for player in hand.players),
+    ]
+    for action in hand.actions:
+        magnitudes.extend(
+            value
+            for value in (action.amount, action.to_amount, action.pot_before, action.pot_after)
+            if value is not None
+        )
+    scale = max(1.0, *(abs(value) for value in magnitudes))
+    operation_bound = max(32, 4 * (len(hand.actions) + len(hand.players)))
+    return math.ulp(scale) * operation_bound
+
+
+def validate_hand(hand: CanonicalHand, *, tolerance: float | None = None) -> dict[str, object]:
+    if tolerance is not None and (not math.isfinite(tolerance) or tolerance < 0):
         raise ValueError("tolerance must be finite and non-negative")
+    tolerance = _derived_chip_tolerance(hand) if tolerance is None else tolerance
     errors: list[str] = []
     warnings: list[str] = []
     try:
@@ -108,8 +128,10 @@ def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, 
             errors.append(f"{prefix}: folded player acts again")
         if action.actor in all_in_players:
             errors.append(f"{prefix}: all-in player acts again")
-        if action.pot_before is not None and not math.isclose(
-            action.pot_before, pot, abs_tol=tolerance
+        if action.pot_before is not None and not close_absolute(
+            action.pot_before,
+            pot,
+            absolute=tolerance,
         ):
             errors.append(f"{prefix}: pot_before={action.pot_before} but reconstructed pot={pot}")
         if action.amount > stacks[action.actor] + tolerance:
@@ -168,7 +190,7 @@ def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, 
                 errors.append(f"{prefix}: bet/raise requires to_amount")
             else:
                 expected_increment = action.to_amount - contributions[action.actor]
-                if not math.isclose(expected_increment, action.amount, abs_tol=tolerance):
+                if not close_absolute(expected_increment, action.amount, absolute=tolerance):
                     errors.append(
                         f"{prefix}: amount does not match to_amount minus prior contribution"
                     )
@@ -197,17 +219,21 @@ def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, 
                     current_bet = action.to_amount
         if action.action == "call":
             required = outstanding
-            if not math.isclose(
-                action.amount, min(required, stacks[action.actor]), abs_tol=tolerance
+            if not close_absolute(
+                action.amount,
+                min(required, stacks[action.actor]),
+                absolute=tolerance,
             ):
                 errors.append(f"{prefix}: call amount does not match the outstanding bet")
             acted_since_full_raise.add(action.actor)
         if action.action == "all_in":
-            if not math.isclose(action.amount, stacks[action.actor], abs_tol=tolerance):
+            if not close_absolute(action.amount, stacks[action.actor], absolute=tolerance):
                 errors.append(f"{prefix}: all_in must commit the actor's remaining stack")
             all_in_total = contributions[action.actor] + action.amount
-            if action.to_amount is not None and not math.isclose(
-                action.to_amount, all_in_total, abs_tol=tolerance
+            if action.to_amount is not None and not close_absolute(
+                action.to_amount,
+                all_in_total,
+                absolute=tolerance,
             ):
                 errors.append(f"{prefix}: all_in to_amount does not match total contribution")
             if all_in_total > current_bet + tolerance:
@@ -235,8 +261,10 @@ def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, 
                 warnings.append(
                     "side-pot consistency requires explicit side-pot data and is not fully verified"
                 )
-        if action.pot_after is not None and not math.isclose(
-            action.pot_after, pot, abs_tol=tolerance
+        if action.pot_after is not None and not close_absolute(
+            action.pot_after,
+            pot,
+            absolute=tolerance,
         ):
             errors.append(f"{prefix}: pot_after={action.pot_after} but reconstructed pot={pot}")
         reconstructed.append(
@@ -253,6 +281,7 @@ def validate_hand(hand: CanonicalHand, *, tolerance: float = 1e-6) -> dict[str, 
         history.append(f"{action.street.value}: {action.actor} {action.action}{amount}{to_amount}")
     return {
         "valid": not errors,
+        "verification_tolerance": tolerance,
         "errors": errors,
         "warnings": sorted(set(warnings)),
         "final_pot": pot,

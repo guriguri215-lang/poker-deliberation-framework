@@ -8,9 +8,18 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
 
-from poker_deliberation.schemas import CanonicalHand, Exactness, ToolResult, ToolStatus
+from poker_deliberation.schemas import (
+    CanonicalHand,
+    Exactness,
+    NumericalErrorMetadata,
+    NumericalExactness,
+    ToolResult,
+    ToolStatus,
+    VerificationMetadata,
+)
 from poker_deliberation.tools.best_response import best_response_to_fixed_strategy
 from poker_deliberation.tools.combinations import combo_summary, parse_weighted_range
+from poker_deliberation.tools.contracts import ToolContract, contract_by_name
 from poker_deliberation.tools.equity import holdem_equity
 from poker_deliberation.tools.ev_tree import evaluate_ev_tree
 from poker_deliberation.tools.hand_validator import validate_hand
@@ -46,6 +55,7 @@ class ToolDefinition:
     function: ToolFunction
     assumptions: tuple[str, ...] = ()
     version: str = "1.0.0"
+    contract: ToolContract | None = None
 
 
 class ToolRegistry:
@@ -64,25 +74,40 @@ class ToolRegistry:
     def register(self, definition: ToolDefinition) -> None:
         if definition.name in self._tools:
             raise ValueError(f"duplicate tool name: {definition.name}")
+        if definition.contract is not None and definition.contract.name != definition.name:
+            raise ValueError("tool definition name must match its typed contract")
         self._tools[definition.name] = definition
 
     def names(self) -> list[str]:
         return sorted(self._tools)
 
     def describe(self) -> list[dict[str, object]]:
-        return [
-            {
-                "name": tool.name,
-                "purpose": tool.purpose,
-                "exact_or_approximate": tool.exact_or_approximate,
-                "supported_games": list(tool.supported_games),
-                "assumptions": list(tool.assumptions),
-                "version": tool.version,
-            }
-            for tool in sorted(self._tools.values(), key=lambda item: item.name)
-        ]
+        descriptions: list[dict[str, object]] = []
+        for tool in sorted(self._tools.values(), key=lambda item: item.name):
+            if tool.contract is not None:
+                descriptions.append(tool.contract.manifest_entry())
+                continue
+            descriptions.append(
+                {
+                    "name": tool.name,
+                    "purpose": tool.purpose,
+                    "exact_or_approximate": tool.exact_or_approximate,
+                    "supported_games": list(tool.supported_games),
+                    "assumptions": list(tool.assumptions),
+                    "version": tool.version,
+                }
+            )
+        return descriptions
 
-    def execute(self, name: str, payload: dict[str, Any]) -> ToolResult:
+    def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+    ) -> ToolResult:
+        known_definition = self._tools.get(name)
+        known_contract = known_definition.contract if known_definition is not None else None
         payload_size = len(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
         if payload_size > self.max_payload_bytes:
             return ToolResult(
@@ -90,36 +115,41 @@ class ToolRegistry:
                 input={},
                 status=ToolStatus.FAILED,
                 exactness=Exactness.UNAVAILABLE,
+                numeric_exactness=NumericalExactness.UNAVAILABLE,
+                contract_version=(known_contract.contract_version if known_contract else "1.0.0"),
                 error=f"tool input exceeds hard limit {self.max_payload_bytes} bytes",
             )
-        if name not in self._tools:
+        if known_definition is None:
             return ToolResult(
                 tool_name=name,
                 input=payload,
                 status=ToolStatus.UNAVAILABLE,
                 exactness=Exactness.UNAVAILABLE,
+                numeric_exactness=NumericalExactness.UNAVAILABLE,
                 error=f"unknown tool: {name}",
                 reproduce_command=None,
             )
-        definition = self._tools[name]
+        definition = known_definition
         started = perf_counter()
         try:
-            output = definition.function(payload)
-            duration = perf_counter() - started
-            if duration > self.max_duration_seconds:
-                return ToolResult(
-                    tool_name=name,
-                    input=payload,
-                    status=ToolStatus.FAILED,
-                    exactness=Exactness.UNAVAILABLE,
-                    assumptions=list(definition.assumptions),
-                    version=definition.version,
-                    duration_seconds=duration,
-                    error=(
-                        "tool exceeded post-execution runtime limit "
-                        f"{self.max_duration_seconds} seconds"
-                    ),
+            contract = definition.contract
+            if (
+                contract is not None
+                and contract_version is not None
+                and contract_version != contract.contract_version
+            ):
+                raise ValueError(
+                    f"contract version mismatch: requested {contract_version}, "
+                    f"supported {contract.contract_version}"
                 )
+            normalized_payload = payload
+            if contract is not None:
+                validated_input = contract.input_model.model_validate(payload)
+                normalized_payload = validated_input.model_dump(mode="python", exclude_unset=True)
+            output = definition.function(normalized_payload)
+            if contract is not None:
+                contract.output_model.model_validate(output)
+            duration = perf_counter() - started
             output_size = len(
                 json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
             )
@@ -129,32 +159,95 @@ class ToolRegistry:
                     input=payload,
                     status=ToolStatus.FAILED,
                     exactness=Exactness.UNAVAILABLE,
+                    numeric_exactness=NumericalExactness.UNAVAILABLE,
+                    contract_version=(
+                        definition.contract.contract_version
+                        if definition.contract is not None
+                        else "1.0.0"
+                    ),
                     assumptions=list(definition.assumptions),
                     version=definition.version,
                     duration_seconds=duration,
                     error=f"tool output exceeds hard limit {self.max_output_bytes} bytes",
                 )
             unavailable = bool(output.get("unavailable", False))
-            exactness = _infer_exactness(output, definition.exact_or_approximate)
+            numeric_exactness = (
+                NumericalExactness.UNAVAILABLE
+                if unavailable
+                else (
+                    contract.resolve_numeric_exactness(output)
+                    if contract is not None
+                    else _legacy_numeric_exactness(output, definition.exact_or_approximate)
+                )
+            )
+            exactness = _legacy_exactness_projection(numeric_exactness)
             warnings = _extract_warnings(output)
+            if numeric_exactness in {
+                NumericalExactness.EXACT_UNDER_MODEL,
+                NumericalExactness.FLOATING_VERIFIED,
+            }:
+                warnings.append(
+                    "legacy exactness='exact' is only a compatibility projection; "
+                    f"use numeric_exactness='{numeric_exactness.value}'"
+                )
             status = ToolStatus.UNAVAILABLE if unavailable else ToolStatus.SUCCESS
             error = str(output.get("error")) if unavailable and output.get("error") else None
             confidence_interval = output.get("confidence_interval_95")
+            approximate_metadata = _approximate_metadata(name, output, numeric_exactness)
+            verification = _verification_metadata(
+                contract,
+                numeric_exactness,
+                normalized_payload,
+                output,
+            )
+            duration = perf_counter() - started
+            if duration > self.max_duration_seconds:
+                return ToolResult(
+                    tool_name=name,
+                    input=payload,
+                    status=ToolStatus.FAILED,
+                    exactness=Exactness.UNAVAILABLE,
+                    numeric_exactness=NumericalExactness.UNAVAILABLE,
+                    contract_version=(
+                        definition.contract.contract_version
+                        if definition.contract is not None
+                        else "1.0.0"
+                    ),
+                    assumptions=list(definition.assumptions),
+                    version=definition.version,
+                    duration_seconds=duration,
+                    error=(
+                        "tool plus verification exceeded post-execution runtime limit "
+                        f"{self.max_duration_seconds} seconds"
+                    ),
+                )
             return ToolResult(
                 tool_name=name,
                 input=payload,
                 output=output,
                 status=status,
-                exactness=Exactness.UNAVAILABLE if unavailable else exactness,
+                exactness=exactness,
+                numeric_exactness=numeric_exactness,
+                contract_version=contract.contract_version if contract is not None else "1.0.0",
                 assumptions=list(definition.assumptions),
                 version=definition.version,
+                model_qualifier=contract.model_qualifier if contract is not None else None,
+                method=str(output["method"]) if output.get("method") is not None else None,
+                stochastic=approximate_metadata.get("stochastic"),
                 seed=int(output["seed"]) if output.get("seed") is not None else None,
                 samples=int(output["samples"]) if output.get("samples") is not None else None,
+                iterations=(
+                    int(output["iterations"]) if output.get("iterations") is not None else None
+                ),
                 confidence_interval=(
                     (float(confidence_interval[0]), float(confidence_interval[1]))
                     if isinstance(confidence_interval, list) and len(confidence_interval) == 2
                     else None
                 ),
+                confidence_level=approximate_metadata.get("confidence_level"),
+                error_metadata=approximate_metadata.get("error_metadata"),
+                stopping_condition=approximate_metadata.get("stopping_condition"),
+                verification=verification,
                 duration_seconds=duration,
                 warnings=warnings,
                 error=error,
@@ -169,6 +262,12 @@ class ToolRegistry:
                 input=payload,
                 status=ToolStatus.FAILED,
                 exactness=Exactness.UNAVAILABLE,
+                numeric_exactness=NumericalExactness.UNAVAILABLE,
+                contract_version=(
+                    definition.contract.contract_version
+                    if definition.contract is not None
+                    else "1.0.0"
+                ),
                 assumptions=list(definition.assumptions),
                 version=definition.version,
                 duration_seconds=perf_counter() - started,
@@ -191,12 +290,69 @@ def _extract_warnings(output: dict[str, Any]) -> list[str]:
     return warnings
 
 
-def _infer_exactness(output: dict[str, Any], declared: str) -> Exactness:
+def _legacy_numeric_exactness(output: dict[str, Any], declared: str) -> NumericalExactness:
     if output.get("exact") is False or output.get("exact_algorithm") is False:
-        return Exactness.APPROXIMATE
+        return NumericalExactness.APPROXIMATE
     if declared == "approximate":
+        return NumericalExactness.APPROXIMATE
+    if declared == "unavailable":
+        return NumericalExactness.UNAVAILABLE
+    return NumericalExactness.EXACT
+
+
+def _legacy_exactness_projection(numeric: NumericalExactness) -> Exactness:
+    if numeric is NumericalExactness.APPROXIMATE:
         return Exactness.APPROXIMATE
+    if numeric is NumericalExactness.UNAVAILABLE:
+        return Exactness.UNAVAILABLE
     return Exactness.EXACT
+
+
+def _verification_metadata(
+    contract: ToolContract | None,
+    numeric: NumericalExactness,
+    payload: dict[str, Any],
+    output: dict[str, Any],
+) -> VerificationMetadata | None:
+    if numeric is not NumericalExactness.FLOATING_VERIFIED:
+        return None
+    if contract is None:
+        raise ValueError("floating-verified result lacks a typed verification policy")
+    evidence = contract.verify_floating(payload, output)
+    return VerificationMetadata(
+        method="executed tool-specific invariant checks",
+        checks=list(evidence.checks),
+        observations=list(evidence.observations),
+        tolerance=evidence.tolerance,
+        passed=True,
+    )
+
+
+def _approximate_metadata(
+    name: str,
+    output: dict[str, Any],
+    numeric: NumericalExactness,
+) -> dict[str, Any]:
+    if numeric is not NumericalExactness.APPROXIMATE:
+        return {}
+    method = str(output.get("method", ""))
+    if name == "holdem_equity" and method == "monte_carlo":
+        return {
+            "stochastic": True,
+            "confidence_level": 0.95,
+            "stopping_condition": "fixed requested sample count",
+        }
+    if name == "matrix_game" and method == "fictitious_play_fallback":
+        return {
+            "stochastic": False,
+            "error_metadata": NumericalErrorMetadata(
+                metric="duality_gap",
+                value=float(output["duality_gap"]),
+                unit="caller payoff unit",
+            ),
+            "stopping_condition": "fixed fictitious-play iteration count",
+        }
+    raise ValueError(f"{name} approximate output lacks a registered metadata adapter")
 
 
 def _combo_tool(payload: dict[str, Any]) -> dict[str, Any]:
@@ -240,6 +396,13 @@ def _solver_status(_payload: dict[str, Any]) -> dict[str, Any]:
     return {**response, "unavailable": True}
 
 
+def _hand_validator_tool(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    tolerance = normalized.pop("tolerance", None)
+    hand = CanonicalHand.model_validate(normalized)
+    return validate_hand(hand, tolerance=float(tolerance) if tolerance is not None else None)
+
+
 def default_registry(
     *,
     max_payload_bytes: int = 1_000_000,
@@ -255,14 +418,14 @@ def default_registry(
         ToolDefinition(
             "pot_odds",
             "Pot odds and required equity after a bet and optional rake.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: pot_odds(**p),
         ),
         ToolDefinition(
             "break_even_fold",
             "Break-even fold frequency for a zero-equity bluff.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: break_even_fold_frequency(**p),
             ("Called branch has zero equity unless represented elsewhere in an EV tree.",),
@@ -270,7 +433,7 @@ def default_registry(
         ToolDefinition(
             "mdf",
             "Minimum defense frequency against one bet in the zero-equity-bluff toy model.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: minimum_defense_frequency(**p),
             ("Single bet; no future action; MDF is not a complete strategy prescription.",),
@@ -278,21 +441,21 @@ def default_registry(
         ToolDefinition(
             "spr",
             "Stack-to-pot ratio from a supplied effective stack and pot.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: stack_to_pot_ratio(**p),
         ),
         ToolDefinition(
             "effective_stack",
             "Effective stack as the minimum supplied remaining stack.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: effective_stack(**p),
         ),
         ToolDefinition(
             "rake_amount",
             "Declared percentage rake with an optional cap.",
-            "exact",
+            "floating-verified",
             ("cash", "generic"),
             lambda p: rake_amount(**p),
             ("rake_percent is expressed as percentage points, for example 5 for 5%.",),
@@ -300,7 +463,7 @@ def default_registry(
         ToolDefinition(
             "raked_call_ev",
             "Call EV with declared final-pot rake in a no-future-betting model.",
-            "exact",
+            "floating-verified",
             ("cash", "generic"),
             lambda p: raked_call_ev(**p),
             ("No future betting; equity is supplied; rake is taken from the final pot.",),
@@ -308,7 +471,7 @@ def default_registry(
         ToolDefinition(
             "bluff_ev",
             "Bet EV against a supplied fold frequency and called-branch equity.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: bluff_ev(**p),
             ("Single street; opponent calls or folds; no rake or future betting.",),
@@ -316,7 +479,7 @@ def default_registry(
         ToolDefinition(
             "polar_river_bluff_fraction",
             "Indifference bluff fraction for a polarized river toy model.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO", "generic"),
             lambda p: polar_river_bluff_fraction(**p),
             ("River only; polarized value/bluff range versus a bluff-catcher; no rake.",),
@@ -324,7 +487,7 @@ def default_registry(
         ToolDefinition(
             "bayes_update",
             "Bayesian posterior from a supplied prior and likelihoods.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: bayes_update(**p),
             ("The supplied prior and likelihoods are assumptions, not inferred population data.",),
@@ -332,20 +495,20 @@ def default_registry(
         ToolDefinition(
             "pot_reconstruction",
             "Reconstruct a pot from incremental contributions.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: reconstruct_pot(**p),
         ),
         ToolDefinition(
             "combos",
             "Expand pairs, suited, offsuit, and weighted Hold'em ranges with blockers.",
-            "exact",
+            "mixed",
             ("NLHE",),
             _combo_tool,
         ),
         ToolDefinition(
             "holdem_equity",
-            "Heads-up Hold'em equity by exact enumeration or seeded Monte Carlo.",
+            "Heads-up Hold'em equity by complete enumeration or seeded Monte Carlo.",
             "mixed",
             ("NLHE",),
             _equity_tool,
@@ -354,14 +517,14 @@ def default_registry(
         ToolDefinition(
             "ev_tree",
             "Expected value of a finite tree with supplied branch probabilities.",
-            "exact",
+            "floating-verified",
             ("generic",),
             evaluate_ev_tree,
         ),
         ToolDefinition(
             "icm",
             "Independent Chip Model expected payouts.",
-            "exact",
+            "floating-verified",
             ("tournament",),
             lambda p: calculate_icm(list(map(float, p["stacks"])), list(map(float, p["payouts"]))),
             ("ICM independence assumption; no future-game simulation.",),
@@ -380,8 +543,8 @@ def default_registry(
         ),
         ToolDefinition(
             "fixed_strategy_best_response",
-            "Exact small-game best response with shared information-set actions.",
-            "exact",
+            "Exhaustive small-game best response with shared information-set actions.",
+            "floating-verified",
             ("finite_extensive_form",),
             lambda p: best_response_to_fixed_strategy(
                 p["game"],
@@ -394,14 +557,14 @@ def default_registry(
         ToolDefinition(
             "hand_validator",
             "Validate canonical hand cards, action order, stacks, and pots.",
-            "exact",
+            "floating-verified",
             ("NLHE", "PLO"),
-            lambda p: validate_hand(CanonicalHand.model_validate(p)),
+            _hand_validator_tool,
         ),
         ToolDefinition(
             "sensitivity",
             "Bounds and influence ranking over a supplied scenario grid.",
-            "exact",
+            "floating-verified",
             ("generic",),
             lambda p: analyze_scenarios(
                 p["scenarios"], decision_threshold=float(p.get("decision_threshold", 0.0))
@@ -416,6 +579,23 @@ def default_registry(
             _solver_status,
         ),
     ]
+    contracts = contract_by_name()
+    if {definition.name for definition in definitions} != set(contracts):
+        raise RuntimeError("registry function map and canonical tool contracts differ")
     for definition in definitions:
-        registry.register(definition)
+        contract = contracts[definition.name]
+        registry.register(
+            ToolDefinition(
+                name=contract.name,
+                purpose=contract.purpose,
+                exact_or_approximate="/".join(
+                    item.value for item in contract.numeric_exactness_modes
+                ),
+                supported_games=contract.supported_games,
+                function=definition.function,
+                assumptions=contract.assumptions,
+                version=contract.version,
+                contract=contract,
+            )
+        )
     return registry

@@ -1,190 +1,558 @@
 {
-  "schema_version": "1.1.0",
+  "schema_version": "2.0.0",
   "source_policy": {
     "canonical": true,
-    "description": "Tracked single source of truth for RM implementation state. user_materials/ROADMAP.md is explanatory policy and is not a runtime dependency.",
-    "generated_document": "docs/roadmap-status.md",
-    "history_baseline": "Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit."
+    "projection": "public",
+    "description": "Tracked public roadmap projection for implementation status, dependencies, capability scope, acceptance criteria, milestones, and decision rationale.",
+    "generated_document": "docs/roadmap-status.md"
   },
-  "approval_records": {
-    "phase-0-approved-scope-2026-07-19": {
-      "source_label": "recorded human scope approval",
-      "topics": ["offline audit only; no publication or history rewrite"],
-      "scope_digest": "96f523568b52cdf069211bffe45a7ca6d53e0c0bbb269adb50be7c811648cef0"
-    },
-    "goal-objective-2026-07-20": {
-      "source_label": "attached goal objective",
-      "topics": ["tracked packaged JSON as canonical RM status"],
-      "scope_digest": "bab1b56a1cf48cd2ec67dd710119038a09ce4bdcffc036cc46a50b54aea6f976"
-    },
-    "goal-rm024-p2-024a-2026-07-20": {
-      "source_label": "attached goal objective approved by human",
-      "topics": [
-        "Implement RM-024 milestone P2-024A only.",
-        "Use context classifications public, internal by default, sensitive, and restricted.",
-        "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.",
-        "Create a fresh immutable ContextEnvelope for every attempt.",
-        "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.",
-        "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.",
-        "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.",
-        "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.",
-        "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.",
-        "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.",
-        "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."
+  "status_vocabulary": {
+    "proposed": "Candidate under consideration.",
+    "planned": "Public scope is listed and implementation has not started.",
+    "in_progress": "Implementation is underway within the published scope.",
+    "blocked": "Implementation cannot proceed for the reason recorded in status_reason.",
+    "completed": "The current tree satisfies the published acceptance criteria and tests.",
+    "superseded": "Replaced by another roadmap item."
+  },
+  "legal_transitions": {
+    "proposed": [
+      "planned",
+      "superseded"
+    ],
+    "planned": [
+      "in_progress",
+      "blocked",
+      "completed",
+      "superseded"
+    ],
+    "in_progress": [
+      "planned",
+      "blocked",
+      "completed"
+    ],
+    "blocked": [
+      "planned",
+      "in_progress",
+      "superseded"
+    ],
+    "completed": [
+      "in_progress",
+      "blocked"
+    ],
+    "superseded": []
+  },
+  "milestone_status_vocabulary": {
+    "not_started": "Milestone implementation has not started.",
+    "in_progress": "Milestone implementation is underway.",
+    "blocked": "Milestone implementation cannot proceed for the recorded reason.",
+    "completed": "The current tree satisfies the milestone scope."
+  },
+  "milestone_legal_transitions": {
+    "not_started": [
+      "in_progress",
+      "blocked"
+    ],
+    "in_progress": [
+      "not_started",
+      "blocked",
+      "completed"
+    ],
+    "blocked": [
+      "not_started",
+      "in_progress"
+    ],
+    "completed": []
+  },
+  "implementation_milestones": [
+    {
+      "id": "P2-024A",
+      "rm_id": "RM-024",
+      "status": "completed",
+      "status_reason": "Context lifecycle contracts are implemented and covered by the declared tests.",
+      "dependencies": [
+        "RM-006",
+        "RM-023"
       ],
-      "scope": {
-        "schema_version": "1.0.0",
-        "rm_id": "RM-024",
-        "milestone_id": "P2-024A",
-        "item_contract": {
-          "acceptance_criteria": [
-            "A strict versioned immutable ContextPolicy and ContextEnvelope bind classification, retention-policy ID, UTC expiry, exact allowlist, canonical payload/source/policy hashes, and run/assignment/attempt/runtime lineage.",
-            "The actual orchestrator-to-provider path validates integrity, expiry, lineage, runtime, assignment allowlist parity, restricted secrets, and provider availability before delivering a fresh AgentContext copy.",
-            "Unknown fields, versions, runtimes, dotted-path allowlists, tampering, replay, expired context, and restricted provider handoff fail closed without enabling external providers or writing context lifecycle state.",
-            "Existing AgentContext and provider signatures, LocalProvider behavior, CLI exit codes, run/resume/show, and existing artifact meanings remain compatible.",
-            "Unit, property/metamorphic, integration, adversarial, CLI, roadmap, doctor, and canonical quality gates pass with no new dependency."
-          ],
-          "capabilities": [],
-          "completion_milestone": "P2-024A",
-          "dependencies": ["RM-006", "RM-023"],
-          "entry_milestone": "P2-024A",
-          "evidence_mode": null,
-          "id": "RM-024",
-          "objective": "Implement the approved P2-024A attempt-scoped context policy, immutable envelope, lineage, expiry, integrity, and provider allowlist contract without persistence, cleanup, external runtime, or later Phase 2 work.",
-          "phase": "phase-2",
-          "priority": "P1",
-          "relations": ["Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance."],
-          "targets": [
-            "src/poker_deliberation/context_lifecycle.py",
-            "src/poker_deliberation/orchestrator.py",
-            "src/poker_deliberation/schemas.py",
-            "src/poker_deliberation/agents/roles.py",
-            "src/poker_deliberation/providers",
-            "docs/context-lifecycle.md",
-            "docs/architecture.md",
-            "docs/security.md",
-            "docs/limitations.md",
-            "docs/agent-protocol.md"
-          ],
-          "tests": [
-            "tests/unit/test_context_lifecycle.py",
-            "tests/property/test_context_lifecycle_properties.py",
-            "tests/integration/test_context_lifecycle_integration.py",
-            "tests/adversarial/test_context_lifecycle_security.py",
-            "tests/adversarial/test_review_regressions.py",
-            "tests/adversarial/test_blind_isolation.py",
-            "tests/integration/test_cli.py"
-          ],
-          "title": "Context lifecycle contract"
-        },
-        "policy_decisions": [
-          "Implement RM-024 milestone P2-024A only.",
-          "Use context classifications public, internal by default, sensitive, and restricted.",
-          "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.",
-          "Create a fresh immutable ContextEnvelope for every attempt.",
-          "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.",
-          "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.",
-          "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.",
-          "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.",
-          "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.",
-          "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.",
-          "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."
-        ]
+      "scope": "Context envelope policy, schema, ownership, lineage, and allowlists."
+    },
+    {
+      "id": "P2-010A",
+      "rm_id": "RM-010",
+      "status": "completed",
+      "status_reason": "Typed pure phase services are implemented; durable integration remains in P2-010B.",
+      "dependencies": [
+        "RM-006",
+        "RM-007",
+        "RM-023",
+        "P2-024A"
+      ],
+      "scope": "Typed pure phase services with serial execution and no persistence integration."
+    },
+    {
+      "id": "P2-011A",
+      "rm_id": "RM-011",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "RM-023",
+        "P2-010A"
+      ],
+      "scope": "Strict budget schema, fake clock, serial accounting, and retry classification."
+    },
+    {
+      "id": "P2-027A",
+      "rm_id": "RM-027",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "RM-023",
+        "P2-024A"
+      ],
+      "scope": "Classification, retention, expiry, quarantine, and disposition policy/schema only."
+    },
+    {
+      "id": "P2-012A",
+      "rm_id": "RM-012",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "RM-023",
+        "P2-010A",
+        "P2-011A",
+        "P2-027A"
+      ],
+      "scope": "Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation."
+    },
+    {
+      "id": "P2-010B",
+      "rm_id": "RM-010",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-012A"
+      ],
+      "scope": "Phase service integration with durable transition ordering and fault injection."
+    },
+    {
+      "id": "P2-011B",
+      "rm_id": "RM-011",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-012A"
+      ],
+      "scope": "Durable usage/resume, reservations, concurrency, cancellation, and RM-028 interface."
+    },
+    {
+      "id": "P2-012B",
+      "rm_id": "RM-012",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-010B",
+        "P2-011B",
+        "P2-012A"
+      ],
+      "scope": "Completion marker, verified reader/status mapping, migration, and lifecycle hooks."
+    },
+    {
+      "id": "P2-013A",
+      "rm_id": "RM-013",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-012B"
+      ],
+      "scope": "Approval actor, authority, action digest, request/decision idempotency, and CAS transaction."
+    },
+    {
+      "id": "P2-027B",
+      "rm_id": "RM-027",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-012B",
+        "P2-013A"
+      ],
+      "scope": "Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation."
+    },
+    {
+      "id": "P2-013B",
+      "rm_id": "RM-013",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-013A",
+        "P2-027B"
+      ],
+      "scope": "Resume integration, legacy reissue, expiry/revocation, and lifecycle binding."
+    },
+    {
+      "id": "P2-028A",
+      "rm_id": "RM-028",
+      "status": "not_started",
+      "status_reason": "Not started.",
+      "dependencies": [
+        "P2-011B",
+        "P2-012B",
+        "P2-013B",
+        "P2-027B"
+      ],
+      "scope": "Approved isolation boundary, durable external-effect state, cancellation, and reconciliation."
+    }
+  ],
+  "items": [
+    {
+      "id": "RM-001",
+      "title": "Capability matrix and documentation synchronization",
+      "phase": "phase-0",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "Phase 0 capability truthfulness is implemented and contract-tested.",
+      "dependencies": [],
+      "capabilities": [
+        "local_calculators",
+        "local_provider",
+        "openai_agents_outbound",
+        "external_solver"
+      ],
+      "objective": "Keep implemented, disabled, unavailable, and planned capability claims aligned with executable behavior.",
+      "targets": [
+        "src/poker_deliberation/capabilities.py",
+        "docs/capabilities.md",
+        "src/poker_deliberation/cli.py"
+      ],
+      "acceptance_criteria": [
+        "Doctor, documentation, and code expose the same capability states."
+      ],
+      "tests": [
+        "tests/integration/test_capability_contract.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
       },
-      "scope_digest": "50b14fcf598111d6462d6046ded5ccdd01835a1b71536abe96a55de94c645069"
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
     },
-    "goal-rm010-p2-010a-governance-amendment-2026-07-20": {
-      "source_label": "explicit human approval of governance amendment",
-      "topics": [
-        "Migrate the canonical roadmap schema from 1.0.0 to 1.1.0 without rewriting existing approval records or status history.",
-        "Add an append-only milestone_approvals mapping so approval for P2-010A cannot authorize P2-010B.",
-        "Support approval scope schema 1.1.0 while continuing to validate existing 1.0.0 scoped approvals.",
-        "Bind a 1.1.0 approval to the canonical milestone contract and an explicit milestone implementation scope containing targets, tests, and acceptance criteria.",
-        "Bind completed milestone evidence to its milestone-specific approved implementation scope; do not weaken repository, commit-tree, changed-path, or append-only evidence validation."
+    {
+      "id": "RM-002",
+      "title": "Provider capability truthfulness",
+      "phase": "phase-0",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "The four package/key combinations are tested and do not overstate capability.",
+      "dependencies": [
+        "RM-001"
       ],
-      "scope_digest": "c3a011edf9134bdd74a55688694ced80bc4283894cca6f367a0a66d97f4cf475"
+      "capabilities": [
+        "local_provider",
+        "openai_agents_outbound"
+      ],
+      "objective": "Never infer outbound availability from package or key presence alone.",
+      "targets": [
+        "src/poker_deliberation/providers",
+        "src/poker_deliberation/cli.py"
+      ],
+      "acceptance_criteria": [
+        "OpenAI provider remains disabled until outbound analyze is implemented and approved."
+      ],
+      "tests": [
+        "tests/unit/test_provider_availability.py",
+        "tests/integration/test_capability_contract.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
     },
-    "goal-rm010-p2-010a-2026-07-20": {
-      "source_label": "attached goal objective explicitly approved by human",
-      "topics": [
-        "Advance RM-010 from planned to in_progress and implement P2-010A only.",
-        "Implement typed phase schemas, pure phase services, and only the minimum connection to the current serial orchestrator.",
-        "Preserve the calculation assignment artifact, including the currently assigned but unexecuted report-writer, without deletion, rename, or schema change.",
-        "Treat the P2-024A context retention and classification contract as authoritative and add no P2-010A retention, deletion, quarantine, cleanup, or persistence semantics.",
-        "Preserve the current attempt-memory-only-v1 semantics and defer retention or disposition changes to RM-027A/B.",
-        "Treat the phase schema as a versioned internal API and do not declare it a stable public API.",
-        "Preserve Orchestrator.run, resume, load_report, CLI, exit codes, CaseInput, FinalReport, ToolResult, and existing artifact meanings.",
-        "Pure phases do not directly access filesystem, state machine, provider, tool, network, approval ledger, ambient clock, or ambient randomness.",
-        "Provide time, IDs, policy, and capability data as typed inputs or explicitly injected values.",
-        "Isolate Analysis and ToolResearch effects behind explicit executor or adapter boundaries without changing serial execution semantics.",
-        "Allow phases to return requested next state and artifact intent only as values without executing transitions or writes.",
-        "Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.",
-        "Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.",
-        "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.",
-        "Update the roadmap only from implementation evidence and review results and do not start work beyond P2-010A.",
-        "Stop for a new human approval and digest before changing immutable scope, dependencies, or approved policy decisions.",
-        "Keep intermediate and progress data in ignored areas and do not commit raw review logs, caches, run artifacts, or user_materials."
+    {
+      "id": "RM-003",
+      "title": "Canonical quality gate and temp policy",
+      "phase": "phase-0",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "Canonical commands and workspace-local pytest temp isolation are implemented.",
+      "dependencies": [
+        "RM-001"
       ],
-      "scope": {
-        "schema_version": "1.1.0",
-        "rm_id": "RM-010",
-        "milestone_contract": {
-          "id": "P2-010A",
-          "rm_id": "RM-010",
-          "dependencies": ["RM-006", "RM-007", "RM-023", "P2-024A"],
-          "scope": "Typed pure phase services with serial execution and no persistence integration."
-        },
-        "item_contract": {
-          "acceptance_criteria": ["Pure phase services do not mutate state or artifacts; the orchestrator alone requests transitions after durable writes."],
-          "capabilities": [],
-          "completion_milestone": "P2-010B",
-          "dependencies": ["RM-006", "RM-007", "RM-023", "RM-024"],
-          "entry_milestone": "P2-010A",
-          "evidence_mode": null,
-          "id": "RM-010",
-          "objective": "Split orchestration into typed, independently testable phases while preserving public behavior.",
-          "phase": "phase-2",
-          "priority": "P1",
-          "relations": null,
-          "targets": ["src/poker_deliberation/orchestrator.py", "future phase service modules"],
-          "tests": ["phase unit/property tests", "artifact parity", "state and write fault injection"],
-          "title": "Orchestrator phase services"
-        },
-        "milestone_implementation_scope": {
-          "targets": [
-            "src/poker_deliberation/orchestrator.py",
-            "src/poker_deliberation/phases",
-            "docs/phase-services.md",
-            "docs/architecture.md",
-            "docs/security.md"
-          ],
-          "tests": [
-            "tests/characterization/test_orchestrator_phase_baseline.py",
-            "tests/unit/test_phase_contracts.py",
-            "tests/unit/test_pure_phase_services.py",
-            "tests/property/test_phase_properties.py",
-            "tests/integration/test_phase_orchestration.py",
-            "tests/adversarial/test_phase_boundaries.py",
-            "tests/fault/test_phase_failures.py",
-            "tests/integration/test_context_lifecycle_integration.py",
-            "tests/adversarial/test_context_lifecycle_security.py",
-            "tests/integration/test_tool_contracts.py",
-            "tests/golden/test_golden_scenarios.py",
-            "tests/integration/test_cli.py"
-          ],
-          "acceptance_criteria": [
-            "Versioned strict PhaseRequest and PhaseOutcome contracts reject missing, extra, malformed, and unsupported-version data and carry structured failures, warnings, requested next state, and artifact intents as values.",
-            "IntakeValidation, Normalization, Routing, ContextBuild, Critique, Adjudication, and Synthesis are deterministic pure services with injected IDs, time, policy, and capability snapshots and do not mutate inputs or nested values.",
-            "Analysis and ToolResearch execute only through explicit typed serial executor boundaries with run, phase, attempt, assignment, context, report, request, result, and contract correlation validated before materialization.",
-            "The actual Orchestrator.run path uses every applicable typed phase while Orchestrator alone retains existing state transitions and artifact writes.",
-            "P2-024A ContextEnvelope enforcement, calculation assignment including unexecuted report-writer, provider/tool call order and count, ToolResult metadata, public API, CLI exit codes, artifact names, meanings, and normalized ordering remain compatible.",
-            "Provider output cannot inject state transitions or artifact paths, unsafe or duplicate report/result IDs fail closed, and provider claims remain untrusted USER_CLAIM or UNKNOWN until typed adjudication.",
-            "Persistence transactions, manifest revisions, locks, recovery, CAS, automatic retry, parallel execution, budget accounting, timeout/cancellation redesign, durable resume, cleanup, external provider, and external solver behavior are not implemented.",
-            "Characterization, unit, property, integration, adversarial, fault, context, calculator, tool contract, golden, CLI, roadmap, doctor, and canonical quality gates pass with no unresolved High or Medium finding."
-          ]
-        },
-        "policy_decisions": [
-          "Advance RM-010 from planned to in_progress and implement P2-010A only.",
+      "capabilities": [],
+      "objective": "Make the four local quality gates reproducible without unsafe shared temp cleanup.",
+      "targets": [
+        "pyproject.toml",
+        "tests/conftest.py",
+        "scripts/check_quality.ps1"
+      ],
+      "acceptance_criteria": [
+        "Pytest, Ruff lint, Ruff format check, and mypy run in the supported local workspace."
+      ],
+      "tests": [
+        "tests/integration/test_quality_config.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
+    },
+    {
+      "id": "RM-004",
+      "title": "Priority mathematical branch coverage",
+      "phase": "phase-1",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "The approved priority branches and regressions are implemented.",
+      "dependencies": [
+        "RM-003"
+      ],
+      "capabilities": [
+        "phase_1_hardening"
+      ],
+      "objective": "Exercise high-risk numeric, normalization, evidence, and provider branches with known outcomes.",
+      "targets": [
+        "src/poker_deliberation/tools",
+        "src/poker_deliberation/normalization.py",
+        "src/poker_deliberation/research/evidence.py"
+      ],
+      "acceptance_criteria": [
+        "Priority failure, fallback, warning, and boundary branches have regression tests."
+      ],
+      "tests": [
+        "tests/unit/test_phase1_priority_branches.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
+    },
+    {
+      "id": "RM-005",
+      "title": "Exactness and numeric tolerance specification",
+      "phase": "phase-1",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "Contract v2 exactness and runtime verification are present.",
+      "dependencies": [
+        "RM-004"
+      ],
+      "capabilities": [
+        "phase_1_hardening"
+      ],
+      "objective": "Define exact, exact-under-model, floating-verified, approximate, and unavailable results without false precision.",
+      "targets": [
+        "src/poker_deliberation/schemas.py",
+        "src/poker_deliberation/tools/verification.py",
+        "docs/calculation-policy.md"
+      ],
+      "acceptance_criteria": [
+        "Contract v2 records numeric exactness, tolerance, model qualifiers, and executable verification."
+      ],
+      "tests": [
+        "tests/integration/test_tool_contracts.py",
+        "tests/property/test_phase1_math_oracles.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
+    },
+    {
+      "id": "RM-006",
+      "title": "Single source for typed tool contracts",
+      "phase": "phase-1",
+      "priority": "P1",
+      "status": "completed",
+      "status_reason": "All 20 tools expose contract version 2.0.0 with typed schemas.",
+      "dependencies": [
+        "RM-005"
+      ],
+      "capabilities": [
+        "local_calculators",
+        "phase_1_hardening"
+      ],
+      "objective": "Keep all registered tool input, output, assumptions, limits, and versions in one typed definition set.",
+      "targets": [
+        "src/poker_deliberation/tools/contracts.py",
+        "tools/manifest.yaml",
+        "docs/tool-contracts.md"
+      ],
+      "acceptance_criteria": [
+        "Registry, generated manifest, and generated documentation have full contract parity."
+      ],
+      "tests": [
+        "tests/integration/test_tool_contracts.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
+    },
+    {
+      "id": "RM-007",
+      "title": "Mathematical oracle and metamorphic test pack",
+      "phase": "phase-1",
+      "priority": "P1",
+      "status": "completed",
+      "status_reason": "Local oracle and metamorphic regression coverage is implemented.",
+      "dependencies": [
+        "RM-005",
+        "RM-006"
+      ],
+      "capabilities": [
+        "phase_1_hardening"
+      ],
+      "objective": "Cross-check calculators with known answers, independent local oracles, invariants, and metamorphic relations.",
+      "targets": [
+        "tests/property/test_phase1_math_oracles.py",
+        "tests/fixtures/phase1"
+      ],
+      "acceptance_criteria": [
+        "Priority calculators have deterministic oracle, boundary, and reproducibility coverage."
+      ],
+      "tests": [
+        "tests/property/test_phase1_math_oracles.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
+    },
+    {
+      "id": "RM-008",
+      "title": "Offline public preflight",
+      "phase": "phase-0",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "The offline scanner and synthetic fixtures are implemented; publication remains a separate decision.",
+      "dependencies": [
+        "RM-001",
+        "RM-003"
+      ],
+      "capabilities": [],
+      "objective": "Audit tracked worktree and Git history without network access or destructive history changes.",
+      "targets": [
+        "src/poker_deliberation/public_preflight.py",
+        "scripts/public_preflight.py"
+      ],
+      "acceptance_criteria": [
+        "Tracked/history secret, PII, license, artifact, and exclusion checks fail closed."
+      ],
+      "tests": [
+        "tests/unit/test_public_preflight.py",
+        "tests/integration/test_public_preflight_history.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "offline audit only; no publication or history rewrite"
+        ]
+      }
+    },
+    {
+      "id": "RM-009",
+      "title": "Complete Markdown ToolResult metadata",
+      "phase": "phase-0",
+      "priority": "P0",
+      "status": "completed",
+      "status_reason": "Golden coverage protects the required Markdown result metadata.",
+      "dependencies": [
+        "RM-005"
+      ],
+      "capabilities": [
+        "local_calculators"
+      ],
+      "objective": "Render ToolResult status, exactness, assumptions, warnings, uncertainty, errors, and reproduction data without silent loss.",
+      "targets": [
+        "src/poker_deliberation/reporting/markdown.py"
+      ],
+      "acceptance_criteria": [
+        "JSON and Markdown preserve the required result metadata for every result state."
+      ],
+      "tests": [
+        "tests/golden/test_markdown_tool_results.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
+      }
+    },
+    {
+      "id": "RM-010",
+      "title": "Orchestrator phase services",
+      "phase": "phase-2",
+      "priority": "P1",
+      "status": "in_progress",
+      "status_reason": "P2-010A is completed with contract-bound evidence; RM-010 remains in progress because P2-010B is separately unapproved and not started.",
+      "dependencies": [
+        "RM-006",
+        "RM-007",
+        "RM-023",
+        "RM-024"
+      ],
+      "capabilities": [],
+      "objective": "Split orchestration into typed, independently testable phases while preserving public behavior.",
+      "targets": [
+        "src/poker_deliberation/orchestrator.py",
+        "future phase service modules"
+      ],
+      "acceptance_criteria": [
+        "Pure phase services do not mutate state or artifacts; the orchestrator alone requests transitions after durable writes."
+      ],
+      "tests": [
+        "phase unit/property tests",
+        "artifact parity",
+        "state and write fault injection"
+      ],
+      "milestones": {
+        "entry": "P2-010A",
+        "completion": "P2-010B"
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
           "Implement typed phase schemas, pure phase services, and only the minimum connection to the current serial orchestrator.",
           "Preserve the calculation assignment artifact, including the currently assigned but unexecuted report-writer, without deletion, rename, or schema change.",
           "Treat the P2-024A context retention and classification contract as authoritative and add no P2-010A retention, deletion, quarantine, cleanup, or persistence semantics.",
@@ -197,266 +565,9 @@
           "Allow phases to return requested next state and artifact intent only as values without executing transitions or writes.",
           "Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.",
           "Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.",
-          "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.",
-          "Update the roadmap only from implementation evidence and review results and do not start work beyond P2-010A.",
-          "Stop for a new human approval and digest before changing immutable scope, dependencies, or approved policy decisions.",
-          "Keep intermediate and progress data in ignored areas and do not commit raw review logs, caches, run artifacts, or user_materials."
+          "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge."
         ]
-      },
-      "scope_digest": "03bd675003b31ab0861ac196bd3b79229b863dca3ce15d555f76fb2f3e8a6f89"
-    }
-  },
-  "status_vocabulary": {
-    "proposed": "Candidate not yet accepted into an implementation plan.",
-    "planned": "Accepted scope with no implementation work in progress.",
-    "in_progress": "An explicitly scoped implementation is active.",
-    "blocked": "Progress is stopped by a recorded concrete blocker.",
-    "completed": "Acceptance criteria have tracked code, test, or artifact evidence.",
-    "superseded": "Replaced by another RM and terminal unless governance is amended."
-  },
-  "legal_transitions": {
-    "proposed": ["planned", "superseded"],
-    "planned": ["in_progress", "blocked", "completed", "superseded"],
-    "in_progress": ["planned", "blocked", "completed"],
-    "blocked": ["planned", "in_progress", "superseded"],
-    "completed": ["in_progress", "blocked"],
-    "superseded": []
-  },
-  "status_history": {
-    "RM-001": ["proposed", "planned", "completed"],
-    "RM-002": ["proposed", "planned", "completed"],
-    "RM-003": ["proposed", "planned", "completed"],
-    "RM-004": ["proposed", "planned", "completed"],
-    "RM-005": ["proposed", "planned", "completed"],
-    "RM-006": ["proposed", "planned", "completed"],
-    "RM-007": ["proposed", "planned", "completed"],
-    "RM-008": ["proposed", "planned", "completed"],
-    "RM-009": ["proposed", "planned", "completed"],
-    "RM-010": ["proposed", "planned", "in_progress"],
-    "RM-011": ["proposed", "planned"],
-    "RM-012": ["proposed", "planned"],
-    "RM-013": ["proposed", "planned"],
-    "RM-014": ["proposed", "planned"],
-    "RM-015": ["proposed", "planned"],
-    "RM-016": ["proposed", "planned"],
-    "RM-017": ["proposed", "planned"],
-    "RM-018A": ["proposed", "planned"],
-    "RM-018B": ["proposed", "planned"],
-    "RM-019": ["proposed", "planned"],
-    "RM-020": ["proposed", "planned"],
-    "RM-021": ["proposed", "planned"],
-    "RM-022": ["proposed", "planned"],
-    "RM-023": ["proposed", "planned", "completed"],
-    "RM-024": ["proposed", "planned", "in_progress", "completed"],
-    "RM-025": ["proposed"],
-    "RM-026": ["proposed"],
-    "RM-027": ["proposed"],
-    "RM-028": ["proposed"]
-  },
-  "implementation_milestones": [
-    {"id": "P2-024A", "rm_id": "RM-024", "dependencies": ["RM-006", "RM-023"], "scope": "Context envelope policy, schema, ownership, lineage, and allowlists."},
-    {"id": "P2-010A", "rm_id": "RM-010", "dependencies": ["RM-006", "RM-007", "RM-023", "P2-024A"], "scope": "Typed pure phase services with serial execution and no persistence integration."},
-    {"id": "P2-011A", "rm_id": "RM-011", "dependencies": ["RM-023", "P2-010A"], "scope": "Strict budget schema, fake clock, serial accounting, and retry classification."},
-    {"id": "P2-027A", "rm_id": "RM-027", "dependencies": ["RM-023", "P2-024A"], "scope": "Classification, retention, expiry, quarantine, and disposition policy/schema only."},
-    {"id": "P2-012A", "rm_id": "RM-012", "dependencies": ["RM-023", "P2-010A", "P2-011A", "P2-027A"], "scope": "Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation."},
-    {"id": "P2-010B", "rm_id": "RM-010", "dependencies": ["P2-012A"], "scope": "Phase service integration with durable transition ordering and fault injection."},
-    {"id": "P2-011B", "rm_id": "RM-011", "dependencies": ["P2-012A"], "scope": "Durable usage/resume, reservations, concurrency, cancellation, and RM-028 interface."},
-    {"id": "P2-012B", "rm_id": "RM-012", "dependencies": ["P2-010B", "P2-011B", "P2-012A"], "scope": "Completion marker, verified reader/status mapping, migration, and lifecycle hooks."},
-    {"id": "P2-013A", "rm_id": "RM-013", "dependencies": ["P2-012B"], "scope": "Approval actor, authority, action digest, request/decision idempotency, and CAS transaction."},
-    {"id": "P2-027B", "rm_id": "RM-027", "dependencies": ["P2-012B", "P2-013A"], "scope": "Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation."},
-    {"id": "P2-013B", "rm_id": "RM-013", "dependencies": ["P2-013A", "P2-027B"], "scope": "Resume integration, legacy reissue, expiry/revocation, and lifecycle binding."},
-    {"id": "P2-028A", "rm_id": "RM-028", "dependencies": ["P2-011B", "P2-012B", "P2-013B", "P2-027B"], "scope": "Approved isolation boundary, durable external-effect state, cancellation, and reconciliation."}
-  ],
-  "milestone_approvals": {
-    "P2-024A": "goal-rm024-p2-024a-2026-07-20",
-    "P2-010A": "goal-rm010-p2-010a-2026-07-20",
-    "P2-011A": null,
-    "P2-027A": null,
-    "P2-012A": null,
-    "P2-010B": null,
-    "P2-011B": null,
-    "P2-012B": null,
-    "P2-013A": null,
-    "P2-027B": null,
-    "P2-013B": null,
-    "P2-028A": null
-  },
-  "milestone_progress": {
-    "P2-024A": {"state": "completed", "history": ["not_started", "in_progress", "completed"], "completion_evidence": {"commits": ["fc2e41dd4fbde2962373ff7ea29019bff2999505"], "paths": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"], "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"]}},
-    "P2-010A": {"state": "completed", "history": ["not_started", "in_progress", "completed"], "completion_evidence": {"commits": ["c2524132cebde56a5d3fbd1f79908419a0bcfbc8", "2ef186cec715046f386bd9a72db460a5f9a99a25", "c0bb76b982250ac5ace85ac122be4479d568b242"], "paths": ["src/poker_deliberation/orchestrator.py", "src/poker_deliberation/phases", "docs/phase-services.md", "docs/architecture.md", "docs/security.md"], "tests": ["tests/characterization/test_orchestrator_phase_baseline.py", "tests/unit/test_phase_contracts.py", "tests/unit/test_pure_phase_services.py", "tests/property/test_phase_properties.py", "tests/integration/test_phase_orchestration.py", "tests/adversarial/test_phase_boundaries.py", "tests/fault/test_phase_failures.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/integration/test_tool_contracts.py", "tests/golden/test_golden_scenarios.py", "tests/integration/test_cli.py"]}},
-    "P2-011A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-027A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-012A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-010B": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-011B": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-012B": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-013A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-027B": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-013B": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}},
-    "P2-028A": {"state": "not_started", "history": ["not_started"], "completion_evidence": {"commits": [], "paths": [], "tests": []}}
-  },
-  "items": [
-    {
-      "id": "RM-001",
-      "title": "Capability matrix and documentation synchronization",
-      "phase": "phase-0",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": [],
-      "capabilities": ["local_calculators", "local_provider", "openai_agents_outbound", "external_solver"],
-      "objective": "Keep implemented, disabled, unavailable, and planned capability claims aligned with executable behavior.",
-      "targets": ["src/poker_deliberation/capabilities.py", "docs/capabilities.md", "src/poker_deliberation/cli.py"],
-      "acceptance_criteria": ["Doctor, documentation, and code expose the same capability states."],
-      "tests": ["tests/integration/test_capability_contract.py"],
-      "completion_evidence": {"commits": ["675855e0339e51d843d2762eca3aa789cb9dd243"], "paths": ["src/poker_deliberation/capabilities.py", "docs/capabilities.md"], "tests": ["tests/integration/test_capability_contract.py::test_capability_matrix_matches_code_and_doctor"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "Phase 0 capability truthfulness is implemented and contract-tested."
-    },
-    {
-      "id": "RM-002",
-      "title": "Provider capability truthfulness",
-      "phase": "phase-0",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": ["RM-001"],
-      "capabilities": ["local_provider", "openai_agents_outbound"],
-      "objective": "Never infer outbound availability from package or key presence alone.",
-      "targets": ["src/poker_deliberation/providers", "src/poker_deliberation/cli.py"],
-      "acceptance_criteria": ["OpenAI provider remains disabled until outbound analyze is implemented and approved."],
-      "tests": ["tests/unit/test_provider_availability.py", "tests/integration/test_capability_contract.py"],
-      "completion_evidence": {"commits": ["675855e0339e51d843d2762eca3aa789cb9dd243"], "paths": ["src/poker_deliberation/providers/openai_agents.py"], "tests": ["tests/integration/test_capability_contract.py::test_openai_provider_contract_is_disabled_for_all_local_prerequisites"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "The four package/key combinations are tested and do not overstate capability."
-    },
-    {
-      "id": "RM-003",
-      "title": "Canonical quality gate and temp policy",
-      "phase": "phase-0",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": ["RM-001"],
-      "capabilities": [],
-      "objective": "Make the four local quality gates reproducible without unsafe shared temp cleanup.",
-      "targets": ["pyproject.toml", "tests/conftest.py", "scripts/check_quality.ps1"],
-      "acceptance_criteria": ["Pytest, Ruff lint, Ruff format check, and mypy run in the supported local workspace."],
-      "tests": ["tests/integration/test_quality_config.py"],
-      "completion_evidence": {"commits": ["675855e0339e51d843d2762eca3aa789cb9dd243"], "paths": ["tests/conftest.py", "scripts/check_quality.ps1"], "tests": ["tests/integration/test_quality_config.py"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "Canonical commands and workspace-local pytest temp isolation are implemented."
-    },
-    {
-      "id": "RM-004",
-      "title": "Priority mathematical branch coverage",
-      "phase": "phase-1",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": ["RM-003"],
-      "capabilities": ["phase_1_hardening"],
-      "objective": "Exercise high-risk numeric, normalization, evidence, and provider branches with known outcomes.",
-      "targets": ["src/poker_deliberation/tools", "src/poker_deliberation/normalization.py", "src/poker_deliberation/research/evidence.py"],
-      "acceptance_criteria": ["Priority failure, fallback, warning, and boundary branches have regression tests."],
-      "tests": ["tests/unit/test_phase1_priority_branches.py"],
-      "completion_evidence": {"commits": ["d5c5f9b643a7f9a3e6569604f6acf4bea8310183", "ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976"], "paths": ["tests/unit/test_phase1_priority_branches.py"], "tests": ["tests/unit/test_phase1_priority_branches.py"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "The approved priority branches and regressions are implemented."
-    },
-    {
-      "id": "RM-005",
-      "title": "Exactness and numeric tolerance specification",
-      "phase": "phase-1",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": ["RM-004"],
-      "capabilities": ["phase_1_hardening"],
-      "objective": "Define exact, exact-under-model, floating-verified, approximate, and unavailable results without false precision.",
-      "targets": ["src/poker_deliberation/schemas.py", "src/poker_deliberation/tools/verification.py", "docs/calculation-policy.md"],
-      "acceptance_criteria": ["Contract v2 records numeric exactness, tolerance, model qualifiers, and executable verification."],
-      "tests": ["tests/integration/test_tool_contracts.py", "tests/property/test_phase1_math_oracles.py"],
-      "completion_evidence": {"commits": ["d5c5f9b643a7f9a3e6569604f6acf4bea8310183", "ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976"], "paths": ["src/poker_deliberation/tools/verification.py", "docs/calculation-policy.md"], "tests": ["tests/property/test_phase1_math_oracles.py"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "Contract v2 exactness and runtime verification are present."
-    },
-    {
-      "id": "RM-006",
-      "title": "Single source for typed tool contracts",
-      "phase": "phase-1",
-      "priority": "P1",
-      "status": "completed",
-      "dependencies": ["RM-005"],
-      "capabilities": ["local_calculators", "phase_1_hardening"],
-      "objective": "Keep all registered tool input, output, assumptions, limits, and versions in one typed definition set.",
-      "targets": ["src/poker_deliberation/tools/contracts.py", "tools/manifest.yaml", "docs/tool-contracts.md"],
-      "acceptance_criteria": ["Registry, generated manifest, and generated documentation have full contract parity."],
-      "tests": ["tests/integration/test_tool_contracts.py"],
-      "completion_evidence": {"commits": ["d5c5f9b643a7f9a3e6569604f6acf4bea8310183", "ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976"], "paths": ["src/poker_deliberation/tools/contracts.py", "tools/manifest.yaml"], "tests": ["tests/integration/test_tool_contracts.py::test_manifest_docs_and_registry_are_full_canonical_projections"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "All 20 tools expose contract version 2.0.0 with typed schemas."
-    },
-    {
-      "id": "RM-007",
-      "title": "Mathematical oracle and metamorphic test pack",
-      "phase": "phase-1",
-      "priority": "P1",
-      "status": "completed",
-      "dependencies": ["RM-005", "RM-006"],
-      "capabilities": ["phase_1_hardening"],
-      "objective": "Cross-check calculators with known answers, independent local oracles, invariants, and metamorphic relations.",
-      "targets": ["tests/property/test_phase1_math_oracles.py", "tests/fixtures/phase1"],
-      "acceptance_criteria": ["Priority calculators have deterministic oracle, boundary, and reproducibility coverage."],
-      "tests": ["tests/property/test_phase1_math_oracles.py"],
-      "completion_evidence": {"commits": ["d5c5f9b643a7f9a3e6569604f6acf4bea8310183", "ca8c9ab5c24f5a4416ed3bcfde3d0fb9028a3976"], "paths": ["tests/property/test_phase1_math_oracles.py", "tests/fixtures/phase1"], "tests": ["tests/property/test_phase1_math_oracles.py"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "Local oracle and metamorphic regression coverage is implemented."
-    },
-    {
-      "id": "RM-008",
-      "title": "Offline public preflight",
-      "phase": "phase-0",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": ["RM-001", "RM-003"],
-      "capabilities": [],
-      "objective": "Audit tracked worktree and Git history without network access or destructive history changes.",
-      "targets": ["src/poker_deliberation/public_preflight.py", "scripts/public_preflight.py"],
-      "acceptance_criteria": ["Tracked/history secret, PII, license, artifact, and exclusion checks fail closed."],
-      "tests": ["tests/unit/test_public_preflight.py", "tests/integration/test_public_preflight_history.py"],
-      "completion_evidence": {"commits": ["675855e0339e51d843d2762eca3aa789cb9dd243"], "paths": ["src/poker_deliberation/public_preflight.py"], "tests": ["tests/integration/test_public_preflight_history.py"]},
-      "human_approval": {"required": true, "state": "approved_scope", "topics": ["offline audit only; no publication or history rewrite"], "approval_reference": "phase-0-approved-scope-2026-07-19"},
-      "status_reason": "The offline scanner and synthetic fixtures are implemented; publication remains a separate decision."
-    },
-    {
-      "id": "RM-009",
-      "title": "Complete Markdown ToolResult metadata",
-      "phase": "phase-0",
-      "priority": "P0",
-      "status": "completed",
-      "dependencies": ["RM-005"],
-      "capabilities": ["local_calculators"],
-      "objective": "Render ToolResult status, exactness, assumptions, warnings, uncertainty, errors, and reproduction data without silent loss.",
-      "targets": ["src/poker_deliberation/reporting/markdown.py"],
-      "acceptance_criteria": ["JSON and Markdown preserve the required result metadata for every result state."],
-      "tests": ["tests/golden/test_markdown_tool_results.py"],
-      "completion_evidence": {"commits": ["675855e0339e51d843d2762eca3aa789cb9dd243", "d5c5f9b643a7f9a3e6569604f6acf4bea8310183"], "paths": ["src/poker_deliberation/reporting/markdown.py"], "tests": ["tests/golden/test_markdown_tool_results.py"]},
-      "human_approval": {"required": false, "state": "not_required", "topics": []},
-      "status_reason": "Golden coverage protects the required Markdown result metadata."
-    },
-    {
-      "id": "RM-010",
-      "title": "Orchestrator phase services",
-      "phase": "phase-2",
-      "priority": "P1",
-      "status": "in_progress",
-      "dependencies": ["RM-006", "RM-007", "RM-023", "RM-024"],
-      "capabilities": [],
-      "objective": "Split orchestration into typed, independently testable phases while preserving public behavior.",
-      "targets": ["src/poker_deliberation/orchestrator.py", "future phase service modules"],
-      "acceptance_criteria": ["Pure phase services do not mutate state or artifacts; the orchestrator alone requests transitions after durable writes."],
-      "tests": ["phase unit/property tests", "artifact parity", "state and write fault injection"],
-      "entry_milestone": "P2-010A",
-      "completion_milestone": "P2-010B",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "approved_scope", "topics": ["Advance RM-010 from planned to in_progress and implement P2-010A only.", "Implement typed phase schemas, pure phase services, and only the minimum connection to the current serial orchestrator.", "Preserve the calculation assignment artifact, including the currently assigned but unexecuted report-writer, without deletion, rename, or schema change.", "Treat the P2-024A context retention and classification contract as authoritative and add no P2-010A retention, deletion, quarantine, cleanup, or persistence semantics.", "Preserve the current attempt-memory-only-v1 semantics and defer retention or disposition changes to RM-027A/B.", "Treat the phase schema as a versioned internal API and do not declare it a stable public API.", "Preserve Orchestrator.run, resume, load_report, CLI, exit codes, CaseInput, FinalReport, ToolResult, and existing artifact meanings.", "Pure phases do not directly access filesystem, state machine, provider, tool, network, approval ledger, ambient clock, or ambient randomness.", "Provide time, IDs, policy, and capability data as typed inputs or explicitly injected values.", "Isolate Analysis and ToolResearch effects behind explicit executor or adapter boundaries without changing serial execution semantics.", "Allow phases to return requested next state and artifact intent only as values without executing transitions or writes.", "Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.", "Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.", "Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.", "Update the roadmap only from implementation evidence and review results and do not start work beyond P2-010A.", "Stop for a new human approval and digest before changing immutable scope, dependencies, or approved policy decisions.", "Keep intermediate and progress data in ignored areas and do not commit raw review logs, caches, run artifacts, or user_materials."], "approval_reference": "goal-rm010-p2-010a-2026-07-20", "scope_digest": "03bd675003b31ab0861ac196bd3b79229b863dca3ce15d555f76fb2f3e8a6f89"},
-      "status_reason": "P2-010A is completed with contract-bound evidence; RM-010 remains in progress because P2-010B is separately unapproved and not started."
+      }
     },
     {
       "id": "RM-011",
@@ -464,17 +575,43 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-023", "RM-024"],
-      "capabilities": ["parallel_deliberation_and_tool_retry", "process_sandbox"],
+      "status_reason": "Current ordinary orchestration does not enforce several declared fields; implementation is not started.",
+      "dependencies": [
+        "RM-023",
+        "RM-024"
+      ],
+      "capabilities": [
+        "parallel_deliberation_and_tool_retry",
+        "process_sandbox"
+      ],
       "objective": "Make every active budget field finite, enforceable, auditable, and fail-closed or remove it from active configuration.",
-      "targets": ["src/poker_deliberation/config.py", "src/poker_deliberation/state_machine.py", "provider and tool execution boundaries"],
-      "acceptance_criteria": ["Unknown, zero, or over-cap cost prevents external calls while free local execution remains valid; retries are typed and idempotent; unconfirmed cancellation is not success."],
-      "tests": ["fake-clock budget tests", "retry classifier tests", "concurrency/cost reservation tests", "cooperative and uncooperative cancel tests"],
-      "entry_milestone": "P2-011A",
-      "completion_milestone": "P2-011B",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["whether parallel deliberation is a product capability", "field removal and deprecation policy", "cost precision"]},
-      "status_reason": "Current ordinary orchestration does not enforce several declared fields; implementation is not started."
+      "targets": [
+        "src/poker_deliberation/config.py",
+        "src/poker_deliberation/state_machine.py",
+        "provider and tool execution boundaries"
+      ],
+      "acceptance_criteria": [
+        "Unknown, zero, or over-cap cost prevents external calls while free local execution remains valid; retries are typed and idempotent; unconfirmed cancellation is not success."
+      ],
+      "tests": [
+        "fake-clock budget tests",
+        "retry classifier tests",
+        "concurrency/cost reservation tests",
+        "cooperative and uncooperative cancel tests"
+      ],
+      "milestones": {
+        "entry": "P2-011A",
+        "completion": "P2-011B"
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "whether parallel deliberation is a product capability",
+          "field removal and deprecation policy",
+          "cost precision"
+        ]
+      }
     },
     {
       "id": "RM-012",
@@ -482,17 +619,40 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-023", "RM-024"],
+      "status_reason": "The current v1 marker is not validated and whole-run completion is not atomic; implementation is not started.",
+      "dependencies": [
+        "RM-023",
+        "RM-024"
+      ],
       "capabilities": [],
       "objective": "Distinguish completed, incomplete, corrupt, unsupported, and resumable runs with integrity evidence.",
-      "targets": ["src/poker_deliberation/storage/run_store.py", "src/poker_deliberation/schemas.py", "orchestrator persistence"],
-      "acceptance_criteria": ["Immutable revision artifacts preserve every prior verified revision; a terminal marker is written last inside the revision and an atomic current pointer is published only after readers verify run ID, manifest, payload inventory, sizes, and hashes."],
-      "tests": ["write-boundary fault injection", "corrupt/missing/hash mismatch", "lock/recovery", "old/future version migration"],
-      "entry_milestone": "P2-012A",
-      "completion_milestone": "P2-012B",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["supported old-run versions", "retention and quarantine", "Windows durability target"]},
-      "status_reason": "The current v1 marker is not validated and whole-run completion is not atomic; implementation is not started."
+      "targets": [
+        "src/poker_deliberation/storage/run_store.py",
+        "src/poker_deliberation/schemas.py",
+        "orchestrator persistence"
+      ],
+      "acceptance_criteria": [
+        "Immutable revision artifacts preserve every prior verified revision; a terminal marker is written last inside the revision and an atomic current pointer is published only after readers verify run ID, manifest, payload inventory, sizes, and hashes."
+      ],
+      "tests": [
+        "write-boundary fault injection",
+        "corrupt/missing/hash mismatch",
+        "lock/recovery",
+        "old/future version migration"
+      ],
+      "milestones": {
+        "entry": "P2-012A",
+        "completion": "P2-012B"
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "supported old-run versions",
+          "retention and quarantine",
+          "Windows durability target"
+        ]
+      }
     },
     {
       "id": "RM-013",
@@ -500,17 +660,40 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-012", "RM-024"],
+      "status_reason": "Current local approvals have no actor, revision, CAS, or action digest; implementation is not started.",
+      "dependencies": [
+        "RM-012",
+        "RM-024"
+      ],
       "capabilities": [],
       "objective": "Make approval decisions authoritative, conflict-safe, auditable, and idempotently resumable.",
-      "targets": ["src/poker_deliberation/approvals.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/cli.py"],
-      "acceptance_criteria": ["Existing idempotency outcomes are resolved before stale-revision checks; unknown, duplicate, stale, unauthorized, concurrent, and approve/reject conflicts otherwise fail as structured all-or-nothing decisions bound to an action digest."],
-      "tests": ["approval state matrix", "concurrent resume", "idempotency conflicts", "actor/authority/action binding"],
-      "entry_milestone": "P2-013A",
-      "completion_milestone": "P2-013B",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["actor trust model", "approval expiry/revocation", "authority scopes"]},
-      "status_reason": "Current local approvals have no actor, revision, CAS, or action digest; implementation is not started."
+      "targets": [
+        "src/poker_deliberation/approvals.py",
+        "src/poker_deliberation/orchestrator.py",
+        "src/poker_deliberation/cli.py"
+      ],
+      "acceptance_criteria": [
+        "Existing idempotency outcomes are resolved before stale-revision checks; unknown, duplicate, stale, unauthorized, concurrent, and approve/reject conflicts otherwise fail as structured all-or-nothing decisions bound to an action digest."
+      ],
+      "tests": [
+        "approval state matrix",
+        "concurrent resume",
+        "idempotency conflicts",
+        "actor/authority/action binding"
+      ],
+      "milestones": {
+        "entry": "P2-013A",
+        "completion": "P2-013B"
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "actor trust model",
+          "approval expiry/revocation",
+          "authority scopes"
+        ]
+      }
     },
     {
       "id": "RM-014",
@@ -518,15 +701,37 @@
       "phase": "phase-3",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-006", "RM-012"],
-      "capabilities": ["documented_hand_parser", "natural_language_or_site_parser"],
+      "status_reason": "Accepted roadmap scope; not implemented.",
+      "dependencies": [
+        "RM-006",
+        "RM-012"
+      ],
+      "capabilities": [
+        "documented_hand_parser",
+        "natural_language_or_site_parser"
+      ],
       "objective": "Version the supported conservative grammar and preserve parser provenance in run artifacts.",
-      "targets": ["src/poker_deliberation/normalization.py", "input schema documentation"],
-      "acceptance_criteria": ["Supported and unsupported syntax, locale, warnings, and parser version are explicit and round-trip tested."],
-      "tests": ["round-trip, malformed, Unicode, unknown-key, and resource-boundary tests"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["supported sites and grammar profiles"]},
-      "status_reason": "Accepted roadmap scope; not implemented."
+      "targets": [
+        "src/poker_deliberation/normalization.py",
+        "input schema documentation"
+      ],
+      "acceptance_criteria": [
+        "Supported and unsupported syntax, locale, warnings, and parser version are explicit and round-trip tested."
+      ],
+      "tests": [
+        "round-trip, malformed, Unicode, unknown-key, and resource-boundary tests"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "supported sites and grammar profiles"
+        ]
+      }
     },
     {
       "id": "RM-015",
@@ -534,15 +739,33 @@
       "phase": "phase-3",
       "priority": "P2",
       "status": "planned",
-      "dependencies": ["RM-014"],
+      "status_reason": "Accepted roadmap scope; not implemented.",
+      "dependencies": [
+        "RM-014"
+      ],
       "capabilities": [],
       "objective": "Define selected rule profiles for raises, all-ins, uncalled bets, side pots, and rake timing.",
-      "targets": ["src/poker_deliberation/schemas.py", "src/poker_deliberation/tools/hand_validator.py"],
-      "acceptance_criteria": ["Supported rule profiles and unsupported cases match schema, documentation, and golden ledgers."],
-      "tests": ["multiway side-pot, short-call, folded-contribution, and rule-profile golden tests"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["site, jurisdiction, and game rule profiles"]},
-      "status_reason": "Accepted roadmap scope; not implemented."
+      "targets": [
+        "src/poker_deliberation/schemas.py",
+        "src/poker_deliberation/tools/hand_validator.py"
+      ],
+      "acceptance_criteria": [
+        "Supported rule profiles and unsupported cases match schema, documentation, and golden ledgers."
+      ],
+      "tests": [
+        "multiway side-pot, short-call, folded-contribution, and rule-profile golden tests"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "site, jurisdiction, and game rule profiles"
+        ]
+      }
     },
     {
       "id": "RM-016",
@@ -550,15 +773,34 @@
       "phase": "phase-3",
       "priority": "P2",
       "status": "planned",
-      "dependencies": ["RM-006", "RM-014"],
+      "status_reason": "Accepted roadmap scope; not implemented.",
+      "dependencies": [
+        "RM-006",
+        "RM-014"
+      ],
       "capabilities": [],
       "objective": "Add only approved range syntax with source and game-condition provenance.",
-      "targets": ["src/poker_deliberation/tools/combinations.py", "range schemas and documentation"],
-      "acceptance_criteria": ["Ambiguity, overlap, blocker, weight, and provenance mismatches fail explicitly."],
-      "tests": ["range parser, normalization, blocker, ambiguity, and provenance isolation tests"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["range formats and source licenses"]},
-      "status_reason": "Accepted roadmap scope; not implemented."
+      "targets": [
+        "src/poker_deliberation/tools/combinations.py",
+        "range schemas and documentation"
+      ],
+      "acceptance_criteria": [
+        "Ambiguity, overlap, blocker, weight, and provenance mismatches fail explicitly."
+      ],
+      "tests": [
+        "range parser, normalization, blocker, ambiguity, and provenance isolation tests"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "range formats and source licenses"
+        ]
+      }
     },
     {
       "id": "RM-017",
@@ -566,15 +808,41 @@
       "phase": "phase-3",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-006", "RM-007", "RM-012"],
+      "status_reason": "evals/metrics.json names metrics but has no executable runner or baseline.",
+      "dependencies": [
+        "RM-006",
+        "RM-007",
+        "RM-012"
+      ],
       "capabilities": [],
       "objective": "Turn evaluation metric names into versioned datasets, scorers, thresholds or review protocols, and reproducible result artifacts.",
-      "targets": ["evals", "future evaluation runner"],
-      "acceptance_criteria": ["Every metric records dataset/license/hash, scorer/version, direction, aggregation, denominator policy, threshold or human rubric, commit/config hashes, and per-case outcomes."],
-      "tests": ["deterministic scorer", "threshold boundaries", "corrupt/missing metric", "baseline drift", "unsupported-equilibrium and false-precision fixtures"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["dataset rights", "metric thresholds", "human review rubric"]},
-      "status_reason": "evals/metrics.json names metrics but has no executable runner or baseline."
+      "targets": [
+        "evals",
+        "future evaluation runner"
+      ],
+      "acceptance_criteria": [
+        "Every metric records dataset/license/hash, scorer/version, direction, aggregation, denominator policy, threshold or human rubric, commit/config hashes, and per-case outcomes."
+      ],
+      "tests": [
+        "deterministic scorer",
+        "threshold boundaries",
+        "corrupt/missing metric",
+        "baseline drift",
+        "unsupported-equilibrium and false-precision fixtures"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "dataset rights",
+          "metric thresholds",
+          "human review rubric"
+        ]
+      }
     },
     {
       "id": "RM-018A",
@@ -582,15 +850,52 @@
       "phase": "pre-release",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-001", "RM-002", "RM-003", "RM-004", "RM-005", "RM-006", "RM-007", "RM-008", "RM-009", "RM-023"],
+      "status_reason": "The phase order is corrected, but build, matrix, license, and artifact evidence do not yet exist.",
+      "dependencies": [
+        "RM-001",
+        "RM-002",
+        "RM-003",
+        "RM-004",
+        "RM-005",
+        "RM-006",
+        "RM-007",
+        "RM-008",
+        "RM-009",
+        "RM-023"
+      ],
       "capabilities": [],
       "objective": "Establish reproducible build and distribution evidence after Phase 1 and before any pre-release tag.",
-      "targets": ["CI", "build metadata", "wheel/sdist smoke", "license inventory", "release evidence manifest"],
-      "acceptance_criteria": ["Approved OS/Python matrix, clean build/install, wheel/sdist contents, CLI/package-data smoke, license inventory, artifact SHA-256, and offline preflight are tied to one candidate commit."],
-      "tests": ["CI matrix", "isolated install", "package data", "dependency/license check", "artifact hash verification"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["supported matrix", "release channel", "distribution target", "tag operation"]},
-      "status_reason": "The phase order is corrected, but build, matrix, license, and artifact evidence do not yet exist."
+      "targets": [
+        "CI",
+        "build metadata",
+        "wheel/sdist smoke",
+        "license inventory",
+        "release evidence manifest"
+      ],
+      "acceptance_criteria": [
+        "Approved OS/Python matrix, clean build/install, wheel/sdist contents, CLI/package-data smoke, license inventory, artifact SHA-256, and offline preflight are tied to one candidate commit."
+      ],
+      "tests": [
+        "CI matrix",
+        "isolated install",
+        "package data",
+        "dependency/license check",
+        "artifact hash verification"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "supported matrix",
+          "release channel",
+          "distribution target",
+          "tag operation"
+        ]
+      }
     },
     {
       "id": "RM-018B",
@@ -598,15 +903,47 @@
       "phase": "stable-release",
       "priority": "P1",
       "status": "planned",
-      "dependencies": ["RM-018A", "RM-010", "RM-011", "RM-012", "RM-013", "RM-024", "RM-027"],
+      "status_reason": "This gate is intentionally after Phase 2 and is not implemented or evaluated.",
+      "dependencies": [
+        "RM-018A",
+        "RM-010",
+        "RM-011",
+        "RM-012",
+        "RM-013",
+        "RM-024",
+        "RM-027"
+      ],
       "capabilities": [],
       "objective": "Gate any stable tag on completed Phase 2 compatibility, migration, and source-to-artifact evidence.",
-      "targets": ["version/tag/changelog policy", "migration and deprecation policy", "stable release manifest"],
-      "acceptance_criteria": ["SemVer, version/tag/changelog parity, migration, deprecation, supported stable matrix, and artifact/source commit mapping are verified for one candidate."],
-      "tests": ["version parity", "migration fixtures", "deprecation compatibility", "artifact/source mapping", "stable release dry-run"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["SemVer", "support window", "migration guarantees", "stable tag operation"]},
-      "status_reason": "This gate is intentionally after Phase 2 and is not implemented or evaluated."
+      "targets": [
+        "version/tag/changelog policy",
+        "migration and deprecation policy",
+        "stable release manifest"
+      ],
+      "acceptance_criteria": [
+        "SemVer, version/tag/changelog parity, migration, deprecation, supported stable matrix, and artifact/source commit mapping are verified for one candidate."
+      ],
+      "tests": [
+        "version parity",
+        "migration fixtures",
+        "deprecation compatibility",
+        "artifact/source mapping",
+        "stable release dry-run"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "SemVer",
+          "support window",
+          "migration guarantees",
+          "stable tag operation"
+        ]
+      }
     },
     {
       "id": "RM-019",
@@ -614,15 +951,49 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "planned",
-      "dependencies": ["RM-010", "RM-011", "RM-012", "RM-013", "RM-024", "RM-028"],
-      "capabilities": ["openai_agents_outbound"],
+      "status_reason": "The outbound provider remains disabled; implementation is decision-gated.",
+      "dependencies": [
+        "RM-010",
+        "RM-011",
+        "RM-012",
+        "RM-013",
+        "RM-024",
+        "RM-028"
+      ],
+      "capabilities": [
+        "openai_agents_outbound"
+      ],
       "objective": "Connect an external provider only after data, model, trace, cost, timeout, and approval boundaries are authorized.",
-      "targets": ["src/poker_deliberation/providers/openai_agents.py", "provider schemas", "security and approval boundaries"],
-      "acceptance_criteria": ["Only approved data is sent and model/version/reasoning, trace policy, cost, timeout, structured output, and failure are recorded."],
-      "tests": ["no-network mocks", "redaction canaries", "timeout/cancel", "malformed output", "approval and SDK compatibility"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["external transmission", "provider/model", "trace retention", "credentials", "cost"]},
-      "status_reason": "The outbound provider remains disabled; implementation is decision-gated."
+      "targets": [
+        "src/poker_deliberation/providers/openai_agents.py",
+        "provider schemas",
+        "security and approval boundaries"
+      ],
+      "acceptance_criteria": [
+        "Only approved data is sent and model/version/reasoning, trace policy, cost, timeout, structured output, and failure are recorded."
+      ],
+      "tests": [
+        "no-network mocks",
+        "redaction canaries",
+        "timeout/cancel",
+        "malformed output",
+        "approval and SDK compatibility"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "external transmission",
+          "provider/model",
+          "trace retention",
+          "credentials",
+          "cost"
+        ]
+      }
     },
     {
       "id": "RM-020",
@@ -630,15 +1001,49 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "planned",
-      "dependencies": ["RM-011", "RM-012", "RM-013", "RM-017", "RM-028"],
-      "capabilities": ["external_solver", "full_nlhe_equilibrium", "process_sandbox"],
+      "status_reason": "Only an honest unavailable adapter exists; RM-028 is a hard dependency for external execution.",
+      "dependencies": [
+        "RM-011",
+        "RM-012",
+        "RM-013",
+        "RM-017",
+        "RM-028"
+      ],
+      "capabilities": [
+        "external_solver",
+        "full_nlhe_equilibrium",
+        "process_sandbox"
+      ],
       "objective": "Qualify external solver results without promoting partial, mismatched, or non-converged output to GTO or equilibrium.",
-      "targets": ["src/poker_deliberation/tools/solver_adapter.py", "qualification fixtures", "isolated job control"],
-      "acceptance_criteria": ["Typed status, full game/tree/rake/stack/range/version identity, executable/license and I/O hashes, resource approval, convergence definitions and trajectory, exploitability evidence, and tiny-game comparison are required."],
-      "tests": ["unavailable/disabled/failed/partial/cancelled/timed_out", "version and condition mismatch", "non-convergence", "RM-028 hard-stop", "tiny-game oracle"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["solver product/license", "resource budget", "redistribution rights", "convergence threshold"]},
-      "status_reason": "Only an honest unavailable adapter exists; RM-028 is a hard dependency for external execution."
+      "targets": [
+        "src/poker_deliberation/tools/solver_adapter.py",
+        "qualification fixtures",
+        "isolated job control"
+      ],
+      "acceptance_criteria": [
+        "Typed status, full game/tree/rake/stack/range/version identity, executable/license and I/O hashes, resource approval, convergence definitions and trajectory, exploitability evidence, and tiny-game comparison are required."
+      ],
+      "tests": [
+        "unavailable/disabled/failed/partial/cancelled/timed_out",
+        "version and condition mismatch",
+        "non-convergence",
+        "RM-028 hard-stop",
+        "tiny-game oracle"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "solver product/license",
+          "resource budget",
+          "redistribution rights",
+          "convergence threshold"
+        ]
+      }
     },
     {
       "id": "RM-021",
@@ -646,15 +1051,42 @@
       "phase": "phase-5",
       "priority": "P3",
       "status": "planned",
-      "dependencies": ["RM-006", "RM-007"],
-      "capabilities": ["multiway_or_plo_equity"],
+      "status_reason": "Research feasibility only; not implemented.",
+      "dependencies": [
+        "RM-006",
+        "RM-007"
+      ],
+      "capabilities": [
+        "multiway_or_plo_equity"
+      ],
       "objective": "Measure algorithm, error, oracle, license, and resource feasibility before any production commitment.",
-      "targets": ["research ADR", "evaluator interface", "benchmark fixtures"],
-      "acceptance_criteria": ["Small exact cases, complexity, hard caps, oracle provenance, and expected error support a separate adoption decision."],
-      "tests": ["small exact cases", "symmetry", "card legality", "resource caps"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["game priority", "compute budget", "oracle license"]},
-      "status_reason": "Research feasibility only; not implemented."
+      "targets": [
+        "research ADR",
+        "evaluator interface",
+        "benchmark fixtures"
+      ],
+      "acceptance_criteria": [
+        "Small exact cases, complexity, hard caps, oracle provenance, and expected error support a separate adoption decision."
+      ],
+      "tests": [
+        "small exact cases",
+        "symmetry",
+        "card legality",
+        "resource caps"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "game priority",
+          "compute budget",
+          "oracle license"
+        ]
+      }
     },
     {
       "id": "RM-022",
@@ -662,15 +1094,41 @@
       "phase": "phase-5",
       "priority": "P3",
       "status": "planned",
-      "dependencies": ["RM-007", "RM-017"],
-      "capabilities": ["full_nlhe_equilibrium"],
+      "status_reason": "Research-only roadmap item; not implemented.",
+      "dependencies": [
+        "RM-007",
+        "RM-017"
+      ],
+      "capabilities": [
+        "full_nlhe_equilibrium"
+      ],
       "objective": "Reproduce known toy-game results without claiming general NLHE equilibrium capability.",
-      "targets": ["research-only modules", "toy-game fixtures", "research ADR"],
-      "acceptance_criteria": ["Known equilibrium, regret trend, and best-response/exploitability cross-check are reproducible and labeled experimental."],
-      "tests": ["known toy equilibrium", "regret trend", "best-response cross-check"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["research purpose", "success criteria", "compute budget"]},
-      "status_reason": "Research-only roadmap item; not implemented."
+      "targets": [
+        "research-only modules",
+        "toy-game fixtures",
+        "research ADR"
+      ],
+      "acceptance_criteria": [
+        "Known equilibrium, regret trend, and best-response/exploitability cross-check are reproducible and labeled experimental."
+      ],
+      "tests": [
+        "known toy equilibrium",
+        "regret trend",
+        "best-response cross-check"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "research purpose",
+          "success criteria",
+          "compute budget"
+        ]
+      }
     },
     {
       "id": "RM-023",
@@ -678,16 +1136,35 @@
       "phase": "readiness",
       "priority": "P0",
       "status": "completed",
-      "dependencies": ["RM-001"],
+      "status_reason": "Implemented by the tracked readiness change; its enclosing commit is external evidence and cannot be self-referential in this file.",
+      "dependencies": [
+        "RM-001"
+      ],
       "capabilities": [],
       "objective": "Provide a package-resource-configured, tracked, machine-readable canonical RM state independent of ignored user materials; distribution inclusion remains an RM-018A check.",
-      "targets": ["src/poker_deliberation/roadmap_status.json", "src/poker_deliberation/roadmap.py", "docs/roadmap-status.md", "doctor"],
-      "acceptance_criteria": ["Schema, vocabulary, transitions, unique IDs, DAG, evidence, capability references, doctor summary, and generated documentation are contract-tested from any CWD."],
-      "tests": ["tests/integration/test_roadmap_status.py"],
-      "completion_evidence": {"commits": [], "paths": ["src/poker_deliberation/roadmap_status.json", "src/poker_deliberation/roadmap.py", "docs/roadmap-status.md"], "tests": ["tests/integration/test_roadmap_status.py"]},
-      "evidence_mode": "enclosing_commit",
-      "human_approval": {"required": true, "state": "approved_scope", "topics": ["tracked packaged JSON as canonical RM status"], "approval_reference": "goal-objective-2026-07-20"},
-      "status_reason": "Implemented by the tracked readiness change; its enclosing commit is external evidence and cannot be self-referential in this file."
+      "targets": [
+        "src/poker_deliberation/roadmap_status.json",
+        "src/poker_deliberation/roadmap.py",
+        "docs/roadmap-status.md",
+        "doctor"
+      ],
+      "acceptance_criteria": [
+        "Schema, vocabulary, transitions, unique IDs, DAG, evidence, capability references, doctor summary, and generated documentation are contract-tested from any CWD."
+      ],
+      "tests": [
+        "tests/integration/test_roadmap_status.py"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "tracked packaged JSON as canonical RM status"
+        ]
+      }
     },
     {
       "id": "RM-024",
@@ -695,18 +1172,63 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "completed",
-      "dependencies": ["RM-006", "RM-023"],
+      "status_reason": "P2-024A is implemented on the Python-local provider path with versioned policy, immutable attempt envelopes, exact allowlists, expiry, integrity, and lineage; persistence, cleanup, external runtimes, and later milestones remain out of scope.",
+      "dependencies": [
+        "RM-006",
+        "RM-023"
+      ],
       "capabilities": [],
       "objective": "Implement the approved P2-024A attempt-scoped context policy, immutable envelope, lineage, expiry, integrity, and provider allowlist contract without persistence, cleanup, external runtime, or later Phase 2 work.",
-      "targets": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "src/poker_deliberation/providers", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"],
-      "acceptance_criteria": ["A strict versioned immutable ContextPolicy and ContextEnvelope bind classification, retention-policy ID, UTC expiry, exact allowlist, canonical payload/source/policy hashes, and run/assignment/attempt/runtime lineage.", "The actual orchestrator-to-provider path validates integrity, expiry, lineage, runtime, assignment allowlist parity, restricted secrets, and provider availability before delivering a fresh AgentContext copy.", "Unknown fields, versions, runtimes, dotted-path allowlists, tampering, replay, expired context, and restricted provider handoff fail closed without enabling external providers or writing context lifecycle state.", "Existing AgentContext and provider signatures, LocalProvider behavior, CLI exit codes, run/resume/show, and existing artifact meanings remain compatible.", "Unit, property/metamorphic, integration, adversarial, CLI, roadmap, doctor, and canonical quality gates pass with no new dependency."],
-      "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"],
-      "entry_milestone": "P2-024A",
-      "completion_milestone": "P2-024A",
-      "completion_evidence": {"commits": ["fc2e41dd4fbde2962373ff7ea29019bff2999505"], "paths": ["src/poker_deliberation/context_lifecycle.py", "src/poker_deliberation/orchestrator.py", "src/poker_deliberation/schemas.py", "src/poker_deliberation/agents/roles.py", "docs/context-lifecycle.md", "docs/architecture.md", "docs/security.md", "docs/limitations.md", "docs/agent-protocol.md"], "tests": ["tests/unit/test_context_lifecycle.py", "tests/property/test_context_lifecycle_properties.py", "tests/integration/test_context_lifecycle_integration.py", "tests/adversarial/test_context_lifecycle_security.py", "tests/adversarial/test_review_regressions.py", "tests/adversarial/test_blind_isolation.py", "tests/integration/test_cli.py"]},
-      "human_approval": {"required": true, "state": "approved_scope", "topics": ["Implement RM-024 milestone P2-024A only.", "Use context classifications public, internal by default, sensitive, and restricted.", "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.", "Create a fresh immutable ContextEnvelope for every attempt.", "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.", "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.", "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.", "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.", "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.", "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.", "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."], "approval_reference": "goal-rm024-p2-024a-2026-07-20"},
-      "status_reason": "P2-024A is implemented on the Python-local provider path with versioned policy, immutable attempt envelopes, exact allowlists, expiry, integrity, and lineage; persistence, cleanup, external runtimes, and later milestones remain out of scope.",
-      "relations": ["Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance."]
+      "targets": [
+        "src/poker_deliberation/context_lifecycle.py",
+        "src/poker_deliberation/orchestrator.py",
+        "src/poker_deliberation/schemas.py",
+        "src/poker_deliberation/agents/roles.py",
+        "src/poker_deliberation/providers",
+        "docs/context-lifecycle.md",
+        "docs/architecture.md",
+        "docs/security.md",
+        "docs/limitations.md",
+        "docs/agent-protocol.md"
+      ],
+      "acceptance_criteria": [
+        "A strict versioned immutable ContextPolicy and ContextEnvelope bind classification, retention-policy ID, UTC expiry, exact allowlist, canonical payload/source/policy hashes, and run/assignment/attempt/runtime lineage.",
+        "The actual orchestrator-to-provider path validates integrity, expiry, lineage, runtime, assignment allowlist parity, restricted secrets, and provider availability before delivering a fresh AgentContext copy.",
+        "Unknown fields, versions, runtimes, dotted-path allowlists, tampering, replay, expired context, and restricted provider handoff fail closed without enabling external providers or writing context lifecycle state.",
+        "Existing AgentContext and provider signatures, LocalProvider behavior, CLI exit codes, run/resume/show, and existing artifact meanings remain compatible.",
+        "Unit, property/metamorphic, integration, adversarial, CLI, roadmap, doctor, and canonical quality gates pass with no new dependency."
+      ],
+      "tests": [
+        "tests/unit/test_context_lifecycle.py",
+        "tests/property/test_context_lifecycle_properties.py",
+        "tests/integration/test_context_lifecycle_integration.py",
+        "tests/adversarial/test_context_lifecycle_security.py",
+        "tests/adversarial/test_review_regressions.py",
+        "tests/adversarial/test_blind_isolation.py",
+        "tests/integration/test_cli.py"
+      ],
+      "milestones": {
+        "entry": "P2-024A",
+        "completion": "P2-024A"
+      },
+      "relations": [
+        "Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance."
+      ],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "Use context classifications public, internal by default, sensitive, and restricted.",
+          "Treat secrets and credentials as restricted; reject provider handoff fail closed and never use redaction as authorization.",
+          "Create a fresh immutable ContextEnvelope for every attempt.",
+          "Do not add persistence, automatic deletion, or a cleanup executor in P2-024A.",
+          "Require explicit policy expiry, timezone-aware UTC, an injected clock, and reject use when now is at or after expires_at.",
+          "Defer concrete retention durations, quarantine, deletion, tombstones, and secure erase to RM-027A/B.",
+          "Bind schema version, context, run, assignment, attempt, parent context, source hash, producer runtime, and consumer runtime lineage.",
+          "Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.",
+          "Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.",
+          "Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution."
+        ]
+      }
     },
     {
       "id": "RM-025",
@@ -714,16 +1236,44 @@
       "phase": "post-phase-2",
       "priority": "P2",
       "status": "proposed",
-      "dependencies": ["RM-012", "RM-013", "RM-023", "RM-024"],
-      "capabilities": ["codex_python_runtime_bridge"],
-      "objective": "Define versioned conformance fixtures for assignment, context, tool allowlist, approval, result, and execution-record semantics across separate runtimes.",
-      "targets": ["Codex agent definitions", "Python role/provider catalog", "future interchange schema"],
-      "acceptance_criteria": ["Version negotiation and fixture conformance cover assignment, context, result, error, approval, and audit semantics; capability remains unavailable until an actual bridge passes the contract."],
-      "tests": ["cross-runtime fixtures", "version mismatch", "allowlist and approval parity", "missing execution record"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["whether to implement a bridge or retain conformance-only separation"]},
       "status_reason": "Approved as a roadmap candidate only; both runtimes remain separate.",
-      "relations": ["Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability."]
+      "dependencies": [
+        "RM-012",
+        "RM-013",
+        "RM-023",
+        "RM-024"
+      ],
+      "capabilities": [
+        "codex_python_runtime_bridge"
+      ],
+      "objective": "Define versioned conformance fixtures for assignment, context, tool allowlist, approval, result, and execution-record semantics across separate runtimes.",
+      "targets": [
+        "Codex agent definitions",
+        "Python role/provider catalog",
+        "future interchange schema"
+      ],
+      "acceptance_criteria": [
+        "Version negotiation and fixture conformance cover assignment, context, result, error, approval, and audit semantics; capability remains unavailable until an actual bridge passes the contract."
+      ],
+      "tests": [
+        "cross-runtime fixtures",
+        "version mismatch",
+        "allowlist and approval parity",
+        "missing execution record"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [
+        "Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability."
+      ],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "whether to implement a bridge or retain conformance-only separation"
+        ]
+      }
     },
     {
       "id": "RM-026",
@@ -731,16 +1281,41 @@
       "phase": "phase-3",
       "priority": "P2",
       "status": "proposed",
-      "dependencies": ["RM-006", "RM-012", "RM-023"],
+      "status_reason": "Approved as a roadmap candidate only; no extension SPI exists.",
+      "dependencies": [
+        "RM-006",
+        "RM-012",
+        "RM-023"
+      ],
       "capabilities": [],
       "objective": "Define explicit, versioned extension registration without treating arbitrary imports as a security boundary.",
-      "targets": ["future extension registry", "provider/tool/parser adapter interfaces"],
-      "acceptance_criteria": ["Extension ID, type, API version, capability and data permissions, lifecycle methods, duplicate/incompatible rejection, and health/cancel/close semantics are explicit; auto-import is not required."],
-      "tests": ["duplicate/incompatible registration", "version negotiation", "permission denial", "lifecycle and failure isolation"],
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["third-party in-process code policy", "distribution and trust model"]},
-      "status_reason": "Approved as a roadmap candidate only; no extension SPI exists.",
-      "relations": ["May support RM-019/RM-020 adapters but never replaces their approval or isolation requirements."]
+      "targets": [
+        "future extension registry",
+        "provider/tool/parser adapter interfaces"
+      ],
+      "acceptance_criteria": [
+        "Extension ID, type, API version, capability and data permissions, lifecycle methods, duplicate/incompatible rejection, and health/cancel/close semantics are explicit; auto-import is not required."
+      ],
+      "tests": [
+        "duplicate/incompatible registration",
+        "version negotiation",
+        "permission denial",
+        "lifecycle and failure isolation"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [
+        "May support RM-019/RM-020 adapters but never replaces their approval or isolation requirements."
+      ],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "third-party in-process code policy",
+          "distribution and trust model"
+        ]
+      }
     },
     {
       "id": "RM-027",
@@ -748,18 +1323,45 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "proposed",
-      "dependencies": ["RM-023", "RM-024"],
+      "status_reason": "Approved as a roadmap candidate only; current local artifacts have no lifecycle policy.",
+      "dependencies": [
+        "RM-023",
+        "RM-024"
+      ],
       "capabilities": [],
       "objective": "Define versioned classification, retention, expiry, disposition, recovery, and audit receipts for local artifacts and contexts.",
-      "targets": ["runs storage", "context artifacts", "cache/temp policy", "future cleanup CLI"],
-      "acceptance_criteria": ["RM-027A freezes policy/schema before storage; RM-027B runs only after RM-012/P2-013A and requires actor authority, an approved dry-run action digest, revision CAS, active/pending protection, idempotent receipts/tombstones, and partial-failure reconciliation without claiming secure erase absent platform evidence."],
-      "tests": ["active/pending protection", "expiry boundary", "idempotent deletion", "partial failure reconciliation", "receipt integrity"],
-      "entry_milestone": "P2-027A",
-      "completion_milestone": "P2-027B",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["retention periods", "quarantine", "encryption", "audit tombstones and deletion priority"]},
-      "status_reason": "Approved as a roadmap candidate only; current local artifacts have no lifecycle policy.",
-      "relations": ["RM-027A provides policy/schema before RM-012; destructive RM-027B follows RM-012 and P2-013A authorization."]
+      "targets": [
+        "runs storage",
+        "context artifacts",
+        "cache/temp policy",
+        "future cleanup CLI"
+      ],
+      "acceptance_criteria": [
+        "RM-027A freezes policy/schema before storage; RM-027B runs only after RM-012/P2-013A and requires actor authority, an approved dry-run action digest, revision CAS, active/pending protection, idempotent receipts/tombstones, and partial-failure reconciliation without claiming secure erase absent platform evidence."
+      ],
+      "tests": [
+        "active/pending protection",
+        "expiry boundary",
+        "idempotent deletion",
+        "partial failure reconciliation",
+        "receipt integrity"
+      ],
+      "milestones": {
+        "entry": "P2-027A",
+        "completion": "P2-027B"
+      },
+      "relations": [
+        "RM-027A provides policy/schema before RM-012; destructive RM-027B follows RM-012 and P2-013A authorization."
+      ],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "retention periods",
+          "quarantine",
+          "encryption",
+          "audit tombstones and deletion priority"
+        ]
+      }
     },
     {
       "id": "RM-028",
@@ -767,18 +1369,54 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "proposed",
-      "dependencies": ["RM-011", "RM-012", "RM-013", "RM-024", "RM-027"],
-      "capabilities": ["process_sandbox", "external_solver", "openai_agents_outbound"],
-      "objective": "Provide durable, approval-bound process isolation and hard-stop evidence for non-cooperative external jobs.",
-      "targets": ["future isolated job runner", "solver/provider execution adapters", "job artifacts"],
-      "acceptance_criteria": ["Canonical argv plus transitive interpreter/library/image identity, approved secret references, minimal OS identity, closed stdin/handles, filesystem read/write allowlists with link-escape defense, default-deny network egress with destination allowlists, wall-clock kill, process-tree cleanup, CPU/memory/output caps, remote-cancel state, durable launch/effect_unknown/reconciliation states, and approval action digest are enforced."],
-      "tests": ["hung child and process tree", "output flood", "cancel race", "resource caps", "filesystem and network escape", "identity/handle/secret isolation", "partial artifact", "effect-unknown restart recovery", "approval mismatch"],
-      "entry_milestone": "P2-028A",
-      "completion_milestone": "P2-028A",
-      "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "pending", "topics": ["supported isolation platform", "resource limits", "external executables and licenses"]},
       "status_reason": "Approved as a roadmap candidate only; cooperative in-process cancellation is not a hard stop.",
-      "relations": ["Hard dependency for any RM-019/RM-020 execution that claims timeout or cancellation guarantees."]
+      "dependencies": [
+        "RM-011",
+        "RM-012",
+        "RM-013",
+        "RM-024",
+        "RM-027"
+      ],
+      "capabilities": [
+        "process_sandbox",
+        "external_solver",
+        "openai_agents_outbound"
+      ],
+      "objective": "Provide durable, approval-bound process isolation and hard-stop evidence for non-cooperative external jobs.",
+      "targets": [
+        "future isolated job runner",
+        "solver/provider execution adapters",
+        "job artifacts"
+      ],
+      "acceptance_criteria": [
+        "Canonical argv plus transitive interpreter/library/image identity, approved secret references, minimal OS identity, closed stdin/handles, filesystem read/write allowlists with link-escape defense, default-deny network egress with destination allowlists, wall-clock kill, process-tree cleanup, CPU/memory/output caps, remote-cancel state, durable launch/effect_unknown/reconciliation states, and approval action digest are enforced."
+      ],
+      "tests": [
+        "hung child and process tree",
+        "output flood",
+        "cancel race",
+        "resource caps",
+        "filesystem and network escape",
+        "identity/handle/secret isolation",
+        "partial artifact",
+        "effect-unknown restart recovery",
+        "approval mismatch"
+      ],
+      "milestones": {
+        "entry": "P2-028A",
+        "completion": "P2-028A"
+      },
+      "relations": [
+        "Hard dependency for any RM-019/RM-020 execution that claims timeout or cancellation guarantees."
+      ],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "supported isolation platform",
+          "resource limits",
+          "external executables and licenses"
+        ]
+      }
     }
   ]
 }

@@ -10,10 +10,10 @@ Codexネイティブ層とPythonオーケストレーター層は別実行面で
 
 RM実装状態の正はpackage resourceとして設定したtracked JSON
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
-source/editable checkoutでの読込はcontract test対象ですが、wheel/sdist同梱はRM-018Aまで`UNKNOWN`です。
+source/editable checkoutとwheel/sdistの収載・runtime読込をcontract testとartifact smokeで検証します。
+特定release candidate全体のmatrix・license・artifact判定はRM-018Aのままです。
 人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
-`user_materials/ROADMAP.md`は承認方針・背景説明であり、runtimeやdoctorの入力ではありません。
 
 P2-010AのPython run経路は、strict versioned request/outcomeを使うpure phaseとserialな
 Analysis/ToolResearch effect境界へ分割されています。state transitionとartifact writeは引き続き
@@ -27,7 +27,7 @@ allowlist、UTC期限、classification、integrity、run/assignment/attempt/runt
 Codex/Python bridgeは追加していません。
 
 **FACT**: canonical SSOTではRM-024/P2-024AとP2-010Aを`completed`としている。
-RM-010はP2-010B待ちの`in_progress`、P2-010Bは別承認がないため`not_started`である。
+RM-010はP2-010B待ちの`in_progress`、P2-010Bは`not_started`である。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
@@ -269,7 +269,7 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Offline public release checklist](docs/public-release-checklist.md)
 - [RM status projection](docs/roadmap-status.md)
 - [Phase 2 readiness contracts](docs/phase2-readiness-contracts.md)
-- [Independent review remediation](docs/review-remediation.md)
+- [Correctness and security hardening](docs/review-remediation.md)
 
 ## ライセンス
 

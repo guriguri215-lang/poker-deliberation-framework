@@ -10,8 +10,6 @@
 - **FACT**: 現在のprovider timeoutは協調cancelであり、無視するin-process処理を停止できない。
 - **FACT**: 現在のapprovalにはactor、authority、revision、idempotency key、action digestがない。
 - **INFERENCE**: 下記contractとacceptance testを満たすまで、RM-010〜013をimplemented/completedと表示しない。
-- **ASSUMPTION**: このdraftは記載済みhuman approval事項を条件にfreezeする。未承認事項を実装判断で
-  補完せず、承認で意味が変わる場合はcontractとcanonical statusを同じ変更で改訂する。
 
 ## 共通原則
 
@@ -165,24 +163,16 @@ failureをexception textだけで保存せず、code、phase/attempt/revision、
 - failure後に`COMPLETED`を表示せず、orphan attemptを識別できる。
 - existing security、approval、context mutation、golden、tool contract testを維持する。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: P2-024A後にP2-010A（serial pure phase）を実装し、P2-012A後にP2-010B
 （durable integration）を行う。RM-010完了gateはP2-010Bである。
 
-Human approval:
+Public decision gates:
 
 - calculation assignment artifactの互換方針
 - context retention/classification
 - public phase schemaを安定APIとするか
-
-Safe commit units:
-
-1. phase schema/interfaceとcharacterization testsのみ。
-2. pure intake/normalization/routing/context phases。
-3. provider/tool effect adaptersとcorrelation checks。
-4. critique/adjudication/synthesis pure phases。
-5. orchestrator integrationとnormalized artifact parity。
 
 ---
 
@@ -316,24 +306,16 @@ Failures:
 - fake clockでphase/retry/backoff/serialization/writeのaccountingを検証する。
 - cooperative/uncooperative cancelを区別し、返却後に継続するjobを成功扱いしない。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: canonical milestone DAGのP2-010A → P2-011A → P2-012A → P2-011Bを使う。
 hard-stopはP2-028A、persistenceはP2-012A。RM-011完了gateはP2-011Bである。
 
-Human approval:
+Public decision gates:
 
 - multi-round/parallel deliberationを1より大きく有効化する製品判断
 - cost精度とprovider estimate policy
 - legacy field deprecation/support window
-
-Safe commit units:
-
-1. strict v2 budget schemaとv1 migration/characterization tests。
-2. clock、usage、reservation/settlement ledger。
-3. retry classifierとserial attempt loop。
-4. concurrency schedulerとstable reduction。
-5. cancel state、RM-028 interface、run manifest integration。
 
 ---
 
@@ -482,25 +464,17 @@ conflict。直接JSONL appendは禁止し、event segmentをimmutable fileとし
 - markerだけ、manifestだけ、terminal stateだけ、missing/corrupt/hash mismatchをcompletedにしない。
 - 2 writer/resumeのlost update、共有temp race、run byte reservation raceを再現し防止する。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: P2-010A、P2-011A、policy/schemaだけのP2-027Aを経てP2-012Aを実装する。
 P2-010B/P2-011B integration後にP2-012Bを完了gateとする。destructive cleanupのP2-027Bと
 approval lifecycleのP2-013Bを前提にしない。
 
-Human approval:
+Public decision gates:
 
 - v1 support/migration範囲、support window、in-place禁止方針
 - supported platform別durability target
 - lock wait/lease/stale policy、quarantine/retention/encryption
-
-Safe commit units:
-
-1. v2 manifest/marker/error schemaとreader（writer behaviorは未変更）。
-2. immutable revision writer、payload inventory/hash、current pointer revision CAS。
-3. revision-local completion marker last protocolとshow/load/public status mapping verification。
-4. cross-process lock/recoveryとconcurrency tests。
-5. v1 read-only migrationとRM-027 lifecycle hooks。
 
 ---
 
@@ -627,25 +601,17 @@ Postcondition:
 - concurrent resumeでlost updateやmixed winner artifactが生じない。
 - duplicate ledger、unknown ID、partial batch、terminal反対decisionをstructured failureにする。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: P2-012B後にP2-013A（actor/authority/digest/idempotency/CAS）を実装し、P2-013Aの
 destructive authorityを使うP2-027B後にP2-013B（resume/lifecycle）を完了gateとする。
 external executionではP2-011B、P2-024A、P2-028Aが必要。
 
-Human approval:
+Public decision gates:
 
 - actor identity/authority provider、approval expiry/revocation
 - authority scope taxonomy、audit retention
 - 将来external executorを追加するか
-
-Safe commit units:
-
-1. v2 actor/request/decision/error schemaとv1 characterization tests。
-2. strict ledger reader、all-or-nothing validation、action digest。
-3. RM-012 revision CASによるdecision transaction。
-4. resume idempotencyとCLI structured errors。
-5. external execution binding interface（executor本体なし）。
 
 ---
 
@@ -684,7 +650,3 @@ Safe commit units:
 9. P2-027B: authorized cleanup executor、dry-run digest、receipt/tombstone/reconciliation。
 10. P2-013B: resume/legacy reissue/expiry/revocation/lifecycle integration。
 11. P2-028A: isolation、durable external-effect state、cancel/reconciliation。
-12. Phase 2全体のfault-injection、backward compatibility、security再監査。
-
-各stepは独立commitとし、4品質ゲート、targeted contract/fault test、独立レビューがgreenになるまで
-次へ進めない。

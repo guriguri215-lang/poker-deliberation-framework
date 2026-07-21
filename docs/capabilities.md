@@ -79,7 +79,7 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 - **FACT**: 自動temp名はWindowsのpath消費を抑えるため短縮し、session固有性を維持する。
 - **UNKNOWN**: 深いclone先・深い明示`--basetemp`・long-path設定の異なるWindows環境。これらは
   `FileNotFoundError`等のOS path制約に影響され得るため、常時対応とは表示しない。
-- **UNKNOWN**: ローカルで実行していないOS/Python行、clean install、wheel/sdist、remote CIの結果。
+- **UNKNOWN**: ローカルで実行していないOS/Python行、release candidate全体、remote CIの結果。
 - **UNKNOWN**: coverage thresholdは人間承認値がないため、現在のbaselineでは設定しない。
 
 公開判断は[公開前チェックリスト](public-release-checklist.md)を参照してください。

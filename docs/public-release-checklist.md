@@ -59,9 +59,9 @@ scan不完全として扱います。候補を含むref/tag名は一覧にも平
 - supported OS/Python、coverage threshold、wheel/sdist内容、version/tag/changelog方針。
 - 履歴書換えが必要か。preflight自身は書換えない。
 
-Phase 0完了後も、ソース公開は人間の別判断です。2026-07-20の承認方針ではRM-018を2段階へ分割します。
+Phase 0完了後も、ソース公開は人間の別判断です。公開roadmapはRM-018を2段階へ分割します。
 
-- `RM-018A`はPhase 1直後かつpre-release tag前に置き、CI、承認済みsupported matrix、clean
+- `RM-018A`はPhase 1直後かつpre-release tag前に置き、CI、decision gateを満たすsupported matrix、clean
   build/install、wheel/sdist smoke、package data/CLI、license inventory、artifact SHA-256、offline
   preflightをcandidate commitへ結び付けます。
 - `RM-018B`はPhase 2完了後かつstable tag前に置き、SemVer、version/tag/changelog、migration、

@@ -233,7 +233,7 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
 - [Offline public release checklist](docs/public-release-checklist.md)
-- [Independent review remediation](docs/review-remediation.md)
+- [Correctness and security hardening](docs/review-remediation.md)
 
 ## ライセンス
 

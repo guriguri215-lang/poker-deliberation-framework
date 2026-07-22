@@ -471,6 +471,28 @@ class MutableClock:
         return self.value  # type: ignore[return-value]
 
 
+class ClockMutatingProvider(CostedProvider):
+    def __init__(self, clock: MutableClock, post_value: object) -> None:
+        super().__init__(ExecutionClass.LOCAL_FREE, None)
+        self.boundary_clock = clock
+        self.post_value = post_value
+
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        del context, control
+        self.calls += 1
+        self.boundary_clock.value = self.post_value
+        return AgentReport(
+            report_id=f"report-{assignment.agent_role}",
+            agent_role=assignment.agent_role,
+            task=assignment.task,
+        )
+
+
 @pytest.mark.parametrize(
     ("boundary_value", "expected_code"),
     [
@@ -503,6 +525,32 @@ def test_context_handoff_clock_failure_is_structured_before_provider_start(
     ).run(_strategy_case(), run_id=f"run-handoff-{expected_code}")
 
     assert provider.calls == 0
+    assert report.run_status == "failed_with_limitations"
+    assert any(expected_code in item for item in report.data_quality)
+
+
+@pytest.mark.parametrize(
+    ("post_value", "expected_code"),
+    [
+        (400_000_000, "clock_rollback"),
+        ("bad-clock", "usage_malformed"),
+    ],
+)
+def test_post_provider_clock_failure_stops_later_effects(
+    tmp_path: Path,
+    post_value: object,
+    expected_code: str,
+) -> None:
+    clock = MutableClock(500_000_000)
+    provider = ClockMutatingProvider(clock, post_value)
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=10.0),
+    ).run(_strategy_case(), run_id=f"run-post-provider-{expected_code}")
+
+    assert provider.calls == 1
     assert report.run_status == "failed_with_limitations"
     assert any(expected_code in item for item in report.data_quality)
 

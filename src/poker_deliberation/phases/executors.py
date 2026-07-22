@@ -129,26 +129,27 @@ def _analyze_with_timeout(
         observed_start_ns=effect_start_ns,
     )
 
+    def typed_clock_failure(exc: ValueError) -> BudgetLimitError:
+        message = str(exc)
+        rollback = "backwards" in message
+        return BudgetLimitError(
+            BudgetFailure(
+                code=(
+                    BudgetFailureCode.CLOCK_ROLLBACK
+                    if rollback
+                    else BudgetFailureCode.USAGE_MALFORMED
+                ),
+                resource="active_runtime_ns" if rollback else "clock",
+                message=message,
+            )
+        )
+
     def invoke() -> None:
         try:
             try:
                 control.raise_if_cancelled()
             except ValueError as exc:
-                message = str(exc)
-                code = (
-                    BudgetFailureCode.CLOCK_ROLLBACK
-                    if "backwards" in message
-                    else BudgetFailureCode.USAGE_MALFORMED
-                )
-                errors.append(
-                    BudgetLimitError(
-                        BudgetFailure(
-                            code=code,
-                            resource="active_runtime_ns" if "backwards" in message else "clock",
-                            message=message,
-                        )
-                    )
-                )
+                errors.append(typed_clock_failure(exc))
                 return
             results.append(provider.analyze(context, assignment, control))
         except Exception as exc:  # the boundary classifies provider failures below
@@ -172,7 +173,11 @@ def _analyze_with_timeout(
         raise error
     if not results:
         raise RuntimeError("provider returned no report")
-    if control.deadline_status is DeadlineStatus.TIMED_OUT:
+    try:
+        final_deadline_status = control.deadline_status
+    except ValueError as exc:
+        raise typed_clock_failure(exc) from exc
+    if final_deadline_status is DeadlineStatus.TIMED_OUT:
         control.request_cancel()
         raise ProviderControlError(
             f"provider exceeded deadline {effect_timeout_seconds} seconds",

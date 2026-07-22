@@ -483,6 +483,23 @@ class MutableClock:
         return self.value  # type: ignore[return-value]
 
 
+class SequenceAfterActivationClock:
+    def __init__(self, values: list[int]) -> None:
+        self.values = values
+        self.active = False
+        self.index = 0
+
+    def activate(self) -> None:
+        self.active = True
+
+    def now_ns(self) -> int:
+        if not self.active:
+            return 0
+        value = self.values[min(self.index, len(self.values) - 1)]
+        self.index += 1
+        return value
+
+
 class ClockMutatingProvider(CostedProvider):
     def __init__(self, clock: MutableClock, post_value: object) -> None:
         super().__init__(ExecutionClass.LOCAL_FREE, None)
@@ -569,6 +586,42 @@ def test_post_provider_clock_failure_stops_later_effects(
     assert any(expected_code in item for item in report.data_quality)
 
 
+def test_provider_effect_high_water_stops_later_effects_after_rollback(
+    tmp_path: Path,
+) -> None:
+    clock = SequenceAfterActivationClock([500_000_000, 400_000_000])
+
+    class HighWaterProvider(CostedProvider):
+        def analyze(
+            self,
+            context: AgentContext,
+            assignment: AgentAssignment,
+            control: ProviderControl,
+        ) -> AgentReport:
+            del context, control
+            self.calls += 1
+            clock.activate()
+            return AgentReport(
+                report_id=f"report-{assignment.agent_role}",
+                agent_role=assignment.agent_role,
+                task=assignment.task,
+            )
+
+    provider = HighWaterProvider(ExecutionClass.LOCAL_FREE, None)
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=10.0),
+    )
+    report = orchestrator.run(_strategy_case(), run_id="run-provider-high-water-rollback")
+
+    assert provider.calls == 1
+    assert report.run_status == "failed_with_limitations"
+    events = orchestrator._run_machines[report.run_id].snapshot()["events"]
+    assert any("clock_rollback" in str(event) for event in events)
+
+
 class AdvancingNormalizationService(NormalizationService):
     def __init__(self, clock: FakeMonotonicClock) -> None:
         self.clock = clock
@@ -653,6 +706,49 @@ def test_tool_effect_boundary_rechecks_absolute_run_deadline(tmp_path: Path) -> 
     assert effect_calls == 0
     assert report.run_status == "failed_with_limitations"
     assert any("runtime_exceeded" in item for item in report.data_quality)
+
+
+def test_tool_effect_high_water_is_carried_between_serial_tools(tmp_path: Path) -> None:
+    clock = SequenceAfterActivationClock([500_000_000, 500_000_000, 400_000_000])
+    effect_calls: list[str] = []
+
+    def first_tool(_: dict[str, object]) -> dict[str, object]:
+        effect_calls.append("first")
+        clock.activate()
+        return {"value": 1}
+
+    def second_tool(_: dict[str, object]) -> dict[str, object]:
+        effect_calls.append("second")
+        return {"value": 2}
+
+    registry = ToolRegistry(monotonic_clock=clock)
+    for name, function in (("first", first_tool), ("second", second_tool)):
+        registry.register(
+            ToolDefinition(
+                name=name,
+                purpose="serial high-water fixture",
+                exact_or_approximate="exact",
+                supported_games=("fixture",),
+                function=function,
+            )
+        )
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        registry=registry,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=10.0),
+    ).run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["first", "second"],
+        ),
+        run_id="run-tool-high-water-rollback",
+    )
+
+    assert effect_calls == ["first"]
+    assert report.run_status == "failed_with_limitations"
+    assert any("clock_rollback" in item for item in report.data_quality)
 
 
 class AdvancingSynthesisService(SynthesisService):

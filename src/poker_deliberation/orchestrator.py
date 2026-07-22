@@ -438,7 +438,14 @@ class Orchestrator:
                     raise PhaseContractError("hand validation returned no output")
                 validate_tool_research_output(tool_phase_request, tool_phase_outcome.output)
                 try:
-                    machine.apply_usage(tool_phase_outcome.output.usage_delta)
+                    if tool_phase_outcome.output.usage_observed_at_ns is None:
+                        raise PhaseContractError(
+                            "budgeted hand validation returned no usage observation"
+                        )
+                    machine.apply_usage_at(
+                        tool_phase_outcome.output.usage_delta,
+                        observed_at_ns=tool_phase_outcome.output.usage_observed_at_ns,
+                    )
                 except BudgetLimitError as exc:
                     data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
                     machine.transition(
@@ -761,7 +768,10 @@ class Orchestrator:
                 execution_records.append(analysis.execution_record)
                 data_quality.extend(analysis.data_quality)
                 try:
-                    machine.apply_usage(analysis.usage_delta)
+                    machine.apply_usage_at(
+                        analysis.usage_delta,
+                        observed_at_ns=analysis.usage_observed_at_ns,
+                    )
                 except BudgetLimitError as exc:
                     data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
                     machine.transition(
@@ -966,7 +976,12 @@ class Orchestrator:
             raise PhaseContractError("tool research returned no output")
         validate_tool_research_output(requested_tools_request, requested_tools_outcome.output)
         try:
-            machine.apply_usage(requested_tools_outcome.output.usage_delta)
+            if requested_tools_outcome.output.usage_observed_at_ns is None:
+                raise PhaseContractError("budgeted tool research returned no usage observation")
+            machine.apply_usage_at(
+                requested_tools_outcome.output.usage_delta,
+                observed_at_ns=requested_tools_outcome.output.usage_observed_at_ns,
+            )
         except BudgetLimitError as exc:
             data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
             machine.transition(

@@ -216,6 +216,14 @@ class WorkflowStateMachine:
     def apply_usage(self, delta: UsageDelta) -> BudgetSnapshot:
         return self.ledger.apply(delta)
 
+    def apply_usage_at(
+        self,
+        delta: UsageDelta,
+        *,
+        observed_at_ns: int,
+    ) -> BudgetSnapshot:
+        return self.ledger.apply_at(delta, observed_at_ns=observed_at_ns)
+
     def usage_snapshot(self) -> BudgetSnapshot:
         return self.ledger.snapshot()
 

@@ -181,6 +181,7 @@ class AnalysisOutput(PhasePayload):
     data_quality: tuple[str, ...] = ()
     timed_out: bool = False
     usage_delta: UsageDelta = Field(default_factory=UsageDelta)
+    usage_observed_at_ns: int = Field(ge=0)
     budget_failure: BudgetFailure | None = None
     retry_classification: RetryClassification | None = None
     deadline_status: DeadlineStatus = DeadlineStatus.ACTIVE
@@ -287,6 +288,7 @@ class ToolResearchOutput(PhasePayload):
     bindings: tuple[ToolExecutionBinding, ...]
     data_quality: tuple[str, ...] = ()
     usage_delta: UsageDelta = Field(default_factory=UsageDelta)
+    usage_observed_at_ns: int | None = Field(default=None, ge=0)
     budget_failure: BudgetFailure | None = None
     retry_classifications: tuple[RetryClassification | None, ...] = ()
 

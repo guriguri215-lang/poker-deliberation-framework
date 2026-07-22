@@ -72,6 +72,13 @@ class SerialUsageLedger:
         except BudgetLimitError as exc:
             self._clock_failure = exc.failure
             raise
+        self._settle_runtime_observation(now)
+
+    def _settle_runtime_observation(self, now: int) -> None:
+        """Settle one validated clock high-water observation into this ledger."""
+
+        if self._clock_failure is not None:
+            raise BudgetLimitError(self._clock_failure)
         if now < self._last_ns:
             self._clock_failure = BudgetFailure(
                 code=BudgetFailureCode.CLOCK_ROLLBACK,
@@ -186,6 +193,27 @@ class SerialUsageLedger:
 
     def apply(self, delta: UsageDelta) -> BudgetSnapshot:
         self._observe_runtime()
+        candidate = self._snapshot.apply(delta)
+        self._validate_snapshot(candidate)
+        self._snapshot = candidate
+        return self._snapshot
+
+    def apply_at(self, delta: UsageDelta, *, observed_at_ns: int) -> BudgetSnapshot:
+        """Settle usage at an effect boundary's monotonic clock high-water mark."""
+
+        if (
+            isinstance(observed_at_ns, bool)
+            or not isinstance(observed_at_ns, int)
+            or observed_at_ns < 0
+        ):
+            failure = BudgetFailure(
+                code=BudgetFailureCode.USAGE_MALFORMED,
+                resource="clock",
+                message="effect clock observation must be non-negative integer nanoseconds",
+            )
+            self._clock_failure = failure
+            raise BudgetLimitError(failure)
+        self._settle_runtime_observation(observed_at_ns)
         candidate = self._snapshot.apply(delta)
         self._validate_snapshot(candidate)
         self._snapshot = candidate

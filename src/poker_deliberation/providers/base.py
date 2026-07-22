@@ -139,6 +139,14 @@ class ProviderControl:
         return self._cancellation_status
 
     @property
+    def observed_at_ns(self) -> int:
+        """Return the greatest validated clock observation made by this control."""
+
+        # Do not wait on the clock lock here: a timed-out worker may still be
+        # blocked inside an injected clock implementation while holding it.
+        return self._last_ns
+
+    @property
     def remaining_seconds(self) -> float:
         elapsed = self._elapsed_ns() / 1_000_000_000
         return max(0.0, self.timeout_seconds - elapsed)

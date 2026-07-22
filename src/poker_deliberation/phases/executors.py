@@ -84,6 +84,7 @@ def _analyze_with_timeout(
     run_deadline_ns: int,
     runtime_limit_ns: int,
     active_runtime_ns: int,
+    observation_sink: list[int],
 ) -> AgentReport:
     results: list[AgentReport] = []
     errors: list[Exception] = []
@@ -109,6 +110,7 @@ def _analyze_with_timeout(
                 message="monotonic clock must return non-negative integer nanoseconds",
             )
         )
+    observation_sink.append(effect_start_ns)
     if effect_start_ns < budget_observed_at_ns:
         raise BudgetLimitError(
             BudgetFailure(
@@ -172,20 +174,25 @@ def _analyze_with_timeout(
         worker.join(min(0.5, max(0.05, effect_timeout_seconds)))
         if worker.is_alive() or control.cancellation_status is not CancellationStatus.CANCELLED:
             control.mark_cancel_unconfirmed()
+        observation_sink.append(control.observed_at_ns)
         raise ProviderControlError(
             f"provider exceeded deadline {effect_timeout_seconds} seconds",
             deadline_status=DeadlineStatus.TIMED_OUT,
             cancellation_status=control.cancellation_status,
         )
     if errors:
+        observation_sink.append(control.observed_at_ns)
         error = errors[0]
         raise error
     if not results:
+        observation_sink.append(control.observed_at_ns)
         raise RuntimeError("provider returned no report")
     try:
         final_deadline_status = control.deadline_status
     except ValueError as exc:
+        observation_sink.append(control.observed_at_ns)
         raise typed_clock_failure(exc) from exc
+    observation_sink.append(control.observed_at_ns)
     if final_deadline_status is DeadlineStatus.TIMED_OUT:
         control.request_cancel()
         raise ProviderControlError(
@@ -229,6 +236,14 @@ def validate_tool_research_output(
     """Bind every result to the exact outer request before materialization."""
 
     value = request.input
+    if (value.budget_policy is None) != (output.usage_observed_at_ns is None):
+        raise PhaseContractError("tool usage observation must match budgeted execution")
+    if (
+        value.budget_observed_at_ns is not None
+        and output.usage_observed_at_ns is not None
+        and output.usage_observed_at_ns < value.budget_observed_at_ns
+    ):
+        raise PhaseContractError("tool usage observation moved backwards")
     if len(output.bindings) != len(value.requests):
         raise PhaseContractError("tool binding count does not match phase request")
     seen_result_ids = set(value.existing_result_ids)
@@ -256,6 +271,8 @@ def validate_analysis_output(
     """Bind a provider result to its exact dispatch before materialization."""
 
     value = request.input
+    if output.usage_observed_at_ns < value.budget_observed_at_ns:
+        raise PhaseContractError("analysis usage observation moved backwards")
     dispatch = value.dispatch
     assignment = dispatch.assignment
     context = dispatch.context
@@ -330,6 +347,7 @@ class AnalysisExecutor:
         budget_failure: BudgetFailure | None = None
         retry_classification = None
         usage_delta = UsageDelta()
+        effect_observations = [value.budget_observed_at_ns]
         accepted_provider_output = False
         provider_output_size = 0
         try:
@@ -373,6 +391,7 @@ class AnalysisExecutor:
                     run_deadline_ns=value.run_deadline_ns,
                     runtime_limit_ns=value.budget_policy.runtime_limit_ns,
                     active_runtime_ns=value.budget_snapshot.active_runtime_ns,
+                    observation_sink=effect_observations,
                 )
             except ProviderControlError:
                 raise
@@ -614,6 +633,7 @@ class AnalysisExecutor:
             data_quality=tuple(warnings),
             timed_out=timed_out,
             usage_delta=usage_delta,
+            usage_observed_at_ns=max(effect_observations),
             budget_failure=budget_failure,
             retry_classification=retry_classification,
             deadline_status=deadline_status,
@@ -651,6 +671,9 @@ class ToolResearchExecutor:
         any_failure = False
         budget_failure: BudgetFailure | None = None
         usage_delta = UsageDelta()
+        effect_observations = (
+            [value.budget_observed_at_ns] if value.budget_observed_at_ns is not None else []
+        )
         budget_ledger = (
             SerialUsageLedger(
                 value.budget_policy,
@@ -696,6 +719,10 @@ class ToolResearchExecutor:
                                 if value.budget_snapshot is not None
                                 else None
                             ),
+                            runtime_not_before_ns=(
+                                max(effect_observations) if effect_observations else None
+                            ),
+                            observation_sink=effect_observations,
                         )
                         if callable(phase_execute)
                         else self.registry.execute(
@@ -905,6 +932,7 @@ class ToolResearchExecutor:
             bindings=tuple(bindings),
             data_quality=tuple(warnings),
             usage_delta=usage_delta,
+            usage_observed_at_ns=(max(effect_observations) if effect_observations else None),
             budget_failure=budget_failure,
             retry_classifications=tuple(retry_classifications),
         )

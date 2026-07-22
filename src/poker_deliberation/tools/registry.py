@@ -153,12 +153,15 @@ class ToolRegistry:
         _run_deadline_ns: int | None = None,
         _runtime_limit_ns: int | None = None,
         _active_runtime_ns: int | None = None,
+        _runtime_not_before_ns: int | None = None,
+        _observation_sink: list[int] | None = None,
     ) -> ToolResult:
         runtime_values = (
             _budget_observed_at_ns,
             _run_deadline_ns,
             _runtime_limit_ns,
             _active_runtime_ns,
+            _runtime_not_before_ns,
         )
         if any(item is not None for item in runtime_values) and any(
             item is None for item in runtime_values
@@ -176,6 +179,8 @@ class ToolRegistry:
                         message=f"monotonic clock read failed: {type(exc).__name__}",
                     )
                 ) from exc
+            if _observation_sink is not None:
+                _observation_sink.append(value)
             if value < not_before_ns:
                 raise BudgetLimitError(
                     BudgetFailure(
@@ -232,7 +237,7 @@ class ToolRegistry:
         started = 0
         try:
             started = (
-                read_phase_clock(_budget_observed_at_ns or 0)
+                read_phase_clock(_runtime_not_before_ns or 0)
                 if _run_deadline_ns is not None
                 else self._read_clock()
             )
@@ -252,7 +257,7 @@ class ToolRegistry:
                 validated_input = contract.input_model.model_validate(payload)
                 normalized_payload = validated_input.model_dump(mode="python", exclude_unset=True)
             effect_started_ns = (
-                read_phase_clock(max(started, _budget_observed_at_ns or 0))
+                read_phase_clock(max(started, _runtime_not_before_ns or 0))
                 if _run_deadline_ns is not None
                 else started
             )
@@ -411,6 +416,8 @@ class ToolRegistry:
         run_deadline_ns: int | None = None,
         runtime_limit_ns: int | None = None,
         active_runtime_ns: int | None = None,
+        runtime_not_before_ns: int | None = None,
+        observation_sink: list[int] | None = None,
     ) -> ToolResult:
         """Execute with typed byte-limit signaling for the orchestrated phase boundary."""
 
@@ -423,6 +430,8 @@ class ToolRegistry:
             _run_deadline_ns=run_deadline_ns,
             _runtime_limit_ns=runtime_limit_ns,
             _active_runtime_ns=active_runtime_ns,
+            _runtime_not_before_ns=runtime_not_before_ns,
+            _observation_sink=observation_sink,
         )
 
 

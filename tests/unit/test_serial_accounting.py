@@ -55,6 +55,19 @@ def test_fake_clock_rollback_is_rejected() -> None:
     assert error.value.failure.code is BudgetFailureCode.CLOCK_ROLLBACK
 
 
+def test_effect_clock_high_water_is_settled_before_next_observation() -> None:
+    clock = FakeMonotonicClock(current_ns=100)
+    ledger = SerialUsageLedger(BudgetPolicyV2(), clock=clock)
+
+    settled = ledger.apply_at(UsageDelta(tool_attempts=1), observed_at_ns=500)
+    assert settled.active_runtime_ns == 400
+    clock.set_ns(400)
+
+    with pytest.raises(BudgetLimitError) as error:
+        ledger.snapshot()
+    assert error.value.failure.code is BudgetFailureCode.CLOCK_ROLLBACK
+
+
 def test_paused_human_wait_is_not_charged() -> None:
     clock = FakeMonotonicClock()
     ledger = SerialUsageLedger(BudgetPolicyV2(max_runtime_seconds=2.0), clock=clock)

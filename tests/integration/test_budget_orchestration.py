@@ -145,7 +145,7 @@ def test_external_cost_is_refused_before_provider_call(
 
     assert provider.calls == 0
     assert report.run_status == "failed_with_limitations"
-    assert any("strict budget" in item for item in report.data_quality)
+    assert any("budget refused" in item for item in report.data_quality)
 
 
 def test_known_external_cost_under_cap_is_accounted_serially(tmp_path: Path) -> None:
@@ -398,6 +398,32 @@ def test_context_build_runtime_overrun_refuses_provider_start(tmp_path: Path) ->
     assert provider.calls == 0
     assert report.run_status == "failed_with_limitations"
     assert "maximum runtime reached during context build" in report.data_quality
+
+
+def test_context_handoff_runtime_overrun_refuses_provider_start(tmp_path: Path) -> None:
+    clock = FakeMonotonicClock()
+    provider = CostedProvider(ExecutionClass.LOCAL_FREE, None)
+    context_clock_calls = 0
+
+    def context_clock() -> datetime:
+        nonlocal context_clock_calls
+        context_clock_calls += 1
+        if context_clock_calls == 2:
+            clock.advance_ns(2_000_000_000)
+        return datetime.now(UTC)
+
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        context_clock=context_clock,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    ).run(_strategy_case(), run_id="run-context-handoff-overrun")
+
+    assert context_clock_calls == 2
+    assert provider.calls == 0
+    assert report.run_status == "failed_with_limitations"
+    assert any("budget refused" in item for item in report.data_quality)
 
 
 class AdvancingSynthesisService(SynthesisService):

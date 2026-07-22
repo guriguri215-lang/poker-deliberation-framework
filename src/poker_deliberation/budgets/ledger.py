@@ -159,6 +159,13 @@ class SerialUsageLedger:
         self._observe_runtime()
         return self._snapshot
 
+    def runtime_window(self) -> tuple[BudgetSnapshot, int, int]:
+        """Return one atomic snapshot, its clock observation, and absolute run deadline."""
+
+        self._observe_runtime()
+        remaining_ns = self.policy.runtime_limit_ns - self._snapshot.active_runtime_ns
+        return self._snapshot, self._last_ns, self._last_ns + remaining_ns
+
     def apply(self, delta: UsageDelta) -> BudgetSnapshot:
         self._observe_runtime()
         candidate = self._snapshot.apply(delta)

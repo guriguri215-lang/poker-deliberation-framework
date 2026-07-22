@@ -157,6 +157,8 @@ class AnalysisInput(PhasePayload):
     provider_availability: ProviderAvailability
     budget_policy: BudgetPolicyV2
     budget_snapshot: BudgetSnapshot
+    budget_observed_at_ns: int = Field(ge=0)
+    run_deadline_ns: int = Field(ge=1)
 
     @model_validator(mode="after")
     def budget_snapshot_matches_policy(self) -> AnalysisInput:
@@ -164,6 +166,8 @@ class AnalysisInput(PhasePayload):
             raise ValueError("analysis budget snapshot policy mismatch")
         if self.max_output_bytes != self.budget_policy.max_provider_output_bytes:
             raise ValueError("compatibility output cap must match budget policy")
+        if self.run_deadline_ns <= self.budget_observed_at_ns:
+            raise ValueError("analysis requires a positive absolute runtime window")
         return self
 
 

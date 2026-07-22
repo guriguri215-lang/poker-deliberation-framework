@@ -262,6 +262,46 @@ class AnalysisExecutor:
             )
             if not provider_info.available:
                 raise ContextHandoffRefused("provider is not available for context handoff")
+            effect_start_ns = self.monotonic_clock.now_ns()
+            if (
+                isinstance(effect_start_ns, bool)
+                or not isinstance(effect_start_ns, int)
+                or effect_start_ns < 0
+            ):
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.USAGE_MALFORMED,
+                        resource="clock",
+                        message="monotonic clock must return non-negative integer nanoseconds",
+                    )
+                )
+            if effect_start_ns < value.budget_observed_at_ns:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.CLOCK_ROLLBACK,
+                        resource="active_runtime_ns",
+                        message="monotonic clock moved backwards before provider execution",
+                        observed=value.budget_observed_at_ns - effect_start_ns,
+                    )
+                )
+            if effect_start_ns >= value.run_deadline_ns:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.RUNTIME_EXCEEDED,
+                        resource="active_runtime_ns",
+                        message="active runtime expired before provider execution",
+                        limit=value.budget_policy.runtime_limit_ns,
+                        observed=(
+                            value.budget_snapshot.active_runtime_ns
+                            + effect_start_ns
+                            - value.budget_observed_at_ns
+                        ),
+                    )
+                )
+            effect_timeout_seconds = min(
+                value.provider_timeout_seconds,
+                (value.run_deadline_ns - effect_start_ns) / 1_000_000_000,
+            )
             attempt_ledger = SerialUsageLedger(
                 value.budget_policy,
                 clock=self.monotonic_clock,
@@ -286,7 +326,7 @@ class AnalysisExecutor:
                     self.provider,
                     provider_context,
                     assignment.model_copy(deep=True),
-                    value.provider_timeout_seconds,
+                    effect_timeout_seconds,
                     self.monotonic_clock,
                 )
             except ProviderControlError:

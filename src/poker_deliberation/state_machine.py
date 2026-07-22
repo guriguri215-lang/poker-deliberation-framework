@@ -213,6 +213,9 @@ class WorkflowStateMachine:
     def usage_snapshot(self) -> BudgetSnapshot:
         return self.ledger.snapshot()
 
+    def runtime_window(self) -> tuple[BudgetSnapshot, int, int]:
+        return self.ledger.runtime_window()
+
     def pause_active_runtime(self) -> None:
         self.ledger.pause()
 

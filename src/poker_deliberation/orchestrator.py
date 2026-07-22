@@ -485,8 +485,8 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                usage_before = machine.usage_snapshot()
-                remaining_ns = self.budget_policy.runtime_limit_ns - usage_before.active_runtime_ns
+                usage_before, budget_observed_at_ns, run_deadline_ns = machine.runtime_window()
+                remaining_ns = run_deadline_ns - budget_observed_at_ns
                 if remaining_ns <= 0:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
@@ -579,8 +579,8 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                usage_before = machine.usage_snapshot()
-                remaining_ns = self.budget_policy.runtime_limit_ns - usage_before.active_runtime_ns
+                usage_before, budget_observed_at_ns, run_deadline_ns = machine.runtime_window()
+                remaining_ns = run_deadline_ns - budget_observed_at_ns
                 if remaining_ns <= 0:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
@@ -620,8 +620,8 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                usage_before = machine.usage_snapshot()
-                remaining_ns = self.budget_policy.runtime_limit_ns - usage_before.active_runtime_ns
+                usage_before, budget_observed_at_ns, run_deadline_ns = machine.runtime_window()
+                remaining_ns = run_deadline_ns - budget_observed_at_ns
                 if remaining_ns <= 0:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
@@ -663,6 +663,8 @@ class Orchestrator:
                         provider_availability=provider_info,
                         budget_policy=self.budget_policy,
                         budget_snapshot=usage_before,
+                        budget_observed_at_ns=budget_observed_at_ns,
+                        run_deadline_ns=run_deadline_ns,
                     ),
                 )
                 analysis_outcome = revalidate_outcome(

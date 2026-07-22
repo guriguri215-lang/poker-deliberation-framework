@@ -29,3 +29,5 @@ Thumbs.db
 tmp/
 runs/*
 !runs/.gitkeep
+/PLAN.md
+/PROGRESS.md

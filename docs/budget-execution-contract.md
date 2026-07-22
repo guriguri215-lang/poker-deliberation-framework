@@ -45,9 +45,10 @@ limit; the typed failure then remains sticky and blocks later effects. `RunStore
 projected artifact and run sizes to the in-memory ledger before each write. Clock rollback and
 policy-hash substitution fail closed.
 
-After a sticky runtime or clock-observation failure, the ledger no longer accepts storage
-observations. Failure-report writes still pass through `RunStore`'s independent artifact/run hard
-caps, but those later physical bytes are not represented in the settled in-memory snapshot.
+After a sticky runtime or clock-observation failure, the orchestrator stops forwarding storage
+observations to the ledger. Failure-report writes still pass through `RunStore`'s independent
+artifact/run hard caps, but those later physical bytes are not represented in the settled in-memory
+snapshot.
 
 Provider availability declares `local_free`, `external`, or `unknown` execution. Unknown execution,
 unknown external cost, a zero external-cost cap, and over-cap estimated cost are rejected before

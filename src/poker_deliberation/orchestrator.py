@@ -408,6 +408,7 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
+                hand_usage, hand_observed_at_ns, hand_deadline_ns = machine.runtime_window()
                 hand_request = ToolRequest(
                     request_id=_new_internal_id("tool-request"),
                     tool_name="hand_validator",
@@ -423,7 +424,9 @@ class Orchestrator:
                         requests=(hand_request,),
                         fallback_result_ids=(_new_internal_id("tool-result"),),
                         budget_policy=self.budget_policy,
-                        budget_snapshot=machine.usage_snapshot(),
+                        budget_snapshot=hand_usage,
+                        budget_observed_at_ns=hand_observed_at_ns,
+                        run_deadline_ns=hand_deadline_ns,
                     ),
                 )
                 tool_phase_outcome = revalidate_outcome(
@@ -935,6 +938,7 @@ class Orchestrator:
                 completed=False,
                 machine=machine,
             )
+        tool_usage, tool_observed_at_ns, tool_deadline_ns = machine.runtime_window()
         requested_tools_request = make_phase_request(
             run_id=actual_run_id,
             phase_id=PhaseId.TOOL_RESEARCH,
@@ -948,7 +952,9 @@ class Orchestrator:
                     _new_internal_id("tool-result") for _ in requested_tool_calls
                 ),
                 budget_policy=self.budget_policy,
-                budget_snapshot=machine.usage_snapshot(),
+                budget_snapshot=tool_usage,
+                budget_observed_at_ns=tool_observed_at_ns,
+                run_deadline_ns=tool_deadline_ns,
             ),
         )
         requested_tools_outcome = revalidate_outcome(

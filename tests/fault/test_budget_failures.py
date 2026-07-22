@@ -137,11 +137,26 @@ class MalformedClock:
         return "not-an-integer"  # type: ignore[return-value]
 
 
+class RaisingClock:
+    def now_ns(self) -> int:
+        raise RuntimeError("clock unavailable")
+
+
 def test_malformed_clock_fails_as_typed_usage_error() -> None:
     with pytest.raises(BudgetLimitError) as error:
         SerialUsageLedger(BudgetPolicyV2(), clock=MalformedClock())
 
     assert error.value.failure.code is BudgetFailureCode.USAGE_MALFORMED
+
+
+def test_raising_clock_returns_typed_run_limitation(tmp_path: Path) -> None:
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=RaisingClock(),
+    ).run(_strategy_case(), run_id="run-raising-clock")
+
+    assert report.run_status == "failed_with_limitations"
+    assert any("usage_malformed" in item for item in report.data_quality)
 
 
 @pytest.mark.parametrize(

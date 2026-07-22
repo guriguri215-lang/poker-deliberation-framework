@@ -99,7 +99,12 @@ class ProviderControl:
         if not math.isfinite(float(self.timeout_seconds)) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         self.timeout_seconds = float(self.timeout_seconds)
-        started = self.clock.now_ns() if self.observed_start_ns is None else self.observed_start_ns
+        try:
+            started = (
+                self.clock.now_ns() if self.observed_start_ns is None else self.observed_start_ns
+            )
+        except Exception as exc:
+            raise ValueError(f"monotonic clock read failed: {type(exc).__name__}") from exc
         if isinstance(started, bool) or not isinstance(started, int) or started < 0:
             raise ValueError("monotonic clock must return non-negative integer nanoseconds")
         self._started_ns = started
@@ -107,7 +112,10 @@ class ProviderControl:
 
     def _read_clock(self) -> int:
         with self._clock_lock:
-            value = self.clock.now_ns()
+            try:
+                value = self.clock.now_ns()
+            except Exception as exc:
+                raise ValueError(f"monotonic clock read failed: {type(exc).__name__}") from exc
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ValueError("monotonic clock must return non-negative integer nanoseconds")
             if value < self._last_ns:

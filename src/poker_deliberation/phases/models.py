@@ -209,6 +209,8 @@ class ToolResearchInput(PhasePayload):
     fallback_result_ids: tuple[str, ...] = ()
     budget_policy: BudgetPolicyV2 | None = None
     budget_snapshot: BudgetSnapshot | None = None
+    budget_observed_at_ns: int | None = Field(default=None, ge=0)
+    run_deadline_ns: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def fallback_count_matches_requests(self) -> ToolResearchInput:
@@ -219,12 +221,28 @@ class ToolResearchInput(PhasePayload):
             raise ValueError("tool request IDs must be unique")
         if (self.budget_policy is None) != (self.budget_snapshot is None):
             raise ValueError("tool budget policy and snapshot must be provided together")
+        budget_values = (
+            self.budget_policy,
+            self.budget_snapshot,
+            self.budget_observed_at_ns,
+            self.run_deadline_ns,
+        )
+        if any(item is not None for item in budget_values) and any(
+            item is None for item in budget_values
+        ):
+            raise ValueError("tool budget policy, snapshot, observation, and deadline are atomic")
         if (
             self.budget_policy is not None
             and self.budget_snapshot is not None
             and self.budget_snapshot.policy_sha256 != self.budget_policy.canonical_sha256
         ):
             raise ValueError("tool budget snapshot policy mismatch")
+        if (
+            self.budget_observed_at_ns is not None
+            and self.run_deadline_ns is not None
+            and self.run_deadline_ns <= self.budget_observed_at_ns
+        ):
+            raise ValueError("tool execution requires a positive absolute runtime window")
         return self
 
 

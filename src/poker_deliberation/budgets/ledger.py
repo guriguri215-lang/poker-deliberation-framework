@@ -36,7 +36,16 @@ class SerialUsageLedger:
         self._validate_snapshot(self._snapshot)
 
     def _read_clock(self) -> int:
-        now = self.clock.now_ns()
+        try:
+            now = self.clock.now_ns()
+        except Exception as exc:
+            raise BudgetLimitError(
+                BudgetFailure(
+                    code=BudgetFailureCode.USAGE_MALFORMED,
+                    resource="clock",
+                    message=f"monotonic clock read failed: {type(exc).__name__}",
+                )
+            ) from exc
         if isinstance(now, bool) or not isinstance(now, int):
             raise BudgetLimitError(
                 BudgetFailure(

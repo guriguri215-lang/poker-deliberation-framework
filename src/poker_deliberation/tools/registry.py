@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Any
 
 from poker_deliberation.budgets import (
+    BudgetFailure,
+    BudgetFailureCode,
+    BudgetLimitError,
     MonotonicClock,
     SystemMonotonicClock,
     canonical_json_utf8_size,
@@ -146,7 +149,56 @@ class ToolRegistry:
         *,
         contract_version: str | None = None,
         _raise_on_byte_limit: bool = False,
+        _budget_observed_at_ns: int | None = None,
+        _run_deadline_ns: int | None = None,
+        _runtime_limit_ns: int | None = None,
+        _active_runtime_ns: int | None = None,
     ) -> ToolResult:
+        runtime_values = (
+            _budget_observed_at_ns,
+            _run_deadline_ns,
+            _runtime_limit_ns,
+            _active_runtime_ns,
+        )
+        if any(item is not None for item in runtime_values) and any(
+            item is None for item in runtime_values
+        ):
+            raise ValueError("tool runtime boundary values must be provided together")
+
+        def read_phase_clock(not_before_ns: int) -> int:
+            try:
+                value = self._read_clock()
+            except Exception as exc:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.USAGE_MALFORMED,
+                        resource="clock",
+                        message=f"monotonic clock read failed: {type(exc).__name__}",
+                    )
+                ) from exc
+            if value < not_before_ns:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.CLOCK_ROLLBACK,
+                        resource="active_runtime_ns",
+                        message="monotonic clock moved backwards before or during tool execution",
+                        observed=not_before_ns - value,
+                    )
+                )
+            if _run_deadline_ns is not None and value >= _run_deadline_ns:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.RUNTIME_EXCEEDED,
+                        resource="active_runtime_ns",
+                        message="active runtime expired before or during tool execution",
+                        limit=_runtime_limit_ns,
+                        observed=(
+                            (_active_runtime_ns or 0) + value - (_budget_observed_at_ns or 0)
+                        ),
+                    )
+                )
+            return value
+
         known_definition = self._tools.get(name)
         known_contract = known_definition.contract if known_definition is not None else None
         payload_size = canonical_json_utf8_size(payload)
@@ -179,7 +231,11 @@ class ToolRegistry:
         definition = known_definition
         started = 0
         try:
-            started = self._read_clock()
+            started = (
+                read_phase_clock(_budget_observed_at_ns or 0)
+                if _run_deadline_ns is not None
+                else self._read_clock()
+            )
             contract = definition.contract
             if (
                 contract is not None
@@ -195,10 +251,20 @@ class ToolRegistry:
             if contract is not None:
                 validated_input = contract.input_model.model_validate(payload)
                 normalized_payload = validated_input.model_dump(mode="python", exclude_unset=True)
+            effect_started_ns = (
+                read_phase_clock(max(started, _budget_observed_at_ns or 0))
+                if _run_deadline_ns is not None
+                else started
+            )
             output = definition.function(normalized_payload)
             if contract is not None:
                 contract.output_model.model_validate(output)
-            duration = self._duration_seconds(started)
+            if _run_deadline_ns is not None:
+                effect_completed_ns = read_phase_clock(effect_started_ns)
+                duration = (effect_completed_ns - started) / 1_000_000_000
+            else:
+                effect_completed_ns = started
+                duration = self._duration_seconds(started)
             output_size = canonical_json_utf8_size(output)
             if output_size > self.max_output_bytes:
                 if _raise_on_byte_limit:
@@ -253,7 +319,11 @@ class ToolRegistry:
                 normalized_payload,
                 output,
             )
-            duration = self._duration_seconds(started)
+            if _run_deadline_ns is not None:
+                verified_ns = read_phase_clock(effect_completed_ns)
+                duration = (verified_ns - started) / 1_000_000_000
+            else:
+                duration = self._duration_seconds(started)
             if duration > self.max_duration_seconds:
                 return ToolResult(
                     tool_name=name,
@@ -337,6 +407,10 @@ class ToolRegistry:
         payload: dict[str, Any],
         *,
         contract_version: str | None = None,
+        budget_observed_at_ns: int | None = None,
+        run_deadline_ns: int | None = None,
+        runtime_limit_ns: int | None = None,
+        active_runtime_ns: int | None = None,
     ) -> ToolResult:
         """Execute with typed byte-limit signaling for the orchestrated phase boundary."""
 
@@ -345,6 +419,10 @@ class ToolRegistry:
             payload,
             contract_version=contract_version,
             _raise_on_byte_limit=True,
+            _budget_observed_at_ns=budget_observed_at_ns,
+            _run_deadline_ns=run_deadline_ns,
+            _runtime_limit_ns=runtime_limit_ns,
+            _active_runtime_ns=active_runtime_ns,
         )
 
 

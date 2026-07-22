@@ -87,7 +87,16 @@ def _analyze_with_timeout(
 ) -> AgentReport:
     results: list[AgentReport] = []
     errors: list[Exception] = []
-    effect_start_ns = clock.now_ns()
+    try:
+        effect_start_ns = clock.now_ns()
+    except Exception as exc:
+        raise BudgetLimitError(
+            BudgetFailure(
+                code=BudgetFailureCode.USAGE_MALFORMED,
+                resource="clock",
+                message=f"monotonic clock read failed: {type(exc).__name__}",
+            )
+        ) from exc
     if (
         isinstance(effect_start_ns, bool)
         or not isinstance(effect_start_ns, int)
@@ -675,6 +684,18 @@ class ToolResearchExecutor:
                             tool_request.tool_name,
                             dict(tool_request.input),
                             contract_version=tool_request.contract_version,
+                            budget_observed_at_ns=value.budget_observed_at_ns,
+                            run_deadline_ns=value.run_deadline_ns,
+                            runtime_limit_ns=(
+                                value.budget_policy.runtime_limit_ns
+                                if value.budget_policy is not None
+                                else None
+                            ),
+                            active_runtime_ns=(
+                                value.budget_snapshot.active_runtime_ns
+                                if value.budget_snapshot is not None
+                                else None
+                            ),
                         )
                         if callable(phase_execute)
                         else self.registry.execute(
@@ -697,6 +718,21 @@ class ToolResearchExecutor:
                         observed=exc.observed,
                     )
                     warnings.append(f"{tool_request.tool_name}: {exc}")
+                    result = ToolResult(
+                        result_id=fallback_result_id,
+                        tool_name=tool_request.tool_name,
+                        input=dict(tool_request.input),
+                        status=ToolStatus.FAILED,
+                        exactness=Exactness.UNAVAILABLE,
+                        numeric_exactness=NumericalExactness.UNAVAILABLE,
+                        contract_version=supported_contract_version,
+                        error=f"strict budget failure: {budget_failure.code.value}",
+                    )
+                except BudgetLimitError as exc:
+                    budget_failure = exc.failure
+                    warnings.append(
+                        f"{tool_request.tool_name}: strict runtime budget refused execution"
+                    )
                     result = ToolResult(
                         result_id=fallback_result_id,
                         tool_name=tool_request.tool_name,

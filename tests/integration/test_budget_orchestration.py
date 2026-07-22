@@ -123,6 +123,16 @@ class CapturingToolResearchExecutor(ToolResearchExecutor):
         return outcome
 
 
+class AdvancingToolResearchExecutor(CapturingToolResearchExecutor):
+    def __init__(self, *args, clock: FakeMonotonicClock, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.clock = clock
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        self.clock.advance_ns(2_000_000_000)
+        return super().run(request)
+
+
 def _strategy_case() -> CaseInput:
     return CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective")
 
@@ -468,6 +478,8 @@ class MutableClock:
         self.value = value
 
     def now_ns(self) -> int:
+        if isinstance(self.value, BaseException):
+            raise self.value
         return self.value  # type: ignore[return-value]
 
 
@@ -498,6 +510,7 @@ class ClockMutatingProvider(CostedProvider):
     [
         (900_000_000, "clock_rollback"),
         ("bad-clock", "usage_malformed"),
+        (RuntimeError("clock unavailable"), "usage_malformed"),
     ],
 )
 def test_context_handoff_clock_failure_is_structured_before_provider_start(
@@ -534,6 +547,7 @@ def test_context_handoff_clock_failure_is_structured_before_provider_start(
     [
         (400_000_000, "clock_rollback"),
         ("bad-clock", "usage_malformed"),
+        (RuntimeError("clock unavailable"), "usage_malformed"),
     ],
 )
 def test_post_provider_clock_failure_stops_later_effects(
@@ -595,6 +609,50 @@ def test_early_phase_runtime_exhaustion_returns_structured_tool_limitation(
     assert report.run_status == "failed_with_limitations"
     assert report.tool_results == []
     assert "strict runtime refused before requested tool execution" in report.data_quality
+
+
+def test_tool_effect_boundary_rechecks_absolute_run_deadline(tmp_path: Path) -> None:
+    clock = FakeMonotonicClock()
+    effect_calls = 0
+
+    def counted_tool(_: dict[str, object]) -> dict[str, object]:
+        nonlocal effect_calls
+        effect_calls += 1
+        return {"value": 1}
+
+    registry = ToolRegistry(monotonic_clock=clock)
+    registry.register(
+        ToolDefinition(
+            name="counted_tool",
+            purpose="absolute runtime boundary fixture",
+            exact_or_approximate="exact",
+            supported_games=("fixture",),
+            function=counted_tool,
+        )
+    )
+    executor = AdvancingToolResearchExecutor(
+        registry,
+        record_sensitive_data=False,
+        clock=clock,
+    )
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        registry=registry,
+        tool_research_executor=executor,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    ).run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["counted_tool"],
+        ),
+        run_id="run-tool-effect-deadline",
+    )
+
+    assert effect_calls == 0
+    assert report.run_status == "failed_with_limitations"
+    assert any("runtime_exceeded" in item for item in report.data_quality)
 
 
 class AdvancingSynthesisService(SynthesisService):

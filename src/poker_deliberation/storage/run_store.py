@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -19,10 +20,12 @@ class RunStore:
         *,
         max_artifact_bytes: int = 1_000_000,
         max_run_bytes: int = 10_000_000,
+        usage_observer: Callable[[str, int, int], None] | None = None,
     ) -> None:
         self.root = root.resolve()
         self.max_artifact_bytes = max_artifact_bytes
         self.max_run_bytes = max_run_bytes
+        self.usage_observer = usage_observer
         self.root.mkdir(parents=True, exist_ok=True)
 
     def run_dir(self, run_id: str, *, create: bool = False) -> Path:
@@ -80,8 +83,11 @@ class RunStore:
             for item in run_dir.rglob("*")
             if item.is_file() and not item.name.endswith(".tmp")
         )
-        if current_size - existing_size + new_size > self.max_run_bytes:
+        projected_run_size = current_size - existing_size + new_size
+        if projected_run_size > self.max_run_bytes:
             raise ValueError(f"run artifacts exceed hard limit {self.max_run_bytes} bytes")
+        if self.usage_observer is not None:
+            self.usage_observer(run_id, new_size, projected_run_size)
 
     def write_json(self, run_id: str, relative: str, value: Any) -> Path:
         path = self._artifact_path(run_id, relative)

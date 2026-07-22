@@ -21,8 +21,9 @@ UTF-8 encoding; its SHA-256 binds snapshots to the exact policy.
 | `max_concurrent_agents` | in-flight attempts | Exactly `1`; every other value is unsupported. |
 | `max_runtime_seconds` | monotonic seconds | Positive and finite; converted exactly to integer nanoseconds. |
 | `max_external_cost_micro_usd` | micro-USD | Integer cap checked before an external provider attempt. |
-| provider/tool/artifact caps | UTF-8 bytes | Separate canonical limits; equality is allowed and over-cap is rejected. |
-| `max_run_bytes` | bytes | Existing `RunStore` whole-run fail-closed behavior is retained. |
+| provider/tool caps | canonical JSON UTF-8 bytes | Per-value peak limits use sorted compact JSON; equality is allowed and over-cap is rejected. Tool output means the calculator's typed output payload, not its audit envelope. |
+| `max_artifact_bytes` | serialized artifact UTF-8 bytes | Per-file peak limit measured from the exact bytes written by `RunStore`. |
+| `max_run_bytes` | stored bytes | Current whole-run size, including the run sentinel; overwrites replace rather than double-count prior bytes. |
 
 The legacy `BudgetConfig` is a v1 input surface. It is copied and validated once, then explicitly
 migrated to `BudgetPolicyV2`. Historical fields that did not control the ordinary run resolve to the
@@ -35,9 +36,11 @@ integer number of micro-USD.
 ## Accounting and execution classes
 
 `SerialUsageLedger` owns an attempt/run-local `BudgetSnapshot`. It keeps provider and tool attempts,
-retry candidates, active runtime, external cost, the four byte classes, run bytes, and peak
-concurrency in separate fields; unlike units are never summed. A rejected preflight does not commit
-the proposed usage. Clock rollback and policy-hash substitution fail closed.
+retry candidates, active runtime, external cost, peak canonical provider/tool values, peak artifact
+size, current run size, and peak concurrency in separate fields; unlike units are never summed. A
+rejected preflight or observation does not commit the proposed usage. `RunStore` reports the exact
+projected artifact and run sizes to the in-memory ledger before each write. Clock rollback and
+policy-hash substitution fail closed.
 
 Provider availability declares `local_free`, `external`, or `unknown` execution. Unknown execution,
 unknown external cost, a zero external-cost cap, and over-cap estimated cost are rejected before
@@ -47,8 +50,9 @@ durable settlement are not implemented.
 
 The state machine and effect executors share an injected monotonic clock. Active run time is observed
 at serial boundaries. Entering human approval wait pauses the ledger, so waiting time is excluded.
-The ledger is not written to a manifest and is reconstructed only from the legacy elapsed-time
-snapshot on the existing resume surface.
+The ledger is not written to a manifest. The existing resume surface reconstructs elapsed time only;
+subsequent storage writes observe current physical artifact sizes without restoring external cost,
+attempt, or prior provider/tool byte accounting.
 
 ## Failure, retry, deadline, and cancellation
 
@@ -63,7 +67,8 @@ Provider control distinguishes `timed_out`, `cancel_requested`, `cancel_unconfir
 exiting without acknowledgment. In-process cooperative cancellation is not described as a hard
 stop; process-tree termination, durable cancellation, and remote reconciliation remain deferred.
 
-`AnalysisOutput` and `ToolResearchOutput` carry typed usage and budget failure values. Effect
+`AnalysisOutput` and `ToolResearchOutput` carry typed usage, retry classification, and budget
+failure values. Effect
 executors cannot write artifacts or transition workflow state. The orchestrator settles usage first,
 then decides state and fixed artifact writes. Oversized, malformed, or budget-refused provider/tool
 values cannot choose a path or become a successful result.

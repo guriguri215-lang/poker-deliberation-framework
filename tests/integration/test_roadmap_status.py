@@ -67,6 +67,13 @@ def _scoped_approval_record(
     }
 
 
+def _scope_digest(scope: object) -> str:
+    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def test_packaged_roadmap_loads_outside_repository_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -352,6 +359,53 @@ def test_milestone_approval_binding_is_append_only() -> None:
         validate_roadmap_update(previous, current, {new_reference})
 
 
+def test_scoped_approval_projection_correction_is_strict_and_append_only() -> None:
+    current = load_roadmap()
+    previous = deepcopy(current)
+    old_reference = "goal-rm011-p2-011a-2026-07-20"
+    new_reference = f"{old_reference}-correction-1"
+    previous["approval_records"].pop(new_reference)
+    previous["milestone_approvals"]["P2-011A"] = old_reference
+    rm_011 = next(item for item in previous["items"] if item["id"] == "RM-011")
+    rm_011["human_approval"]["approval_reference"] = old_reference
+    rm_011["human_approval"]["scope_digest"] = previous["approval_records"][old_reference][
+        "scope_digest"
+    ]
+
+    validate_roadmap_update(previous, current)
+    validate_roadmap_update(previous, current, {"irrelevant-compatibility-value"})
+
+    changed_topics = deepcopy(current)
+    changed_topics["approval_records"][new_reference]["topics"].append("new authority")
+    changed_topics["approval_records"][new_reference]["scope"]["policy_decisions"].append(
+        "new authority"
+    )
+    changed_topics["approval_records"][new_reference]["scope_digest"] = _scope_digest(
+        changed_topics["approval_records"][new_reference]["scope"]
+    )
+    changed_topics_rm_011 = next(item for item in changed_topics["items"] if item["id"] == "RM-011")
+    changed_topics_rm_011["human_approval"]["topics"].append("new authority")
+    changed_topics_rm_011["human_approval"]["scope_digest"] = changed_topics["approval_records"][
+        new_reference
+    ]["scope_digest"]
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, changed_topics)
+
+    changed_tests = deepcopy(current)
+    changed_tests["approval_records"][new_reference]["scope"]["milestone_implementation_scope"][
+        "tests"
+    ].append("tests/new_scope.py")
+    changed_tests["approval_records"][new_reference]["scope_digest"] = _scope_digest(
+        changed_tests["approval_records"][new_reference]["scope"]
+    )
+    changed_rm_011 = next(item for item in changed_tests["items"] if item["id"] == "RM-011")
+    changed_rm_011["human_approval"]["scope_digest"] = changed_tests["approval_records"][
+        new_reference
+    ]["scope_digest"]
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, changed_tests)
+
+
 def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -> None:
     counterexample = deepcopy(load_roadmap())
     progress = counterexample["milestone_progress"]["P2-010A"]
@@ -445,19 +499,31 @@ def test_completed_evidence_is_repository_validated_separately() -> None:
     with pytest.raises(ValueError, match="does not exist"):
         validate_repository_evidence(fake, ROOT)
 
-    all_references = {
-        reference.split("::", 1)[0]
-        for item in document["items"]
-        if item["status"] == "completed"
-        for field in ("paths", "tests")
-        for reference in item["completion_evidence"][field]
-    } | {
-        reference.split("::", 1)[0]
-        for progress in document["milestone_progress"].values()
-        if progress["state"] == "completed"
-        for field in ("paths", "tests")
-        for reference in progress["completion_evidence"][field]
-    }
+    all_references = (
+        {
+            reference.split("::", 1)[0]
+            for item in document["items"]
+            if item["status"] == "completed"
+            for field in ("paths", "tests")
+            for reference in item["completion_evidence"][field]
+        }
+        | {
+            reference.split("::", 1)[0]
+            for progress in document["milestone_progress"].values()
+            if progress["state"] == "completed"
+            for field in ("paths", "tests")
+            for reference in progress["completion_evidence"][field]
+        }
+        | {
+            reference
+            for approval_reference in document["milestone_approvals"].values()
+            if approval_reference is not None
+            for scope in [document["approval_records"][approval_reference].get("scope")]
+            if scope is not None and scope.get("schema_version") == APPROVAL_SCOPE_SCHEMA_VERSION
+            for field in ("targets", "tests")
+            for reference in scope["milestone_implementation_scope"][field]
+        }
+    )
     validate_repository_evidence(document, ROOT, tracked_paths=all_references)
     directory_prefix_paths = set(all_references)
     directory_prefix_paths.remove("tests/fixtures/phase1")
@@ -465,6 +531,18 @@ def test_completed_evidence_is_repository_validated_separately() -> None:
     validate_repository_evidence(document, ROOT, tracked_paths=directory_prefix_paths)
     with pytest.raises(ValueError, match="not tracked"):
         validate_repository_evidence(document, ROOT, tracked_paths=set())
+
+    invalid_scope = deepcopy(document)
+    approval_reference = invalid_scope["milestone_approvals"]["P2-011A"]
+    approval = invalid_scope["approval_records"][approval_reference]
+    approval["scope"]["milestone_implementation_scope"]["targets"].append(
+        "src/poker_deliberation/missing-budget-scope.py"
+    )
+    approval["scope_digest"] = _scope_digest(approval["scope"])
+    rm_011 = next(item for item in invalid_scope["items"] if item["id"] == "RM-011")
+    rm_011["human_approval"]["scope_digest"] = approval["scope_digest"]
+    with pytest.raises(ValueError, match="approval scope path does not exist"):
+        validate_repository_evidence(invalid_scope, ROOT)
 
     known_commits = {
         commit for item in document["items"] for commit in item["completion_evidence"]["commits"]

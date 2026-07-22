@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from datetime import datetime
@@ -17,9 +16,11 @@ from poker_deliberation.budgets import (
     FailureCategory,
     IdempotencyStatus,
     MonotonicClock,
+    RetryClassification,
     SerialUsageLedger,
     SystemMonotonicClock,
     UsageDelta,
+    canonical_json_utf8_size,
     classify_retry,
 )
 from poker_deliberation.context_lifecycle import (
@@ -104,6 +105,13 @@ def _analyze_with_timeout(
         raise errors[0]
     if not results:
         raise RuntimeError("provider returned no report")
+    if control.deadline_status is DeadlineStatus.TIMED_OUT:
+        control.request_cancel()
+        raise ProviderControlError(
+            f"provider exceeded deadline {timeout_seconds} seconds",
+            deadline_status=DeadlineStatus.TIMED_OUT,
+            cancellation_status=control.cancellation_status,
+        )
     return results[0]
 
 
@@ -329,7 +337,7 @@ class AnalysisExecutor:
             warnings.append(f"provider {assignment.agent_role} budget refused: {exc.failure.code}")
             retry_classification = classify_retry(
                 FailureCategory.BUDGET,
-                max_retries=value.budget_policy.max_tool_retries,
+                max_retries=0,
             )
             report = AgentReport(
                 report_id=value.fallback_report_id,
@@ -346,8 +354,12 @@ class AnalysisExecutor:
             execution_error = str(exc)
             warnings.append(str(exc))
             retry_classification = classify_retry(
-                FailureCategory.DEADLINE,
-                max_retries=value.budget_policy.max_tool_retries,
+                (
+                    FailureCategory.DEADLINE
+                    if deadline_status is DeadlineStatus.TIMED_OUT
+                    else FailureCategory.CANCEL
+                ),
+                max_retries=0,
             )
             report = AgentReport(
                 report_id=value.fallback_report_id,
@@ -362,7 +374,7 @@ class AnalysisExecutor:
             warnings.append(f"provider {assignment.agent_role} handoff refused: {exc}")
             retry_classification = classify_retry(
                 FailureCategory.UNAVAILABLE,
-                max_retries=value.budget_policy.max_tool_retries,
+                max_retries=0,
             )
             report = AgentReport(
                 report_id=value.fallback_report_id,
@@ -377,7 +389,7 @@ class AnalysisExecutor:
             warnings.append(f"provider {assignment.agent_role} context rejected: {exc}")
             retry_classification = classify_retry(
                 FailureCategory.VALIDATION,
-                max_retries=value.budget_policy.max_tool_retries,
+                max_retries=0,
             )
             report = AgentReport(
                 report_id=value.fallback_report_id,
@@ -391,13 +403,9 @@ class AnalysisExecutor:
             execution_error = f"{exc.error_type}: provider analyze failed"
             warnings.append(f"provider {assignment.agent_role} failed: {exc.error_type}")
             retry_classification = classify_retry(
-                FailureCategory.PROVIDER_TRANSIENT,
-                idempotency=(
-                    IdempotencyStatus.NOT_APPLICABLE
-                    if provider_info.execution_class.value == "local_free"
-                    else IdempotencyStatus.UNKNOWN
-                ),
-                max_retries=value.budget_policy.max_tool_retries,
+                FailureCategory.PROVIDER_PERMANENT,
+                idempotency=IdempotencyStatus.UNKNOWN,
+                max_retries=0,
             )
             report = AgentReport(
                 report_id=value.fallback_report_id,
@@ -412,7 +420,7 @@ class AnalysisExecutor:
             warnings.append(f"provider {assignment.agent_role} failed: {type(exc).__name__}")
             retry_classification = classify_retry(
                 FailureCategory.INTERNAL,
-                max_retries=value.budget_policy.max_tool_retries,
+                max_retries=0,
             )
             report = AgentReport(
                 report_id=value.fallback_report_id,
@@ -439,9 +447,7 @@ class AnalysisExecutor:
             execution_error = str(exc)
             accepted_provider_output = False
         if accepted_provider_output:
-            report_size = len(
-                json.dumps(report.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
-            )
+            report_size = canonical_json_utf8_size(report)
             try:
                 SerialUsageLedger(
                     value.budget_policy,
@@ -465,7 +471,7 @@ class AnalysisExecutor:
                 execution_error = "provider output exceeded the hard byte limit"
                 retry_classification = classify_retry(
                     FailureCategory.BUDGET,
-                    max_retries=value.budget_policy.max_tool_retries,
+                    max_retries=0,
                 )
             else:
                 usage_delta = usage_delta.combine(UsageDelta(provider_output_bytes=report_size))
@@ -527,6 +533,7 @@ class ToolResearchExecutor:
             raise PhaseContractError("tool research does not accept provider context IDs")
         seen = set(value.existing_result_ids)
         bindings: list[ToolExecutionBinding] = []
+        retry_classifications: list[RetryClassification | None] = []
         warnings: list[str] = []
         any_failure = False
         budget_failure: BudgetFailure | None = None
@@ -546,15 +553,7 @@ class ToolResearchExecutor:
             _safe_unique_id(fallback_result_id, seen, "fallback result ID")
             request_is_safe = bool(_PORTABLE_ID.fullmatch(tool_request.request_id))
             supported_contract_version = tool_request.contract_version or "1.0.0"
-            request_bytes = len(
-                json.dumps(
-                    tool_request.input,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-            )
+            request_bytes = canonical_json_utf8_size(tool_request.input)
             current_delta = UsageDelta(tool_attempts=1, tool_input_bytes=request_bytes)
             if budget_ledger is not None and budget_failure is None:
                 try:
@@ -637,15 +636,7 @@ class ToolResearchExecutor:
             result = ToolResult.model_validate(
                 redact_sensitive(result, enabled=not self.record_sensitive_data)
             )
-            result_bytes = len(
-                json.dumps(
-                    result.model_dump(mode="json"),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ).encode("utf-8")
-            )
+            result_bytes = canonical_json_utf8_size(result.output)
             if budget_ledger is not None and budget_failure is None:
                 try:
                     budget_ledger.apply(UsageDelta(tool_output_bytes=result_bytes))
@@ -684,6 +675,30 @@ class ToolResearchExecutor:
                 )
             seen.add(result.result_id)
             any_failure = any_failure or result.status is not ToolStatus.SUCCESS
+            if result.status is ToolStatus.SUCCESS:
+                retry_classifications.append(None)
+            else:
+                if budget_failure is not None:
+                    category = FailureCategory.BUDGET
+                elif not request_is_safe or "correlation" in (result.error or ""):
+                    category = FailureCategory.VALIDATION
+                elif result.status is ToolStatus.UNAVAILABLE:
+                    category = FailureCategory.UNAVAILABLE
+                elif "runtime limit" in (result.error or ""):
+                    category = FailureCategory.DEADLINE
+                else:
+                    category = FailureCategory.TOOL_DETERMINISTIC
+                retry_classifications.append(
+                    classify_retry(
+                        category,
+                        idempotency=IdempotencyStatus.IDEMPOTENT,
+                        max_retries=(
+                            value.budget_policy.max_tool_retries
+                            if value.budget_policy is not None
+                            else 0
+                        ),
+                    )
+                )
             bindings.append(
                 ToolExecutionBinding(
                     run_id=isolated.run_id,
@@ -704,6 +719,7 @@ class ToolResearchExecutor:
             data_quality=tuple(warnings),
             usage_delta=usage_delta,
             budget_failure=budget_failure,
+            retry_classifications=tuple(retry_classifications),
         )
         validate_tool_research_output(isolated, output)
         return successful_outcome(

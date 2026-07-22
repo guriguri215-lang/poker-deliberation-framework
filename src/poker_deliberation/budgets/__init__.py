@@ -19,6 +19,7 @@ from poker_deliberation.budgets.contracts import (
     V1BudgetMigrationResult,
     canonical_budget_json,
     canonical_budget_sha256,
+    canonical_json_utf8_size,
     decimal_usd_to_micro_usd,
 )
 from poker_deliberation.budgets.ledger import SerialUsageLedger
@@ -52,6 +53,7 @@ __all__ = [
     "V1BudgetMigrationResult",
     "canonical_budget_json",
     "canonical_budget_sha256",
+    "canonical_json_utf8_size",
     "classify_retry",
     "decimal_usd_to_micro_usd",
 ]

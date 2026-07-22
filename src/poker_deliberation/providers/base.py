@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import StrEnum
-from threading import Event
+from threading import Event, Lock
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -82,6 +83,8 @@ class ProviderControl:
     clock: MonotonicClock = field(default_factory=SystemMonotonicClock)
     _cancelled: Event = field(default_factory=Event)
     _started_ns: int = field(init=False)
+    _last_ns: int = field(init=False)
+    _clock_lock: Lock = field(default_factory=Lock)
     _cancellation_status: CancellationStatus = field(
         default=CancellationStatus.NOT_REQUESTED,
         init=False,
@@ -92,16 +95,33 @@ class ProviderControl:
             self.timeout_seconds, (int, float)
         ):
             raise TypeError("timeout_seconds must be numeric")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        if not math.isfinite(float(self.timeout_seconds)) or self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be finite and positive")
         self.timeout_seconds = float(self.timeout_seconds)
-        self._started_ns = self.clock.now_ns()
+        started = self.clock.now_ns()
+        if isinstance(started, bool) or not isinstance(started, int) or started < 0:
+            raise ValueError("monotonic clock must return non-negative integer nanoseconds")
+        self._started_ns = started
+        self._last_ns = started
+
+    def _read_clock(self) -> int:
+        with self._clock_lock:
+            value = self.clock.now_ns()
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError("monotonic clock must return non-negative integer nanoseconds")
+            if value < self._last_ns:
+                raise ValueError("monotonic clock moved backwards during provider execution")
+            self._last_ns = value
+            return value
+
+    def _elapsed_ns(self) -> int:
+        return self._read_clock() - self._started_ns
 
     @property
     def deadline_status(self) -> DeadlineStatus:
         return (
             DeadlineStatus.TIMED_OUT
-            if self.clock.now_ns() - self._started_ns >= int(self.timeout_seconds * 1_000_000_000)
+            if self._elapsed_ns() >= int(self.timeout_seconds * 1_000_000_000)
             else DeadlineStatus.ACTIVE
         )
 
@@ -111,7 +131,7 @@ class ProviderControl:
 
     @property
     def remaining_seconds(self) -> float:
-        elapsed = (self.clock.now_ns() - self._started_ns) / 1_000_000_000
+        elapsed = self._elapsed_ns() / 1_000_000_000
         return max(0.0, self.timeout_seconds - elapsed)
 
     @property

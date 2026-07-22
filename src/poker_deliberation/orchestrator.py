@@ -129,13 +129,19 @@ class Orchestrator:
                 budget_policy.model_dump(mode="python")
             )
         self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
-        self.registry = registry or default_registry(
-            max_payload_bytes=self.budget_policy.max_tool_input_bytes,
-            max_output_bytes=self.budget_policy.max_tool_output_bytes,
-            max_duration_seconds=min(30.0, self.budget_policy.max_runtime_seconds),
-            monotonic_clock=self.monotonic_clock,
-        )
-        self.provider = provider or LocalProvider()
+        if registry is None and tool_research_executor is not None:
+            self.registry = tool_research_executor.registry
+        else:
+            self.registry = registry or default_registry(
+                max_payload_bytes=self.budget_policy.max_tool_input_bytes,
+                max_output_bytes=self.budget_policy.max_tool_output_bytes,
+                max_duration_seconds=min(30.0, self.budget_policy.max_runtime_seconds),
+                monotonic_clock=self.monotonic_clock,
+            )
+        if provider is None and analysis_executor is not None:
+            self.provider = analysis_executor.provider
+        else:
+            self.provider = provider or LocalProvider()
         self.context_clock = context_clock or (lambda: datetime.now(UTC))
         self.sensitive_action_categories = tuple(sorted(SENSITIVE_ACTIONS))
         self.tool_contract_versions = {
@@ -150,12 +156,18 @@ class Orchestrator:
         self.context_build_service = context_build_service or ContextBuildService(
             blind_context_builder=build_blind_decision_context
         )
+        if analysis_executor is not None and analysis_executor.provider is not self.provider:
+            raise ValueError("analysis executor provider must match orchestrator provider")
         self.analysis_executor = analysis_executor or AnalysisExecutor(
             self.provider,
             context_clock=self.context_clock,
             record_clock=lambda: datetime.now(UTC),
             monotonic_clock=self.monotonic_clock,
         )
+        if tool_research_executor is not None and (
+            tool_research_executor.registry is not self.registry
+        ):
+            raise ValueError("tool research executor registry must match orchestrator registry")
         self.tool_research_executor = tool_research_executor or ToolResearchExecutor(
             self.registry,
             record_sensitive_data=self.config.record_sensitive_data,
@@ -175,17 +187,28 @@ class Orchestrator:
                 "budget_policy_sha256": self.budget_policy.canonical_sha256,
             }
         )
+        self._run_machines: dict[str, WorkflowStateMachine] = {}
         self.store = RunStore(
             self.config.runs_dir,
             max_artifact_bytes=self.budget_policy.max_artifact_bytes,
             max_run_bytes=self.budget_policy.max_run_bytes,
+            usage_observer=self._observe_storage_usage,
         )
+
+    def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
+        machine = self._run_machines.get(run_id)
+        if machine is not None:
+            machine.ledger.observe_storage(
+                artifact_bytes=artifact_bytes,
+                run_bytes=run_bytes,
+            )
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
         actual_run_id = run_id or new_run_id()
         self.store.create_run(actual_run_id)
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
+        self._run_machines[actual_run_id] = machine
         approvals = ApprovalLedger()
         disputes: list[Dispute] = []
         tool_results: list[ToolResult] = []
@@ -456,7 +479,6 @@ class Orchestrator:
                 remaining_runtime = remaining_ns / 1_000_000_000
                 started_at = datetime.now(UTC)
                 provider_timeout = min(30.0, remaining_runtime)
-                provider_info = self.provider.availability()
                 lifecycle_now = self.context_clock()
                 expected_context_id = new_context_id()
                 expected_attempt_id = new_attempt_id()
@@ -508,6 +530,88 @@ class Orchestrator:
                 dispatch = context_outcome.output.dispatches[0]
                 assignments[index] = dispatch.assignment
                 self.store.write_json(actual_run_id, "assignments.json", assignments)
+                if not machine.enforce_runtime():
+                    data_quality.append("maximum runtime reached during context build")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                usage_before = machine.usage_snapshot()
+                remaining_ns = self.budget_policy.runtime_limit_ns - usage_before.active_runtime_ns
+                if remaining_ns <= 0:
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "maximum runtime reached during context build",
+                    )
+                    data_quality.append("maximum runtime reached during context build")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                provider_info = self.provider.availability()
+                if not machine.enforce_runtime():
+                    data_quality.append("maximum runtime reached during provider preflight")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                usage_before = machine.usage_snapshot()
+                remaining_ns = self.budget_policy.runtime_limit_ns - usage_before.active_runtime_ns
+                if remaining_ns <= 0:
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "maximum runtime reached during provider preflight",
+                    )
+                    data_quality.append("maximum runtime reached during provider preflight")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                provider_timeout = min(30.0, remaining_ns / 1_000_000_000)
                 analysis_request = make_phase_request(
                     run_id=actual_run_id,
                     phase_id=PhaseId.ANALYSIS,
@@ -831,8 +935,6 @@ class Orchestrator:
 
         if approvals.pending():
             machine.transition(RunState.HUMAN_REVIEW_REQUIRED, "sensitive action needs approval")
-            machine.pause_active_runtime()
-            self._write_common_artifacts(actual_run_id, machine, approvals, disputes)
             return self._synthesize(
                 actual_run_id,
                 case,
@@ -847,6 +949,7 @@ class Orchestrator:
                 security_events,
                 completed=False,
                 machine=machine,
+                pause_before_return=True,
             )
         machine.transition(RunState.FINAL_SYNTHESIS, "no pending approval blocks synthesis")
         final_report = self._synthesize(
@@ -897,6 +1000,7 @@ class Orchestrator:
         *,
         completed: bool,
         machine: WorkflowStateMachine,
+        pause_before_return: bool = False,
     ) -> FinalReport:
         provider_info = self.provider.availability()
         provider_reason = provider_info.reason
@@ -968,6 +1072,9 @@ class Orchestrator:
         self._write_common_artifacts(run_id, machine, approvals, disputes)
         self.store.write_json(run_id, "final_report.json", report)
         self.store.write_text(run_id, "final_report.md", render_markdown(report))
+        if pause_before_return:
+            machine.pause_active_runtime()
+            self.store.write_json(run_id, "state.json", machine.snapshot())
         return report
 
     def load_report(self, run_id: str) -> FinalReport:
@@ -987,6 +1094,7 @@ class Orchestrator:
             snapshot,
             clock=self.monotonic_clock,
         )
+        self._run_machines[run_id] = machine
         if machine.state is not RunState.HUMAN_REVIEW_REQUIRED:
             return self.load_report(run_id)
         requests = [

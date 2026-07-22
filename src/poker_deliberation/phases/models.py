@@ -162,6 +162,8 @@ class AnalysisInput(PhasePayload):
     def budget_snapshot_matches_policy(self) -> AnalysisInput:
         if self.budget_snapshot.policy_sha256 != self.budget_policy.canonical_sha256:
             raise ValueError("analysis budget snapshot policy mismatch")
+        if self.max_output_bytes != self.budget_policy.max_provider_output_bytes:
+            raise ValueError("compatibility output cap must match budget policy")
         return self
 
 
@@ -263,6 +265,13 @@ class ToolResearchOutput(PhasePayload):
     data_quality: tuple[str, ...] = ()
     usage_delta: UsageDelta = Field(default_factory=UsageDelta)
     budget_failure: BudgetFailure | None = None
+    retry_classifications: tuple[RetryClassification | None, ...] = ()
+
+    @model_validator(mode="after")
+    def retry_classification_count_matches_bindings(self) -> ToolResearchOutput:
+        if len(self.retry_classifications) != len(self.bindings):
+            raise ValueError("one retry classification is required per tool binding")
+        return self
 
 
 class CritiqueInput(PhasePayload):

@@ -48,6 +48,23 @@ def canonical_budget_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_budget_json(value).encode("utf-8")).hexdigest()
 
 
+def canonical_json_utf8_size(value: Any) -> int:
+    """Measure one JSON value with the canonical UTF-8 representation used by caps."""
+
+    try:
+        return len(
+            json.dumps(
+                _json_value(value),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("value is not canonical JSON") from exc
+
+
 def decimal_usd_to_micro_usd(value: Decimal) -> int:
     if not isinstance(value, Decimal):
         raise TypeError("USD cost must be provided as Decimal")
@@ -173,10 +190,10 @@ class UsageDelta(_BudgetModel):
             retry_attempts=self.retry_attempts + other.retry_attempts,
             active_runtime_ns=self.active_runtime_ns + other.active_runtime_ns,
             external_cost_micro_usd=(self.external_cost_micro_usd + other.external_cost_micro_usd),
-            provider_output_bytes=self.provider_output_bytes + other.provider_output_bytes,
-            tool_input_bytes=self.tool_input_bytes + other.tool_input_bytes,
-            tool_output_bytes=self.tool_output_bytes + other.tool_output_bytes,
-            artifact_bytes=self.artifact_bytes + other.artifact_bytes,
+            provider_output_bytes=max(self.provider_output_bytes, other.provider_output_bytes),
+            tool_input_bytes=max(self.tool_input_bytes, other.tool_input_bytes),
+            tool_output_bytes=max(self.tool_output_bytes, other.tool_output_bytes),
+            artifact_bytes=max(self.artifact_bytes, other.artifact_bytes),
             run_bytes=self.run_bytes + other.run_bytes,
             peak_concurrency=max(self.peak_concurrency, other.peak_concurrency),
         )

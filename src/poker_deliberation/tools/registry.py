@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from poker_deliberation.budgets import MonotonicClock, SystemMonotonicClock
+from poker_deliberation.budgets import (
+    MonotonicClock,
+    SystemMonotonicClock,
+    canonical_json_utf8_size,
+)
 from poker_deliberation.schemas import (
     CanonicalHand,
     Exactness,
@@ -70,11 +74,23 @@ class ToolRegistry:
         self._tools: dict[str, ToolDefinition] = {}
         self.max_payload_bytes = max_payload_bytes
         self.max_output_bytes = max_output_bytes
+        if isinstance(max_duration_seconds, bool) or not isinstance(
+            max_duration_seconds, (int, float)
+        ):
+            raise TypeError("max_duration_seconds must be numeric")
+        if not math.isfinite(float(max_duration_seconds)) or max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds must be finite and positive")
         self.max_duration_seconds = max_duration_seconds
         self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
 
+    def _read_clock(self) -> int:
+        value = self.monotonic_clock.now_ns()
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("monotonic clock must return non-negative integer nanoseconds")
+        return value
+
     def _duration_seconds(self, started_ns: int) -> float:
-        completed_ns = self.monotonic_clock.now_ns()
+        completed_ns = self._read_clock()
         if completed_ns < started_ns:
             raise ValueError("monotonic clock moved backwards during tool execution")
         return (completed_ns - started_ns) / 1_000_000_000
@@ -116,7 +132,7 @@ class ToolRegistry:
     ) -> ToolResult:
         known_definition = self._tools.get(name)
         known_contract = known_definition.contract if known_definition is not None else None
-        payload_size = len(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        payload_size = canonical_json_utf8_size(payload)
         if payload_size > self.max_payload_bytes:
             return ToolResult(
                 tool_name=name,
@@ -138,8 +154,9 @@ class ToolRegistry:
                 reproduce_command=None,
             )
         definition = known_definition
-        started = self.monotonic_clock.now_ns()
+        started = 0
         try:
+            started = self._read_clock()
             contract = definition.contract
             if (
                 contract is not None
@@ -158,9 +175,7 @@ class ToolRegistry:
             if contract is not None:
                 contract.output_model.model_validate(output)
             duration = self._duration_seconds(started)
-            output_size = len(
-                json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            )
+            output_size = canonical_json_utf8_size(output)
             if output_size > self.max_output_bytes:
                 return ToolResult(
                     tool_name=name,
@@ -278,7 +293,7 @@ class ToolRegistry:
                 ),
                 assumptions=list(definition.assumptions),
                 version=definition.version,
-                duration_seconds=self._duration_seconds(started),
+                duration_seconds=0,
                 error=f"{type(exc).__name__}: {exc}",
                 reproduce_command=(
                     f"poker-deliberate calculate {name} --analysis-scope retrospective "

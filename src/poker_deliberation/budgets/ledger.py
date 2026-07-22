@@ -66,10 +66,11 @@ class SerialUsageLedger:
                 )
             )
         elapsed = now - self._last_ns if self._active else 0
-        self._last_ns = now
         if elapsed:
-            self._snapshot = self._snapshot.apply(UsageDelta(active_runtime_ns=elapsed))
-            self._validate_snapshot(self._snapshot)
+            candidate = self._snapshot.apply(UsageDelta(active_runtime_ns=elapsed))
+            self._validate_snapshot(candidate)
+            self._snapshot = candidate
+        self._last_ns = now
 
     def _failure(
         self,
@@ -159,6 +160,31 @@ class SerialUsageLedger:
         candidate = self._snapshot.apply(delta)
         self._validate_snapshot(candidate)
         return candidate
+
+    def observe_storage(self, *, artifact_bytes: int, run_bytes: int) -> BudgetSnapshot:
+        """Record an absolute storage observation without durable reservation semantics."""
+
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (artifact_bytes, run_bytes)
+        ):
+            raise BudgetLimitError(
+                BudgetFailure(
+                    code=BudgetFailureCode.USAGE_MALFORMED,
+                    resource="storage_bytes",
+                    message="storage byte observations must be non-negative integers",
+                )
+            )
+        candidate = self._snapshot.model_copy(
+            update={
+                "artifact_bytes": max(self._snapshot.artifact_bytes, artifact_bytes),
+                "run_bytes": run_bytes,
+            }
+        )
+        candidate = BudgetSnapshot.model_validate(candidate.model_dump(mode="python"))
+        self._validate_snapshot(candidate)
+        self._snapshot = candidate
+        return self._snapshot
 
     def pause(self) -> BudgetSnapshot:
         self._observe_runtime()

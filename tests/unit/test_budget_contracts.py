@@ -121,3 +121,18 @@ def test_provider_control_distinguishes_request_ack_unconfirmed_and_deadline() -
         deadline.raise_if_cancelled()
     assert error.value.deadline_status is DeadlineStatus.TIMED_OUT
     assert error.value.cancellation_status is CancellationStatus.CANCELLED
+
+
+@pytest.mark.parametrize("timeout", [float("nan"), float("inf"), -1.0, 0.0])
+def test_provider_control_rejects_nonfinite_or_nonpositive_timeout(timeout: float) -> None:
+    with pytest.raises(ValueError, match="finite and positive"):
+        ProviderControl(timeout_seconds=timeout)
+
+
+def test_provider_control_rejects_monotonic_clock_rollback() -> None:
+    clock = FakeMonotonicClock(current_ns=10)
+    control = ProviderControl(timeout_seconds=1.0, clock=clock)
+    clock.set_ns(9)
+
+    with pytest.raises(ValueError, match="moved backwards"):
+        _ = control.deadline_status

@@ -236,6 +236,50 @@ def _validate_scoped_approval_record(
             raise ValueError(f"approval scope contract does not match milestone: {milestone_id}")
 
 
+def _is_projection_correction(
+    old_reference: str,
+    old_record: dict[str, Any],
+    new_reference: str,
+    new_record: dict[str, Any],
+) -> bool:
+    """Recognize an append-only correction of a machine-transcribed public projection."""
+
+    if (
+        new_record.get("source_label") != f"corrected projection of {old_reference}"
+        or new_record.get("topics") != old_record.get("topics")
+        or "scope" not in old_record
+        or "scope" not in new_record
+    ):
+        return False
+    old_scope = _require_dict(old_record["scope"], f"{old_reference}.scope")
+    new_scope = _require_dict(new_record["scope"], f"{new_reference}.scope")
+    if old_scope.get("schema_version") != APPROVAL_SCOPE_SCHEMA_VERSION:
+        return False
+    if new_scope.get("schema_version") != APPROVAL_SCOPE_SCHEMA_VERSION:
+        return False
+    for field in (
+        "schema_version",
+        "rm_id",
+        "milestone_contract",
+        "item_contract",
+        "policy_decisions",
+    ):
+        if new_scope.get(field) != old_scope.get(field):
+            return False
+    old_implementation = _require_dict(
+        old_scope.get("milestone_implementation_scope"),
+        f"{old_reference}.milestone_implementation_scope",
+    )
+    new_implementation = _require_dict(
+        new_scope.get("milestone_implementation_scope"),
+        f"{new_reference}.milestone_implementation_scope",
+    )
+    return all(
+        new_implementation.get(field) == old_implementation.get(field)
+        for field in ("tests", "acceptance_criteria")
+    )
+
+
 def _milestone_approval_map(
     document: dict[str, Any],
     items: dict[str, dict[str, Any]],
@@ -804,7 +848,20 @@ def validate_roadmap_update(
     new_bindings = _milestone_approval_map(current, current_items, new_milestones, new_records)
     for milestone_id, old_reference in old_bindings.items():
         new_reference = new_bindings[milestone_id]
-        if old_reference is not None and new_reference != old_reference:
+        if (
+            old_reference is not None
+            and new_reference != old_reference
+            and (
+                not isinstance(new_reference, str)
+                or new_reference not in appended_records
+                or not _is_projection_correction(
+                    old_reference,
+                    _require_dict(old_records[old_reference], old_reference),
+                    new_reference,
+                    _require_dict(new_records[new_reference], new_reference),
+                )
+            )
+        ):
             raise ValueError(f"milestone approval was deleted or rewritten: {milestone_id}")
         if (
             old_reference is None
@@ -875,8 +932,21 @@ def validate_roadmap_update(
         if old_approval != new_approval:
             new_reference = new_approval.get("approval_reference")
             if old_approval.get("state") == "approved_scope":
-                raise ValueError(f"approval was deleted or rewritten: {rm_id}")
-            if (
+                old_reference = old_approval.get("approval_reference")
+                correction = (
+                    isinstance(old_reference, str)
+                    and isinstance(new_reference, str)
+                    and new_reference in appended_records
+                    and _is_projection_correction(
+                        old_reference,
+                        _require_dict(old_records[old_reference], old_reference),
+                        new_reference,
+                        _require_dict(new_records[new_reference], new_reference),
+                    )
+                )
+                if not correction:
+                    raise ValueError(f"approval was deleted or rewritten: {rm_id}")
+            elif (
                 new_approval.get("state") != "approved_scope"
                 or not isinstance(new_reference, str)
                 or new_reference not in appended_records
@@ -955,6 +1025,56 @@ def validate_repository_evidence(
 
     validate_roadmap(document)
     root = repository_root.resolve()
+    items = {str(item["id"]): item for item in roadmap_items(document)}
+    milestones = {
+        str(milestone["id"]): _require_dict(milestone, "milestone")
+        for milestone in document["implementation_milestones"]
+    }
+    approval_records = {
+        str(reference): _require_dict(record, f"approval_records.{reference}")
+        for reference, record in _require_dict(
+            document["approval_records"], "approval_records"
+        ).items()
+    }
+    active_approvals = {
+        reference
+        for reference in _milestone_approval_map(
+            document,
+            items,
+            milestones,
+            approval_records,
+        ).values()
+        if reference is not None
+    }
+    for reference in active_approvals:
+        record = approval_records[reference]
+        if "scope" not in record:
+            continue
+        scope = _require_dict(record["scope"], f"{reference}.scope")
+        if scope.get("schema_version") != APPROVAL_SCOPE_SCHEMA_VERSION:
+            continue
+        implementation_scope = _require_dict(
+            scope["milestone_implementation_scope"],
+            f"{reference}.milestone_implementation_scope",
+        )
+        scoped_paths = _require_string_list(
+            implementation_scope["targets"], "targets"
+        ) + _require_string_list(implementation_scope["tests"], "tests")
+        for relative in scoped_paths:
+            candidate = (root / relative).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError as exc:
+                raise ValueError(f"approval scope path escapes repository: {reference}") from exc
+            if not candidate.exists():
+                raise ValueError(f"approval scope path does not exist: {reference}: {relative}")
+            if tracked_paths is not None:
+                tracked = relative in tracked_paths
+                if candidate.is_dir():
+                    prefix = f"{relative.rstrip('/')}/"
+                    tracked = tracked or any(path.startswith(prefix) for path in tracked_paths)
+                if not tracked:
+                    raise ValueError(f"approval scope path is not tracked: {reference}: {relative}")
     evidence_records: list[tuple[str, dict[str, Any]]] = []
     for item in roadmap_items(document):
         if item["status"] == "completed":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -41,7 +42,7 @@ class RetryDisposition(StrEnum):
 class RetryClassification(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
-    schema_version: str = BUDGET_SCHEMA_VERSION
+    schema_version: Literal["2.0.0"] = BUDGET_SCHEMA_VERSION
     category: FailureCategory
     idempotency: IdempotencyStatus
     disposition: RetryDisposition

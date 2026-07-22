@@ -312,6 +312,113 @@
         ]
       },
       "scope_digest": "c96bc2a5f56930630884b7dd7181366638768b4623762d1bd9aa249c01c76d9f"
+    },
+    "goal-rm011-p2-011a-2026-07-20-correction-1": {
+      "source_label": "corrected projection of goal-rm011-p2-011a-2026-07-20",
+      "topics": [
+        "Advance RM-011 from planned to in_progress and implement P2-011A only; keep RM-011 incomplete and P2-011B unapproved and not started.",
+        "Implement a strict versioned budget schema, explicit v1 migration, fake monotonic clock, serial usage accounting, retry classification, and typed budget failures.",
+        "Use serial execution, zero automatic retries, and peak concurrency one as the v2 effective baseline; do not add a parallel scheduler or automatic retry loop.",
+        "Require strict finite unit-bearing canonical values, integer micro-USD and byte counts, split UTF-8 byte caps, and fail-closed handling of unsupported legacy fields.",
+        "Refuse unknown-cost, zero-cap, and over-cap external execution before the call while allowing free local providers and deterministic calculators under a zero external-cost cap.",
+        "Measure active runtime with an injected monotonic clock, exclude human approval wait, preserve artifact and run byte fail-closed behavior, and keep usage accounting in memory only.",
+        "Classify validation, unavailable, budget, deadline, cancellation, and policy failures as non-retryable; transient failures require safe idempotency and remain classification-only.",
+        "Distinguish timed_out, cancel_requested, cancel_unconfirmed, and cancelled without claiming cooperative thread cancellation is a hard stop.",
+        "Preserve P2-010A phase contracts, P2-024A context envelopes, public APIs, CLI behavior, artifact meanings, and calculator ToolResult metadata.",
+        "Do not add dependencies, external providers, external solvers, runtime bridges, durable manifests, transactions, reservations, CAS, resume accounting, approval CAS, retention, or cleanup.",
+        "Update roadmap state and evidence append-only; stop for a new approval and digest before changing immutable scope, dependencies, or approved policy decisions.",
+        "Keep intermediate data, review logs, test output, run artifacts, and user_materials out of Git."
+      ],
+      "scope": {
+        "schema_version": "1.1.0",
+        "rm_id": "RM-011",
+        "milestone_contract": {
+          "id": "P2-011A",
+          "rm_id": "RM-011",
+          "dependencies": ["RM-023", "P2-010A"],
+          "scope": "Strict budget schema, fake clock, serial accounting, and retry classification."
+        },
+        "item_contract": {
+          "acceptance_criteria": ["Unknown, zero, or over-cap cost prevents external calls while free local execution remains valid; retries are typed and idempotent; unconfirmed cancellation is not success."],
+          "capabilities": ["parallel_deliberation_and_tool_retry", "process_sandbox"],
+          "completion_milestone": "P2-011B",
+          "dependencies": ["RM-023", "RM-024"],
+          "entry_milestone": "P2-011A",
+          "evidence_mode": null,
+          "id": "RM-011",
+          "objective": "Make every active budget field finite, enforceable, auditable, and fail-closed or remove it from active configuration.",
+          "phase": "phase-2",
+          "priority": "P1",
+          "relations": null,
+          "targets": ["src/poker_deliberation/config.py", "src/poker_deliberation/state_machine.py", "provider and tool execution boundaries"],
+          "tests": ["fake-clock budget tests", "retry classifier tests", "concurrency/cost reservation tests", "cooperative and uncooperative cancel tests"],
+          "title": "Budget, retry, timeout, cancellation, and concurrency semantics"
+        },
+        "milestone_implementation_scope": {
+          "targets": [
+            "src/poker_deliberation/config.py",
+            "src/poker_deliberation/state_machine.py",
+            "src/poker_deliberation/orchestrator.py",
+            "src/poker_deliberation/budgets",
+            "src/poker_deliberation/phases",
+            "src/poker_deliberation/providers",
+            "src/poker_deliberation/tools",
+            "src/poker_deliberation/storage",
+            "src/poker_deliberation/roadmap_status.json",
+            "src/poker_deliberation/roadmap.py",
+            "docs/budget-execution-contract.md",
+            "docs/architecture.md",
+            "docs/security.md",
+            "docs/limitations.md",
+            "docs/phase-services.md",
+            "docs/roadmap-status.md",
+            "README.md"
+          ],
+          "tests": [
+            "tests/characterization/test_budget_baseline.py",
+            "tests/unit/test_budget_contracts.py",
+            "tests/unit/test_serial_accounting.py",
+            "tests/unit/test_retry_classification.py",
+            "tests/property/test_budget_properties.py",
+            "tests/integration/test_budget_orchestration.py",
+            "tests/adversarial/test_budget_boundaries.py",
+            "tests/fault/test_budget_failures.py",
+            "tests/characterization/test_orchestrator_phase_baseline.py",
+            "tests/integration/test_phase_orchestration.py",
+            "tests/integration/test_context_lifecycle_integration.py",
+            "tests/adversarial/test_context_lifecycle_security.py",
+            "tests/integration/test_tool_contracts.py",
+            "tests/golden/test_golden_scenarios.py",
+            "tests/integration/test_cli.py",
+            "tests/integration/test_roadmap_status.py"
+          ],
+          "acceptance_criteria": [
+            "BudgetPolicyV2, BudgetSnapshot, UsageDelta, SerialUsageLedger, retry and deadline/cancellation values, typed failures, deterministic canonical hashes, and explicit v1 migration are strict and versioned.",
+            "Boolean, coercive string, non-finite, negative, unknown-field, clock-rollback, policy-substitution, unsupported-concurrency, and malformed-usage inputs fail closed.",
+            "External costs use integer micro-USD; unknown, disabled, and over-cap external attempts are refused before analyze while local-free provider and calculator execution remain valid at cap zero.",
+            "Legacy max_output_bytes expands once during v1 migration into separate provider-output, tool-input, tool-output, and artifact UTF-8 byte limits; max_run_bytes remains fail closed.",
+            "Active runtime is measured serially with an injected monotonic clock and excludes human approval wait; accounting remains attempt/run-local without durable reservation, manifest, transaction, CAS, or resume integration.",
+            "Retry classification is separate from execution, exposes at most N+1 candidate attempts for N retries, and never performs automatic retries in P2-011A.",
+            "Typed deadline and cancellation distinguish timed out, requested, unconfirmed, and acknowledged states; uncooperative in-process work is not reported as hard-stopped or successful.",
+            "P2-010A phase behavior, P2-024A ContextEnvelope checks, serial call and artifact order, run/resume/show, CLI exits, public schemas, and calculator ToolResult metadata remain compatible with no new dependency."
+          ]
+        },
+        "policy_decisions": [
+          "Advance RM-011 from planned to in_progress and implement P2-011A only; keep RM-011 incomplete and P2-011B unapproved and not started.",
+          "Implement a strict versioned budget schema, explicit v1 migration, fake monotonic clock, serial usage accounting, retry classification, and typed budget failures.",
+          "Use serial execution, zero automatic retries, and peak concurrency one as the v2 effective baseline; do not add a parallel scheduler or automatic retry loop.",
+          "Require strict finite unit-bearing canonical values, integer micro-USD and byte counts, split UTF-8 byte caps, and fail-closed handling of unsupported legacy fields.",
+          "Refuse unknown-cost, zero-cap, and over-cap external execution before the call while allowing free local providers and deterministic calculators under a zero external-cost cap.",
+          "Measure active runtime with an injected monotonic clock, exclude human approval wait, preserve artifact and run byte fail-closed behavior, and keep usage accounting in memory only.",
+          "Classify validation, unavailable, budget, deadline, cancellation, and policy failures as non-retryable; transient failures require safe idempotency and remain classification-only.",
+          "Distinguish timed_out, cancel_requested, cancel_unconfirmed, and cancelled without claiming cooperative thread cancellation is a hard stop.",
+          "Preserve P2-010A phase contracts, P2-024A context envelopes, public APIs, CLI behavior, artifact meanings, and calculator ToolResult metadata.",
+          "Do not add dependencies, external providers, external solvers, runtime bridges, durable manifests, transactions, reservations, CAS, resume accounting, approval CAS, retention, or cleanup.",
+          "Update roadmap state and evidence append-only; stop for a new approval and digest before changing immutable scope, dependencies, or approved policy decisions.",
+          "Keep intermediate data, review logs, test output, run artifacts, and user_materials out of Git."
+        ]
+      },
+      "scope_digest": "63f0bae2b1e49a2c5ea7558d166a463ff4f1e9169b977e5968fdf0fb6f5e0f9e"
     }
   },
   "status_vocabulary": {
@@ -378,7 +485,7 @@
   "milestone_approvals": {
     "P2-024A": "goal-rm024-p2-024a-2026-07-20",
     "P2-010A": "goal-rm010-p2-010a-2026-07-20",
-    "P2-011A": "goal-rm011-p2-011a-2026-07-20",
+    "P2-011A": "goal-rm011-p2-011a-2026-07-20-correction-1",
     "P2-027A": null,
     "P2-012A": null,
     "P2-010B": null,
@@ -581,7 +688,7 @@
       "entry_milestone": "P2-011A",
       "completion_milestone": "P2-011B",
       "completion_evidence": {"commits": [], "paths": [], "tests": []},
-      "human_approval": {"required": true, "state": "approved_scope", "topics": ["Advance RM-011 from planned to in_progress and implement P2-011A only; keep RM-011 incomplete and P2-011B unapproved and not started.", "Implement a strict versioned budget schema, explicit v1 migration, fake monotonic clock, serial usage accounting, retry classification, and typed budget failures.", "Use serial execution, zero automatic retries, and peak concurrency one as the v2 effective baseline; do not add a parallel scheduler or automatic retry loop.", "Require strict finite unit-bearing canonical values, integer micro-USD and byte counts, split UTF-8 byte caps, and fail-closed handling of unsupported legacy fields.", "Refuse unknown-cost, zero-cap, and over-cap external execution before the call while allowing free local providers and deterministic calculators under a zero external-cost cap.", "Measure active runtime with an injected monotonic clock, exclude human approval wait, preserve artifact and run byte fail-closed behavior, and keep usage accounting in memory only.", "Classify validation, unavailable, budget, deadline, cancellation, and policy failures as non-retryable; transient failures require safe idempotency and remain classification-only.", "Distinguish timed_out, cancel_requested, cancel_unconfirmed, and cancelled without claiming cooperative thread cancellation is a hard stop.", "Preserve P2-010A phase contracts, P2-024A context envelopes, public APIs, CLI behavior, artifact meanings, and calculator ToolResult metadata.", "Do not add dependencies, external providers, external solvers, runtime bridges, durable manifests, transactions, reservations, CAS, resume accounting, approval CAS, retention, or cleanup.", "Update roadmap state and evidence append-only; stop for a new approval and digest before changing immutable scope, dependencies, or approved policy decisions.", "Keep intermediate data, review logs, test output, run artifacts, and user_materials out of Git."], "approval_reference": "goal-rm011-p2-011a-2026-07-20", "scope_digest": "c96bc2a5f56930630884b7dd7181366638768b4623762d1bd9aa249c01c76d9f"},
+      "human_approval": {"required": true, "state": "approved_scope", "topics": ["Advance RM-011 from planned to in_progress and implement P2-011A only; keep RM-011 incomplete and P2-011B unapproved and not started.", "Implement a strict versioned budget schema, explicit v1 migration, fake monotonic clock, serial usage accounting, retry classification, and typed budget failures.", "Use serial execution, zero automatic retries, and peak concurrency one as the v2 effective baseline; do not add a parallel scheduler or automatic retry loop.", "Require strict finite unit-bearing canonical values, integer micro-USD and byte counts, split UTF-8 byte caps, and fail-closed handling of unsupported legacy fields.", "Refuse unknown-cost, zero-cap, and over-cap external execution before the call while allowing free local providers and deterministic calculators under a zero external-cost cap.", "Measure active runtime with an injected monotonic clock, exclude human approval wait, preserve artifact and run byte fail-closed behavior, and keep usage accounting in memory only.", "Classify validation, unavailable, budget, deadline, cancellation, and policy failures as non-retryable; transient failures require safe idempotency and remain classification-only.", "Distinguish timed_out, cancel_requested, cancel_unconfirmed, and cancelled without claiming cooperative thread cancellation is a hard stop.", "Preserve P2-010A phase contracts, P2-024A context envelopes, public APIs, CLI behavior, artifact meanings, and calculator ToolResult metadata.", "Do not add dependencies, external providers, external solvers, runtime bridges, durable manifests, transactions, reservations, CAS, resume accounting, approval CAS, retention, or cleanup.", "Update roadmap state and evidence append-only; stop for a new approval and digest before changing immutable scope, dependencies, or approved policy decisions.", "Keep intermediate data, review logs, test output, run artifacts, and user_materials out of Git."], "approval_reference": "goal-rm011-p2-011a-2026-07-20-correction-1", "scope_digest": "63f0bae2b1e49a2c5ea7558d166a463ff4f1e9169b977e5968fdf0fb6f5e0f9e"},
       "status_reason": "The approved P2-011A strict budget, fake-clock, serial-accounting, retry-classification, and typed cancellation implementation is in progress; P2-011B remains unapproved and not started."
     },
     {

@@ -11,6 +11,7 @@ from poker_deliberation.budgets import (
     SerialUsageLedger,
     UsageDelta,
 )
+from poker_deliberation.state_machine import WorkflowStateMachine
 
 
 def test_fake_clock_accepts_exact_runtime_cap_and_rejects_over_cap() -> None:
@@ -23,6 +24,21 @@ def test_fake_clock_accepts_exact_runtime_cap_and_rejects_over_cap() -> None:
     with pytest.raises(BudgetLimitError) as error:
         ledger.snapshot()
     assert error.value.failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
+    with pytest.raises(BudgetLimitError) as repeated:
+        ledger.snapshot()
+    assert repeated.value.failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
+
+
+def test_runtime_failure_remains_fail_closed_across_state_machine_checks() -> None:
+    clock = FakeMonotonicClock()
+    machine = WorkflowStateMachine(
+        BudgetPolicyV2(max_runtime_seconds=1.0),
+        clock=clock,
+    )
+    clock.advance_ns(1_000_000_001)
+
+    assert not machine.enforce_runtime()
+    assert not machine.enforce_runtime()
 
 
 def test_fake_clock_rollback_is_rejected() -> None:
@@ -91,3 +107,17 @@ def test_peak_concurrency_above_serial_baseline_fails_closed() -> None:
     with pytest.raises(BudgetLimitError) as error:
         ledger.apply(UsageDelta(peak_concurrency=2))
     assert error.value.failure.code is BudgetFailureCode.UNSUPPORTED_CONCURRENCY
+
+
+def test_storage_observation_records_peak_artifact_and_absolute_run_bytes() -> None:
+    ledger = SerialUsageLedger(
+        BudgetPolicyV2(max_artifact_bytes=1024, max_run_bytes=10_240),
+        active=False,
+    )
+
+    first = ledger.observe_storage(artifact_bytes=100, run_bytes=300)
+    second = ledger.observe_storage(artifact_bytes=50, run_bytes=325)
+
+    assert first.artifact_bytes == 100
+    assert second.artifact_bytes == 100
+    assert second.run_bytes == 325

@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
-from poker_deliberation.budgets import BudgetPolicyV2, ExecutionClass, FakeMonotonicClock
+from poker_deliberation.budgets import (
+    BudgetPolicyV2,
+    ExecutionClass,
+    FailureCategory,
+    FakeMonotonicClock,
+)
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.phases import AnalysisExecutor, ToolResearchExecutor
+from poker_deliberation.phases.services import ContextBuildService, SynthesisService
 from poker_deliberation.providers import (
     ProviderAvailability,
     ProviderControl,
     ProviderStatus,
 )
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport, CaseInput
+from poker_deliberation.tools import default_registry
 
 
 class CostedProvider:
@@ -58,6 +68,54 @@ class CostedProvider:
             task=assignment.task,
             conclusions=["x" * self.conclusion_size] if self.conclusion_size else [],
         )
+
+
+class CapturingAnalysisExecutor(AnalysisExecutor):
+    def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.outcomes = []
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        outcome = super().run(request)
+        self.outcomes.append(outcome)
+        return outcome
+
+
+class FailingProvider(CostedProvider):
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        del context, assignment, control
+        self.calls += 1
+        raise ValueError("deterministic invalid provider payload")
+
+
+class CancellingProvider(CostedProvider):
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        del context, assignment
+        self.calls += 1
+        control.request_cancel()
+        control.raise_if_cancelled()
+        raise AssertionError("cancelled provider must not continue")
+
+
+class CapturingToolResearchExecutor(ToolResearchExecutor):
+    def __init__(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        super().__init__(*args, **kwargs)
+        self.outcomes = []
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        outcome = super().run(request)
+        self.outcomes.append(outcome)
+        return outcome
 
 
 def _strategy_case() -> CaseInput:
@@ -152,7 +210,71 @@ def test_fake_clock_runtime_overrun_becomes_structured_limitation(tmp_path: Path
 
     assert provider.calls == 1
     assert report.run_status == "failed_with_limitations"
-    assert any("usage settlement" in item for item in report.data_quality)
+    assert any("deadline" in item for item in report.data_quality)
+
+
+def test_late_provider_output_is_rejected_by_injected_deadline(tmp_path: Path) -> None:
+    clock = FakeMonotonicClock()
+    provider = CostedProvider(
+        ExecutionClass.LOCAL_FREE,
+        None,
+        clock=clock,
+        advance_ns=31_000_000_000,
+    )
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=300.0),
+    ).run(_strategy_case(), run_id="run-late-provider-output")
+
+    assert provider.calls == 1
+    assert report.run_status == "failed_with_limitations"
+    assert report.agent_execution_records[0].status.value == "failed"
+
+
+def test_provider_failure_is_not_assumed_transient_or_given_tool_retries(
+    tmp_path: Path,
+) -> None:
+    provider = FailingProvider(ExecutionClass.LOCAL_FREE, None)
+    executor = CapturingAnalysisExecutor(
+        provider,
+        context_clock=lambda: datetime.now(UTC),
+        record_clock=lambda: datetime.now(UTC),
+    )
+    Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        analysis_executor=executor,
+        budget_policy=BudgetPolicyV2(max_tool_retries=3),
+    ).run(_strategy_case(), run_id="run-provider-permanent-failure")
+
+    classification = executor.outcomes[0].output.retry_classification
+    assert classification is not None
+    assert classification.category is FailureCategory.PROVIDER_PERMANENT
+    assert not classification.retryable
+    assert classification.max_retries == 0
+
+
+def test_explicit_provider_cancellation_is_not_misclassified_as_deadline(
+    tmp_path: Path,
+) -> None:
+    provider = CancellingProvider(ExecutionClass.LOCAL_FREE, None)
+    executor = CapturingAnalysisExecutor(
+        provider,
+        context_clock=lambda: datetime.now(UTC),
+        record_clock=lambda: datetime.now(UTC),
+    )
+    Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        analysis_executor=executor,
+    ).run(_strategy_case(), run_id="run-provider-cancelled")
+
+    classification = executor.outcomes[0].output.retry_classification
+    assert classification is not None
+    assert classification.category is FailureCategory.CANCEL
+    assert not classification.retryable
 
 
 def test_provider_output_split_cap_rejects_oversized_report(tmp_path: Path) -> None:
@@ -184,3 +306,156 @@ def test_zero_deliberation_rounds_skip_provider_analysis(tmp_path: Path) -> None
     assert provider.calls == 0
     assert report.run_status == "failed_with_limitations"
     assert "provider analysis skipped because round budget is zero" in report.data_quality
+
+
+def test_injected_analysis_executor_cannot_use_a_different_provider(tmp_path: Path) -> None:
+    orchestrator_provider = CostedProvider(ExecutionClass.LOCAL_FREE, None)
+    executor_provider = CostedProvider(ExecutionClass.EXTERNAL, 1)
+    executor = AnalysisExecutor(
+        executor_provider,
+        context_clock=lambda: datetime.now(UTC),
+        record_clock=lambda: datetime.now(UTC),
+    )
+
+    with pytest.raises(ValueError, match="executor provider must match"):
+        Orchestrator(
+            AppConfig(runs_dir=tmp_path / "runs"),
+            provider=orchestrator_provider,
+            analysis_executor=executor,
+            budget_policy=BudgetPolicyV2(max_external_cost_micro_usd=0),
+        )
+
+    assert orchestrator_provider.calls == 0
+    assert executor_provider.calls == 0
+
+
+class AdvancingContextBuildService(ContextBuildService):
+    def __init__(self, clock: FakeMonotonicClock) -> None:
+        super().__init__()
+        self.clock = clock
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        outcome = super().run(request)
+        self.clock.advance_ns(2_000_000_000)
+        return outcome
+
+
+def test_context_build_runtime_overrun_refuses_provider_start(tmp_path: Path) -> None:
+    clock = FakeMonotonicClock()
+    provider = CostedProvider(ExecutionClass.EXTERNAL, 1)
+
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(
+            max_runtime_seconds=1.0,
+            max_external_cost_micro_usd=10,
+        ),
+        context_build_service=AdvancingContextBuildService(clock),
+    ).run(_strategy_case(), run_id="run-context-budget-overrun")
+
+    assert provider.calls == 0
+    assert report.run_status == "failed_with_limitations"
+    assert "maximum runtime reached during context build" in report.data_quality
+
+
+class AdvancingSynthesisService(SynthesisService):
+    def __init__(self, clock: FakeMonotonicClock) -> None:
+        self.clock = clock
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        self.clock.advance_ns(500_000_000)
+        return super().run(request)
+
+
+def test_internal_approval_report_work_is_charged_before_human_wait_pause(
+    tmp_path: Path,
+) -> None:
+    clock = FakeMonotonicClock()
+    run_id = "run-approval-wait-accounting"
+    case = CaseInput(
+        kind="strategy",
+        raw_text="external solver",
+        analysis_scope="retrospective",
+        metadata={
+            "approval_requests": [
+                {
+                    "approval_id": "approval-budget-wait",
+                    "requested_action": "external solver",
+                    "reason": "test approval boundary",
+                    "expected_benefit": "external result",
+                    "risks": ["external execution"],
+                    "cost_or_resource_estimate": "unknown",
+                    "alternatives": ["local analysis"],
+                    "effect_of_declining": "no external result",
+                }
+            ]
+        },
+    )
+
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=clock,
+        synthesis_service=AdvancingSynthesisService(clock),
+    ).run(case, run_id=run_id)
+    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+
+    assert report.run_status == "approval_required"
+    assert state["elapsed_seconds"] == 0.5
+
+
+def test_run_store_writes_settle_peak_artifact_and_current_run_bytes(tmp_path: Path) -> None:
+    run_id = "run-storage-accounting"
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"))
+
+    orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["pot_odds"],
+            metadata={
+                "tool_inputs": {
+                    "pot_odds": {
+                        "pot_before_bet": 100,
+                        "opponent_bet": 50,
+                        "call_cost": 50,
+                    }
+                }
+            },
+        ),
+        run_id=run_id,
+    )
+    run_dir = tmp_path / "runs" / run_id
+    sizes = [path.stat().st_size for path in run_dir.rglob("*") if path.is_file()]
+    usage = orchestrator._run_machines[run_id].usage_snapshot()
+
+    assert usage.artifact_bytes == max(sizes)
+    assert usage.run_bytes == sum(sizes)
+
+
+def test_tool_failure_has_non_retryable_production_classification(tmp_path: Path) -> None:
+    registry = default_registry()
+    executor = CapturingToolResearchExecutor(registry, record_sensitive_data=False)
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        registry=registry,
+        tool_research_executor=executor,
+        budget_policy=BudgetPolicyV2(max_tool_retries=3),
+    )
+
+    orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["pot_odds"],
+            metadata={"tool_inputs": {"pot_odds": {}}},
+        ),
+        run_id="run-tool-retry-classification",
+    )
+
+    classification = executor.outcomes[0].output.retry_classifications[0]
+    assert classification is not None
+    assert classification.category is FailureCategory.TOOL_DETERMINISTIC
+    assert not classification.retryable
+    assert classification.max_retries == 3

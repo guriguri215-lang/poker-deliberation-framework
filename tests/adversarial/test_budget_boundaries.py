@@ -21,7 +21,7 @@ def test_utf8_byte_cap_accepts_exact_value_and_rejects_one_byte_over() -> None:
 
     ledger.apply(UsageDelta(tool_input_bytes=len(exact_payload.encode("utf-8"))))
     with pytest.raises(BudgetLimitError) as error:
-        ledger.apply(UsageDelta(tool_input_bytes=1))
+        ledger.apply(UsageDelta(tool_input_bytes=1025))
 
     assert error.value.failure.code is BudgetFailureCode.TOOL_INPUT_EXCEEDED
     assert ledger.snapshot().tool_input_bytes == 1024

@@ -5,6 +5,7 @@ import pytest
 from poker_deliberation.budgets import (
     FailureCategory,
     IdempotencyStatus,
+    RetryClassification,
     RetryDisposition,
     classify_retry,
 )
@@ -62,3 +63,12 @@ def test_retry_count_is_strict_and_non_negative() -> None:
         classify_retry(FailureCategory.PROVIDER_TRANSIENT, max_retries=True)
     with pytest.raises(ValueError):
         classify_retry(FailureCategory.PROVIDER_TRANSIENT, max_retries=-1)
+
+
+def test_retry_schema_version_is_strict() -> None:
+    baseline = classify_retry(FailureCategory.INTERNAL)
+    payload = baseline.model_dump(mode="python")
+    payload["schema_version"] = "9.9.9"
+
+    with pytest.raises(ValueError):
+        RetryClassification.model_validate(payload)

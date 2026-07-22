@@ -46,6 +46,8 @@
   injected provider's execution class and preflight cost estimate are trusted declarations. For
   public API compatibility, a pre-P2-011A injected provider that omits the new class is treated as a
   trusted in-process local-free declaration; callers must not use that legacy form for external work.
+  After a sticky runtime or clock-observation failure, failure artifacts remain protected by
+  `RunStore` hard caps, but their later physical bytes are not added to the frozen ledger snapshot.
 - The v2 retry count describes candidate attempts and classification only. P2-011A has no automatic
   retry loop, backoff, durable retry state, or parallel execution; peak concurrency is fixed at one.
 - Redaction covers common structured keys and token forms, not arbitrary personal information or

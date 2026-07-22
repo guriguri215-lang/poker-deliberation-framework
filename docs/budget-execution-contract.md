@@ -35,14 +35,19 @@ integer number of micro-USD.
 
 ## Accounting and execution classes
 
-`SerialUsageLedger` owns an attempt/run-local `BudgetSnapshot`. It keeps provider and tool attempts,
-retry candidates, active runtime, external cost, peak canonical provider/tool values, peak artifact
-size, current run size, and peak concurrency in separate fields; unlike units are never summed. A
+`SerialUsageLedger` owns an attempt/run-local `BudgetSnapshot`. While budget observations remain
+healthy, it keeps provider and tool attempts, retry candidates, active runtime, external cost, peak
+canonical provider/tool values, peak artifact size, current run size, and peak concurrency in
+separate fields; unlike units are never summed. A
 rejected preflight or storage projection does not commit proposed usage. Actual runtime and completed
 effect usage are settled together and remain in the snapshot even when the settlement exceeds a
 limit; the typed failure then remains sticky and blocks later effects. `RunStore` reports the exact
 projected artifact and run sizes to the in-memory ledger before each write. Clock rollback and
 policy-hash substitution fail closed.
+
+After a sticky runtime or clock-observation failure, the ledger no longer accepts storage
+observations. Failure-report writes still pass through `RunStore`'s independent artifact/run hard
+caps, but those later physical bytes are not represented in the settled in-memory snapshot.
 
 Provider availability declares `local_free`, `external`, or `unknown` execution. Unknown execution,
 unknown external cost, a zero external-cost cap, and over-cap estimated cost are rejected before

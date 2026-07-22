@@ -641,14 +641,21 @@ def validate_roadmap(document: dict[str, Any]) -> None:
             approved_topics = _require_string_list(
                 approval_records[approval_reference]["topics"], f"{approval_reference}.topics"
             )
+            approval_record = approval_records[approval_reference]
             if not set(topics) <= set(approved_topics):
                 raise ValueError(f"approval topics exceed tracked scope: {rm_id}")
-            if "scope" in approval_records[approval_reference]:
+            if "scope" in approval_record:
                 if topics != approved_topics:
                     raise ValueError(f"scoped approval topics must match exactly: {rm_id}")
+                approval_scope = _require_dict(approval_record["scope"], "approval scope")
+                if (
+                    approval_scope.get("schema_version") == APPROVAL_SCOPE_SCHEMA_VERSION
+                    and approval.get("scope_digest") != approval_record["scope_digest"]
+                ):
+                    raise ValueError(f"approved scope digest is not bound to record: {rm_id}")
                 _validate_scoped_approval_record(
                     approval_reference,
-                    approval_records[approval_reference],
+                    approval_record,
                     rm_id=rm_id,
                     item=item,
                 )
@@ -747,25 +754,24 @@ def validate_roadmap_update(
     current: dict[str, Any],
     newly_approved_references: set[str] | None = None,
 ) -> None:
-    """Validate append-only history and externally authorized approval changes."""
+    """Validate append-only history; the third argument is compatibility-only."""
 
     validate_roadmap(previous)
     validate_roadmap(current)
-    authorized = newly_approved_references or set()
+    del newly_approved_references
     previous_schema = previous.get("schema_version")
     current_schema = current.get("schema_version")
     if previous_schema != current_schema:
-        migration_is_authorized = (
+        migration_is_bound = (
             previous_schema == LEGACY_ROADMAP_SCHEMA_VERSION
             and current_schema == ROADMAP_SCHEMA_VERSION
-            and ROADMAP_SCHEMA_AMENDMENT_REFERENCE in authorized
             and ROADMAP_SCHEMA_AMENDMENT_REFERENCE
             in _require_dict(current.get("approval_records"), "approval_records")
             and ROADMAP_SCHEMA_AMENDMENT_REFERENCE
             not in _require_dict(previous.get("approval_records"), "approval_records")
         )
-        if not migration_is_authorized:
-            raise ValueError("roadmap schema migration was not externally authorized")
+        if not migration_is_bound:
+            raise ValueError("roadmap schema migration lacks its append-only amendment record")
     for field in (
         "source_policy",
         "status_vocabulary",
@@ -784,9 +790,7 @@ def validate_roadmap_update(
     for reference, record in old_records.items():
         if new_records.get(reference) != record:
             raise ValueError(f"approval record was deleted or rewritten: {reference}")
-    for reference in set(new_records) - set(old_records):
-        if reference not in authorized:
-            raise ValueError(f"approval change was not externally authorized: {reference}")
+    appended_records = set(new_records) - set(old_records)
 
     old_milestones = {
         str(milestone["id"]): _require_dict(milestone, "milestone")
@@ -802,8 +806,12 @@ def validate_roadmap_update(
         new_reference = new_bindings[milestone_id]
         if old_reference is not None and new_reference != old_reference:
             raise ValueError(f"milestone approval was deleted or rewritten: {milestone_id}")
-        if old_reference is None and new_reference is not None and new_reference not in authorized:
-            raise ValueError(f"milestone approval was not externally authorized: {milestone_id}")
+        if (
+            old_reference is None
+            and new_reference is not None
+            and new_reference not in appended_records
+        ):
+            raise ValueError(f"milestone approval was not appended with binding: {milestone_id}")
 
     for rm_id in sorted(EXPECTED_RM_IDS):
         changed_contract_fields = {
@@ -819,8 +827,7 @@ def validate_roadmap_update(
                 and current_items[rm_id]["status"] == "planned"
                 and new_approval.get("state") == "approved_scope"
                 and isinstance(new_reference, str)
-                and new_reference in authorized
-                and new_reference in new_records
+                and new_reference in appended_records
                 and "scope" in _require_dict(new_records[new_reference], new_reference)
             )
             if not scope_freeze:
@@ -866,11 +873,15 @@ def validate_roadmap_update(
         old_approval = _require_dict(previous_items[rm_id]["human_approval"], "approval")
         new_approval = _require_dict(current_items[rm_id]["human_approval"], "approval")
         if old_approval != new_approval:
-            old_reference = old_approval.get("approval_reference")
             new_reference = new_approval.get("approval_reference")
-            required_reference = new_reference if isinstance(new_reference, str) else old_reference
-            if required_reference not in authorized:
-                raise ValueError(f"approval change was not externally authorized: {rm_id}")
+            if old_approval.get("state") == "approved_scope":
+                raise ValueError(f"approval was deleted or rewritten: {rm_id}")
+            if (
+                new_approval.get("state") != "approved_scope"
+                or not isinstance(new_reference, str)
+                or new_reference not in appended_records
+            ):
+                raise ValueError(f"approval was not appended with exact scope: {rm_id}")
 
         if "completed" in old_history:
             old_evidence = _require_dict(

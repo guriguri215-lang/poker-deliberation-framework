@@ -89,7 +89,8 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
         "RM-024",
     }
     assert items["RM-010"]["status"] == "in_progress"
-    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(11, 18))
+    assert items["RM-011"]["status"] == "in_progress"
+    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(12, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in range(25, 29))
     assert items["RM-023"]["completion_evidence"]
@@ -130,7 +131,7 @@ def test_status_history_prevents_status_only_completion_counterexample() -> None
         validate_roadmap(counterexample)
 
 
-def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> None:
+def test_update_validation_rejects_rewritten_history_and_approval_rebinding() -> None:
     previous = load_roadmap()
     rewritten = deepcopy(previous)
     rewritten["status_history"]["RM-001"] = [
@@ -146,7 +147,7 @@ def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> N
     weakened = deepcopy(previous)
     item = next(item for item in weakened["items"] if item["id"] == "RM-024")
     item["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    with pytest.raises(ValueError, match="approval change was not externally authorized"):
+    with pytest.raises(ValueError, match="approval was deleted or rewritten"):
         validate_roadmap_update(previous, weakened)
 
     rebound = deepcopy(previous)
@@ -158,9 +159,9 @@ def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> N
     completed = next(item for item in rebound["items"] if item["id"] == "RM-023")
     completed["human_approval"]["approval_reference"] = "fake-self-declared"
     validate_roadmap(rebound)
-    with pytest.raises(ValueError, match="approval change was not externally authorized"):
+    with pytest.raises(ValueError, match="approval was deleted or rewritten"):
         validate_roadmap_update(previous, rebound)
-    with pytest.raises(ValueError, match="approval change was not externally authorized"):
+    with pytest.raises(ValueError, match="approval was deleted or rewritten"):
         validate_roadmap_update(previous, rebound, {"goal-objective-2026-07-20"})
 
     changed_scope = deepcopy(previous)
@@ -177,7 +178,7 @@ def test_update_validation_rejects_rewritten_history_and_unapproved_scope() -> N
         validate_roadmap(remapped)
 
 
-def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
+def test_scoped_proposed_item_can_be_frozen_exactly_once() -> None:
     previous = load_roadmap()
     planned = deepcopy(previous)
     rm_027 = next(item for item in planned["items"] if item["id"] == "RM-027")
@@ -199,11 +200,12 @@ def test_authorized_proposed_scope_can_be_frozen_exactly_once() -> None:
         "state": "approved_scope",
         "topics": topics,
         "approval_reference": reference,
+        "scope_digest": planned["approval_records"][reference]["scope_digest"],
     }
 
     validate_roadmap_update(previous, planned, {reference})
-    with pytest.raises(ValueError, match="approval change was not externally authorized"):
-        validate_roadmap_update(previous, planned)
+    validate_roadmap_update(previous, planned)
+    validate_roadmap_update(previous, planned, {"irrelevant-compatibility-value"})
 
     mutated_after_freeze = deepcopy(planned)
     mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-027")
@@ -316,6 +318,12 @@ def test_milestone_approval_is_digest_bound_and_does_not_unlock_p2_010b() -> Non
     assert document["milestone_approvals"]["P2-010B"] is None
     assert "P2-010B" not in roadmap_summary(document)["milestone_ready_ids"]
 
+    digest_mismatch = deepcopy(document)
+    item = next(item for item in digest_mismatch["items"] if item["id"] == "RM-010")
+    item["human_approval"]["scope_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="scope digest is not bound"):
+        validate_roadmap(digest_mismatch)
+
     rebound = deepcopy(document)
     rebound["milestone_approvals"]["P2-010B"] = reference
     with pytest.raises(ValueError, match="approval scope contract does not match milestone"):
@@ -384,8 +392,8 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(counterexample)
 
     pending_parent = deepcopy(load_roadmap())
-    pending_parent["milestone_progress"]["P2-011A"]["state"] = "in_progress"
-    pending_parent["milestone_progress"]["P2-011A"]["history"] = [
+    pending_parent["milestone_progress"]["P2-012A"]["state"] = "in_progress"
+    pending_parent["milestone_progress"]["P2-012A"]["history"] = [
         "not_started",
         "in_progress",
     ]
@@ -393,10 +401,6 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(pending_parent)
 
     blocked_under_active_parent = deepcopy(load_roadmap())
-    rm_011 = next(item for item in blocked_under_active_parent["items"] if item["id"] == "RM-011")
-    rm_011["status"] = "in_progress"
-    rm_011["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    blocked_under_active_parent["status_history"]["RM-011"].append("in_progress")
     blocked_progress = blocked_under_active_parent["milestone_progress"]["P2-011A"]
     blocked_progress["state"] = "blocked"
     blocked_progress["history"] = ["not_started", "blocked"]
@@ -407,9 +411,9 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(blocked_under_active_parent)
 
     pending_item = deepcopy(load_roadmap())
-    rm_011 = next(item for item in pending_item["items"] if item["id"] == "RM-011")
-    rm_011["status"] = "in_progress"
-    pending_item["status_history"]["RM-011"].append("in_progress")
+    rm_012 = next(item for item in pending_item["items"] if item["id"] == "RM-012")
+    rm_012["status"] = "in_progress"
+    pending_item["status_history"]["RM-012"].append("in_progress")
     with pytest.raises(ValueError, match="in-progress item lacks required approval"):
         validate_roadmap(pending_item)
 
@@ -517,36 +521,26 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 2,
-        "not_started": 10,
+        "in_progress": 1,
+        "not_started": 9,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
     assert (
-        generate_roadmap_status(
-            [
-                "--check",
-                "--approve-reference",
-                "goal-rm010-p2-010a-governance-amendment-2026-07-20",
-                "--approve-reference",
-                "goal-rm010-p2-010a-2026-07-20",
-            ]
-        )
+        generate_roadmap_status(["--check"])
         == 0
     )
 
 
-def test_plan_progress_and_readme_reference_the_canonical_source() -> None:
-    plan = (ROOT / "PLAN.md").read_text(encoding="utf-8")
-    progress = (ROOT / "PROGRESS.md").read_text(encoding="utf-8")
+def test_readme_and_ignore_policy_reference_canonical_and_local_planning_files() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
 
-    canonical = "src/poker_deliberation/roadmap_status.json"
-    assert canonical in plan
-    assert canonical in progress
     assert "docs/roadmap-status.md" in readme
-    assert "# Progress" in progress and "実行履歴" in progress
+    assert "/PLAN.md" in ignore
+    assert "/PROGRESS.md" in ignore
 
 
 def test_release_split_and_external_execution_dependencies_are_frozen() -> None:

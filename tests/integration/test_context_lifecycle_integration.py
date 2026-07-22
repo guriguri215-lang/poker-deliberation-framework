@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.config import AppConfig
 from poker_deliberation.context_lifecycle import context_payload
 from poker_deliberation.orchestrator import Orchestrator
@@ -29,6 +30,7 @@ class CapturingProvider:
             provider="capturing-test",
             reason="integration test provider",
             version="1.0.0",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(

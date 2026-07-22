@@ -10,6 +10,8 @@ Python `AgentExecutionRecord` entries or run artifacts.
 
 - `schemas.py`: strict Pydantic contracts.
 - `state_machine.py`: legal bounded transitions and budget counters.
+- `budgets/`: strict policy, canonical usage values, injected monotonic clocks, serial ledger,
+  retry classification, and deadline/cancellation vocabulary.
 - `orchestrator.py`: routing, provider calls, tools, adjudication inputs, synthesis, artifacts.
 - `phases/`: strict internal phase contracts, deterministic pure services, and serial Analysis /
   ToolResearch effect adapters. See `docs/phase-services.md`.
@@ -29,9 +31,9 @@ Safe paths end through `FINAL_SYNTHESIS -> COMPLETED`; unavailable approved exte
 end at `FAILED_WITH_LIMITATIONS`.
 
 The application, not an SDK or model, owns transition legality, runtime checks, output/run caps,
-cost defaults, and terminal conditions. Budget fields for deliberation rounds, tool retries, and
-concurrency exist, but ordinary orchestration does not execute those controls; they are documented as
-disabled until their semantics are implemented and contract-tested.
+cost preflight, and terminal conditions. The v2 budget baseline is one serial analysis batch, zero
+automatic retries, and peak concurrency one. A zero batch cap skips provider analysis; retry counts
+remain classification-only. See `docs/budget-execution-contract.md`.
 
 ## Provider boundary
 
@@ -67,6 +69,12 @@ only permitted requested terminal state before performing the existing fixed wri
 Calculation still assigns `math-auditor` and `report-writer` without executing either provider role.
 Phase values are internal and are not persisted as new artifacts. P2-010A does not change the known
 whole-run atomicity limitation; durable transition ordering belongs to P2-012A/P2-010B.
+
+P2-011A extends Analysis and ToolResearch values with policy-bound usage deltas, typed budget
+failures, retry classification, and deadline/cancellation status. Each effect adapter preflights its
+own provider or tool boundary, but only the orchestrator settles run usage and decides subsequent
+state/artifact effects. Accounting is in-memory and serial; no reservation, durable manifest,
+transaction, CAS, resume settlement, scheduler, or automatic retry is introduced.
 
 ## Trust boundaries
 

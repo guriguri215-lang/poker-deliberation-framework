@@ -48,7 +48,12 @@ class PhaseFailureCode(StrEnum):
     PROVIDER_REFUSED = "provider_refused"
     PROVIDER_TIMEOUT = "provider_timeout"
     PROVIDER_FAILURE = "provider_failure"
+    PROVIDER_TRANSIENT = "provider_transient"
     TOOL_FAILURE = "tool_failure"
+    TOOL_TRANSIENT = "tool_transient"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    CANCEL_REQUESTED = "cancel_requested"
+    CANCEL_UNCONFIRMED = "cancel_unconfirmed"
     MALFORMED_OUTCOME = "malformed_outcome"
     ILLEGAL_REQUESTED_TRANSITION = "illegal_requested_transition"
     UNSAFE_ARTIFACT_IDENTITY = "unsafe_artifact_identity"
@@ -124,6 +129,16 @@ class PhaseFailure(_PhaseModel):
         if not _PORTABLE_ID.fullmatch(value):
             raise ValueError("attempt_id must use the portable ID format")
         return value
+
+    @model_validator(mode="after")
+    def retryability_matches_failure_code(self) -> PhaseFailure:
+        retryable_codes = {
+            PhaseFailureCode.PROVIDER_TRANSIENT,
+            PhaseFailureCode.TOOL_TRANSIENT,
+        }
+        if self.retryable != (self.code in retryable_codes):
+            raise ValueError("retryable must match the typed transient failure taxonomy")
+        return self
 
 
 class ArtifactIntent(_PhaseModel):

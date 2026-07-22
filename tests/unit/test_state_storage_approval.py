@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from poker_deliberation.approvals import ApprovalLedger, requires_human_approval
+from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.config import BudgetConfig
 from poker_deliberation.schemas import ApprovalRequest, ApprovalStatus, CaseInput
 from poker_deliberation.state_machine import RunState, WorkflowStateMachine
@@ -29,10 +30,17 @@ def test_state_machine_rejects_illegal_transition() -> None:
 
 
 def test_state_machine_bounded_rounds_and_retries() -> None:
-    machine = WorkflowStateMachine(BudgetConfig(max_deliberation_rounds=1, max_tool_retries=1))
+    machine = WorkflowStateMachine(BudgetPolicyV2(max_deliberation_rounds=1, max_tool_retries=1))
     assert machine.start_deliberation_round()
     assert not machine.start_deliberation_round()
     assert machine.allow_tool_retry("x")
+    assert not machine.allow_tool_retry("x")
+
+
+def test_legacy_budget_migration_preserves_effective_zero_retry_behavior() -> None:
+    machine = WorkflowStateMachine(BudgetConfig(max_deliberation_rounds=1, max_tool_retries=1))
+    assert machine.start_deliberation_round()
+    assert not machine.start_deliberation_round()
     assert not machine.allow_tool_retry("x")
 
 

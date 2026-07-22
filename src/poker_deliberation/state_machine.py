@@ -4,9 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from time import monotonic
 
-from poker_deliberation.config import BudgetConfig
+from poker_deliberation.budgets import (
+    BudgetFailureCode,
+    BudgetLimitError,
+    BudgetPolicyV2,
+    BudgetSnapshot,
+    MonotonicClock,
+    SerialUsageLedger,
+    SystemMonotonicClock,
+    UsageDelta,
+)
+from poker_deliberation.config import BudgetConfig, migrate_budget_config
 
 
 class RunState(StrEnum):
@@ -79,18 +88,36 @@ class StateEvent:
 
 @dataclass(slots=True)
 class WorkflowStateMachine:
-    budgets: BudgetConfig
+    budgets: BudgetConfig | BudgetPolicyV2
     state: RunState = RunState.INTAKE
     events: list[StateEvent] = field(default_factory=list)
     deliberation_rounds: int = 0
     tool_retries: dict[str, int] = field(default_factory=dict)
-    started_at: float = field(default_factory=monotonic)
+    clock: MonotonicClock = field(default_factory=SystemMonotonicClock)
+    ledger: SerialUsageLedger = field(init=False)
+
+    def __post_init__(self) -> None:
+        policy = (
+            self.budgets
+            if isinstance(self.budgets, BudgetPolicyV2)
+            else migrate_budget_config(self.budgets).policy
+        )
+        self.budgets = policy
+        self.ledger = SerialUsageLedger(policy, clock=self.clock)
 
     @classmethod
     def from_snapshot(
-        cls, budgets: BudgetConfig, snapshot: dict[str, object]
+        cls,
+        budgets: BudgetConfig | BudgetPolicyV2,
+        snapshot: dict[str, object],
+        *,
+        clock: MonotonicClock | None = None,
     ) -> WorkflowStateMachine:
-        machine = cls(budgets=budgets, state=RunState(str(snapshot["state"])))
+        machine = cls(
+            budgets=budgets,
+            state=RunState(str(snapshot["state"])),
+            clock=clock or SystemMonotonicClock(),
+        )
         raw_events = snapshot.get("events", [])
         if isinstance(raw_events, list):
             machine.events = [
@@ -106,7 +133,18 @@ class WorkflowStateMachine:
         raw_retries = snapshot.get("tool_retries", {})
         if isinstance(raw_retries, dict):
             machine.tool_retries = {str(key): int(value) for key, value in raw_retries.items()}
-        machine.started_at = monotonic() - float(str(snapshot.get("elapsed_seconds", 0.0)))
+        elapsed_ns = int(float(str(snapshot.get("elapsed_seconds", 0.0))) * 1_000_000_000)
+        policy = machine.budgets
+        if not isinstance(policy, BudgetPolicyV2):  # pragma: no cover - narrowed in __post_init__
+            raise TypeError("workflow budget policy was not resolved")
+        machine.ledger = SerialUsageLedger(
+            policy,
+            clock=machine.clock,
+            initial=BudgetSnapshot(
+                policy_sha256=policy.canonical_sha256,
+                active_runtime_ns=elapsed_ns,
+            ),
+        )
         return machine
 
     def transition(self, target: RunState, reason: str) -> None:
@@ -118,8 +156,12 @@ class WorkflowStateMachine:
     def enforce_runtime(self) -> bool:
         """Fail closed after a completed step exceeds the run budget."""
 
-        if self.elapsed_seconds <= self.budgets.max_runtime_seconds:
+        try:
+            self.ledger.snapshot()
             return True
+        except BudgetLimitError as exc:
+            if exc.failure.code is not BudgetFailureCode.RUNTIME_EXCEEDED:
+                raise
         if not self.terminal:
             self.events.append(
                 StateEvent(
@@ -133,24 +175,46 @@ class WorkflowStateMachine:
 
     @property
     def elapsed_seconds(self) -> float:
-        return monotonic() - self.started_at
+        try:
+            snapshot = self.ledger.snapshot()
+            return snapshot.active_runtime_ns / 1_000_000_000
+        except BudgetLimitError as exc:
+            if (
+                exc.failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
+                and exc.failure.observed is not None
+            ):
+                return exc.failure.observed / 1_000_000_000
+            raise
 
     @property
     def terminal(self) -> bool:
         return self.state in TERMINAL_STATES
 
     def start_deliberation_round(self) -> bool:
+        if not isinstance(self.budgets, BudgetPolicyV2):
+            raise TypeError("workflow budget policy was not resolved")
         if self.deliberation_rounds >= self.budgets.max_deliberation_rounds:
             return False
         self.deliberation_rounds += 1
         return True
 
     def allow_tool_retry(self, tool_name: str) -> bool:
+        if not isinstance(self.budgets, BudgetPolicyV2):
+            raise TypeError("workflow budget policy was not resolved")
         retries = self.tool_retries.get(tool_name, 0)
         if retries >= self.budgets.max_tool_retries:
             return False
         self.tool_retries[tool_name] = retries + 1
         return True
+
+    def apply_usage(self, delta: UsageDelta) -> BudgetSnapshot:
+        return self.ledger.apply(delta)
+
+    def usage_snapshot(self) -> BudgetSnapshot:
+        return self.ledger.snapshot()
+
+    def pause_active_runtime(self) -> None:
+        self.ledger.pause()
 
     def snapshot(self) -> dict[str, object]:
         return {

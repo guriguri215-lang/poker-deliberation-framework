@@ -10,6 +10,11 @@
 - Tools have non-overridable aggregate work estimates (including support combinations and
   policy-node work), memoized DAG evaluation, plus serialized input/output limits; failures remain
   failures. RunStore enforces per-artifact and whole-run byte budgets.
+- Strict budget values reject coercion, non-finite numbers, negative counts, unknown fields,
+  unsupported concurrency, clock rollback, and policy-hash substitution. External provider attempts
+  require an explicit execution class and known integer micro-USD estimate and are refused before
+  execution when unknown, disabled, or over cap. Local-free providers and deterministic calculators
+  remain valid with an external-cost cap of zero.
 - Providers receive a cooperative deadline/cancellation control and a fresh role-specific context
   only after the versioned context envelope passes strict schema, UTC expiry, exact top-level
   allowlist, run/assignment/attempt/parent/source correlation, Python-local runtime, and canonical
@@ -25,7 +30,8 @@
   before the orchestrator materializes fixed paths; unsafe/duplicate IDs become safe failures.
 - Pure phases receive time, IDs, policy, and capability snapshots as values and have no storage,
   workflow-state, provider, tool-registry, network, approval-ledger, ambient-clock, or random access.
-  Analysis and ToolResearch are serial effect boundaries without write/transition authority.
+  Analysis and ToolResearch are serial effect boundaries without write/transition authority. Their
+  usage and failure values are settled by the orchestrator before later artifact writes.
 - Context classification is `public`, `internal` by default, `sensitive`, or `restricted`. Detected
   credentials force `restricted` and never cross the provider boundary. Redaction is artifact defense
   in depth, not authorization. Raw envelopes and canonical context payloads are not persisted as new
@@ -56,7 +62,9 @@
 - Reproduction instructions are stored as JSON argv, and unknown tool names never produce a shell
   command.
 
-Adversarial tests also cover phase schema/correlation and artifact-intent forgery, unsafe/duplicate
+Adversarial tests also cover strict budget coercion and cap boundaries, clock rollback, policy
+substitution, external cost refusal, cooperative/uncooperative cancellation, phase
+schema/correlation and artifact-intent forgery, unsafe/duplicate
 report and result IDs, provider state/path injection, blind-context invariance,
 context tampering/replay/expiry/unknown runtime,
 restricted and unavailable provider call suppression, prohibited-use refusal, prompt-injection event

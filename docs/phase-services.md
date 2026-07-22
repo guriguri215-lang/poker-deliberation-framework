@@ -6,7 +6,8 @@
   declared as a stable public API.
 - **FACT**: `Orchestrator.run` remains the only owner of workflow transitions and run-artifact
   writes. Phase services return values and never receive `RunStore` or `WorkflowStateMachine`.
-- **FACT**: execution remains serial. P2-010A adds no retry, parallelism, budget accounting,
+- **FACT**: execution remains serial. P2-011A adds typed in-memory budget accounting and retry
+  classification around the P2-010A effect adapters, but no automatic retry, parallelism,
   persistence transaction, manifest revision, lock, recovery, CAS, durable resume, or cleanup.
 
 ## Common boundary
@@ -58,6 +59,10 @@ epistemic labels are untrusted and normalized to `USER_CLAIM`/at most confidence
 unadjudicated provider sections as `UNKNOWN`. The executor and orchestrator both bind the returned
 assignment, context, envelope, report, execution record, context hashes, and report ID back to the
 exact Analysis request before any artifact path is selected.
+The input also binds a strict v2 budget policy, current policy-hashed usage snapshot, and a single
+captured provider-availability value. Unknown/disabled/over-cap external execution is refused before
+`analyze`; accepted provider output bytes and attempt/cost usage are returned as typed values.
+Deadline, cancellation, budget, and retry classification are explicit output fields.
 
 ToolResearch binds the full original `ToolRequest`, ordinal, run/phase attempt, canonical input hash,
 requested/supported/result contract versions, validated/materialized input hashes, and complete
@@ -67,6 +72,8 @@ results. Exactness, assumptions, warnings, confidence interval, error and
 verification metadata, seed/sample/iteration/stopping data, and reproduction metadata are preserved.
 The executor is used once for structured-hand validation before provider analysis and once for the
 ordered requested-tool batch after analysis; repeated `hand_validator` remains skipped.
+Tool input and complete result bytes are charged to separate UTF-8 caps. A budget failure stops later
+tool calls in the batch and returns correlated failed results; it cannot write or transition state.
 
 ## Compatibility and deferred work
 
@@ -74,6 +81,10 @@ ordered requested-tool batch after analysis; repeated `hand_validator` remains s
 `report_path`, CLI commands/exit codes, `CaseInput`, `FinalReport`, public `ToolRequest`/`ToolResult`,
 artifact names, normalized order, provider/tool call order, and P2-024A context enforcement remain
 compatible. Phase requests/outcomes are not new run artifacts.
+
+P2-011A usage values are schema `2.0.0` internal fields and preserve the phase contract's `1.0.0`
+outer request/outcome version. No durable usage artifact is added. See
+`docs/budget-execution-contract.md` for units, migration, and deferred behavior.
 
 The existing whole-run atomicity limitation is unchanged: the completion transition can be written
 before a later final-report write fails. P2-012A/P2-010B, not P2-010A, owns durable transition/write

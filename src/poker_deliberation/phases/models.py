@@ -8,12 +8,22 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from poker_deliberation.budgets import (
+    BudgetFailure,
+    BudgetPolicyV2,
+    BudgetSnapshot,
+    CancellationStatus,
+    DeadlineStatus,
+    RetryClassification,
+    UsageDelta,
+)
 from poker_deliberation.context_lifecycle import (
     ContextEnvelope,
     assignment_sha256,
     context_payload,
 )
 from poker_deliberation.phases.contracts import canonical_sha256
+from poker_deliberation.providers.base import ProviderAvailability
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentContext,
@@ -144,6 +154,15 @@ class AnalysisInput(PhasePayload):
     execution_id: str
     fallback_report_id: str
     existing_report_ids: tuple[str, ...] = ()
+    provider_availability: ProviderAvailability
+    budget_policy: BudgetPolicyV2
+    budget_snapshot: BudgetSnapshot
+
+    @model_validator(mode="after")
+    def budget_snapshot_matches_policy(self) -> AnalysisInput:
+        if self.budget_snapshot.policy_sha256 != self.budget_policy.canonical_sha256:
+            raise ValueError("analysis budget snapshot policy mismatch")
+        return self
 
 
 class AnalysisOutput(PhasePayload):
@@ -154,6 +173,26 @@ class AnalysisOutput(PhasePayload):
     execution_record: AgentExecutionRecord
     data_quality: tuple[str, ...] = ()
     timed_out: bool = False
+    usage_delta: UsageDelta = Field(default_factory=UsageDelta)
+    budget_failure: BudgetFailure | None = None
+    retry_classification: RetryClassification | None = None
+    deadline_status: DeadlineStatus = DeadlineStatus.ACTIVE
+    cancellation_status: CancellationStatus = CancellationStatus.NOT_REQUESTED
+
+    @model_validator(mode="after")
+    def control_and_budget_status_are_consistent(self) -> AnalysisOutput:
+        if self.timed_out != (self.deadline_status is DeadlineStatus.TIMED_OUT):
+            raise ValueError("timed_out must match deadline_status")
+        if (
+            self.deadline_status is DeadlineStatus.TIMED_OUT
+            and self.cancellation_status is CancellationStatus.NOT_REQUESTED
+        ):
+            raise ValueError("timed out analysis must record cancellation state")
+        if self.budget_failure is not None and (
+            self.retry_classification is None or self.retry_classification.retryable
+        ):
+            raise ValueError("budget failures require non-retryable classification")
+        return self
 
 
 class ToolResearchInput(PhasePayload):
@@ -161,6 +200,8 @@ class ToolResearchInput(PhasePayload):
     start_ordinal: int = Field(default=0, ge=0)
     existing_result_ids: tuple[str, ...] = ()
     fallback_result_ids: tuple[str, ...] = ()
+    budget_policy: BudgetPolicyV2 | None = None
+    budget_snapshot: BudgetSnapshot | None = None
 
     @model_validator(mode="after")
     def fallback_count_matches_requests(self) -> ToolResearchInput:
@@ -169,6 +210,14 @@ class ToolResearchInput(PhasePayload):
         request_ids = [request.request_id for request in self.requests]
         if len(request_ids) != len(set(request_ids)):
             raise ValueError("tool request IDs must be unique")
+        if (self.budget_policy is None) != (self.budget_snapshot is None):
+            raise ValueError("tool budget policy and snapshot must be provided together")
+        if (
+            self.budget_policy is not None
+            and self.budget_snapshot is not None
+            and self.budget_snapshot.policy_sha256 != self.budget_policy.canonical_sha256
+        ):
+            raise ValueError("tool budget snapshot policy mismatch")
         return self
 
 
@@ -212,6 +261,8 @@ class ToolExecutionBinding(PhasePayload):
 class ToolResearchOutput(PhasePayload):
     bindings: tuple[ToolExecutionBinding, ...]
     data_quality: tuple[str, ...] = ()
+    usage_delta: UsageDelta = Field(default_factory=UsageDelta)
+    budget_failure: BudgetFailure | None = None
 
 
 class CritiqueInput(PhasePayload):

@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Any
 
+from poker_deliberation.budgets import MonotonicClock, SystemMonotonicClock
 from poker_deliberation.schemas import (
     CanonicalHand,
     Exactness,
@@ -65,11 +65,19 @@ class ToolRegistry:
         max_payload_bytes: int = 1_000_000,
         max_output_bytes: int = 1_000_000,
         max_duration_seconds: float = 30.0,
+        monotonic_clock: MonotonicClock | None = None,
     ) -> None:
         self._tools: dict[str, ToolDefinition] = {}
         self.max_payload_bytes = max_payload_bytes
         self.max_output_bytes = max_output_bytes
         self.max_duration_seconds = max_duration_seconds
+        self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
+
+    def _duration_seconds(self, started_ns: int) -> float:
+        completed_ns = self.monotonic_clock.now_ns()
+        if completed_ns < started_ns:
+            raise ValueError("monotonic clock moved backwards during tool execution")
+        return (completed_ns - started_ns) / 1_000_000_000
 
     def register(self, definition: ToolDefinition) -> None:
         if definition.name in self._tools:
@@ -130,7 +138,7 @@ class ToolRegistry:
                 reproduce_command=None,
             )
         definition = known_definition
-        started = perf_counter()
+        started = self.monotonic_clock.now_ns()
         try:
             contract = definition.contract
             if (
@@ -149,7 +157,7 @@ class ToolRegistry:
             output = definition.function(normalized_payload)
             if contract is not None:
                 contract.output_model.model_validate(output)
-            duration = perf_counter() - started
+            duration = self._duration_seconds(started)
             output_size = len(
                 json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
             )
@@ -200,7 +208,7 @@ class ToolRegistry:
                 normalized_payload,
                 output,
             )
-            duration = perf_counter() - started
+            duration = self._duration_seconds(started)
             if duration > self.max_duration_seconds:
                 return ToolResult(
                     tool_name=name,
@@ -270,7 +278,7 @@ class ToolRegistry:
                 ),
                 assumptions=list(definition.assumptions),
                 version=definition.version,
-                duration_seconds=perf_counter() - started,
+                duration_seconds=self._duration_seconds(started),
                 error=f"{type(exc).__name__}: {exc}",
                 reproduce_command=(
                     f"poker-deliberate calculate {name} --analysis-scope retrospective "
@@ -408,11 +416,13 @@ def default_registry(
     max_payload_bytes: int = 1_000_000,
     max_output_bytes: int = 1_000_000,
     max_duration_seconds: float = 30.0,
+    monotonic_clock: MonotonicClock | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(
         max_payload_bytes=max_payload_bytes,
         max_output_bytes=max_output_bytes,
         max_duration_seconds=max_duration_seconds,
+        monotonic_clock=monotonic_clock,
     )
     definitions = [
         ToolDefinition(

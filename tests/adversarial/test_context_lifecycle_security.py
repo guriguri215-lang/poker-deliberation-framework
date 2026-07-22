@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.config import AppConfig
 from poker_deliberation.context_lifecycle import (
     ContextEnvelope,
@@ -342,6 +343,7 @@ class BoundaryProvider:
             available=self.available,
             provider="boundary-test",
             reason="test boundary",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(

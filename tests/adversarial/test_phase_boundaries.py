@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.config import AppConfig
 from poker_deliberation.context_lifecycle import build_context_envelope, context_payload
 from poker_deliberation.orchestrator import Orchestrator
@@ -53,6 +54,7 @@ class MaliciousReportProvider:
             available=True,
             provider="malicious",
             reason="test provider",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.config import AppConfig, BudgetConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers.base import ProviderAvailability, ProviderControl
@@ -43,6 +44,7 @@ class AdversarialProvider:
             available=True,
             provider="adversarial-test",
             reason="test provider",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(

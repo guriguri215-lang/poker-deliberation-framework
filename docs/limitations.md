@@ -29,6 +29,10 @@
   but the MVP has no OS-level preemptive CPU or memory sandbox. Providers must honor the cooperative
   cancellation contract. Any future external-code executor must use process isolation and true
   time/memory limits.
+- P2-011A deadline/cancellation is cooperative and in-process. It distinguishes requested,
+  acknowledged, and unconfirmed cancellation, but an uncooperative daemon thread may continue after
+  the run reports a limitation. There is no process-tree kill, remote cancellation, or durable
+  reconciliation.
 - Role-specific provider contexts now use a versioned P2-024A attempt envelope with Python-local
   lineage, UTC use-expiry, exact allowlists, and unkeyed SHA-256 integrity. It does not persist the
   envelope, choose a storage retention duration, delete data, run cleanup, provide secure erase, add
@@ -37,8 +41,11 @@
   but JSONL evidence is appended directly and is not crash-atomic. There is no versioned run
   manifest, whole-run atomic completion protocol, retention/deletion policy, migration contract, or
   at-rest encryption.
-- Budget fields for deliberation rounds, tool retries, and concurrency are not executed by the ordinary
-  orchestrator path. They are disabled capability declarations, not enforced runtime guarantees.
+- Budget accounting is serial and in-memory. It does not reserve concurrent work, meter an external
+  provider's actual invoice, persist a usage manifest, or settle usage across durable resume. The
+  injected provider's execution class and preflight cost estimate are trusted declarations.
+- The v2 retry count describes candidate attempts and classification only. P2-011A has no automatic
+  retry loop, backoff, durable retry state, or parallel execution; peak concurrency is fixed at one.
 - Redaction covers common structured keys and token forms, not arbitrary personal information or
   every possible secret encoding.
 - `audit-claim` without structured calculation inputs preserves a USER_CLAIM as unverified rather

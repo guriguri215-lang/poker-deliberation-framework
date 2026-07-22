@@ -26,8 +26,14 @@ allowlist、UTC期限、classification、integrity、run/assignment/attempt/runt
 `AgentContext`として渡します。envelope/payloadの新規永続化、retention期間、削除、cleanup、外部送信、
 Codex/Python bridgeは追加していません。
 
+P2-011Aでは、strictなbudget schema、明示的v1 migration、注入可能なmonotonic clock、serial usage
+accounting、retry classification、typed deadline/cancellationを追加しています。external cost cap 0でも
+free local providerと決定論calculatorは利用でき、parallel実行とautomatic retryは行いません。詳細は
+[`docs/budget-execution-contract.md`](docs/budget-execution-contract.md)を参照してください。
+
 **FACT**: canonical SSOTではRM-024/P2-024AとP2-010Aを`completed`としている。
-RM-010はP2-010B待ちの`in_progress`、P2-010Bは別承認がないため`not_started`である。
+RM-010とRM-011は各completion milestone待ちの`in_progress`であり、P2-010BとP2-011Bは別承認が
+ないため`not_started`である。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
@@ -176,9 +182,10 @@ Python MVPは常に`LocalProvider`を使い、モデルへ外部送信せず、�
 
 ## 状態と成果物
 
-状態はINTAKEからCOMPLETEDまたはFAILED_WITH_LIMITATIONSまで明示的に遷移します。実行時間と
-artifact/output sizeの上限は通常経路で強制します。討論round、tool retry、concurrencyのbudget
-fieldは存在しますが、通常のorchestrator経路には未接続で`disabled`です。
+状態はINTAKEからCOMPLETEDまたはFAILED_WITH_LIMITATIONSまで明示的に遷移します。strict v2
+budgetはactive runtime、external micro-USD、provider/tool/artifact/runのbyte上限、analysis batch、
+serial peak concurrencyを通常経路で検証します。tool retry数は分類上の候補上限であり、通常経路は
+automatic retryを実行しません。
 
 各runには次を保存します。
 
@@ -266,6 +273,7 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Source policy](docs/source-policy.md)
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
+- [Budget execution contract](docs/budget-execution-contract.md)
 - [Offline public release checklist](docs/public-release-checklist.md)
 - [RM status projection](docs/roadmap-status.md)
 - [Phase 2 readiness contracts](docs/phase2-readiness-contracts.md)

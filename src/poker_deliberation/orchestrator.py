@@ -9,7 +9,15 @@ from pathlib import Path
 
 from poker_deliberation.agents import select_roles
 from poker_deliberation.approvals import SENSITIVE_ACTIONS, ApprovalLedger
-from poker_deliberation.config import AppConfig
+from poker_deliberation.budgets import (
+    BudgetLimitError,
+    BudgetPolicyV2,
+    CancellationStatus,
+    MonotonicClock,
+    SystemMonotonicClock,
+    V1BudgetMigrationResult,
+)
+from poker_deliberation.config import AppConfig, migrate_budget_config
 from poker_deliberation.context_lifecycle import (
     new_attempt_id,
     new_context_id,
@@ -98,6 +106,8 @@ class Orchestrator:
         provider: AgentProvider | None = None,
         context_clock: Callable[[], datetime] | None = None,
         *,
+        monotonic_clock: MonotonicClock | None = None,
+        budget_policy: BudgetPolicyV2 | None = None,
         intake_service: IntakeValidationService | None = None,
         normalization_service: NormalizationService | None = None,
         routing_service: RoutingService | None = None,
@@ -109,10 +119,21 @@ class Orchestrator:
         synthesis_service: SynthesisService | None = None,
     ) -> None:
         self.config = config or AppConfig.from_env()
+        self.budget_migration: V1BudgetMigrationResult | None
+        if budget_policy is None:
+            self.budget_migration = migrate_budget_config(self.config.budgets)
+            self.budget_policy = self.budget_migration.policy
+        else:
+            self.budget_migration = None
+            self.budget_policy = BudgetPolicyV2.model_validate(
+                budget_policy.model_dump(mode="python")
+            )
+        self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
         self.registry = registry or default_registry(
-            max_payload_bytes=self.config.budgets.max_output_bytes,
-            max_output_bytes=self.config.budgets.max_output_bytes,
-            max_duration_seconds=min(30.0, self.config.budgets.max_runtime_seconds),
+            max_payload_bytes=self.budget_policy.max_tool_input_bytes,
+            max_output_bytes=self.budget_policy.max_tool_output_bytes,
+            max_duration_seconds=min(30.0, self.budget_policy.max_runtime_seconds),
+            monotonic_clock=self.monotonic_clock,
         )
         self.provider = provider or LocalProvider()
         self.context_clock = context_clock or (lambda: datetime.now(UTC))
@@ -133,6 +154,7 @@ class Orchestrator:
             self.provider,
             context_clock=self.context_clock,
             record_clock=lambda: datetime.now(UTC),
+            monotonic_clock=self.monotonic_clock,
         )
         self.tool_research_executor = tool_research_executor or ToolResearchExecutor(
             self.registry,
@@ -149,19 +171,21 @@ class Orchestrator:
                 "sensitive_action_categories": self.sensitive_action_categories,
                 "context_retention_policy": "attempt-memory-only-v1",
                 "execution": "serial",
+                "budget_schema_version": self.budget_policy.schema_version,
+                "budget_policy_sha256": self.budget_policy.canonical_sha256,
             }
         )
         self.store = RunStore(
             self.config.runs_dir,
-            max_artifact_bytes=self.config.budgets.max_output_bytes,
-            max_run_bytes=self.config.budgets.max_run_bytes,
+            max_artifact_bytes=self.budget_policy.max_artifact_bytes,
+            max_run_bytes=self.budget_policy.max_run_bytes,
         )
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
         actual_run_id = run_id or new_run_id()
         self.store.create_run(actual_run_id)
-        machine = WorkflowStateMachine(self.config.budgets)
+        machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         approvals = ApprovalLedger()
         disputes: list[Dispute] = []
         tool_results: list[ToolResult] = []
@@ -296,6 +320,8 @@ class Orchestrator:
                     input_value=ToolResearchInput(
                         requests=(hand_request,),
                         fallback_result_ids=(_new_internal_id("tool-result"),),
+                        budget_policy=self.budget_policy,
+                        budget_snapshot=machine.usage_snapshot(),
                     ),
                 )
                 tool_phase_outcome = revalidate_outcome(
@@ -306,9 +332,33 @@ class Orchestrator:
                 if tool_phase_outcome.output is None:
                     raise PhaseContractError("hand validation returned no output")
                 validate_tool_research_output(tool_phase_request, tool_phase_outcome.output)
+                machine.apply_usage(tool_phase_outcome.output.usage_delta)
                 data_quality.extend(tool_phase_outcome.output.data_quality)
                 validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
+                if tool_phase_outcome.output.budget_failure is not None:
+                    data_quality.append(
+                        f"strict budget failure: {tool_phase_outcome.output.budget_failure.code}"
+                    )
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "tool execution budget refused",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        [],
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
                 if not validation.output.get("valid", False):
                     data_quality.extend(map(str, validation.output.get("errors", [])))
                 data_quality.extend(map(str, validation.output.get("warnings", [])))
@@ -340,14 +390,73 @@ class Orchestrator:
         reports: list[AgentReport] = []
         if case.kind != "calculation":
             machine.transition(RunState.INDEPENDENT_ANALYSIS, "selected roles run independently")
+            if not machine.start_deliberation_round():
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "provider analysis round budget is zero",
+                )
+                data_quality.append("provider analysis skipped because round budget is zero")
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
             report_ids: set[str] = set()
             for index, assignment in enumerate(assignments):
-                remaining_runtime = max(
-                    0.001,
-                    self.config.budgets.max_runtime_seconds - machine.elapsed_seconds,
-                )
+                if not machine.enforce_runtime():
+                    data_quality.append("maximum runtime reached before provider analysis")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                usage_before = machine.usage_snapshot()
+                remaining_ns = self.budget_policy.runtime_limit_ns - usage_before.active_runtime_ns
+                if remaining_ns <= 0:
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "maximum runtime reached before provider analysis",
+                    )
+                    data_quality.append("maximum runtime reached before provider analysis")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                remaining_runtime = remaining_ns / 1_000_000_000
                 started_at = datetime.now(UTC)
                 provider_timeout = min(30.0, remaining_runtime)
+                provider_info = self.provider.availability()
                 lifecycle_now = self.context_clock()
                 expected_context_id = new_context_id()
                 expected_attempt_id = new_attempt_id()
@@ -409,12 +518,15 @@ class Orchestrator:
                         dispatch=dispatch,
                         provider_timeout_seconds=provider_timeout,
                         registered_tools=registered_tools,
-                        max_output_bytes=self.config.budgets.max_output_bytes,
+                        max_output_bytes=self.budget_policy.max_provider_output_bytes,
                         record_sensitive_data=self.config.record_sensitive_data,
                         started_at=started_at,
                         execution_id=_new_internal_id("execution"),
                         fallback_report_id=_new_internal_id("report"),
                         existing_report_ids=tuple(sorted(report_ids)),
+                        provider_availability=provider_info,
+                        budget_policy=self.budget_policy,
+                        budget_snapshot=usage_before,
                     ),
                 )
                 analysis_outcome = revalidate_outcome(
@@ -428,6 +540,71 @@ class Orchestrator:
                 analysis = analysis_outcome.output
                 execution_records.append(analysis.execution_record)
                 data_quality.extend(analysis.data_quality)
+                try:
+                    machine.apply_usage(analysis.usage_delta)
+                except BudgetLimitError as exc:
+                    data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "provider usage settlement failed",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                if analysis.budget_failure is not None:
+                    data_quality.append(f"strict budget failure: {analysis.budget_failure.code}")
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "provider execution budget refused",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                if analysis.cancellation_status is CancellationStatus.CANCEL_UNCONFIRMED:
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "provider cancellation was not confirmed",
+                    )
+                    data_quality.append("provider cancellation was not confirmed")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
                 if analysis.timed_out:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
@@ -536,6 +713,8 @@ class Orchestrator:
                 fallback_result_ids=tuple(
                     _new_internal_id("tool-result") for _ in requested_tool_calls
                 ),
+                budget_policy=self.budget_policy,
+                budget_snapshot=machine.usage_snapshot(),
             ),
         )
         requested_tools_outcome = revalidate_outcome(
@@ -546,8 +725,32 @@ class Orchestrator:
         if requested_tools_outcome.output is None:
             raise PhaseContractError("tool research returned no output")
         validate_tool_research_output(requested_tools_request, requested_tools_outcome.output)
+        machine.apply_usage(requested_tools_outcome.output.usage_delta)
         data_quality.extend(requested_tools_outcome.output.data_quality)
         tool_results.extend(binding.result for binding in requested_tools_outcome.output.bindings)
+        if requested_tools_outcome.output.budget_failure is not None:
+            data_quality.append(
+                f"strict budget failure: {requested_tools_outcome.output.budget_failure.code}"
+            )
+            machine.transition(
+                RunState.FAILED_WITH_LIMITATIONS,
+                "tool execution budget refused",
+            )
+            return self._synthesize(
+                actual_run_id,
+                case,
+                data_quality,
+                list(case.claims),
+                reports,
+                execution_records,
+                tool_results,
+                disputes,
+                evidence.all(),
+                approvals,
+                security_events,
+                completed=False,
+                machine=machine,
+            )
         for result in tool_results:
             self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
             self.store.write_json(
@@ -628,6 +831,7 @@ class Orchestrator:
 
         if approvals.pending():
             machine.transition(RunState.HUMAN_REVIEW_REQUIRED, "sensitive action needs approval")
+            machine.pause_active_runtime()
             self._write_common_artifacts(actual_run_id, machine, approvals, disputes)
             return self._synthesize(
                 actual_run_id,
@@ -695,11 +899,7 @@ class Orchestrator:
         machine: WorkflowStateMachine,
     ) -> FinalReport:
         provider_info = self.provider.availability()
-        provider_reason = (
-            self.provider.availability().reason
-            if not provider_info.available
-            else provider_info.reason
-        )
+        provider_reason = provider_info.reason
         synthesis_request = make_phase_request(
             run_id=run_id,
             phase_id=PhaseId.SYNTHESIS,
@@ -782,7 +982,11 @@ class Orchestrator:
         reason: str = "human decision recorded by CLI",
     ) -> FinalReport:
         snapshot = self.store.read_json(run_id, "state.json")
-        machine = WorkflowStateMachine.from_snapshot(self.config.budgets, snapshot)
+        machine = WorkflowStateMachine.from_snapshot(
+            self.budget_policy,
+            snapshot,
+            clock=self.monotonic_clock,
+        )
         if machine.state is not RunState.HUMAN_REVIEW_REQUIRED:
             return self.load_report(run_id)
         requests = [

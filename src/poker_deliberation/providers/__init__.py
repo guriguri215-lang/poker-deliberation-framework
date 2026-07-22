@@ -2,6 +2,7 @@ from poker_deliberation.providers.base import (
     AgentProvider,
     ProviderAvailability,
     ProviderControl,
+    ProviderControlError,
     ProviderStatus,
 )
 from poker_deliberation.providers.local import LocalProvider
@@ -15,5 +16,6 @@ __all__ = [
     "OpenAIAgentsProvider",
     "ProviderAvailability",
     "ProviderControl",
+    "ProviderControlError",
     "ProviderStatus",
 ]

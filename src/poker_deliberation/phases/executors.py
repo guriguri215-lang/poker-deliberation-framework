@@ -9,6 +9,19 @@ from datetime import datetime
 from threading import Thread
 from typing import Any
 
+from poker_deliberation.budgets import (
+    BudgetFailure,
+    BudgetLimitError,
+    CancellationStatus,
+    DeadlineStatus,
+    FailureCategory,
+    IdempotencyStatus,
+    MonotonicClock,
+    SerialUsageLedger,
+    SystemMonotonicClock,
+    UsageDelta,
+    classify_retry,
+)
 from poker_deliberation.context_lifecycle import (
     ContextEnvelope,
     ContextHandoffRefused,
@@ -32,7 +45,7 @@ from poker_deliberation.phases.models import (
     ToolResearchInput,
     ToolResearchOutput,
 )
-from poker_deliberation.providers import AgentProvider, ProviderControl
+from poker_deliberation.providers import AgentProvider, ProviderControl, ProviderControlError
 from poker_deliberation.schemas import (
     AgentContext,
     AgentExecutionRecord,
@@ -62,10 +75,11 @@ def _analyze_with_timeout(
     context: AgentContext,
     assignment: Any,
     timeout_seconds: float,
+    clock: MonotonicClock,
 ) -> AgentReport:
     results: list[AgentReport] = []
     errors: list[Exception] = []
-    control = ProviderControl(timeout_seconds=timeout_seconds)
+    control = ProviderControl(timeout_seconds=timeout_seconds, clock=clock)
 
     def invoke() -> None:
         try:
@@ -77,10 +91,15 @@ def _analyze_with_timeout(
     worker.start()
     worker.join(timeout_seconds)
     if worker.is_alive():
-        control.cancel()
+        control.request_cancel()
         worker.join(min(0.5, max(0.05, timeout_seconds)))
-        suffix = " and ignored cancellation" if worker.is_alive() else " and was cancelled"
-        raise TimeoutError(f"provider exceeded deadline {timeout_seconds} seconds{suffix}")
+        if worker.is_alive() or control.cancellation_status is not CancellationStatus.CANCELLED:
+            control.mark_cancel_unconfirmed()
+        raise ProviderControlError(
+            f"provider exceeded deadline {timeout_seconds} seconds",
+            deadline_status=DeadlineStatus.TIMED_OUT,
+            cancellation_status=control.cancellation_status,
+        )
     if errors:
         raise errors[0]
     if not results:
@@ -190,10 +209,12 @@ class AnalysisExecutor:
         *,
         context_clock: Callable[[], datetime],
         record_clock: Callable[[], datetime],
+        monotonic_clock: MonotonicClock | None = None,
     ) -> None:
         self.provider = provider
         self.context_clock = context_clock
         self.record_clock = record_clock
+        self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
 
     def run(self, request: PhaseRequest[AnalysisInput]) -> PhaseOutcome[AnalysisOutput]:
         isolated = revalidate_request(
@@ -210,11 +231,17 @@ class AnalysisExecutor:
         existing_report_ids = set(value.existing_report_ids)
         _safe_unique_id(value.fallback_report_id, existing_report_ids, "fallback report ID")
         _safe_unique_id(value.execution_id, set(), "execution ID")
-        provider_info = self.provider.availability()
+        provider_info = value.provider_availability
         execution_status = AgentExecutionStatus.COMPLETED
         execution_error: str | None = None
         warnings: list[str] = []
         timed_out = False
+        deadline_status = DeadlineStatus.ACTIVE
+        cancellation_status = CancellationStatus.NOT_REQUESTED
+        budget_failure: BudgetFailure | None = None
+        retry_classification = None
+        usage_delta = UsageDelta()
+        accepted_provider_output = False
         try:
             provider_context = validate_context_envelope(
                 envelope,
@@ -226,14 +253,34 @@ class AnalysisExecutor:
             )
             if not provider_info.available:
                 raise ContextHandoffRefused("provider is not available for context handoff")
+            attempt_ledger = SerialUsageLedger(
+                value.budget_policy,
+                clock=self.monotonic_clock,
+                initial=value.budget_snapshot,
+                active=False,
+            )
+            attempt_ledger.begin_provider_attempt(
+                provider_info.execution_class,
+                provider_info.estimated_cost_micro_usd,
+            )
+            usage_delta = UsageDelta(
+                provider_attempts=1,
+                external_cost_micro_usd=(
+                    provider_info.estimated_cost_micro_usd or 0
+                    if provider_info.execution_class.value == "external"
+                    else 0
+                ),
+                peak_concurrency=1,
+            )
             try:
                 raw_report = _analyze_with_timeout(
                     self.provider,
                     provider_context,
                     assignment.model_copy(deep=True),
                     value.provider_timeout_seconds,
+                    self.monotonic_clock,
                 )
-            except TimeoutError:
+            except ProviderControlError:
                 raise
             except Exception as exc:
                 raise _ProviderAnalysisFailed(type(exc).__name__) from exc
@@ -274,11 +321,34 @@ class AnalysisExecutor:
             if report.agent_role != assignment.agent_role or report.task != assignment.task:
                 raise ContextLifecycleError("provider report correlation mismatch")
             _safe_unique_id(report.report_id, existing_report_ids, "provider report ID")
-        except TimeoutError as exc:
-            timed_out = True
+            accepted_provider_output = True
+        except BudgetLimitError as exc:
+            budget_failure = exc.failure
+            execution_status = AgentExecutionStatus.REFUSED
+            execution_error = exc.failure.message
+            warnings.append(f"provider {assignment.agent_role} budget refused: {exc.failure.code}")
+            retry_classification = classify_retry(
+                FailureCategory.BUDGET,
+                max_retries=value.budget_policy.max_tool_retries,
+            )
+            report = AgentReport(
+                report_id=value.fallback_report_id,
+                agent_role=assignment.agent_role,
+                task=assignment.task,
+                uncertainties=["Provider execution was refused by the strict budget policy."],
+                confidence=ConfidenceGrade.D,
+            )
+        except ProviderControlError as exc:
+            deadline_status = exc.deadline_status
+            cancellation_status = exc.cancellation_status
+            timed_out = deadline_status is DeadlineStatus.TIMED_OUT
             execution_status = AgentExecutionStatus.FAILED
             execution_error = str(exc)
             warnings.append(str(exc))
+            retry_classification = classify_retry(
+                FailureCategory.DEADLINE,
+                max_retries=value.budget_policy.max_tool_retries,
+            )
             report = AgentReport(
                 report_id=value.fallback_report_id,
                 agent_role=assignment.agent_role,
@@ -290,6 +360,10 @@ class AnalysisExecutor:
             execution_status = AgentExecutionStatus.REFUSED
             execution_error = str(exc)
             warnings.append(f"provider {assignment.agent_role} handoff refused: {exc}")
+            retry_classification = classify_retry(
+                FailureCategory.UNAVAILABLE,
+                max_retries=value.budget_policy.max_tool_retries,
+            )
             report = AgentReport(
                 report_id=value.fallback_report_id,
                 agent_role=assignment.agent_role,
@@ -301,6 +375,10 @@ class AnalysisExecutor:
             execution_status = AgentExecutionStatus.FAILED
             execution_error = str(exc)
             warnings.append(f"provider {assignment.agent_role} context rejected: {exc}")
+            retry_classification = classify_retry(
+                FailureCategory.VALIDATION,
+                max_retries=value.budget_policy.max_tool_retries,
+            )
             report = AgentReport(
                 report_id=value.fallback_report_id,
                 agent_role=assignment.agent_role,
@@ -312,6 +390,15 @@ class AnalysisExecutor:
             execution_status = AgentExecutionStatus.FALLBACK
             execution_error = f"{exc.error_type}: provider analyze failed"
             warnings.append(f"provider {assignment.agent_role} failed: {exc.error_type}")
+            retry_classification = classify_retry(
+                FailureCategory.PROVIDER_TRANSIENT,
+                idempotency=(
+                    IdempotencyStatus.NOT_APPLICABLE
+                    if provider_info.execution_class.value == "local_free"
+                    else IdempotencyStatus.UNKNOWN
+                ),
+                max_retries=value.budget_policy.max_tool_retries,
+            )
             report = AgentReport(
                 report_id=value.fallback_report_id,
                 agent_role=assignment.agent_role,
@@ -323,6 +410,10 @@ class AnalysisExecutor:
             execution_status = AgentExecutionStatus.FALLBACK
             execution_error = f"{type(exc).__name__}: provider analyze failed"
             warnings.append(f"provider {assignment.agent_role} failed: {type(exc).__name__}")
+            retry_classification = classify_retry(
+                FailureCategory.INTERNAL,
+                max_retries=value.budget_policy.max_tool_retries,
+            )
             report = AgentReport(
                 report_id=value.fallback_report_id,
                 agent_role=assignment.agent_role,
@@ -346,20 +437,38 @@ class AnalysisExecutor:
             )
             execution_status = AgentExecutionStatus.FAILED
             execution_error = str(exc)
-        report_size = len(
-            json.dumps(report.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
-        )
-        if report_size > value.max_output_bytes:
-            warnings.append(f"provider {assignment.agent_role} output exceeded the hard byte limit")
-            report = AgentReport(
-                report_id=value.fallback_report_id,
-                agent_role=assignment.agent_role,
-                task=assignment.task,
-                uncertainties=["Oversized provider output was rejected."],
-                confidence=ConfidenceGrade.D,
+            accepted_provider_output = False
+        if accepted_provider_output:
+            report_size = len(
+                json.dumps(report.model_dump(mode="json"), ensure_ascii=False).encode("utf-8")
             )
-            execution_status = AgentExecutionStatus.FAILED
-            execution_error = "provider output exceeded the hard byte limit"
+            try:
+                SerialUsageLedger(
+                    value.budget_policy,
+                    clock=self.monotonic_clock,
+                    initial=value.budget_snapshot.apply(usage_delta),
+                    active=False,
+                ).preflight(UsageDelta(provider_output_bytes=report_size))
+            except BudgetLimitError as exc:
+                budget_failure = exc.failure
+                warnings.append(
+                    f"provider {assignment.agent_role} output exceeded the hard byte limit"
+                )
+                report = AgentReport(
+                    report_id=value.fallback_report_id,
+                    agent_role=assignment.agent_role,
+                    task=assignment.task,
+                    uncertainties=["Oversized provider output was rejected."],
+                    confidence=ConfidenceGrade.D,
+                )
+                execution_status = AgentExecutionStatus.FAILED
+                execution_error = "provider output exceeded the hard byte limit"
+                retry_classification = classify_retry(
+                    FailureCategory.BUDGET,
+                    max_retries=value.budget_policy.max_tool_retries,
+                )
+            else:
+                usage_delta = usage_delta.combine(UsageDelta(provider_output_bytes=report_size))
         execution_record = AgentExecutionRecord(
             execution_id=value.execution_id,
             assignment_id=assignment.assignment_id,
@@ -385,6 +494,11 @@ class AnalysisExecutor:
             execution_record=execution_record,
             data_quality=tuple(warnings),
             timed_out=timed_out,
+            usage_delta=usage_delta,
+            budget_failure=budget_failure,
+            retry_classification=retry_classification,
+            deadline_status=deadline_status,
+            cancellation_status=cancellation_status,
         )
         validate_analysis_output(isolated, output)
         return successful_outcome(
@@ -415,13 +529,41 @@ class ToolResearchExecutor:
         bindings: list[ToolExecutionBinding] = []
         warnings: list[str] = []
         any_failure = False
+        budget_failure: BudgetFailure | None = None
+        usage_delta = UsageDelta()
+        budget_ledger = (
+            SerialUsageLedger(
+                value.budget_policy,
+                initial=value.budget_snapshot,
+                active=False,
+            )
+            if value.budget_policy is not None and value.budget_snapshot is not None
+            else None
+        )
         for offset, (tool_request, fallback_result_id) in enumerate(
             zip(value.requests, value.fallback_result_ids, strict=True)
         ):
             _safe_unique_id(fallback_result_id, seen, "fallback result ID")
             request_is_safe = bool(_PORTABLE_ID.fullmatch(tool_request.request_id))
             supported_contract_version = tool_request.contract_version or "1.0.0"
-            if request_is_safe:
+            request_bytes = len(
+                json.dumps(
+                    tool_request.input,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+            current_delta = UsageDelta(tool_attempts=1, tool_input_bytes=request_bytes)
+            if budget_ledger is not None and budget_failure is None:
+                try:
+                    budget_ledger.apply(current_delta)
+                    usage_delta = usage_delta.combine(current_delta)
+                except BudgetLimitError as exc:
+                    budget_failure = exc.failure
+                    warnings.append(f"{tool_request.tool_name}: strict budget refused execution")
+            if request_is_safe and budget_failure is None:
                 raw_result = ToolResult.model_validate(
                     self.registry.execute(
                         tool_request.tool_name,
@@ -466,6 +608,17 @@ class ToolResearchExecutor:
                     error="unsafe tool request correlation ID",
                 )
                 warnings.append(f"{tool_request.tool_name}: unsafe tool request correlation ID")
+            if budget_failure is not None and request_is_safe:
+                result = ToolResult(
+                    result_id=fallback_result_id,
+                    tool_name=tool_request.tool_name,
+                    input=dict(tool_request.input),
+                    status=ToolStatus.FAILED,
+                    exactness=Exactness.UNAVAILABLE,
+                    numeric_exactness=NumericalExactness.UNAVAILABLE,
+                    contract_version=supported_contract_version,
+                    error=f"strict budget failure: {budget_failure.code.value}",
+                )
             result_is_safe = bool(_PORTABLE_ID.fullmatch(result.result_id)) and (
                 result.result_id not in seen
             )
@@ -484,6 +637,32 @@ class ToolResearchExecutor:
             result = ToolResult.model_validate(
                 redact_sensitive(result, enabled=not self.record_sensitive_data)
             )
+            result_bytes = len(
+                json.dumps(
+                    result.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+            if budget_ledger is not None and budget_failure is None:
+                try:
+                    budget_ledger.apply(UsageDelta(tool_output_bytes=result_bytes))
+                    usage_delta = usage_delta.combine(UsageDelta(tool_output_bytes=result_bytes))
+                except BudgetLimitError as exc:
+                    budget_failure = exc.failure
+                    warnings.append(f"{tool_request.tool_name}: tool output exceeded strict budget")
+                    result = ToolResult(
+                        result_id=fallback_result_id,
+                        tool_name=tool_request.tool_name,
+                        input=dict(tool_request.input),
+                        status=ToolStatus.FAILED,
+                        exactness=Exactness.UNAVAILABLE,
+                        numeric_exactness=NumericalExactness.UNAVAILABLE,
+                        contract_version=supported_contract_version,
+                        error=f"strict budget failure: {budget_failure.code.value}",
+                    )
             if not _PORTABLE_ID.fullmatch(result.result_id) or result.result_id in seen:
                 warnings.append(
                     f"{tool_request.tool_name}: unsafe or duplicate tool result ID after redaction"
@@ -523,6 +702,8 @@ class ToolResearchExecutor:
         output = ToolResearchOutput(
             bindings=tuple(bindings),
             data_quality=tuple(warnings),
+            usage_delta=usage_delta,
+            budget_failure=budget_failure,
         )
         validate_tool_research_output(isolated, output)
         return successful_outcome(

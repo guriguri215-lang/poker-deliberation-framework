@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from poker_deliberation.agents import ROLE_CATALOG
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers.base import (
@@ -29,6 +30,7 @@ class CountingProvider:
             provider="counting",
             reason="available" if self.available else "unavailable",
             version="1.0.0",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(
@@ -75,7 +77,7 @@ def test_role_order_provider_calls_and_availability_count_are_characterized(
     assert [record.agent_role for record in report.agent_execution_records] == roles
 
 
-def test_unavailable_provider_preserves_per_assignment_and_double_synthesis_checks(
+def test_unavailable_provider_checks_each_assignment_and_synthesis_once(
     tmp_path: Path,
 ) -> None:
     provider = CountingProvider(available=False)
@@ -85,7 +87,7 @@ def test_unavailable_provider_preserves_per_assignment_and_double_synthesis_chec
     )
 
     assert provider.analyze_roles == []
-    assert provider.availability_calls == 6
+    assert provider.availability_calls == 5
     assert [record.agent_role for record in report.agent_execution_records] == [
         "strategy-analyst",
         "math-auditor",

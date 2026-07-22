@@ -528,10 +528,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
-    assert (
-        generate_roadmap_status(["--check"])
-        == 0
-    )
+    assert generate_roadmap_status(["--check"]) == 0
 
 
 def test_readme_and_ignore_policy_reference_canonical_and_local_planning_files() -> None:

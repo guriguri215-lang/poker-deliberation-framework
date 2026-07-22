@@ -68,4 +68,3 @@ def test_local_calculation_succeeds_with_legacy_external_cost_cap_zero(
 
     assert report.run_status == "completed"
     assert report.tool_results[0].status.value == "success"
-

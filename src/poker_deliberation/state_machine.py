@@ -95,14 +95,21 @@ class WorkflowStateMachine:
     tool_retries: dict[str, int] = field(default_factory=dict)
     clock: MonotonicClock = field(default_factory=SystemMonotonicClock)
     ledger: SerialUsageLedger = field(init=False)
+    _tool_retry_limit: int = field(init=False)
 
     def __post_init__(self) -> None:
+        legacy_retry_limit = (
+            self.budgets.max_tool_retries if isinstance(self.budgets, BudgetConfig) else None
+        )
         policy = (
             self.budgets
             if isinstance(self.budgets, BudgetPolicyV2)
             else migrate_budget_config(self.budgets).policy
         )
         self.budgets = policy
+        self._tool_retry_limit = (
+            legacy_retry_limit if legacy_retry_limit is not None else policy.max_tool_retries
+        )
         self.ledger = SerialUsageLedger(policy, clock=self.clock)
 
     @classmethod
@@ -160,14 +167,13 @@ class WorkflowStateMachine:
             self.ledger.snapshot()
             return True
         except BudgetLimitError as exc:
-            if exc.failure.code is not BudgetFailureCode.RUNTIME_EXCEEDED:
-                raise
+            failure_reason = f"strict budget observation failed: {exc.failure.code}"
         if self.state is not RunState.FAILED_WITH_LIMITATIONS:
             self.events.append(
                 StateEvent(
                     source=self.state,
                     target=RunState.FAILED_WITH_LIMITATIONS,
-                    reason="maximum runtime exceeded",
+                    reason=failure_reason,
                 )
             )
             self.state = RunState.FAILED_WITH_LIMITATIONS
@@ -184,7 +190,7 @@ class WorkflowStateMachine:
                 and exc.failure.observed is not None
             ):
                 return exc.failure.observed / 1_000_000_000
-            raise
+            return self.ledger.settled_snapshot().active_runtime_ns / 1_000_000_000
 
     @property
     def terminal(self) -> bool:
@@ -202,7 +208,7 @@ class WorkflowStateMachine:
         if not isinstance(self.budgets, BudgetPolicyV2):
             raise TypeError("workflow budget policy was not resolved")
         retries = self.tool_retries.get(tool_name, 0)
-        if retries >= self.budgets.max_tool_retries:
+        if retries >= self._tool_retry_limit:
             return False
         self.tool_retries[tool_name] = retries + 1
         return True

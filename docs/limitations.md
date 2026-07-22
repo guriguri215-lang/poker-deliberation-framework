@@ -43,7 +43,9 @@
   at-rest encryption.
 - Budget accounting is serial and in-memory. It does not reserve concurrent work, meter an external
   provider's actual invoice, persist a usage manifest, or settle usage across durable resume. The
-  injected provider's execution class and preflight cost estimate are trusted declarations.
+  injected provider's execution class and preflight cost estimate are trusted declarations. For
+  public API compatibility, a pre-P2-011A injected provider that omits the new class is treated as a
+  trusted in-process local-free declaration; callers must not use that legacy form for external work.
 - The v2 retry count describes candidate attempts and classification only. P2-011A has no automatic
   retry loop, backoff, durable retry state, or parallel execution; peak concurrency is fixed at one.
 - Redaction covers common structured keys and token forms, not arbitrary personal information or

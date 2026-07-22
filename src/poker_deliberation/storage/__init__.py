@@ -1,3 +1,3 @@
-from poker_deliberation.storage.run_store import RunStore
+from poker_deliberation.storage.run_store import RunStore, StorageBudgetError
 
-__all__ = ["RunStore"]
+__all__ = ["RunStore", "StorageBudgetError"]

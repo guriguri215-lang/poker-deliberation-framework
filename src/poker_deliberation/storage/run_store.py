@@ -10,7 +10,17 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from poker_deliberation.budgets import (
+    BudgetFailure,
+    BudgetFailureCode,
+    BudgetLimitError,
+)
+
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+class StorageBudgetError(BudgetLimitError, ValueError):
+    """Typed hard-cap refusal that remains ValueError-compatible for legacy callers."""
 
 
 class RunStore:
@@ -75,7 +85,15 @@ class RunStore:
 
     def _enforce_write_budget(self, run_id: str, path: Path, new_size: int) -> None:
         if new_size > self.max_artifact_bytes:
-            raise ValueError(f"artifact exceeds hard limit {self.max_artifact_bytes} bytes")
+            raise StorageBudgetError(
+                BudgetFailure(
+                    code=BudgetFailureCode.ARTIFACT_EXCEEDED,
+                    resource="artifact_bytes",
+                    message=f"artifact exceeds hard limit {self.max_artifact_bytes} bytes",
+                    limit=self.max_artifact_bytes,
+                    observed=new_size,
+                )
+            )
         run_dir = self.run_dir(run_id)
         existing_size = path.stat().st_size if path.exists() else 0
         current_size = sum(
@@ -85,7 +103,15 @@ class RunStore:
         )
         projected_run_size = current_size - existing_size + new_size
         if projected_run_size > self.max_run_bytes:
-            raise ValueError(f"run artifacts exceed hard limit {self.max_run_bytes} bytes")
+            raise StorageBudgetError(
+                BudgetFailure(
+                    code=BudgetFailureCode.RUN_EXCEEDED,
+                    resource="run_bytes",
+                    message=f"run artifacts exceed hard limit {self.max_run_bytes} bytes",
+                    limit=self.max_run_bytes,
+                    observed=projected_run_size,
+                )
+            )
         if self.usage_observer is not None:
             self.usage_observer(run_id, new_size, projected_run_size)
 

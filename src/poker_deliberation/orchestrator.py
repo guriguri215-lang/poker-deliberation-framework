@@ -13,6 +13,7 @@ from poker_deliberation.budgets import (
     BudgetLimitError,
     BudgetPolicyV2,
     CancellationStatus,
+    ExecutionClass,
     MonotonicClock,
     SystemMonotonicClock,
     V1BudgetMigrationResult,
@@ -72,6 +73,7 @@ from poker_deliberation.schemas import (
     ApprovalStatus,
     CaseInput,
     Claim,
+    ConfidenceGrade,
     Dispute,
     EvidenceRecord,
     FinalReport,
@@ -80,7 +82,7 @@ from poker_deliberation.schemas import (
     ToolResult,
 )
 from poker_deliberation.security import redact_sensitive, screen_case
-from poker_deliberation.state_machine import RunState, WorkflowStateMachine
+from poker_deliberation.state_machine import RunState, StateEvent, WorkflowStateMachine
 from poker_deliberation.storage import RunStore
 from poker_deliberation.tools import ToolRegistry, default_registry
 
@@ -229,7 +231,7 @@ class Orchestrator:
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
         machine = self._run_machines.get(run_id)
-        if machine is not None:
+        if machine is not None and not machine.ledger.observation_failed:
             machine.ledger.observe_storage(
                 artifact_bytes=artifact_bytes,
                 run_bytes=run_bytes,
@@ -238,6 +240,34 @@ class Orchestrator:
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
         actual_run_id = run_id or new_run_id()
+        try:
+            return self._run(case, actual_run_id)
+        except BudgetLimitError as exc:
+            machine = self._run_machines.get(actual_run_id)
+            if machine is not None and machine.state is not RunState.FAILED_WITH_LIMITATIONS:
+                machine.events.append(
+                    StateEvent(
+                        source=machine.state,
+                        target=RunState.FAILED_WITH_LIMITATIONS,
+                        reason=f"strict budget failure: {exc.failure.code}",
+                    )
+                )
+                machine.state = RunState.FAILED_WITH_LIMITATIONS
+            limitation = f"strict budget failure: {exc.failure.code}"
+            return FinalReport(
+                run_id=actual_run_id,
+                run_status="failed_with_limitations",
+                conclusion="The run stopped because a strict budget boundary was reached.",
+                reconstructed_input=redact_sensitive(
+                    case.model_dump(mode="json"),
+                    enabled=not self.config.record_sensitive_data,
+                ),
+                data_quality=[limitation],
+                limitations=[limitation],
+                confidence=ConfidenceGrade.D,
+            )
+
+    def _run(self, case: CaseInput, actual_run_id: str) -> FinalReport:
         self.store.create_run(actual_run_id)
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         self._run_machines[actual_run_id] = machine
@@ -361,6 +391,23 @@ class Orchestrator:
                     "自由文だけでは正確なポット・スタック・合法性を確定できません。CanonicalHandが必要です。"
                 )
             else:
+                if not machine.enforce_runtime():
+                    data_quality.append("strict runtime refused before hand validation")
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        [],
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
                 hand_request = ToolRequest(
                     request_id=_new_internal_id("tool-request"),
                     tool_name="hand_validator",
@@ -387,7 +434,29 @@ class Orchestrator:
                 if tool_phase_outcome.output is None:
                     raise PhaseContractError("hand validation returned no output")
                 validate_tool_research_output(tool_phase_request, tool_phase_outcome.output)
-                machine.apply_usage(tool_phase_outcome.output.usage_delta)
+                try:
+                    machine.apply_usage(tool_phase_outcome.output.usage_delta)
+                except BudgetLimitError as exc:
+                    data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "hand validation usage settlement failed",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        [],
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
                 data_quality.extend(tool_phase_outcome.output.data_quality)
                 validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
@@ -644,6 +713,15 @@ class Orchestrator:
                         machine=machine,
                     )
                 provider_timeout = min(30.0, remaining_ns / 1_000_000_000)
+                legacy_provider_contract = "execution_class" not in provider_info.model_fields_set
+                effective_provider_info = (
+                    provider_info.model_copy(
+                        update={"execution_class": ExecutionClass.LOCAL_FREE},
+                        deep=True,
+                    )
+                    if legacy_provider_contract
+                    else provider_info
+                )
                 analysis_request = make_phase_request(
                     run_id=actual_run_id,
                     phase_id=PhaseId.ANALYSIS,
@@ -660,7 +738,8 @@ class Orchestrator:
                         execution_id=_new_internal_id("execution"),
                         fallback_report_id=_new_internal_id("report"),
                         existing_report_ids=tuple(sorted(report_ids)),
-                        provider_availability=provider_info,
+                        provider_availability=effective_provider_info,
+                        legacy_provider_contract=legacy_provider_contract,
                         budget_policy=self.budget_policy,
                         budget_snapshot=usage_before,
                         budget_observed_at_ns=budget_observed_at_ns,
@@ -839,6 +918,23 @@ class Orchestrator:
                     contract_version=self.tool_contract_versions.get(tool_name),
                 )
             )
+        if not machine.enforce_runtime():
+            data_quality.append("strict runtime refused before requested tool execution")
+            return self._synthesize(
+                actual_run_id,
+                case,
+                data_quality,
+                list(case.claims),
+                reports,
+                execution_records,
+                tool_results,
+                disputes,
+                evidence.all(),
+                approvals,
+                security_events,
+                completed=False,
+                machine=machine,
+            )
         requested_tools_request = make_phase_request(
             run_id=actual_run_id,
             phase_id=PhaseId.TOOL_RESEARCH,
@@ -863,7 +959,29 @@ class Orchestrator:
         if requested_tools_outcome.output is None:
             raise PhaseContractError("tool research returned no output")
         validate_tool_research_output(requested_tools_request, requested_tools_outcome.output)
-        machine.apply_usage(requested_tools_outcome.output.usage_delta)
+        try:
+            machine.apply_usage(requested_tools_outcome.output.usage_delta)
+        except BudgetLimitError as exc:
+            data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+            machine.transition(
+                RunState.FAILED_WITH_LIMITATIONS,
+                "tool usage settlement failed",
+            )
+            return self._synthesize(
+                actual_run_id,
+                case,
+                data_quality,
+                list(case.claims),
+                reports,
+                execution_records,
+                tool_results,
+                disputes,
+                evidence.all(),
+                approvals,
+                security_events,
+                completed=False,
+                machine=machine,
+            )
         data_quality.extend(requested_tools_outcome.output.data_quality)
         tool_results.extend(binding.result for binding in requested_tools_outcome.output.bindings)
         if requested_tools_outcome.output.budget_failure is not None:

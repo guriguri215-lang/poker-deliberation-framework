@@ -15,7 +15,11 @@ from poker_deliberation.budgets import (
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases import AnalysisExecutor, ToolResearchExecutor
-from poker_deliberation.phases.services import ContextBuildService, SynthesisService
+from poker_deliberation.phases.services import (
+    ContextBuildService,
+    NormalizationService,
+    SynthesisService,
+)
 from poker_deliberation.providers import (
     ProviderAvailability,
     ProviderControl,
@@ -295,6 +299,39 @@ def test_provider_output_split_cap_rejects_oversized_report(tmp_path: Path) -> N
     assert any("strict budget" in item for item in report.data_quality)
 
 
+class SecretProvider(CostedProvider):
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        del context, control
+        self.calls += 1
+        return AgentReport(
+            report_id=f"report-{assignment.agent_role}",
+            agent_role=assignment.agent_role,
+            task=assignment.task,
+            conclusions=["sk-" + "a" * 4000],
+        )
+
+
+def test_raw_provider_output_is_capped_before_redaction(tmp_path: Path) -> None:
+    provider = SecretProvider(ExecutionClass.LOCAL_FREE, None)
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        budget_policy=BudgetPolicyV2(
+            max_provider_output_bytes=1024,
+            max_artifact_bytes=100_000,
+        ),
+    ).run(_strategy_case(), run_id="run-raw-provider-output-cap")
+
+    assert provider.calls == 1
+    assert report.run_status == "failed_with_limitations"
+    assert any("output exceeded" in item for item in report.data_quality)
+
+
 def test_zero_deliberation_rounds_skip_provider_analysis(tmp_path: Path) -> None:
     provider = CostedProvider(ExecutionClass.LOCAL_FREE, None)
 
@@ -424,6 +461,92 @@ def test_context_handoff_runtime_overrun_refuses_provider_start(tmp_path: Path) 
     assert provider.calls == 0
     assert report.run_status == "failed_with_limitations"
     assert any("budget refused" in item for item in report.data_quality)
+
+
+class MutableClock:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    def now_ns(self) -> int:
+        return self.value  # type: ignore[return-value]
+
+
+@pytest.mark.parametrize(
+    ("boundary_value", "expected_code"),
+    [
+        (900_000_000, "clock_rollback"),
+        ("bad-clock", "usage_malformed"),
+    ],
+)
+def test_context_handoff_clock_failure_is_structured_before_provider_start(
+    tmp_path: Path,
+    boundary_value: object,
+    expected_code: str,
+) -> None:
+    clock = MutableClock(1_000_000_000)
+    provider = CostedProvider(ExecutionClass.LOCAL_FREE, None)
+    context_clock_calls = 0
+
+    def context_clock() -> datetime:
+        nonlocal context_clock_calls
+        context_clock_calls += 1
+        if context_clock_calls == 2:
+            clock.value = boundary_value
+        return datetime.now(UTC)
+
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        context_clock=context_clock,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=10.0),
+    ).run(_strategy_case(), run_id=f"run-handoff-{expected_code}")
+
+    assert provider.calls == 0
+    assert report.run_status == "failed_with_limitations"
+    assert any(expected_code in item for item in report.data_quality)
+
+
+class AdvancingNormalizationService(NormalizationService):
+    def __init__(self, clock: FakeMonotonicClock) -> None:
+        self.clock = clock
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        outcome = super().run(request)
+        self.clock.advance_ns(2_000_000_000)
+        return outcome
+
+
+def test_early_phase_runtime_exhaustion_returns_structured_tool_limitation(
+    tmp_path: Path,
+) -> None:
+    clock = FakeMonotonicClock()
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=clock,
+        normalization_service=AdvancingNormalizationService(clock),
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    ).run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["pot_odds"],
+            metadata={
+                "tool_inputs": {
+                    "pot_odds": {
+                        "pot_before_bet": 100,
+                        "opponent_bet": 50,
+                        "call_cost": 50,
+                    }
+                }
+            },
+        ),
+        run_id="run-early-runtime-tool-refusal",
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert report.tool_results == []
+    assert "strict runtime refused before requested tool execution" in report.data_quality
 
 
 class AdvancingSynthesisService(SynthesisService):
@@ -645,3 +768,40 @@ def test_oversized_raw_tool_output_becomes_typed_budget_failure(tmp_path: Path) 
     assert outcome.budget_failure.code.value == "tool_output_exceeded"
     assert outcome.budget_failure.observed is not None
     assert outcome.retry_classifications[0].category is FailureCategory.BUDGET
+
+
+def test_policy_caps_raw_tool_output_before_redaction_with_looser_registry(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry(max_output_bytes=10_000)
+    registry.register(
+        ToolDefinition(
+            name="secret_output",
+            purpose="raw output cap fixture",
+            exact_or_approximate="exact",
+            supported_games=("fixture",),
+            function=lambda _: {"secret": "sk-" + "a" * 4000},
+        )
+    )
+    executor = CapturingToolResearchExecutor(registry, record_sensitive_data=False)
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        registry=registry,
+        tool_research_executor=executor,
+        budget_policy=BudgetPolicyV2(
+            max_tool_output_bytes=1024,
+            max_artifact_bytes=100_000,
+        ),
+    ).run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["secret_output"],
+        ),
+        run_id="run-policy-raw-tool-output-cap",
+    )
+
+    outcome = executor.outcomes[0].output
+    assert report.run_status == "failed_with_limitations"
+    assert outcome.budget_failure is not None
+    assert outcome.budget_failure.code.value == "tool_output_exceeded"

@@ -48,6 +48,11 @@ unknown external cost, a zero external-cost cap, and over-cap estimated cost are
 external-cost cap. P2-011A trusts the injected provider's declared class and estimate; metering and
 durable settlement are not implemented.
 
+For compatibility with the pre-P2-011A injected-provider API, an availability value constructed
+without the new `execution_class` field is treated as a legacy in-process `local_free` declaration.
+An explicitly supplied `unknown` value remains fail closed. New or external providers must declare
+their class explicitly; the compatibility rule does not infer or meter an external invoice.
+
 The state machine and effect executors share an injected monotonic clock. Active run time is observed
 at serial boundaries. Entering human approval wait pauses the ledger, so waiting time is excluded.
 The ledger is not written to a manifest. The existing resume surface reconstructs elapsed time only;
@@ -71,4 +76,7 @@ stop; process-tree termination, durable cancellation, and remote reconciliation 
 failure values. Effect
 executors cannot write artifacts or transition workflow state. The orchestrator settles usage first,
 then decides state and fixed artifact writes. Oversized, malformed, or budget-refused provider/tool
-values cannot choose a path or become a successful result.
+values cannot choose a path or become a successful result. Provider reports and typed tool outputs
+are measured before redaction as well as after normalization, so a secret-shaped value cannot shrink
+below a cap through redaction. Artifact/run cap errors are typed budget failures; `Orchestrator.run`
+returns a minimal `failed_with_limitations` value when the cap prevents writing the ordinary report.

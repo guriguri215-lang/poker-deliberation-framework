@@ -159,6 +159,15 @@ class SerialUsageLedger:
         self._observe_runtime()
         return self._snapshot
 
+    def settled_snapshot(self) -> BudgetSnapshot:
+        """Return the last validated immutable usage value without another clock read."""
+
+        return self._snapshot
+
+    @property
+    def observation_failed(self) -> bool:
+        return self._clock_failure is not None
+
     def runtime_window(self) -> tuple[BudgetSnapshot, int, int]:
         """Return one atomic snapshot, its clock observation, and absolute run deadline."""
 

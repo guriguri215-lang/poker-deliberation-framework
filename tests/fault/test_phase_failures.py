@@ -5,11 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from poker_deliberation.budgets import (
-    CancellationStatus,
-    DeadlineStatus,
-    ExecutionClass,
-)
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases import PhaseContractError
@@ -17,7 +12,6 @@ from poker_deliberation.phases.services import NormalizationService, RoutingServ
 from poker_deliberation.providers.base import (
     ProviderAvailability,
     ProviderControl,
-    ProviderControlError,
     ProviderStatus,
 )
 from poker_deliberation.schemas import (
@@ -83,7 +77,6 @@ class TimeoutProvider:
             available=True,
             provider="timeout",
             reason="test",
-            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(
@@ -94,11 +87,7 @@ class TimeoutProvider:
     ) -> AgentReport:
         del context, assignment, control
         self.analyze_calls += 1
-        raise ProviderControlError(
-            "forced provider deadline",
-            deadline_status=DeadlineStatus.TIMED_OUT,
-            cancellation_status=CancellationStatus.CANCELLED,
-        )
+        raise TimeoutError("forced provider timeout")
 
 
 def test_provider_timeout_stops_remaining_analysis_and_tool_work(tmp_path: Path) -> None:
@@ -144,11 +133,7 @@ class ObjectionThenTimeoutProvider(TimeoutProvider):
                 task=assignment.task,
                 objections=["first specialist objection"],
             )
-        raise ProviderControlError(
-            "forced provider deadline",
-            deadline_status=DeadlineStatus.TIMED_OUT,
-            cancellation_status=CancellationStatus.CANCELLED,
-        )
+        raise TimeoutError("forced provider timeout")
 
 
 def test_early_timeout_preserves_objections_from_completed_reports(tmp_path: Path) -> None:

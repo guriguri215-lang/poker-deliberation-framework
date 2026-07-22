@@ -61,7 +61,10 @@ assignment, context, envelope, report, execution record, context hashes, and rep
 exact Analysis request before any artifact path is selected.
 The input also binds a strict v2 budget policy, current policy-hashed usage snapshot, and a single
 captured provider-availability value. Unknown/disabled/over-cap external execution is refused before
-`analyze`; accepted provider output bytes and attempt/cost usage are returned as typed values.
+`analyze`; accepted provider output bytes and attempt/cost usage are returned as typed values. Raw
+provider reports and typed tool outputs are capped before redaction. A provider availability created
+through the legacy API without `execution_class` retains its historical in-process/local behavior;
+an explicitly declared `unknown` class remains refused.
 Deadline, cancellation, budget, and retry classification are explicit output fields.
 
 ToolResearch binds the full original `ToolRequest`, ordinal, run/phase attempt, canonical input hash,

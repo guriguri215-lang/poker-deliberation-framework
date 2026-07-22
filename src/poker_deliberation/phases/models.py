@@ -155,6 +155,7 @@ class AnalysisInput(PhasePayload):
     fallback_report_id: str
     existing_report_ids: tuple[str, ...] = ()
     provider_availability: ProviderAvailability
+    legacy_provider_contract: bool = False
     budget_policy: BudgetPolicyV2
     budget_snapshot: BudgetSnapshot
     budget_observed_at_ns: int = Field(ge=0)

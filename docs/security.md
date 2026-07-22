@@ -14,7 +14,10 @@
   unsupported concurrency, clock rollback, and policy-hash substitution. External provider attempts
   require an explicit execution class and known integer micro-USD estimate and are refused before
   execution when unknown, disabled, or over cap. Local-free providers and deterministic calculators
-  remain valid with an external-cost cap of zero.
+  remain valid with an external-cost cap of zero. The compatibility path for a pre-P2-011A injected
+  provider that omitted the newly added class treats that trusted in-process declaration as
+  local-free; explicit `unknown` remains denied. Raw provider/tool values are byte-capped before
+  redaction.
 - Providers receive a cooperative deadline/cancellation control and a fresh role-specific context
   only after the versioned context envelope passes strict schema, UTC expiry, exact top-level
   allowlist, run/assignment/attempt/parent/source correlation, Python-local runtime, and canonical

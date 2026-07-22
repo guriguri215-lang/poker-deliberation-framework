@@ -81,6 +81,7 @@ class ProviderControl:
 
     timeout_seconds: float
     clock: MonotonicClock = field(default_factory=SystemMonotonicClock)
+    observed_start_ns: int | None = None
     _cancelled: Event = field(default_factory=Event)
     _started_ns: int = field(init=False)
     _last_ns: int = field(init=False)
@@ -98,7 +99,7 @@ class ProviderControl:
         if not math.isfinite(float(self.timeout_seconds)) or self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be finite and positive")
         self.timeout_seconds = float(self.timeout_seconds)
-        started = self.clock.now_ns()
+        started = self.clock.now_ns() if self.observed_start_ns is None else self.observed_start_ns
         if isinstance(started, bool) or not isinstance(started, int) or started < 0:
             raise ValueError("monotonic clock must return non-negative integer nanoseconds")
         self._started_ns = started

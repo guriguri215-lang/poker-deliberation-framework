@@ -15,6 +15,7 @@ from poker_deliberation.budgets import (
     CancellationStatus,
     DeadlineStatus,
     FailureCategory,
+    FakeMonotonicClock,
     IdempotencyStatus,
     MonotonicClock,
     RetryClassification,
@@ -78,38 +79,103 @@ def _analyze_with_timeout(
     assignment: Any,
     timeout_seconds: float,
     clock: MonotonicClock,
+    *,
+    budget_observed_at_ns: int,
+    run_deadline_ns: int,
+    runtime_limit_ns: int,
+    active_runtime_ns: int,
 ) -> AgentReport:
     results: list[AgentReport] = []
     errors: list[Exception] = []
-    control = ProviderControl(timeout_seconds=timeout_seconds, clock=clock)
+    effect_start_ns = clock.now_ns()
+    if (
+        isinstance(effect_start_ns, bool)
+        or not isinstance(effect_start_ns, int)
+        or effect_start_ns < 0
+    ):
+        raise BudgetLimitError(
+            BudgetFailure(
+                code=BudgetFailureCode.USAGE_MALFORMED,
+                resource="clock",
+                message="monotonic clock must return non-negative integer nanoseconds",
+            )
+        )
+    if effect_start_ns < budget_observed_at_ns:
+        raise BudgetLimitError(
+            BudgetFailure(
+                code=BudgetFailureCode.CLOCK_ROLLBACK,
+                resource="active_runtime_ns",
+                message="monotonic clock moved backwards before provider execution",
+                observed=budget_observed_at_ns - effect_start_ns,
+            )
+        )
+    if effect_start_ns >= run_deadline_ns:
+        raise BudgetLimitError(
+            BudgetFailure(
+                code=BudgetFailureCode.RUNTIME_EXCEEDED,
+                resource="active_runtime_ns",
+                message="active runtime expired before provider execution",
+                limit=runtime_limit_ns,
+                observed=active_runtime_ns + effect_start_ns - budget_observed_at_ns,
+            )
+        )
+    effect_timeout_seconds = min(
+        timeout_seconds,
+        (run_deadline_ns - effect_start_ns) / 1_000_000_000,
+    )
+    control = ProviderControl(
+        timeout_seconds=effect_timeout_seconds,
+        clock=clock,
+        observed_start_ns=effect_start_ns,
+    )
 
     def invoke() -> None:
         try:
+            try:
+                control.raise_if_cancelled()
+            except ValueError as exc:
+                message = str(exc)
+                code = (
+                    BudgetFailureCode.CLOCK_ROLLBACK
+                    if "backwards" in message
+                    else BudgetFailureCode.USAGE_MALFORMED
+                )
+                errors.append(
+                    BudgetLimitError(
+                        BudgetFailure(
+                            code=code,
+                            resource="active_runtime_ns" if "backwards" in message else "clock",
+                            message=message,
+                        )
+                    )
+                )
+                return
             results.append(provider.analyze(context, assignment, control))
         except Exception as exc:  # the boundary classifies provider failures below
             errors.append(exc)
 
     worker = Thread(target=invoke, daemon=True, name=f"provider-{assignment.agent_role}")
     worker.start()
-    worker.join(timeout_seconds)
+    worker.join(effect_timeout_seconds)
     if worker.is_alive():
         control.request_cancel()
-        worker.join(min(0.5, max(0.05, timeout_seconds)))
+        worker.join(min(0.5, max(0.05, effect_timeout_seconds)))
         if worker.is_alive() or control.cancellation_status is not CancellationStatus.CANCELLED:
             control.mark_cancel_unconfirmed()
         raise ProviderControlError(
-            f"provider exceeded deadline {timeout_seconds} seconds",
+            f"provider exceeded deadline {effect_timeout_seconds} seconds",
             deadline_status=DeadlineStatus.TIMED_OUT,
             cancellation_status=control.cancellation_status,
         )
     if errors:
-        raise errors[0]
+        error = errors[0]
+        raise error
     if not results:
         raise RuntimeError("provider returned no report")
     if control.deadline_status is DeadlineStatus.TIMED_OUT:
         control.request_cancel()
         raise ProviderControlError(
-            f"provider exceeded deadline {timeout_seconds} seconds",
+            f"provider exceeded deadline {effect_timeout_seconds} seconds",
             deadline_status=DeadlineStatus.TIMED_OUT,
             cancellation_status=control.cancellation_status,
         )
@@ -251,6 +317,7 @@ class AnalysisExecutor:
         retry_classification = None
         usage_delta = UsageDelta()
         accepted_provider_output = False
+        provider_output_size = 0
         try:
             provider_context = validate_context_envelope(
                 envelope,
@@ -262,49 +329,9 @@ class AnalysisExecutor:
             )
             if not provider_info.available:
                 raise ContextHandoffRefused("provider is not available for context handoff")
-            effect_start_ns = self.monotonic_clock.now_ns()
-            if (
-                isinstance(effect_start_ns, bool)
-                or not isinstance(effect_start_ns, int)
-                or effect_start_ns < 0
-            ):
-                raise BudgetLimitError(
-                    BudgetFailure(
-                        code=BudgetFailureCode.USAGE_MALFORMED,
-                        resource="clock",
-                        message="monotonic clock must return non-negative integer nanoseconds",
-                    )
-                )
-            if effect_start_ns < value.budget_observed_at_ns:
-                raise BudgetLimitError(
-                    BudgetFailure(
-                        code=BudgetFailureCode.CLOCK_ROLLBACK,
-                        resource="active_runtime_ns",
-                        message="monotonic clock moved backwards before provider execution",
-                        observed=value.budget_observed_at_ns - effect_start_ns,
-                    )
-                )
-            if effect_start_ns >= value.run_deadline_ns:
-                raise BudgetLimitError(
-                    BudgetFailure(
-                        code=BudgetFailureCode.RUNTIME_EXCEEDED,
-                        resource="active_runtime_ns",
-                        message="active runtime expired before provider execution",
-                        limit=value.budget_policy.runtime_limit_ns,
-                        observed=(
-                            value.budget_snapshot.active_runtime_ns
-                            + effect_start_ns
-                            - value.budget_observed_at_ns
-                        ),
-                    )
-                )
-            effect_timeout_seconds = min(
-                value.provider_timeout_seconds,
-                (value.run_deadline_ns - effect_start_ns) / 1_000_000_000,
-            )
             attempt_ledger = SerialUsageLedger(
                 value.budget_policy,
-                clock=self.monotonic_clock,
+                clock=FakeMonotonicClock(value.budget_observed_at_ns),
                 initial=value.budget_snapshot,
                 active=False,
             )
@@ -326,10 +353,16 @@ class AnalysisExecutor:
                     self.provider,
                     provider_context,
                     assignment.model_copy(deep=True),
-                    effect_timeout_seconds,
+                    value.provider_timeout_seconds,
                     self.monotonic_clock,
+                    budget_observed_at_ns=value.budget_observed_at_ns,
+                    run_deadline_ns=value.run_deadline_ns,
+                    runtime_limit_ns=value.budget_policy.runtime_limit_ns,
+                    active_runtime_ns=value.budget_snapshot.active_runtime_ns,
                 )
             except ProviderControlError:
+                raise
+            except BudgetLimitError:
                 raise
             except Exception as exc:
                 raise _ProviderAnalysisFailed(type(exc).__name__) from exc
@@ -338,6 +371,13 @@ class AnalysisExecutor:
                 if isinstance(raw_report, AgentReport)
                 else raw_report
             )
+            provider_output_size = canonical_json_utf8_size(report)
+            SerialUsageLedger(
+                value.budget_policy,
+                clock=FakeMonotonicClock(value.budget_observed_at_ns),
+                initial=value.budget_snapshot.apply(usage_delta),
+                active=False,
+            ).preflight(UsageDelta(provider_output_bytes=provider_output_size))
             normalized_claims = []
             for claim in report.claims:
                 limitations = list(claim.limitations)
@@ -375,7 +415,14 @@ class AnalysisExecutor:
             budget_failure = exc.failure
             execution_status = AgentExecutionStatus.REFUSED
             execution_error = exc.failure.message
-            warnings.append(f"provider {assignment.agent_role} budget refused: {exc.failure.code}")
+            if exc.failure.code is BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED:
+                warnings.append(
+                    f"provider {assignment.agent_role} output exceeded the hard byte limit"
+                )
+            else:
+                warnings.append(
+                    f"provider {assignment.agent_role} budget refused: {exc.failure.code}"
+                )
             retry_classification = classify_retry(
                 FailureCategory.BUDGET,
                 max_retries=0,
@@ -440,12 +487,23 @@ class AnalysisExecutor:
                 confidence=ConfidenceGrade.D,
             )
         except _ProviderAnalysisFailed as exc:
-            execution_status = AgentExecutionStatus.FALLBACK
+            legacy_timeout = exc.error_type == "TimeoutError" and value.legacy_provider_contract
+            if legacy_timeout:
+                timed_out = True
+                deadline_status = DeadlineStatus.TIMED_OUT
+                cancellation_status = CancellationStatus.CANCEL_UNCONFIRMED
+            execution_status = (
+                AgentExecutionStatus.FAILED if legacy_timeout else AgentExecutionStatus.FALLBACK
+            )
             execution_error = f"{exc.error_type}: provider analyze failed"
             warnings.append(f"provider {assignment.agent_role} failed: {exc.error_type}")
             retry_classification = classify_retry(
-                FailureCategory.PROVIDER_PERMANENT,
-                idempotency=IdempotencyStatus.UNKNOWN,
+                FailureCategory.DEADLINE if legacy_timeout else FailureCategory.PROVIDER_PERMANENT,
+                idempotency=(
+                    IdempotencyStatus.NOT_APPLICABLE
+                    if legacy_timeout
+                    else IdempotencyStatus.UNKNOWN
+                ),
                 max_retries=0,
             )
             report = AgentReport(
@@ -488,11 +546,11 @@ class AnalysisExecutor:
             execution_error = str(exc)
             accepted_provider_output = False
         if accepted_provider_output:
-            report_size = canonical_json_utf8_size(report)
+            report_size = max(provider_output_size, canonical_json_utf8_size(report))
             try:
                 SerialUsageLedger(
                     value.budget_policy,
-                    clock=self.monotonic_clock,
+                    clock=FakeMonotonicClock(value.budget_observed_at_ns),
                     initial=value.budget_snapshot.apply(usage_delta),
                     active=False,
                 ).preflight(UsageDelta(provider_output_bytes=report_size))
@@ -591,6 +649,7 @@ class ToolResearchExecutor:
         for offset, (tool_request, fallback_result_id) in enumerate(
             zip(value.requests, value.fallback_result_ids, strict=True)
         ):
+            raw_result_bytes = 0
             _safe_unique_id(fallback_result_id, seen, "fallback result ID")
             request_is_safe = bool(_PORTABLE_ID.fullmatch(tool_request.request_id))
             supported_contract_version = tool_request.contract_version or "1.0.0"
@@ -644,6 +703,17 @@ class ToolResearchExecutor:
                         error=f"strict budget failure: {budget_failure.code.value}",
                     )
                 else:
+                    raw_result_bytes = canonical_json_utf8_size(raw_result.output)
+                    if budget_ledger is not None and budget_failure is None:
+                        try:
+                            raw_output_delta = UsageDelta(tool_output_bytes=raw_result_bytes)
+                            budget_ledger.apply(raw_output_delta)
+                            usage_delta = usage_delta.combine(raw_output_delta)
+                        except BudgetLimitError as exc:
+                            budget_failure = exc.failure
+                            warnings.append(
+                                f"{tool_request.tool_name}: raw tool output exceeded strict budget"
+                            )
                     supported_contract_version = raw_result.contract_version
                     if (
                         raw_result.tool_name != tool_request.tool_name
@@ -712,7 +782,7 @@ class ToolResearchExecutor:
             result = ToolResult.model_validate(
                 redact_sensitive(result, enabled=not self.record_sensitive_data)
             )
-            result_bytes = canonical_json_utf8_size(result.output)
+            result_bytes = max(raw_result_bytes, canonical_json_utf8_size(result.output))
             if budget_ledger is not None and budget_failure is None:
                 try:
                     budget_ledger.apply(UsageDelta(tool_output_bytes=result_bytes))

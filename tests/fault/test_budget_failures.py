@@ -142,3 +142,33 @@ def test_malformed_clock_fails_as_typed_usage_error() -> None:
         SerialUsageLedger(BudgetPolicyV2(), clock=MalformedClock())
 
     assert error.value.failure.code is BudgetFailureCode.USAGE_MALFORMED
+
+
+@pytest.mark.parametrize(
+    ("policy", "case", "expected_code"),
+    [
+        (
+            BudgetPolicyV2(max_artifact_bytes=1024, max_run_bytes=10_240),
+            CaseInput(kind="calculation", raw_text="x"),
+            "artifact_exceeded",
+        ),
+        (
+            BudgetPolicyV2(max_artifact_bytes=8000, max_run_bytes=10_240),
+            CaseInput(kind="calculation", raw_text="x" * 6000),
+            "run_exceeded",
+        ),
+    ],
+)
+def test_storage_byte_exhaustion_returns_structured_limitation(
+    tmp_path: Path,
+    policy: BudgetPolicyV2,
+    case: CaseInput,
+    expected_code: str,
+) -> None:
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / expected_code),
+        budget_policy=policy,
+    ).run(case, run_id=f"run-{expected_code}")
+
+    assert report.run_status == "failed_with_limitations"
+    assert any(expected_code in item for item in report.data_quality)

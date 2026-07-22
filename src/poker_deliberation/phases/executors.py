@@ -10,6 +10,7 @@ from typing import Any
 
 from poker_deliberation.budgets import (
     BudgetFailure,
+    BudgetFailureCode,
     BudgetLimitError,
     CancellationStatus,
     DeadlineStatus,
@@ -60,7 +61,7 @@ from poker_deliberation.schemas import (
     ToolStatus,
 )
 from poker_deliberation.security import redact_sensitive
-from poker_deliberation.tools import ToolRegistry
+from poker_deliberation.tools import ToolByteLimitError, ToolRegistry
 
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -563,24 +564,35 @@ class ToolResearchExecutor:
                     budget_failure = exc.failure
                     warnings.append(f"{tool_request.tool_name}: strict budget refused execution")
             if request_is_safe and budget_failure is None:
-                raw_result = ToolResult.model_validate(
-                    self.registry.execute(
-                        tool_request.tool_name,
-                        dict(tool_request.input),
-                        contract_version=tool_request.contract_version,
+                try:
+                    phase_execute = getattr(self.registry, "execute_for_phase", None)
+                    raw_value = (
+                        phase_execute(
+                            tool_request.tool_name,
+                            dict(tool_request.input),
+                            contract_version=tool_request.contract_version,
+                        )
+                        if callable(phase_execute)
+                        else self.registry.execute(
+                            tool_request.tool_name,
+                            dict(tool_request.input),
+                            contract_version=tool_request.contract_version,
+                        )
                     )
-                )
-                supported_contract_version = raw_result.contract_version
-                if (
-                    raw_result.tool_name != tool_request.tool_name
-                    or raw_result.input != tool_request.input
-                    or (
-                        raw_result.status is ToolStatus.SUCCESS
-                        and tool_request.contract_version is not None
-                        and raw_result.contract_version != tool_request.contract_version
+                    raw_result = ToolResult.model_validate(raw_value)
+                except ToolByteLimitError as exc:
+                    budget_failure = BudgetFailure(
+                        code=(
+                            BudgetFailureCode.TOOL_INPUT_EXCEEDED
+                            if exc.resource == "tool_input_bytes"
+                            else BudgetFailureCode.TOOL_OUTPUT_EXCEEDED
+                        ),
+                        resource=exc.resource,
+                        message=str(exc),
+                        limit=exc.limit,
+                        observed=exc.observed,
                     )
-                ):
-                    warnings.append(f"{tool_request.tool_name}: tool result correlation mismatch")
+                    warnings.append(f"{tool_request.tool_name}: {exc}")
                     result = ToolResult(
                         result_id=fallback_result_id,
                         tool_name=tool_request.tool_name,
@@ -589,12 +601,36 @@ class ToolResearchExecutor:
                         exactness=Exactness.UNAVAILABLE,
                         numeric_exactness=NumericalExactness.UNAVAILABLE,
                         contract_version=supported_contract_version,
-                        error="tool result correlation mismatch",
+                        error=f"strict budget failure: {budget_failure.code.value}",
                     )
                 else:
-                    result = ToolResult.model_validate(
-                        redact_sensitive(raw_result, enabled=not self.record_sensitive_data)
-                    )
+                    supported_contract_version = raw_result.contract_version
+                    if (
+                        raw_result.tool_name != tool_request.tool_name
+                        or raw_result.input != tool_request.input
+                        or (
+                            raw_result.status is ToolStatus.SUCCESS
+                            and tool_request.contract_version is not None
+                            and raw_result.contract_version != tool_request.contract_version
+                        )
+                    ):
+                        warnings.append(
+                            f"{tool_request.tool_name}: tool result correlation mismatch"
+                        )
+                        result = ToolResult(
+                            result_id=fallback_result_id,
+                            tool_name=tool_request.tool_name,
+                            input=dict(tool_request.input),
+                            status=ToolStatus.FAILED,
+                            exactness=Exactness.UNAVAILABLE,
+                            numeric_exactness=NumericalExactness.UNAVAILABLE,
+                            contract_version=supported_contract_version,
+                            error="tool result correlation mismatch",
+                        )
+                    else:
+                        result = ToolResult.model_validate(
+                            redact_sensitive(raw_result, enabled=not self.record_sensitive_data)
+                        )
             else:
                 result = ToolResult(
                     result_id=fallback_result_id,

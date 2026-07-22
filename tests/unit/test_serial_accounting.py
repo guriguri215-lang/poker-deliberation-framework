@@ -27,6 +27,10 @@ def test_fake_clock_accepts_exact_runtime_cap_and_rejects_over_cap() -> None:
     with pytest.raises(BudgetLimitError) as repeated:
         ledger.snapshot()
     assert repeated.value.failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
+    clock.set_ns(500_000_000)
+    with pytest.raises(BudgetLimitError) as rewound_after_failure:
+        ledger.snapshot()
+    assert rewound_after_failure.value.failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
 
 
 def test_runtime_failure_remains_fail_closed_across_state_machine_checks() -> None:

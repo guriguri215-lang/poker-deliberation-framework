@@ -128,7 +128,25 @@ class Orchestrator:
             self.budget_policy = BudgetPolicyV2.model_validate(
                 budget_policy.model_dump(mode="python")
             )
-        self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
+        injected_registry = (
+            registry
+            if registry is not None
+            else (tool_research_executor.registry if tool_research_executor is not None else None)
+        )
+        injected_clocks = [
+            clock
+            for clock in (
+                analysis_executor.monotonic_clock if analysis_executor is not None else None,
+                injected_registry.monotonic_clock if injected_registry is not None else None,
+            )
+            if clock is not None
+        ]
+        if monotonic_clock is None and injected_clocks:
+            self.monotonic_clock = injected_clocks[0]
+        else:
+            self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
+        if any(clock is not self.monotonic_clock for clock in injected_clocks):
+            raise ValueError("injected effect clocks must match orchestrator monotonic clock")
         if registry is None and tool_research_executor is not None:
             self.registry = tool_research_executor.registry
         else:
@@ -158,6 +176,11 @@ class Orchestrator:
         )
         if analysis_executor is not None and analysis_executor.provider is not self.provider:
             raise ValueError("analysis executor provider must match orchestrator provider")
+        if (
+            analysis_executor is not None
+            and analysis_executor.monotonic_clock is not self.monotonic_clock
+        ):
+            raise ValueError("analysis executor clock must match orchestrator monotonic clock")
         self.analysis_executor = analysis_executor or AnalysisExecutor(
             self.provider,
             context_clock=self.context_clock,
@@ -168,6 +191,15 @@ class Orchestrator:
             tool_research_executor.registry is not self.registry
         ):
             raise ValueError("tool research executor registry must match orchestrator registry")
+        if (
+            tool_research_executor is not None
+            and tool_research_executor.record_sensitive_data != self.config.record_sensitive_data
+        ):
+            raise ValueError(
+                "tool research executor redaction policy must match orchestrator config"
+            )
+        if self.registry.monotonic_clock is not self.monotonic_clock:
+            raise ValueError("tool registry clock must match orchestrator monotonic clock")
         self.tool_research_executor = tool_research_executor or ToolResearchExecutor(
             self.registry,
             record_sensitive_data=self.config.record_sensitive_data,
@@ -1065,6 +1097,15 @@ class Orchestrator:
         if synthesis_outcome.requested_next_state != expected_next_state:
             raise PhaseContractError("synthesis requested an illegal next state")
         report = synthesis_outcome.output.report
+        if not machine.enforce_runtime():
+            runtime_message = "maximum runtime exceeded during final synthesis"
+            if runtime_message not in report.data_quality:
+                report.data_quality.append(runtime_message)
+            if runtime_message not in report.limitations:
+                report.limitations.append(runtime_message)
+            report.run_status = "failed_with_limitations"
+            completed = False
+            pause_before_return = False
         self.store.write_json(run_id, "agent_execution_records.json", execution_records)
         self.store.write_json(run_id, "security_events.json", security_events)
         if completed and not machine.terminal:

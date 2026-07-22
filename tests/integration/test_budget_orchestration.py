@@ -23,6 +23,7 @@ from poker_deliberation.providers import (
 )
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport, CaseInput
 from poker_deliberation.tools import default_registry
+from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 
 
 class CostedProvider:
@@ -329,6 +330,45 @@ def test_injected_analysis_executor_cannot_use_a_different_provider(tmp_path: Pa
     assert executor_provider.calls == 0
 
 
+def test_injected_effect_boundaries_cannot_use_different_clocks(tmp_path: Path) -> None:
+    run_clock = FakeMonotonicClock()
+    executor_clock = FakeMonotonicClock()
+    provider = CostedProvider(ExecutionClass.LOCAL_FREE, None)
+    executor = AnalysisExecutor(
+        provider,
+        context_clock=lambda: datetime.now(UTC),
+        record_clock=lambda: datetime.now(UTC),
+        monotonic_clock=executor_clock,
+    )
+    with pytest.raises(ValueError, match="effect clocks must match"):
+        Orchestrator(
+            AppConfig(runs_dir=tmp_path / "provider"),
+            provider=provider,
+            analysis_executor=executor,
+            monotonic_clock=run_clock,
+        )
+
+    registry = ToolRegistry(monotonic_clock=executor_clock)
+    with pytest.raises(ValueError, match="effect clocks must match"):
+        Orchestrator(
+            AppConfig(runs_dir=tmp_path / "tool"),
+            registry=registry,
+            monotonic_clock=run_clock,
+        )
+
+
+def test_injected_tool_executor_cannot_change_redaction_policy(tmp_path: Path) -> None:
+    registry = default_registry()
+    executor = ToolResearchExecutor(registry, record_sensitive_data=True)
+
+    with pytest.raises(ValueError, match="redaction policy must match"):
+        Orchestrator(
+            AppConfig(runs_dir=tmp_path / "runs", record_sensitive_data=False),
+            registry=registry,
+            tool_research_executor=executor,
+        )
+
+
 class AdvancingContextBuildService(ContextBuildService):
     def __init__(self, clock: FakeMonotonicClock) -> None:
         super().__init__()
@@ -361,11 +401,12 @@ def test_context_build_runtime_overrun_refuses_provider_start(tmp_path: Path) ->
 
 
 class AdvancingSynthesisService(SynthesisService):
-    def __init__(self, clock: FakeMonotonicClock) -> None:
+    def __init__(self, clock: FakeMonotonicClock, advance_ns: int = 500_000_000) -> None:
         self.clock = clock
+        self.advance_ns = advance_ns
 
     def run(self, request):  # type: ignore[no-untyped-def]
-        self.clock.advance_ns(500_000_000)
+        self.clock.advance_ns(self.advance_ns)
         return super().run(request)
 
 
@@ -403,6 +444,52 @@ def test_internal_approval_report_work_is_charged_before_human_wait_pause(
 
     assert report.run_status == "approval_required"
     assert state["elapsed_seconds"] == 0.5
+
+
+@pytest.mark.parametrize("approval_required", [False, True])
+def test_final_synthesis_runtime_overrun_is_structured_and_not_completed(
+    tmp_path: Path,
+    approval_required: bool,
+) -> None:
+    clock = FakeMonotonicClock()
+    metadata = (
+        {
+            "approval_requests": [
+                {
+                    "approval_id": "approval-synthesis-overrun",
+                    "requested_action": "external solver",
+                    "reason": "test final synthesis deadline",
+                    "expected_benefit": "external result",
+                    "risks": ["external execution"],
+                    "cost_or_resource_estimate": "unknown",
+                    "alternatives": ["local analysis"],
+                    "effect_of_declining": "no external result",
+                }
+            ]
+        }
+        if approval_required
+        else {}
+    )
+    run_id = f"run-synthesis-overrun-{approval_required}"
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+        synthesis_service=AdvancingSynthesisService(clock, 2_000_000_000),
+    ).run(
+        CaseInput(
+            kind="calculation",
+            raw_text="review final synthesis runtime",
+            analysis_scope="retrospective",
+            metadata=metadata,
+        ),
+        run_id=run_id,
+    )
+    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+
+    assert report.run_status == "failed_with_limitations"
+    assert state["state"] == "FAILED_WITH_LIMITATIONS"
+    assert "maximum runtime exceeded during final synthesis" in report.data_quality
 
 
 def test_run_store_writes_settle_peak_artifact_and_current_run_bytes(tmp_path: Path) -> None:
@@ -459,3 +546,37 @@ def test_tool_failure_has_non_retryable_production_classification(tmp_path: Path
     assert classification.category is FailureCategory.TOOL_DETERMINISTIC
     assert not classification.retryable
     assert classification.max_retries == 3
+
+
+def test_oversized_raw_tool_output_becomes_typed_budget_failure(tmp_path: Path) -> None:
+    registry = ToolRegistry(max_output_bytes=1024)
+    registry.register(
+        ToolDefinition(
+            name="big",
+            purpose="oversized output fixture",
+            exact_or_approximate="exact",
+            supported_games=("fixture",),
+            function=lambda _: {"x": "a" * 2000},
+        )
+    )
+    executor = CapturingToolResearchExecutor(registry, record_sensitive_data=False)
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        registry=registry,
+        tool_research_executor=executor,
+        budget_policy=BudgetPolicyV2(max_tool_output_bytes=1024),
+    ).run(
+        CaseInput(
+            kind="calculation",
+            analysis_scope="retrospective",
+            requested_tools=["big"],
+        ),
+        run_id="run-oversized-raw-tool-output",
+    )
+
+    outcome = executor.outcomes[0].output
+    assert report.run_status == "failed_with_limitations"
+    assert outcome.budget_failure is not None
+    assert outcome.budget_failure.code.value == "tool_output_exceeded"
+    assert outcome.budget_failure.observed is not None
+    assert outcome.retry_classifications[0].category is FailureCategory.BUDGET

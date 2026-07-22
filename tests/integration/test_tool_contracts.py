@@ -610,3 +610,19 @@ def test_registry_clock_rollback_returns_failed_tool_result() -> None:
 
     assert result.status is ToolStatus.FAILED
     assert "moved backwards" in (result.error or "")
+
+
+def test_registry_preserves_measurable_duration_for_failed_tool() -> None:
+    clock = FakeMonotonicClock()
+
+    def fail_after_work(_: dict[str, object]) -> dict[str, object]:
+        clock.advance_ns(100_000_000)
+        raise ValueError("deterministic fixture failure")
+
+    registry = ToolRegistry(monotonic_clock=clock)
+    registry.register(_size_test_definition(fail_after_work))
+
+    result = registry.execute("size-test", {})
+
+    assert result.status is ToolStatus.FAILED
+    assert result.duration_seconds == 0.1

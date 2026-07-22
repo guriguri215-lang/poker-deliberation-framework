@@ -50,6 +50,16 @@ from poker_deliberation.tools.strategy_math import (
 ToolFunction = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+class ToolByteLimitError(RuntimeError):
+    """Typed internal signal used by the phase boundary without changing public results."""
+
+    def __init__(self, resource: str, *, limit: int, observed: int) -> None:
+        super().__init__(f"{resource} exceeds hard limit {limit} bytes")
+        self.resource = resource
+        self.limit = limit
+        self.observed = observed
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
     name: str
@@ -95,6 +105,12 @@ class ToolRegistry:
             raise ValueError("monotonic clock moved backwards during tool execution")
         return (completed_ns - started_ns) / 1_000_000_000
 
+    def _failure_duration_seconds(self, started_ns: int) -> float:
+        try:
+            return self._duration_seconds(started_ns)
+        except (ValueError, TypeError):
+            return 0.0
+
     def register(self, definition: ToolDefinition) -> None:
         if definition.name in self._tools:
             raise ValueError(f"duplicate tool name: {definition.name}")
@@ -129,11 +145,18 @@ class ToolRegistry:
         payload: dict[str, Any],
         *,
         contract_version: str | None = None,
+        _raise_on_byte_limit: bool = False,
     ) -> ToolResult:
         known_definition = self._tools.get(name)
         known_contract = known_definition.contract if known_definition is not None else None
         payload_size = canonical_json_utf8_size(payload)
         if payload_size > self.max_payload_bytes:
+            if _raise_on_byte_limit:
+                raise ToolByteLimitError(
+                    "tool_input_bytes",
+                    limit=self.max_payload_bytes,
+                    observed=payload_size,
+                )
             return ToolResult(
                 tool_name=name,
                 input={},
@@ -167,6 +190,7 @@ class ToolRegistry:
                     f"contract version mismatch: requested {contract_version}, "
                     f"supported {contract.contract_version}"
                 )
+
             normalized_payload = payload
             if contract is not None:
                 validated_input = contract.input_model.model_validate(payload)
@@ -177,6 +201,12 @@ class ToolRegistry:
             duration = self._duration_seconds(started)
             output_size = canonical_json_utf8_size(output)
             if output_size > self.max_output_bytes:
+                if _raise_on_byte_limit:
+                    raise ToolByteLimitError(
+                        "tool_output_bytes",
+                        limit=self.max_output_bytes,
+                        observed=output_size,
+                    )
                 return ToolResult(
                     tool_name=name,
                     input=payload,
@@ -293,13 +323,29 @@ class ToolRegistry:
                 ),
                 assumptions=list(definition.assumptions),
                 version=definition.version,
-                duration_seconds=0,
+                duration_seconds=self._failure_duration_seconds(started),
                 error=f"{type(exc).__name__}: {exc}",
                 reproduce_command=(
                     f"poker-deliberate calculate {name} --analysis-scope retrospective "
                     "--input <input.json>"
                 ),
             )
+
+    def execute_for_phase(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+    ) -> ToolResult:
+        """Execute with typed byte-limit signaling for the orchestrated phase boundary."""
+
+        return self.execute(
+            name,
+            payload,
+            contract_version=contract_version,
+            _raise_on_byte_limit=True,
+        )
 
 
 def _extract_warnings(output: dict[str, Any]) -> list[str]:

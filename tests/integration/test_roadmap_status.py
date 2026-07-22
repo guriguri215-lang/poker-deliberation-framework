@@ -405,6 +405,22 @@ def test_scoped_approval_projection_correction_is_strict_and_append_only() -> No
     with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
         validate_roadmap_update(previous, changed_tests)
 
+    changed_targets = deepcopy(current)
+    changed_targets["approval_records"][new_reference]["scope"]["milestone_implementation_scope"][
+        "targets"
+    ] = ["README.md"]
+    changed_targets["approval_records"][new_reference]["scope_digest"] = _scope_digest(
+        changed_targets["approval_records"][new_reference]["scope"]
+    )
+    changed_targets_rm_011 = next(
+        item for item in changed_targets["items"] if item["id"] == "RM-011"
+    )
+    changed_targets_rm_011["human_approval"]["scope_digest"] = changed_targets["approval_records"][
+        new_reference
+    ]["scope_digest"]
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, changed_targets)
+
 
 def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -> None:
     counterexample = deepcopy(load_roadmap())

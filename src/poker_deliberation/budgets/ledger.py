@@ -32,6 +32,7 @@ class SerialUsageLedger:
         self._snapshot = initial or BudgetSnapshot(policy_sha256=self.policy.canonical_sha256)
         self._active = active
         self._last_ns = self._read_clock()
+        self._clock_failure: BudgetFailure | None = None
         self._validate_snapshot(self._snapshot)
 
     def _read_clock(self) -> int:
@@ -55,20 +56,30 @@ class SerialUsageLedger:
         return now
 
     def _observe_runtime(self) -> None:
-        now = self._read_clock()
+        if self._clock_failure is not None:
+            raise BudgetLimitError(self._clock_failure)
+        try:
+            now = self._read_clock()
+        except BudgetLimitError as exc:
+            self._clock_failure = exc.failure
+            raise
         if now < self._last_ns:
-            raise BudgetLimitError(
-                BudgetFailure(
-                    code=BudgetFailureCode.CLOCK_ROLLBACK,
-                    resource="active_runtime_ns",
-                    message="monotonic clock moved backwards",
-                    observed=self._last_ns - now,
-                )
+            self._clock_failure = BudgetFailure(
+                code=BudgetFailureCode.CLOCK_ROLLBACK,
+                resource="active_runtime_ns",
+                message="monotonic clock moved backwards",
+                observed=self._last_ns - now,
             )
+            raise BudgetLimitError(self._clock_failure)
         elapsed = now - self._last_ns if self._active else 0
         if elapsed:
             candidate = self._snapshot.apply(UsageDelta(active_runtime_ns=elapsed))
-            self._validate_snapshot(candidate)
+            try:
+                self._validate_snapshot(candidate)
+            except BudgetLimitError as exc:
+                self._last_ns = now
+                self._clock_failure = exc.failure
+                raise
             self._snapshot = candidate
         self._last_ns = now
 

@@ -25,6 +25,14 @@ SUPPORTED_APPROVAL_SCOPE_SCHEMA_VERSIONS = {
     APPROVAL_SCOPE_SCHEMA_VERSION,
 }
 ROADMAP_SCHEMA_AMENDMENT_REFERENCE = "goal-rm010-p2-010a-governance-amendment-2026-07-20"
+APPROVAL_PROJECTION_CORRECTIONS = {
+    (
+        "goal-rm011-p2-011a-2026-07-20",
+        "c96bc2a5f56930630884b7dd7181366638768b4623762d1bd9aa249c01c76d9f",
+        "goal-rm011-p2-011a-2026-07-20-correction-1",
+        "63f0bae2b1e49a2c5ea7558d166a463ff4f1e9169b977e5968fdf0fb6f5e0f9e",
+    )
+}
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
 MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -245,7 +253,14 @@ def _is_projection_correction(
     """Recognize an append-only correction of a machine-transcribed public projection."""
 
     if (
-        new_record.get("source_label") != f"corrected projection of {old_reference}"
+        (
+            old_reference,
+            old_record.get("scope_digest"),
+            new_reference,
+            new_record.get("scope_digest"),
+        )
+        not in APPROVAL_PROJECTION_CORRECTIONS
+        or new_record.get("source_label") != f"corrected projection of {old_reference}"
         or new_record.get("topics") != old_record.get("topics")
         or "scope" not in old_record
         or "scope" not in new_record

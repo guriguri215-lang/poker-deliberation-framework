@@ -74,7 +74,12 @@ class SerialUsageLedger:
             raise
         self._settle_runtime_observation(now)
 
-    def _settle_runtime_observation(self, now: int) -> None:
+    def _settle_runtime_observation(
+        self,
+        now: int,
+        *,
+        effect_delta: UsageDelta | None = None,
+    ) -> None:
         """Settle one validated clock high-water observation into this ledger."""
 
         if self._clock_failure is not None:
@@ -88,16 +93,18 @@ class SerialUsageLedger:
             )
             raise BudgetLimitError(self._clock_failure)
         elapsed = now - self._last_ns if self._active else 0
+        candidate = self._snapshot
         if elapsed:
-            candidate = self._snapshot.apply(UsageDelta(active_runtime_ns=elapsed))
-            try:
-                self._validate_snapshot(candidate)
-            except BudgetLimitError as exc:
-                self._last_ns = now
-                self._clock_failure = exc.failure
-                raise
-            self._snapshot = candidate
+            candidate = candidate.apply(UsageDelta(active_runtime_ns=elapsed))
+        if effect_delta is not None:
+            candidate = candidate.apply(effect_delta)
         self._last_ns = now
+        self._snapshot = candidate
+        try:
+            self._validate_snapshot(candidate)
+        except BudgetLimitError as exc:
+            self._clock_failure = exc.failure
+            raise
 
     def _failure(
         self,
@@ -213,10 +220,7 @@ class SerialUsageLedger:
             )
             self._clock_failure = failure
             raise BudgetLimitError(failure)
-        self._settle_runtime_observation(observed_at_ns)
-        candidate = self._snapshot.apply(delta)
-        self._validate_snapshot(candidate)
-        self._snapshot = candidate
+        self._settle_runtime_observation(observed_at_ns, effect_delta=delta)
         return self._snapshot
 
     def preflight(self, delta: UsageDelta) -> BudgetSnapshot:

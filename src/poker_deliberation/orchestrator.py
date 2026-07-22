@@ -100,6 +100,18 @@ def _new_internal_id(prefix: str) -> str:
     return f"{prefix}-{secrets.token_hex(12)}"
 
 
+def _append_observed_budget_failure(
+    target: list[str],
+    machine: WorkflowStateMachine,
+) -> None:
+    failure = machine.last_budget_failure
+    if failure is None:
+        return
+    message = f"strict budget failure: {failure.code.value}"
+    if message not in target:
+        target.append(message)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -393,6 +405,7 @@ class Orchestrator:
             else:
                 if not machine.enforce_runtime():
                     data_quality.append("strict runtime refused before hand validation")
+                    _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
                         actual_run_id,
                         case,
@@ -549,6 +562,7 @@ class Orchestrator:
             for index, assignment in enumerate(assignments):
                 if not machine.enforce_runtime():
                     data_quality.append("maximum runtime reached before provider analysis")
+                    _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
                         actual_run_id,
                         case,
@@ -643,6 +657,7 @@ class Orchestrator:
                 self.store.write_json(actual_run_id, "assignments.json", assignments)
                 if not machine.enforce_runtime():
                     data_quality.append("maximum runtime reached during context build")
+                    _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
                         actual_run_id,
                         case,
@@ -684,6 +699,7 @@ class Orchestrator:
                 provider_info = self.provider.availability()
                 if not machine.enforce_runtime():
                     data_quality.append("maximum runtime reached during provider preflight")
+                    _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
                         actual_run_id,
                         case,
@@ -889,6 +905,7 @@ class Orchestrator:
                 data_quality.extend(objection_outcome.output.data_quality)
             if not machine.enforce_runtime():
                 data_quality.append("maximum runtime exceeded after provider analysis")
+                _append_observed_budget_failure(data_quality, machine)
                 return self._synthesize(
                     actual_run_id,
                     case,
@@ -933,6 +950,7 @@ class Orchestrator:
             )
         if not machine.enforce_runtime():
             data_quality.append("strict runtime refused before requested tool execution")
+            _append_observed_budget_failure(data_quality, machine)
             return self._synthesize(
                 actual_run_id,
                 case,
@@ -1035,6 +1053,7 @@ class Orchestrator:
             )
         if not machine.enforce_runtime():
             data_quality.append("maximum runtime exceeded after tool execution")
+            _append_observed_budget_failure(data_quality, machine)
             return self._synthesize(
                 actual_run_id,
                 case,
@@ -1244,6 +1263,8 @@ class Orchestrator:
                 report.data_quality.append(runtime_message)
             if runtime_message not in report.limitations:
                 report.limitations.append(runtime_message)
+            _append_observed_budget_failure(report.data_quality, machine)
+            _append_observed_budget_failure(report.limitations, machine)
             report.run_status = "failed_with_limitations"
             completed = False
             pause_before_return = False
@@ -1260,6 +1281,8 @@ class Orchestrator:
                 report.data_quality.append(runtime_message)
             if runtime_message not in report.limitations:
                 report.limitations.append(runtime_message)
+            _append_observed_budget_failure(report.data_quality, machine)
+            _append_observed_budget_failure(report.limitations, machine)
             report.run_status = "failed_with_limitations"
             pause_before_return = False
             self.store.write_json(run_id, "state.json", machine.snapshot())

@@ -211,21 +211,29 @@ def test_local_free_provider_and_calculator_work_with_cost_cap_zero(tmp_path: Pa
 def test_fake_clock_runtime_overrun_becomes_structured_limitation(tmp_path: Path) -> None:
     clock = FakeMonotonicClock()
     provider = CostedProvider(
-        ExecutionClass.LOCAL_FREE,
-        None,
+        ExecutionClass.EXTERNAL,
+        5,
         clock=clock,
         advance_ns=2_000_000_000,
     )
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         provider=provider,
         monotonic_clock=clock,
-        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
-    ).run(_strategy_case(), run_id="run-runtime-overrun")
+        budget_policy=BudgetPolicyV2(
+            max_runtime_seconds=1.0,
+            max_external_cost_micro_usd=10,
+        ),
+    )
+    report = orchestrator.run(_strategy_case(), run_id="run-runtime-overrun")
 
     assert provider.calls == 1
     assert report.run_status == "failed_with_limitations"
     assert any("deadline" in item for item in report.data_quality)
+    usage = orchestrator._run_machines[report.run_id].ledger.settled_snapshot()
+    assert usage.active_runtime_ns == 2_000_000_000
+    assert usage.provider_attempts == 1
+    assert usage.external_cost_micro_usd == 5
 
 
 def test_late_provider_output_is_rejected_by_injected_deadline(tmp_path: Path) -> None:
@@ -618,6 +626,7 @@ def test_provider_effect_high_water_stops_later_effects_after_rollback(
 
     assert provider.calls == 1
     assert report.run_status == "failed_with_limitations"
+    assert any("clock_rollback" in item for item in report.data_quality)
     events = orchestrator._run_machines[report.run_id].snapshot()["events"]
     assert any("clock_rollback" in str(event) for event in events)
 

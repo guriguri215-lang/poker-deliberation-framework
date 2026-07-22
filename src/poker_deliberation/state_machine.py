@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from poker_deliberation.budgets import (
+    BudgetFailure,
     BudgetFailureCode,
     BudgetLimitError,
     BudgetPolicyV2,
@@ -96,6 +97,7 @@ class WorkflowStateMachine:
     clock: MonotonicClock = field(default_factory=SystemMonotonicClock)
     ledger: SerialUsageLedger = field(init=False)
     _tool_retry_limit: int = field(init=False)
+    _last_budget_failure: BudgetFailure | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         legacy_retry_limit = (
@@ -165,8 +167,10 @@ class WorkflowStateMachine:
 
         try:
             self.ledger.snapshot()
+            self._last_budget_failure = None
             return True
         except BudgetLimitError as exc:
+            self._last_budget_failure = exc.failure
             failure_reason = f"strict budget observation failed: {exc.failure.code}"
         if self.state is not RunState.FAILED_WITH_LIMITATIONS:
             self.events.append(
@@ -178,6 +182,10 @@ class WorkflowStateMachine:
             )
             self.state = RunState.FAILED_WITH_LIMITATIONS
         return False
+
+    @property
+    def last_budget_failure(self) -> BudgetFailure | None:
+        return self._last_budget_failure
 
     @property
     def elapsed_seconds(self) -> float:

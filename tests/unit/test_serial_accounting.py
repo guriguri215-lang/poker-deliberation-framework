@@ -68,6 +68,26 @@ def test_effect_clock_high_water_is_settled_before_next_observation() -> None:
     assert error.value.failure.code is BudgetFailureCode.CLOCK_ROLLBACK
 
 
+def test_effect_usage_is_preserved_when_runtime_settlement_exceeds_cap() -> None:
+    clock = FakeMonotonicClock()
+    ledger = SerialUsageLedger(
+        BudgetPolicyV2(max_runtime_seconds=0.000_000_001, max_external_cost_micro_usd=10),
+        clock=clock,
+    )
+
+    with pytest.raises(BudgetLimitError) as error:
+        ledger.apply_at(
+            UsageDelta(provider_attempts=1, external_cost_micro_usd=5),
+            observed_at_ns=2,
+        )
+
+    assert error.value.failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
+    settled = ledger.settled_snapshot()
+    assert settled.active_runtime_ns == 2
+    assert settled.provider_attempts == 1
+    assert settled.external_cost_micro_usd == 5
+
+
 def test_paused_human_wait_is_not_charged() -> None:
     clock = FakeMonotonicClock()
     ledger = SerialUsageLedger(BudgetPolicyV2(max_runtime_seconds=2.0), clock=clock)

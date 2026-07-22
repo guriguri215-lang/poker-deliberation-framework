@@ -492,6 +492,45 @@ def test_final_synthesis_runtime_overrun_is_structured_and_not_completed(
     assert "maximum runtime exceeded during final synthesis" in report.data_quality
 
 
+def test_final_artifact_runtime_overrun_rewrites_terminal_state_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeMonotonicClock()
+    run_id = "run-final-artifact-overrun"
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    )
+    original_write_text = orchestrator.store.write_text
+
+    def advance_on_final_markdown(run_id_value: str, relative: str, value: str):  # type: ignore[no-untyped-def]
+        path = original_write_text(run_id_value, relative, value)
+        if relative == "final_report.md":
+            clock.advance_ns(2_000_000_000)
+        return path
+
+    monkeypatch.setattr(orchestrator.store, "write_text", advance_on_final_markdown)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="review final artifact runtime",
+            analysis_scope="retrospective",
+        ),
+        run_id=run_id,
+    )
+    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+    stored_report = json.loads(
+        (tmp_path / "runs" / run_id / "final_report.json").read_text(encoding="utf-8")
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert state["state"] == "FAILED_WITH_LIMITATIONS"
+    assert stored_report["run_status"] == "failed_with_limitations"
+    assert "maximum runtime exceeded during final artifact writes" in report.data_quality
+
+
 def test_run_store_writes_settle_peak_artifact_and_current_run_bytes(tmp_path: Path) -> None:
     run_id = "run-storage-accounting"
     orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"))

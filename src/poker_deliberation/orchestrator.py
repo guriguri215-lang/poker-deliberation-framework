@@ -1113,6 +1113,17 @@ class Orchestrator:
         self._write_common_artifacts(run_id, machine, approvals, disputes)
         self.store.write_json(run_id, "final_report.json", report)
         self.store.write_text(run_id, "final_report.md", render_markdown(report))
+        if not machine.enforce_runtime():
+            runtime_message = "maximum runtime exceeded during final artifact writes"
+            if runtime_message not in report.data_quality:
+                report.data_quality.append(runtime_message)
+            if runtime_message not in report.limitations:
+                report.limitations.append(runtime_message)
+            report.run_status = "failed_with_limitations"
+            pause_before_return = False
+            self.store.write_json(run_id, "state.json", machine.snapshot())
+            self.store.write_json(run_id, "final_report.json", report)
+            self.store.write_text(run_id, "final_report.md", render_markdown(report))
         if pause_before_return:
             machine.pause_active_runtime()
             self.store.write_json(run_id, "state.json", machine.snapshot())

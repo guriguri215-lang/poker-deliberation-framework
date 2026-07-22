@@ -162,7 +162,7 @@ class WorkflowStateMachine:
         except BudgetLimitError as exc:
             if exc.failure.code is not BudgetFailureCode.RUNTIME_EXCEEDED:
                 raise
-        if not self.terminal:
+        if self.state is not RunState.FAILED_WITH_LIMITATIONS:
             self.events.append(
                 StateEvent(
                     source=self.state,

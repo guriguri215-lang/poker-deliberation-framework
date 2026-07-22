@@ -371,6 +371,11 @@ def test_scoped_approval_projection_correction_is_strict_and_append_only() -> No
     rm_011["human_approval"]["scope_digest"] = previous["approval_records"][old_reference][
         "scope_digest"
     ]
+    previous["milestone_progress"]["P2-011A"] = {
+        "state": "in_progress",
+        "history": ["not_started", "in_progress"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
 
     validate_roadmap_update(previous, current)
     validate_roadmap_update(previous, current, {"irrelevant-compatibility-value"})
@@ -395,6 +400,9 @@ def test_scoped_approval_projection_correction_is_strict_and_append_only() -> No
     changed_tests["approval_records"][new_reference]["scope"]["milestone_implementation_scope"][
         "tests"
     ].append("tests/new_scope.py")
+    changed_tests["milestone_progress"]["P2-011A"]["completion_evidence"]["tests"].append(
+        "tests/new_scope.py"
+    )
     changed_tests["approval_records"][new_reference]["scope_digest"] = _scope_digest(
         changed_tests["approval_records"][new_reference]["scope"]
     )
@@ -409,6 +417,7 @@ def test_scoped_approval_projection_correction_is_strict_and_append_only() -> No
     changed_targets["approval_records"][new_reference]["scope"]["milestone_implementation_scope"][
         "targets"
     ] = ["README.md"]
+    changed_targets["milestone_progress"]["P2-011A"]["completion_evidence"]["paths"] = ["README.md"]
     changed_targets["approval_records"][new_reference]["scope_digest"] = _scope_digest(
         changed_targets["approval_records"][new_reference]["scope"]
     )
@@ -554,6 +563,9 @@ def test_completed_evidence_is_repository_validated_separately() -> None:
     approval["scope"]["milestone_implementation_scope"]["targets"].append(
         "src/poker_deliberation/missing-budget-scope.py"
     )
+    invalid_scope["milestone_progress"]["P2-011A"]["completion_evidence"]["paths"].append(
+        "src/poker_deliberation/missing-budget-scope.py"
+    )
     approval["scope_digest"] = _scope_digest(approval["scope"])
     rm_011 = next(item for item in invalid_scope["items"] if item["id"] == "RM-011")
     rm_011["human_approval"]["scope_digest"] = approval["scope_digest"]
@@ -614,8 +626,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 2,
-        "in_progress": 1,
+        "completed": 3,
         "not_started": 9,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

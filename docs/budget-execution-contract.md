@@ -38,7 +38,9 @@ integer number of micro-USD.
 `SerialUsageLedger` owns an attempt/run-local `BudgetSnapshot`. It keeps provider and tool attempts,
 retry candidates, active runtime, external cost, peak canonical provider/tool values, peak artifact
 size, current run size, and peak concurrency in separate fields; unlike units are never summed. A
-rejected preflight or observation does not commit the proposed usage. `RunStore` reports the exact
+rejected preflight or storage projection does not commit proposed usage. Actual runtime and completed
+effect usage are settled together and remain in the snapshot even when the settlement exceeds a
+limit; the typed failure then remains sticky and blocks later effects. `RunStore` reports the exact
 projected artifact and run sizes to the in-memory ledger before each write. Clock rollback and
 policy-hash substitution fail closed.
 
@@ -54,10 +56,12 @@ An explicitly supplied `unknown` value remains fail closed. New or external prov
 their class explicitly; the compatibility rule does not infer or meter an external invoice.
 
 The state machine and effect executors share an injected monotonic clock. Active run time is observed
-at serial boundaries. Entering human approval wait pauses the ledger, so waiting time is excluded.
-The ledger is not written to a manifest. The existing resume surface reconstructs elapsed time only;
-subsequent storage writes observe current physical artifact sizes without restoring external cost,
-attempt, or prior provider/tool byte accounting.
+at serial boundaries. Each provider/tool output carries the greatest validated clock observation
+made at that effect boundary. The orchestrator settles that high-water mark with the effect usage,
+so a later clock rollback cannot be accepted between serial effects. Entering human approval wait
+pauses the ledger, so waiting time is excluded. The ledger is not written to a manifest. The existing
+resume surface reconstructs elapsed time only; subsequent storage writes observe current physical
+artifact sizes without restoring external cost, attempt, or prior provider/tool byte accounting.
 
 ## Failure, retry, deadline, and cancellation
 

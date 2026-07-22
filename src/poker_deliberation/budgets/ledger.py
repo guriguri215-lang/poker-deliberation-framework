@@ -183,7 +183,7 @@ class SerialUsageLedger:
         return self._snapshot
 
     def settled_snapshot(self) -> BudgetSnapshot:
-        """Return the last validated immutable usage value without another clock read."""
+        """Return the last settled immutable usage value without another clock read."""
 
         return self._snapshot
 

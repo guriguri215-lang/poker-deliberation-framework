@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `4281a080b73f7c33d378910f0e3176cb1f14738dcb170eabe740a09281ec8c73`
+- source SHA-256: `72fd3578f291b423815ca40efefaf973682247157f4f731843d482bd3c35b5af`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -30,7 +30,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 |---|---|---|---|---|
 | `P2-024A` | `RM-024` | `completed` | `RM-006`, `RM-023` | Context envelope policy, schema, ownership, lineage, and allowlists. |
 | `P2-010A` | `RM-010` | `completed` | `RM-006`, `RM-007`, `RM-023`, `P2-024A` | Typed pure phase services with serial execution and no persistence integration. |
-| `P2-011A` | `RM-011` | `in_progress` | `RM-023`, `P2-010A` | Strict budget schema, fake clock, serial accounting, and retry classification. |
+| `P2-011A` | `RM-011` | `completed` | `RM-023`, `P2-010A` | Strict budget schema, fake clock, serial accounting, and retry classification. |
 | `P2-027A` | `RM-027` | `not_started` | `RM-023`, `P2-024A` | Classification, retention, expiry, quarantine, and disposition policy/schema only. |
 | `P2-012A` | `RM-012` | `not_started` | `RM-023`, `P2-010A`, `P2-011A`, `P2-027A` | Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation. |
 | `P2-010B` | `RM-010` | `not_started` | `P2-012A` | Phase service integration with durable transition ordering and fault injection. |

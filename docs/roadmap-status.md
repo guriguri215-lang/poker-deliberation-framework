@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `d8008dec503e9fd7f489d96955c2d1faeba841da16fe0bee23479c9af4f98b20`
+- source SHA-256: `ba2f2239d3169a3361c38c58da90e5c9ca86fb5951b22d53dd62df2b7f33aafd`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。

@@ -239,6 +239,10 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
     assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
     assert document["milestone_progress"]["P2-027B"]["state"] == "not_started"
     assert rm_027["status"] == "in_progress"
+    assert rm_027["status_reason"] == (
+        "P2-027A pure policy/schema is completed; RM-027 remains in progress because "
+        "P2-027B is separately unapproved and not started."
+    )
     assert rm_027["human_approval"]["topics"] == record["topics"]
     assert scope["policy_decisions"] == record["topics"]
     assert scope["item_contract"]["capabilities"] == [

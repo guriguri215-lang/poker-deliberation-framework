@@ -49,9 +49,15 @@ _WINDOWS_RESERVED_STEMS = frozenset(
         *(f"LPT{index}" for index in range(1, 10)),
     }
 )
-_REPORT_ARTIFACT = re.compile(r"^agent_reports/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$")
-_TOOL_INPUT_ARTIFACT = re.compile(r"^tool_results/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.input\.json$")
-_TOOL_RESULT_ARTIFACT = re.compile(r"^tool_results/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$")
+_REPORT_ARTIFACT = re.compile(
+    r"^agent_reports/(?P<identifier>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$"
+)
+_TOOL_INPUT_ARTIFACT = re.compile(
+    r"^tool_results/(?P<identifier>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.input\.json$"
+)
+_TOOL_RESULT_ARTIFACT = re.compile(
+    r"^tool_results/(?P<identifier>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$"
+)
 
 Clock = Callable[[], datetime]
 
@@ -191,6 +197,29 @@ class LifecyclePolicyFailureCode(StrEnum):
     ENCRYPTION_REQUIRED = "encryption_required"
     PERSISTENCE_FORBIDDEN = "persistence_forbidden"
     DISPOSITION_DENIED = "disposition_denied"
+
+
+_FAILURE_MESSAGES: Final[dict[LifecyclePolicyFailureCode, str]] = {
+    LifecyclePolicyFailureCode.UNSUPPORTED_SCHEMA: "unsupported local-data schema",
+    LifecyclePolicyFailureCode.INVALID_POLICY: "invalid local-data policy input",
+    LifecyclePolicyFailureCode.UNKNOWN_POLICY: "unknown local-data policy",
+    LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION: "unknown local-data classification",
+    LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND: "unknown local-data artifact kind",
+    LifecyclePolicyFailureCode.INVALID_UTC: "invalid lifecycle UTC timestamp",
+    LifecyclePolicyFailureCode.INVALID_RETENTION_TIME: "invalid lifecycle retention time",
+    LifecyclePolicyFailureCode.CLOCK_ROLLBACK: "lifecycle clock rollback",
+    LifecyclePolicyFailureCode.POLICY_HASH_MISMATCH: "local-data policy hash mismatch",
+    LifecyclePolicyFailureCode.CLASSIFICATION_DOWNGRADE_DENIED: (
+        "local-data classification downgrade denied"
+    ),
+    LifecyclePolicyFailureCode.OWNERSHIP_UNVERIFIED: "local-data ownership unverified",
+    LifecyclePolicyFailureCode.INTEGRITY_UNVERIFIED: "local-data integrity unverified",
+    LifecyclePolicyFailureCode.LINEAGE_UNVERIFIED: "local-data lineage unverified",
+    LifecyclePolicyFailureCode.SUBJECT_PROTECTED: "local-data subject protected",
+    LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED: "local-data encryption required",
+    LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN: "local-data persistence forbidden",
+    LifecyclePolicyFailureCode.DISPOSITION_DENIED: "local-data disposition denied",
+}
 
 
 class _LocalDataModel(BaseModel):
@@ -543,6 +572,12 @@ class LifecycleFailure(_LocalDataModel):
         pattern=r"^[0-9a-f]{64}$",
     )
 
+    @model_validator(mode="after")
+    def validate_fixed_message(self) -> LifecycleFailure:
+        if self.message != _FAILURE_MESSAGES[self.code]:
+            raise ValueError("failure message must be the fixed message for its code")
+        return self
+
 
 class LifecycleAuditMetadata(_LocalDataModel):
     schema_version: Literal["1.0.0"] = LOCAL_DATA_POLICY_SCHEMA_VERSION
@@ -633,16 +668,15 @@ class LifecycleAuditMetadata(_LocalDataModel):
             )
         ):
             raise ValueError("audit retention timestamps are inconsistent")
-        if (
-            self.subject_kind
-            in {
-                SubjectKind.RUN_PAYLOAD,
-                SubjectKind.RUN_AUDIT,
-                SubjectKind.RUN_REPORT,
-            }
-            and _artifact_kind(self.logical_name) is not self.subject_kind
+        if self.subject_kind in {
+            SubjectKind.RUN_PAYLOAD,
+            SubjectKind.RUN_AUDIT,
+            SubjectKind.RUN_REPORT,
+        } and (
+            _artifact_kind(self.logical_name) is not self.subject_kind
+            or not _audit_run_logical_name_is_bounded(self.logical_name)
         ):
-            raise ValueError("audit run logical name does not match its approved kind")
+            raise ValueError("audit run logical name is not a bounded approved artifact")
         if self.subject_kind not in {
             SubjectKind.RUN_PAYLOAD,
             SubjectKind.RUN_AUDIT,
@@ -865,7 +899,6 @@ class LifecyclePolicyError(ValueError):
 
 def _failure(
     code: LifecyclePolicyFailureCode,
-    message: str,
     *,
     policy: LocalDataPolicy | None = None,
     subject_id: str | None = None,
@@ -873,7 +906,7 @@ def _failure(
 ) -> LifecycleFailure:
     return LifecycleFailure(
         code=code,
-        message=message,
+        message=_FAILURE_MESSAGES[code],
         policy_sha256=policy.canonical_sha256 if policy is not None else None,
         manual_review_required=manual_review_required,
         subject_id=(
@@ -884,29 +917,91 @@ def _failure(
     )
 
 
-def _artifact_kind(logical_name: str) -> ArtifactSubjectKind | None:
-    if logical_name in {
+_FIXED_RUN_PAYLOAD_ARTIFACTS = frozenset(
+    {
         "input.json",
         "normalized_case.json",
         "assumptions.json",
         "evidence.jsonl",
         "approvals.json",
-    } or _REPORT_ARTIFACT.fullmatch(logical_name):
-        return SubjectKind.RUN_PAYLOAD
-    if _TOOL_INPUT_ARTIFACT.fullmatch(logical_name):
-        return SubjectKind.RUN_PAYLOAD
-    if logical_name in {
+    }
+)
+_FIXED_RUN_AUDIT_ARTIFACTS = frozenset(
+    {
         ".poker-deliberation-run",
         "state.json",
         "assignments.json",
         "agent_execution_records.json",
         "security_events.json",
         "disputes.json",
-    } or _TOOL_RESULT_ARTIFACT.fullmatch(logical_name):
+    }
+)
+_FIXED_RUN_REPORT_ARTIFACTS = frozenset({"final_report.json", "final_report.md"})
+
+
+def _approved_variable_artifact(
+    pattern: re.Pattern[str],
+    logical_name: str,
+) -> re.Match[str] | None:
+    match = pattern.fullmatch(logical_name)
+    if match is None or not _is_opaque_portable_id(match.group("identifier")):
+        return None
+    return match
+
+
+def _artifact_kind(logical_name: str) -> ArtifactSubjectKind | None:
+    if logical_name in _FIXED_RUN_PAYLOAD_ARTIFACTS or _approved_variable_artifact(
+        _REPORT_ARTIFACT,
+        logical_name,
+    ):
+        return SubjectKind.RUN_PAYLOAD
+    if _approved_variable_artifact(_TOOL_INPUT_ARTIFACT, logical_name):
+        return SubjectKind.RUN_PAYLOAD
+    if logical_name in _FIXED_RUN_AUDIT_ARTIFACTS or _approved_variable_artifact(
+        _TOOL_RESULT_ARTIFACT,
+        logical_name,
+    ):
         return SubjectKind.RUN_AUDIT
-    if logical_name in {"final_report.json", "final_report.md"}:
+    if logical_name in _FIXED_RUN_REPORT_ARTIFACTS:
         return SubjectKind.RUN_REPORT
     return None
+
+
+def _audit_run_logical_name(logical_name: str) -> str:
+    report_match = _approved_variable_artifact(_REPORT_ARTIFACT, logical_name)
+    if report_match is not None:
+        digest = _metadata_identifier_digest(
+            "agent-report-id",
+            report_match.group("identifier"),
+        )
+        return f"agent_reports/{digest}.json"
+    tool_input_match = _approved_variable_artifact(_TOOL_INPUT_ARTIFACT, logical_name)
+    if tool_input_match is not None:
+        digest = _metadata_identifier_digest(
+            "tool-input-id",
+            tool_input_match.group("identifier"),
+        )
+        return f"tool_results/{digest}.input.json"
+    tool_result_match = _approved_variable_artifact(_TOOL_RESULT_ARTIFACT, logical_name)
+    if tool_result_match is not None:
+        digest = _metadata_identifier_digest(
+            "tool-result-id",
+            tool_result_match.group("identifier"),
+        )
+        return f"tool_results/{digest}.json"
+    return logical_name
+
+
+def _audit_run_logical_name_is_bounded(logical_name: str) -> bool:
+    if logical_name in (
+        _FIXED_RUN_PAYLOAD_ARTIFACTS | _FIXED_RUN_AUDIT_ARTIFACTS | _FIXED_RUN_REPORT_ARTIFACTS
+    ):
+        return True
+    for pattern in (_REPORT_ARTIFACT, _TOOL_INPUT_ARTIFACT, _TOOL_RESULT_ARTIFACT):
+        match = pattern.fullmatch(logical_name)
+        if match is not None:
+            return _SHA256.fullmatch(match.group("identifier")) is not None
+    return False
 
 
 _CLASSIFICATION_RANK = {
@@ -971,7 +1066,6 @@ def classify_artifact(
         raise LifecyclePolicyError(
             _failure(
                 code,
-                "local-data policy validation failed",
                 manual_review_required=code
                 in {
                     LifecyclePolicyFailureCode.UNKNOWN_POLICY,
@@ -984,7 +1078,6 @@ def classify_artifact(
         raise LifecyclePolicyError(
             _failure(
                 LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND,
-                "logical artifact kind is not approved",
                 policy=effective_policy,
                 manual_review_required=True,
             )
@@ -994,7 +1087,6 @@ def classify_artifact(
         raise LifecyclePolicyError(
             _failure(
                 LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND,
-                "logical artifact kind is not approved",
                 policy=effective_policy,
                 manual_review_required=True,
             )
@@ -1028,7 +1120,6 @@ def classify_artifact(
         raise LifecyclePolicyError(
             _failure(
                 code,
-                "classification evidence is invalid",
                 policy=effective_policy,
                 manual_review_required=code is LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
             )
@@ -1039,7 +1130,6 @@ def classify_artifact(
         raise LifecyclePolicyError(
             _failure(
                 LifecyclePolicyFailureCode.CLASSIFICATION_DOWNGRADE_DENIED,
-                str(exc),
                 policy=effective_policy,
             )
         ) from exc
@@ -1287,7 +1377,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 code,
-                "local-data policy validation failed",
                 manual_review_required=code
                 in {
                     LifecyclePolicyFailureCode.UNKNOWN_POLICY,
@@ -1303,7 +1392,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 code,
-                "local-data subject validation failed",
                 policy=effective_policy,
                 manual_review_required=code
                 in {
@@ -1322,7 +1410,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.POLICY_HASH_MISMATCH,
-                "local-data policy hash mismatch",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )
@@ -1335,7 +1422,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.INVALID_POLICY,
-                "approval reference is not approved bounded metadata",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )
@@ -1346,7 +1432,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.INVALID_UTC,
-                "lifecycle clock did not return timezone-aware UTC",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )
@@ -1355,7 +1440,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.CLOCK_ROLLBACK,
-                "lifecycle clock precedes the retention anchor",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
                 manual_review_required=True,
@@ -1374,7 +1458,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.INVALID_RETENTION_TIME,
-                "retention expiry cannot be represented",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )
@@ -1389,7 +1472,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.INVALID_POLICY,
-                "quarantine reason is not approved",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )
@@ -1417,7 +1499,7 @@ def evaluate_local_data(
             subject_kind=candidate.subject_kind,
             subject_id=_metadata_identifier_digest("subject-id", candidate.subject_id),
             logical_name=(
-                candidate.logical_name
+                _audit_run_logical_name(candidate.logical_name)
                 if candidate.subject_kind
                 in {
                     SubjectKind.RUN_PAYLOAD,
@@ -1465,7 +1547,6 @@ def evaluate_local_data(
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.INVALID_POLICY,
-                "lifecycle audit metadata validation failed",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )

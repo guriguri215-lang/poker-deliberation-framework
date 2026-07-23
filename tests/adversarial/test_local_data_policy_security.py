@@ -16,6 +16,7 @@ from poker_deliberation.local_data_policy import (
     EncryptionCapabilityState,
     EvidenceVerificationState,
     LifecycleDisposition,
+    LifecycleFailure,
     LifecyclePolicyError,
     LifecyclePolicyFailureCode,
     LifecycleSubject,
@@ -90,6 +91,9 @@ def test_unknown_extra_and_naive_time_inputs_fail_closed() -> None:
         "agent_reports/../../secret.json",
         "tool_results/result.json/extra",
         "state.json\x00",
+        "agent_reports/CON.json",
+        "agent_reports/NUL.json",
+        "tool_results/LPT1.json",
     ],
 )
 def test_path_like_or_unknown_logical_names_are_never_ownership_proof(
@@ -429,6 +433,71 @@ def test_audit_and_failure_never_copy_raw_identifiers_or_approval_references() -
     assert failure.failure is not None
     assert subject.subject_id not in failure.failure.model_dump_json()
     assert failure.failure.subject_id == result.audit.subject_id
+
+
+def test_identifier_digests_are_deterministic_and_purpose_separated() -> None:
+    shared_identifier = "shared-identifier"
+    subject = _subject().model_copy(
+        update={
+            "subject_id": shared_identifier,
+            "run_id": shared_identifier,
+        }
+    )
+
+    first = evaluate_local_data(
+        subject,
+        clock=lambda: NOW,
+        approval_reference=shared_identifier,
+    )
+    second = evaluate_local_data(
+        subject,
+        clock=lambda: NOW,
+        approval_reference=shared_identifier,
+    )
+
+    assert first.audit is not None
+    assert second.audit is not None
+    digests = {
+        first.audit.subject_id,
+        first.audit.run_id,
+        first.audit.approval_reference,
+    }
+    assert None not in digests
+    assert len(digests) == 3
+    assert first.audit.subject_id == second.audit.subject_id
+    assert first.audit.run_id == second.audit.run_id
+    assert first.audit.approval_reference == second.audit.approval_reference
+
+
+def test_variable_run_artifact_identifier_is_digested_in_audit() -> None:
+    raw_identifier = "eyJhbGciOiJIUzI1NiJ9.e30.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    raw_logical_name = f"agent_reports/{raw_identifier}.json"
+    subject_values = _subject().model_dump(mode="python")
+    subject_values.update(
+        {
+            "subject_kind": SubjectKind.RUN_PAYLOAD,
+            "logical_name": raw_logical_name,
+        }
+    )
+
+    result = evaluate_local_data(
+        LifecycleSubject.model_validate(subject_values),
+        clock=lambda: NOW,
+    )
+
+    assert result.audit is not None
+    assert result.audit.logical_name.startswith("agent_reports/")
+    assert result.audit.logical_name.endswith(".json")
+    assert raw_identifier not in result.audit.logical_name
+    assert raw_identifier not in result.audit.model_dump_json()
+
+
+def test_failure_message_is_fixed_by_failure_code() -> None:
+    with pytest.raises(ValidationError, match="fixed message"):
+        LifecycleFailure(
+            code=LifecyclePolicyFailureCode.INVALID_POLICY,
+            message="Bearer example-secret-value",
+        )
 
 
 def test_restricted_persistence_denial_precedes_active_protection() -> None:

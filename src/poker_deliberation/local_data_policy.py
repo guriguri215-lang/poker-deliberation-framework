@@ -669,6 +669,29 @@ class LifecycleAuditMetadata(_LocalDataModel):
             raise ValueError("audit retention expiry cannot be represented") from exc
         if self.retention_expires_at != expected_expiry:
             raise ValueError("audit retention expiry does not match the approved policy")
+        (
+            expected_disposition,
+            expected_failure_code,
+            expected_manual_review,
+        ) = _derive_disposition(
+            audit_subject,
+            encryption_requirement=self.encryption_requirement,
+            encryption_capability=self.encryption_capability,
+            protection_reasons=self.protection_reasons,
+            quarantine_reasons=self.quarantine_reasons,
+            retention_expires_at=self.retention_expires_at,
+            evaluated_at=self.evaluated_at,
+        )
+        if (
+            self.proposed_disposition,
+            self.failure_code,
+            self.manual_review_required,
+        ) != (
+            expected_disposition,
+            expected_failure_code,
+            expected_manual_review,
+        ):
+            raise ValueError("audit disposition does not match lifecycle evidence")
         if self.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE:
             run_subject = self.subject_kind in {
                 SubjectKind.RUN_PAYLOAD,
@@ -1097,6 +1120,90 @@ def _state_quarantine_reasons(subject: LifecycleSubject) -> set[QuarantineReason
     return reasons
 
 
+def _derive_disposition(
+    subject: LifecycleSubject,
+    *,
+    encryption_requirement: EncryptionRequirement,
+    encryption_capability: EncryptionCapabilityState,
+    protection_reasons: tuple[ProtectionReason, ...],
+    quarantine_reasons: tuple[QuarantineReason, ...],
+    retention_expires_at: datetime | None,
+    evaluated_at: datetime,
+) -> tuple[LifecycleDisposition, LifecyclePolicyFailureCode | None, bool]:
+    manual_review_required = (
+        subject.state
+        in {
+            SubjectState.UNSUPPORTED_FUTURE_VERSION,
+            SubjectState.LEGACY_UNVERIFIED,
+        }
+        or ProtectionReason.OWNERSHIP_UNVERIFIED in protection_reasons
+    )
+    if subject.subject_kind is SubjectKind.ATTEMPT_CONTEXT:
+        return (
+            LifecycleDisposition.DENY_PERSISTENCE,
+            LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN,
+            manual_review_required,
+        )
+    if protection_reasons:
+        if ProtectionReason.OWNERSHIP_UNVERIFIED in protection_reasons:
+            failure_code = LifecyclePolicyFailureCode.OWNERSHIP_UNVERIFIED
+        elif ProtectionReason.INTEGRITY_UNVERIFIED in protection_reasons:
+            failure_code = LifecyclePolicyFailureCode.INTEGRITY_UNVERIFIED
+        elif ProtectionReason.LINEAGE_UNVERIFIED in protection_reasons:
+            failure_code = LifecyclePolicyFailureCode.LINEAGE_UNVERIFIED
+        else:
+            failure_code = LifecyclePolicyFailureCode.SUBJECT_PROTECTED
+        return (
+            LifecycleDisposition.PROTECTED,
+            failure_code,
+            manual_review_required,
+        )
+    if subject.classification is ContextClassification.RESTRICTED:
+        return (
+            LifecycleDisposition.DENY_PERSISTENCE,
+            LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN,
+            manual_review_required,
+        )
+    if subject.encryption_state is SubjectEncryptionState.REQUIREMENT_MISMATCH:
+        return (
+            LifecycleDisposition.QUARANTINE_CANDIDATE,
+            None,
+            manual_review_required,
+        )
+    if encryption_requirement is EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE and (
+        encryption_capability is not EncryptionCapabilityState.AVAILABLE
+        or subject.encryption_state is not SubjectEncryptionState.ENCRYPTED_VERIFIED
+    ):
+        return (
+            LifecycleDisposition.DENY_PERSISTENCE,
+            LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED,
+            manual_review_required,
+        )
+    if quarantine_reasons:
+        return (
+            LifecycleDisposition.QUARANTINE_CANDIDATE,
+            None,
+            manual_review_required,
+        )
+    if (
+        (
+            subject.state is SubjectState.VERIFIED_TERMINAL
+            or (
+                subject.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
+                and subject.state is SubjectState.QUARANTINED
+            )
+        )
+        and retention_expires_at is not None
+        and evaluated_at >= retention_expires_at
+    ):
+        return (
+            LifecycleDisposition.DELETE_CANDIDATE,
+            None,
+            manual_review_required,
+        )
+    return LifecycleDisposition.RETAIN, None, manual_review_required
+
+
 def _failed_result(failure: LifecycleFailure) -> LifecycleEvaluationResult:
     return LifecycleEvaluationResult(status="failed", failure=failure)
 
@@ -1218,56 +1325,15 @@ def evaluate_local_data(
     all_quarantine = _state_quarantine_reasons(candidate) | explicit_quarantine
     canonical_quarantine = tuple(sorted(all_quarantine, key=lambda item: item.value))
     protections = _protection_reasons(candidate)
-    manual_review = (
-        candidate.state
-        in {
-            SubjectState.UNSUPPORTED_FUTURE_VERSION,
-            SubjectState.LEGACY_UNVERIFIED,
-        }
-        or ProtectionReason.OWNERSHIP_UNVERIFIED in protections
+    disposition, failure_code, manual_review = _derive_disposition(
+        candidate,
+        encryption_requirement=profile.encryption,
+        encryption_capability=encryption_capability,
+        protection_reasons=protections,
+        quarantine_reasons=canonical_quarantine,
+        retention_expires_at=retention_expires_at,
+        evaluated_at=evaluated_at,
     )
-
-    failure_code: LifecyclePolicyFailureCode | None = None
-    if candidate.subject_kind is SubjectKind.ATTEMPT_CONTEXT:
-        disposition = LifecycleDisposition.DENY_PERSISTENCE
-        failure_code = LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN
-    elif protections:
-        disposition = LifecycleDisposition.PROTECTED
-        if ProtectionReason.OWNERSHIP_UNVERIFIED in protections:
-            failure_code = LifecyclePolicyFailureCode.OWNERSHIP_UNVERIFIED
-        elif ProtectionReason.INTEGRITY_UNVERIFIED in protections:
-            failure_code = LifecyclePolicyFailureCode.INTEGRITY_UNVERIFIED
-        elif ProtectionReason.LINEAGE_UNVERIFIED in protections:
-            failure_code = LifecyclePolicyFailureCode.LINEAGE_UNVERIFIED
-        else:
-            failure_code = LifecyclePolicyFailureCode.SUBJECT_PROTECTED
-    elif candidate.classification is ContextClassification.RESTRICTED:
-        disposition = LifecycleDisposition.DENY_PERSISTENCE
-        failure_code = LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN
-    elif candidate.encryption_state is SubjectEncryptionState.REQUIREMENT_MISMATCH:
-        disposition = LifecycleDisposition.QUARANTINE_CANDIDATE
-    elif profile.encryption is EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE and (
-        encryption_capability is not EncryptionCapabilityState.AVAILABLE
-        or candidate.encryption_state is not SubjectEncryptionState.ENCRYPTED_VERIFIED
-    ):
-        disposition = LifecycleDisposition.DENY_PERSISTENCE
-        failure_code = LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED
-    elif canonical_quarantine:
-        disposition = LifecycleDisposition.QUARANTINE_CANDIDATE
-    elif (
-        (
-            candidate.state is SubjectState.VERIFIED_TERMINAL
-            or (
-                candidate.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
-                and candidate.state is SubjectState.QUARANTINED
-            )
-        )
-        and retention_expires_at is not None
-        and evaluated_at >= retention_expires_at
-    ):
-        disposition = LifecycleDisposition.DELETE_CANDIDATE
-    else:
-        disposition = LifecycleDisposition.RETAIN
 
     try:
         audit = LifecycleAuditMetadata(

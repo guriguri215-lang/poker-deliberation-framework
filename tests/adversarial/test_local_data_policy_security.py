@@ -394,12 +394,41 @@ def test_sensitive_audit_cannot_claim_encryption_denial_when_verified() -> None:
     assert result.audit is not None
     audit_values = result.audit.model_dump(mode="python")
 
-    with pytest.raises(ValidationError, match="encryption evidence"):
+    with pytest.raises(ValidationError, match="disposition"):
         type(result.audit).model_validate(
             {
                 **audit_values,
                 "proposed_disposition": LifecycleDisposition.DENY_PERSISTENCE,
                 "failure_code": LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED,
+            }
+        )
+
+
+def test_restricted_audit_cannot_claim_delete_candidate() -> None:
+    subject_values = _subject().model_dump(mode="python")
+    subject_values.update(
+        {
+            "classification": ContextClassification.RESTRICTED,
+            "classification_source": ClassificationSource.CREDENTIAL_DETECTION,
+            "classification_evidence": ClassificationEvidence(
+                contains_restricted_secret=True,
+            ),
+        }
+    )
+    result = evaluate_local_data(
+        LifecycleSubject.model_validate(subject_values),
+        clock=lambda: NOW,
+    )
+    assert result.audit is not None
+    assert result.audit.proposed_disposition is LifecycleDisposition.DENY_PERSISTENCE
+    audit_values = result.audit.model_dump(mode="python")
+
+    with pytest.raises(ValidationError, match="disposition"):
+        type(result.audit).model_validate(
+            {
+                **audit_values,
+                "proposed_disposition": LifecycleDisposition.DELETE_CANDIDATE,
+                "failure_code": None,
             }
         )
 

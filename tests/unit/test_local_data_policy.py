@@ -424,6 +424,7 @@ def test_audit_metadata_is_bounded_and_contains_hashes_not_raw_content() -> None
     assert dumped["source_sha256"] == "b" * 64
     assert dumped["run_verification_basis"] == "future_verified_revision_v1"
     assert dumped["ownership_provenance"] == "future_verified_manifest_v1"
-    assert dumped["approval_reference"] == "approval/local-data-1"
+    assert dumped["approval_reference"] != "approval/local-data-1"
+    assert len(dumped["approval_reference"]) == 64
     assert "raw_content" not in dumped
     assert "secret" not in dumped

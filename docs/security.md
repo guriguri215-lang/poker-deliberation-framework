@@ -9,6 +9,12 @@
 - Classification audit binds a canonical source vector and strict trust/check booleans. Ownership,
   integrity, and lineage use typed provenance/evidence states; path-like non-run names and explicit
   excluded provenance cannot become destructive candidates.
+- Opaque local-data identifiers reject Windows reserved-device names, including extension variants
+  and trailing-dot aliases. Run artifact names remain on an exact logical-name allowlist.
+- Lifecycle audit/failure values do not copy raw subject IDs, run IDs, approval references, or
+  non-run logical names. They bind those values with purpose-separated SHA-256 digests; raw run
+  logical names are retained only when they match the fixed artifact allowlist. Known credential
+  shapes are also rejected at the input boundary as defense in depth.
 - Policy and audit SHA-256 values detect corruption/correlation mismatch but do not authenticate a
   writer. Cleanup approval, CAS, receipts, tombstones, reconciliation, and secure erase are deferred.
 - Workspace-write is the default maximum; analysis agents are read-only.

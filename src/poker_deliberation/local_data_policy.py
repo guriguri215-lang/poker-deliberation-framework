@@ -27,11 +27,27 @@ LOCAL_DATA_EVALUATOR_VERSION: Final = "p2-027a-pure-evaluator-v1"
 
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_APPROVAL_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,191}$")
 _SECRET_METADATA = re.compile(
     r"(?:\bsk-[A-Za-z0-9_-]{8,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|"
-    r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b|"
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
+    r"\bAIza[A-Za-z0-9_-]{20,}\b|"
+    r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b|"
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bnpm_[A-Za-z0-9]{20,}\b|"
+    r"\b(?:rk|sk)_(?:live|test)_[A-Za-z0-9]{10,}\b|"
+    r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b|"
     r"(?:api[_-]?key|password|passwd|secret|token)\s*[:=])",
     re.IGNORECASE,
+)
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
 )
 _REPORT_ARTIFACT = re.compile(r"^agent_reports/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$")
 _TOOL_INPUT_ARTIFACT = re.compile(r"^tool_results/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.input\.json$")
@@ -186,6 +202,13 @@ class _LocalDataModel(BaseModel):
     )
 
 
+def _is_opaque_portable_id(value: str) -> bool:
+    if not _PORTABLE_ID.fullmatch(value) or value.endswith("."):
+        return False
+    windows_stem = value.split(".", maxsplit=1)[0].upper()
+    return windows_stem not in _WINDOWS_RESERVED_STEMS
+
+
 def _canonical_value(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
@@ -209,6 +232,11 @@ def canonical_local_data_json(value: Any) -> str:
 
 def canonical_local_data_sha256(value: Any) -> str:
     return hashlib.sha256(canonical_local_data_json(value).encode("utf-8")).hexdigest()
+
+
+def _metadata_identifier_digest(domain: str, value: str) -> str:
+    prefix = f"p2-027a:{domain}:v1\0".encode()
+    return hashlib.sha256(prefix + value.encode("utf-8")).hexdigest()
 
 
 def _require_utc(value: datetime, field_name: str) -> datetime:
@@ -389,6 +417,13 @@ class LifecycleSubject(_LocalDataModel):
             raise ValueError("subject metadata must not contain a secret shape")
         return value
 
+    @field_validator("subject_id", "run_id")
+    @classmethod
+    def validate_subject_opaque_identifiers(cls, value: str | None) -> str | None:
+        if value is not None and not _is_opaque_portable_id(value):
+            raise ValueError("subject identifier must be an opaque portable identifier")
+        return value
+
     @field_validator("retention_started_at")
     @classmethod
     def validate_retention_started_at(cls, value: datetime | None) -> datetime | None:
@@ -412,7 +447,7 @@ class LifecycleSubject(_LocalDataModel):
             SubjectKind.RUN_PAYLOAD,
             SubjectKind.RUN_AUDIT,
             SubjectKind.RUN_REPORT,
-        } and not _PORTABLE_ID.fullmatch(self.logical_name):
+        } and not _is_opaque_portable_id(self.logical_name):
             raise ValueError("non-run logical name must be an opaque portable identifier")
         if self.state is SubjectState.QUARANTINED and (
             self.subject_kind is not SubjectKind.QUARANTINE_PAYLOAD
@@ -505,15 +540,8 @@ class LifecycleFailure(_LocalDataModel):
     policy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     subject_id: str | None = Field(
         default=None,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        pattern=r"^[0-9a-f]{64}$",
     )
-
-    @field_validator("subject_id")
-    @classmethod
-    def reject_failure_secret_metadata(cls, value: str | None) -> str | None:
-        if value is not None and _SECRET_METADATA.search(value):
-            raise ValueError("failure metadata must not contain a secret shape")
-        return value
 
 
 class LifecycleAuditMetadata(_LocalDataModel):
@@ -524,11 +552,11 @@ class LifecycleAuditMetadata(_LocalDataModel):
     canonicalization_version: Literal["poker-local-data-policy-json-v1"]
     hash_algorithm: Literal["sha256"]
     subject_kind: SubjectKind
-    subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+    subject_id: str = Field(pattern=r"^[0-9a-f]{64}$")
     logical_name: str = Field(min_length=1, max_length=256)
     run_id: str | None = Field(
         default=None,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+        pattern=r"^[0-9a-f]{64}$",
     )
     revision: int | None = Field(default=None, ge=0)
     subject_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -556,9 +584,7 @@ class LifecycleAuditMetadata(_LocalDataModel):
     evaluator_version: Literal["p2-027a-pure-evaluator-v1"] = LOCAL_DATA_EVALUATOR_VERSION
     approval_reference: str | None = Field(
         default=None,
-        min_length=1,
-        max_length=192,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,191}$",
+        pattern=r"^[0-9a-f]{64}$",
     )
     action_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
@@ -567,7 +593,7 @@ class LifecycleAuditMetadata(_LocalDataModel):
     def validate_audit_utc(cls, value: datetime | None) -> datetime | None:
         return None if value is None else _require_utc(value, "audit timestamp")
 
-    @field_validator("subject_id", "logical_name", "run_id", "approval_reference")
+    @field_validator("logical_name")
     @classmethod
     def reject_audit_secret_metadata(cls, value: str | None) -> str | None:
         if value is not None and _SECRET_METADATA.search(value):
@@ -617,6 +643,12 @@ class LifecycleAuditMetadata(_LocalDataModel):
             and _artifact_kind(self.logical_name) is not self.subject_kind
         ):
             raise ValueError("audit run logical name does not match its approved kind")
+        if self.subject_kind not in {
+            SubjectKind.RUN_PAYLOAD,
+            SubjectKind.RUN_AUDIT,
+            SubjectKind.RUN_REPORT,
+        } and not _SHA256.fullmatch(self.logical_name):
+            raise ValueError("audit non-run logical name must be a domain-separated digest")
         if _classification_outcome(self.classification_evidence) != (
             self.classification,
             self.classification_source,
@@ -781,24 +813,10 @@ class LifecycleAuditMetadata(_LocalDataModel):
             ):
                 raise ValueError("manual review requires protection evidence")
         elif self.proposed_disposition is LifecycleDisposition.RETAIN:
-            if (
-                self.protection_reasons
-                or self.quarantine_reasons
-                or self.failure_code is not None
-                or (
-                    (
-                        self.subject_state is SubjectState.VERIFIED_TERMINAL
-                        or (
-                            self.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
-                            and self.subject_state is SubjectState.QUARANTINED
-                        )
-                    )
-                    and self.retention_expires_at is not None
-                    and self.evaluated_at >= self.retention_expires_at
-                )
-            ):
+            if self.protection_reasons or self.quarantine_reasons or self.failure_code is not None:
                 raise ValueError("retain audit conflicts with lifecycle evidence")
         if self.manual_review_required and self.proposed_disposition not in {
+            LifecycleDisposition.DENY_PERSISTENCE,
             LifecycleDisposition.PROTECTED,
             LifecycleDisposition.MANUAL_REVIEW,
         }:
@@ -859,7 +877,9 @@ def _failure(
         policy_sha256=policy.canonical_sha256 if policy is not None else None,
         manual_review_required=manual_review_required,
         subject_id=(
-            subject_id if subject_id is not None and _PORTABLE_ID.fullmatch(subject_id) else None
+            _metadata_identifier_digest("subject-id", subject_id)
+            if subject_id is not None
+            else None
         ),
     )
 
@@ -1081,15 +1101,19 @@ def _protection_reasons(subject: LifecycleSubject) -> tuple[ProtectionReason, ..
         SubjectKind.RUN_AUDIT,
         SubjectKind.RUN_REPORT,
     }
-    verified_ownership = (
-        subject.ownership_provenance
-        in {
+    if run_subject and subject.state is SubjectState.VERIFIED_TERMINAL:
+        verified_ownership = (
+            subject.ownership_provenance is OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1
+        )
+    elif run_subject:
+        verified_ownership = subject.ownership_provenance in {
             OwnershipProvenance.RUN_CONTRACT_V1,
             OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1,
         }
-        if run_subject
-        else subject.ownership_provenance is OwnershipProvenance.TYPED_APPLICATION_METADATA_V1
-    )
+    else:
+        verified_ownership = (
+            subject.ownership_provenance is OwnershipProvenance.TYPED_APPLICATION_METADATA_V1
+        )
     if not verified_ownership:
         reasons.add(ProtectionReason.OWNERSHIP_UNVERIFIED)
     if subject.integrity_state is EvidenceVerificationState.UNVERIFIED:
@@ -1120,6 +1144,36 @@ def _state_quarantine_reasons(subject: LifecycleSubject) -> set[QuarantineReason
     return reasons
 
 
+def _delete_evidence_complete(subject: LifecycleSubject) -> bool:
+    if (
+        subject.subject_sha256 is None
+        or subject.source_sha256 is None
+        or subject.integrity_state is not EvidenceVerificationState.VERIFIED
+        or subject.lineage_state is not EvidenceVerificationState.VERIFIED
+    ):
+        return False
+    run_subject = subject.subject_kind in {
+        SubjectKind.RUN_PAYLOAD,
+        SubjectKind.RUN_AUDIT,
+        SubjectKind.RUN_REPORT,
+    }
+    if run_subject:
+        return (
+            subject.state is SubjectState.VERIFIED_TERMINAL
+            and subject.ownership_provenance is OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1
+            and subject.run_verification_basis is RunVerificationBasis.FUTURE_VERIFIED_REVISION_V1
+            and subject.run_id is not None
+            and subject.revision is not None
+        )
+    return subject.ownership_provenance is OwnershipProvenance.TYPED_APPLICATION_METADATA_V1 and (
+        subject.state is SubjectState.VERIFIED_TERMINAL
+        or (
+            subject.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
+            and subject.state is SubjectState.QUARANTINED
+        )
+    )
+
+
 def _derive_disposition(
     subject: LifecycleSubject,
     *,
@@ -1144,6 +1198,25 @@ def _derive_disposition(
             LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN,
             manual_review_required,
         )
+    if subject.classification is ContextClassification.RESTRICTED:
+        return (
+            LifecycleDisposition.DENY_PERSISTENCE,
+            LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN,
+            manual_review_required,
+        )
+    if (
+        encryption_requirement is EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE
+        and subject.encryption_state is not SubjectEncryptionState.REQUIREMENT_MISMATCH
+        and (
+            encryption_capability is not EncryptionCapabilityState.AVAILABLE
+            or subject.encryption_state is not SubjectEncryptionState.ENCRYPTED_VERIFIED
+        )
+    ):
+        return (
+            LifecycleDisposition.DENY_PERSISTENCE,
+            LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED,
+            manual_review_required,
+        )
     if protection_reasons:
         if ProtectionReason.OWNERSHIP_UNVERIFIED in protection_reasons:
             failure_code = LifecyclePolicyFailureCode.OWNERSHIP_UNVERIFIED
@@ -1158,25 +1231,10 @@ def _derive_disposition(
             failure_code,
             manual_review_required,
         )
-    if subject.classification is ContextClassification.RESTRICTED:
-        return (
-            LifecycleDisposition.DENY_PERSISTENCE,
-            LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN,
-            manual_review_required,
-        )
     if subject.encryption_state is SubjectEncryptionState.REQUIREMENT_MISMATCH:
         return (
             LifecycleDisposition.QUARANTINE_CANDIDATE,
             None,
-            manual_review_required,
-        )
-    if encryption_requirement is EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE and (
-        encryption_capability is not EncryptionCapabilityState.AVAILABLE
-        or subject.encryption_state is not SubjectEncryptionState.ENCRYPTED_VERIFIED
-    ):
-        return (
-            LifecycleDisposition.DENY_PERSISTENCE,
-            LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED,
             manual_review_required,
         )
     if quarantine_reasons:
@@ -1195,6 +1253,7 @@ def _derive_disposition(
         )
         and retention_expires_at is not None
         and evaluated_at >= retention_expires_at
+        and _delete_evidence_complete(subject)
     ):
         return (
             LifecycleDisposition.DELETE_CANDIDATE,
@@ -1264,6 +1323,19 @@ def evaluate_local_data(
             _failure(
                 LifecyclePolicyFailureCode.POLICY_HASH_MISMATCH,
                 "local-data policy hash mismatch",
+                policy=effective_policy,
+                subject_id=candidate.subject_id,
+            )
+        )
+    if approval_reference is not None and (
+        not isinstance(approval_reference, str)
+        or not _APPROVAL_REFERENCE.fullmatch(approval_reference)
+        or _SECRET_METADATA.search(approval_reference)
+    ):
+        return _failed_result(
+            _failure(
+                LifecyclePolicyFailureCode.INVALID_POLICY,
+                "approval reference is not approved bounded metadata",
                 policy=effective_policy,
                 subject_id=candidate.subject_id,
             )
@@ -1343,9 +1415,22 @@ def evaluate_local_data(
             canonicalization_version=effective_policy.canonicalization_version,
             hash_algorithm=effective_policy.hash_algorithm,
             subject_kind=candidate.subject_kind,
-            subject_id=candidate.subject_id,
-            logical_name=candidate.logical_name,
-            run_id=candidate.run_id,
+            subject_id=_metadata_identifier_digest("subject-id", candidate.subject_id),
+            logical_name=(
+                candidate.logical_name
+                if candidate.subject_kind
+                in {
+                    SubjectKind.RUN_PAYLOAD,
+                    SubjectKind.RUN_AUDIT,
+                    SubjectKind.RUN_REPORT,
+                }
+                else _metadata_identifier_digest("logical-name", candidate.logical_name)
+            ),
+            run_id=(
+                _metadata_identifier_digest("run-id", candidate.run_id)
+                if candidate.run_id is not None
+                else None
+            ),
             revision=candidate.revision,
             subject_sha256=candidate.subject_sha256,
             source_sha256=candidate.source_sha256,
@@ -1369,7 +1454,11 @@ def evaluate_local_data(
             quarantine_reasons=canonical_quarantine,
             manual_review_required=manual_review,
             failure_code=failure_code,
-            approval_reference=approval_reference,
+            approval_reference=(
+                _metadata_identifier_digest("approval-reference", approval_reference)
+                if approval_reference is not None
+                else None
+            ),
             action_digest=action_digest,
         )
     except ValidationError:

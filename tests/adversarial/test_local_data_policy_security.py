@@ -13,6 +13,7 @@ from poker_deliberation.local_data_policy import (
     ArtifactClassification,
     ClassificationEvidence,
     ClassificationSource,
+    EncryptionCapabilityState,
     EvidenceVerificationState,
     LifecycleDisposition,
     LifecyclePolicyError,
@@ -134,6 +135,26 @@ def test_untrusted_public_and_source_downgrade_are_denied() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "classification",
+    [
+        ContextClassification.INTERNAL,
+        ContextClassification.SENSITIVE,
+    ],
+)
+def test_every_untrusted_explicit_classification_is_denied(
+    classification: ContextClassification,
+) -> None:
+    with pytest.raises(LifecyclePolicyError) as exc_info:
+        classify_artifact(
+            "final_report.md",
+            explicit_classification=classification,
+            explicit_source_trusted=False,
+        )
+
+    assert exc_info.value.failure.code is LifecyclePolicyFailureCode.CLASSIFICATION_DOWNGRADE_DENIED
+
+
 def test_public_requires_a_completed_clean_restricted_secret_check() -> None:
     with pytest.raises(LifecyclePolicyError):
         classify_artifact(
@@ -174,6 +195,8 @@ def test_policy_hash_substitution_and_invalid_audit_fields_return_no_action() ->
 def test_unknown_policy_and_classification_require_manual_review() -> None:
     unknown_policy = DEFAULT_LOCAL_DATA_POLICY.model_dump(mode="python")
     unknown_policy["policy_id"] = "unknown-policy"
+    future_policy = DEFAULT_LOCAL_DATA_POLICY.model_dump(mode="python")
+    future_policy["schema_version"] = "2.0.0"
     unknown_classification = _subject().model_dump(mode="python")
     unknown_classification["classification"] = "unknown"
 
@@ -186,6 +209,11 @@ def test_unknown_policy_and_classification_require_manual_review() -> None:
         unknown_classification,
         clock=lambda: NOW,
     )
+    future_policy_result = evaluate_local_data(
+        _subject(),
+        clock=lambda: NOW,
+        policy=future_policy,
+    )
 
     assert policy_result.failure is not None
     assert policy_result.failure.code is LifecyclePolicyFailureCode.UNKNOWN_POLICY
@@ -193,6 +221,9 @@ def test_unknown_policy_and_classification_require_manual_review() -> None:
     assert classification_result.failure is not None
     assert classification_result.failure.code is LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION
     assert classification_result.failure.manual_review_required is True
+    assert future_policy_result.failure is not None
+    assert future_policy_result.failure.code is LifecyclePolicyFailureCode.UNSUPPORTED_SCHEMA
+    assert future_policy_result.failure.manual_review_required is True
 
 
 def test_subject_classification_is_bound_to_the_typed_source_vector() -> None:
@@ -208,12 +239,22 @@ def test_subject_classification_is_bound_to_the_typed_source_vector() -> None:
     assert result.failure.code is LifecyclePolicyFailureCode.INVALID_POLICY
 
 
-def test_excluded_or_path_like_non_run_subjects_cannot_become_delete_candidates() -> None:
+@pytest.mark.parametrize(
+    "logical_name",
+    [
+        "user_materials/private.txt",
+        "C:private",
+        "file:stream",
+    ],
+)
+def test_path_like_non_run_subjects_cannot_become_delete_candidates(
+    logical_name: str,
+) -> None:
     with pytest.raises(ValidationError, match="opaque portable identifier"):
         LifecycleSubject(
             subject_kind=SubjectKind.APPLICATION_TEMP,
             subject_id="excluded-temp",
-            logical_name="user_materials/private.txt",
+            logical_name=logical_name,
             encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
             state=SubjectState.VERIFIED_TERMINAL,
             retention_anchor_kind=RetentionAnchorKind.APPLICATION_CREATED,
@@ -226,6 +267,8 @@ def test_excluded_or_path_like_non_run_subjects_cannot_become_delete_candidates(
             legal_hold=False,
         )
 
+
+def test_excluded_non_run_subject_cannot_become_delete_candidate() -> None:
     excluded = LifecycleSubject(
         subject_kind=SubjectKind.APPLICATION_TEMP,
         subject_id="excluded-temp",
@@ -304,6 +347,20 @@ def test_audit_schema_rejects_secret_metadata_and_inconsistent_disposition() -> 
 
     with pytest.raises(ValidationError, match="secret shape"):
         type(result.audit).model_validate({**audit_values, "logical_name": "sk-abcdefghijk"})
+    with pytest.raises(ValidationError, match="secret shape"):
+        type(result.audit).model_validate(
+            {
+                **audit_values,
+                "run_id": "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            }
+        )
+    with pytest.raises(ValidationError, match="secret shape"):
+        type(result.audit).model_validate(
+            {
+                **audit_values,
+                "subject_id": "AKIAABCDEFGHIJKLMNOP",
+            }
+        )
     with pytest.raises(ValidationError, match="policy hash"):
         type(result.audit).model_validate({**audit_values, "policy_sha256": "f" * 64})
     with pytest.raises(ValidationError, match=r"protection reasons|delete candidate"):
@@ -312,6 +369,37 @@ def test_audit_schema_rejects_secret_metadata_and_inconsistent_disposition() -> 
                 **audit_values,
                 "proposed_disposition": LifecycleDisposition.DELETE_CANDIDATE,
                 "protection_reasons": (ProtectionReason.ACTIVE_RUN,),
+            }
+        )
+
+
+def test_sensitive_audit_cannot_claim_encryption_denial_when_verified() -> None:
+    subject_values = _subject().model_dump(mode="python")
+    subject_values.update(
+        {
+            "classification": ContextClassification.SENSITIVE,
+            "classification_source": ClassificationSource.EXPLICIT_TRUSTED,
+            "classification_evidence": ClassificationEvidence(
+                explicit_classification=ContextClassification.SENSITIVE,
+                explicit_source_trusted=True,
+            ),
+            "encryption_state": SubjectEncryptionState.ENCRYPTED_VERIFIED,
+        }
+    )
+    result = evaluate_local_data(
+        LifecycleSubject.model_validate(subject_values),
+        clock=lambda: NOW,
+        encryption_capability=EncryptionCapabilityState.AVAILABLE,
+    )
+    assert result.audit is not None
+    audit_values = result.audit.model_dump(mode="python")
+
+    with pytest.raises(ValidationError, match="encryption evidence"):
+        type(result.audit).model_validate(
+            {
+                **audit_values,
+                "proposed_disposition": LifecycleDisposition.DENY_PERSISTENCE,
+                "failure_code": LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED,
             }
         )
 

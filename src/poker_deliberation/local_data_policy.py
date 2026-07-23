@@ -25,10 +25,11 @@ LOCAL_DATA_CANONICALIZATION_VERSION: Final = "poker-local-data-policy-json-v1"
 LOCAL_DATA_HASH_ALGORITHM: Final = "sha256"
 LOCAL_DATA_EVALUATOR_VERSION: Final = "p2-027a-pure-evaluator-v1"
 
-_PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_METADATA = re.compile(
-    r"(?:\bsk-[A-Za-z0-9_-]{8,}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b|"
+    r"(?:\bsk-[A-Za-z0-9_-]{8,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|"
+    r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b|"
     r"(?:api[_-]?key|password|passwd|secret|token)\s*[:=])",
     re.IGNORECASE,
 )
@@ -362,7 +363,7 @@ class ArtifactClassification(_LocalDataModel):
 class LifecycleSubject(_LocalDataModel):
     schema_version: Literal["1.0.0"] = LOCAL_DATA_POLICY_SCHEMA_VERSION
     subject_kind: SubjectKind
-    subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     logical_name: str = Field(min_length=1, max_length=256)
     classification: ContextClassification = ContextClassification.INTERNAL
     classification_source: ClassificationSource = ClassificationSource.DEFAULT_INTERNAL
@@ -371,7 +372,7 @@ class LifecycleSubject(_LocalDataModel):
     state: SubjectState
     retention_anchor_kind: RetentionAnchorKind = RetentionAnchorKind.NOT_APPLICABLE
     retention_started_at: datetime | None = None
-    run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    run_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     revision: int | None = Field(default=None, ge=0)
     subject_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -504,8 +505,15 @@ class LifecycleFailure(_LocalDataModel):
     policy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     subject_id: str | None = Field(
         default=None,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
     )
+
+    @field_validator("subject_id")
+    @classmethod
+    def reject_failure_secret_metadata(cls, value: str | None) -> str | None:
+        if value is not None and _SECRET_METADATA.search(value):
+            raise ValueError("failure metadata must not contain a secret shape")
+        return value
 
 
 class LifecycleAuditMetadata(_LocalDataModel):
@@ -516,11 +524,11 @@ class LifecycleAuditMetadata(_LocalDataModel):
     canonicalization_version: Literal["poker-local-data-policy-json-v1"]
     hash_algorithm: Literal["sha256"]
     subject_kind: SubjectKind
-    subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+    subject_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     logical_name: str = Field(min_length=1, max_length=256)
     run_id: str | None = Field(
         default=None,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
     )
     revision: int | None = Field(default=None, ge=0)
     subject_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -732,11 +740,16 @@ class LifecycleAuditMetadata(_LocalDataModel):
                 and self.subject_kind is not SubjectKind.ATTEMPT_CONTEXT
             ):
                 raise ValueError("persistence-forbidden audit lacks a forbidden subject")
-            if (
-                self.failure_code is LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED
-                and self.classification is not ContextClassification.SENSITIVE
+            if self.failure_code is LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED and (
+                self.classification is not ContextClassification.SENSITIVE
+                or self.encryption_requirement
+                is not EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE
+                or (
+                    self.encryption_capability is EncryptionCapabilityState.AVAILABLE
+                    and self.subject_encryption_state is SubjectEncryptionState.ENCRYPTED_VERIFIED
+                )
             ):
-                raise ValueError("encryption denial requires sensitive classification")
+                raise ValueError("encryption denial conflicts with encryption evidence")
         elif self.proposed_disposition is LifecycleDisposition.MANUAL_REVIEW:
             if (
                 not self.manual_review_required
@@ -1113,6 +1126,7 @@ def evaluate_local_data(
                 in {
                     LifecyclePolicyFailureCode.UNKNOWN_POLICY,
                     LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
+                    LifecyclePolicyFailureCode.UNSUPPORTED_SCHEMA,
                 },
             )
         )

@@ -1,5 +1,9 @@
 # Current limitations
 
+- P2-027A defines and evaluates local-data policy values only. There is no filesystem discovery,
+  ownership scan, quarantine move, deletion, cleanup CLI, encryption/key management, secure erase,
+  durable lifecycle audit, receipt, tombstone, CAS, or partial-failure reconciliation. All
+  dispositions are candidates; `local_data_cleanup_executor` remains unavailable.
 - `OpenAIAgentsProvider` outbound analyze is not implemented. It reports `disabled` and `available=false`
   whether the optional SDK/API key is absent or present; the probes never imply outbound capability.
 - Codex-native agents/Skills and the Python role/provider catalog are separate execution surfaces.

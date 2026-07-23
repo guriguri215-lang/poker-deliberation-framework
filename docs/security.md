@@ -1,5 +1,13 @@
 # Security
 
+- P2-027A local-data evaluation is pure and fail closed. It does not discover ownership from paths,
+  ignores, globs, names, mtime, or user-controlled directories and performs no filesystem mutation.
+- `sensitive` persistence requires an encryption capability value; P2-027A implements no encryption.
+  `restricted` persistence is forbidden. Public/internal at-rest protection is not claimed.
+- Active/pending/held or ownership/integrity/lineage-unverified subjects are protected before
+  destructive eligibility. Legacy/current-v1 and unsupported-future subjects require manual review.
+- Policy and audit SHA-256 values detect corruption/correlation mismatch but do not authenticate a
+  writer. Cleanup approval, CAS, receipts, tombstones, reconciliation, and secure erase are deferred.
 - Workspace-write is the default maximum; analysis agents are read-only.
 - Run IDs and artifact paths are validated and resolved under the configured run root.
 - `.env` is ignored and only `.env.example` exists. With `record_sensitive_data=false`, structured

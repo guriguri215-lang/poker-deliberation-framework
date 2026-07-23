@@ -1,5 +1,14 @@
 # Context lifecycle contract
 
+## P2-027A との分離
+
+P2-027A の local-data policy は `ContextPolicy` / `ContextEnvelope` 1.0.0 を変更しない。
+`ContextPolicy.expires_at` は provider handoff の use-expiry、`attempt-memory-only-v1` は現在の
+非永続 attempt 契約である。local-data policy の `retention_started_at` と
+`retention_expires_at` は future storage lifecycle 用の別 field であり、use-expiry を retention
+anchor に流用しない。P2-027A evaluator は pure value だけを返し、context、RunStore、
+orchestrator、provider、CLI に接続しない。
+
 ## Scope
 
 P2-024Aは、Python local orchestratorから既存`AgentProvider.analyze`へ渡す1回の試行単位の

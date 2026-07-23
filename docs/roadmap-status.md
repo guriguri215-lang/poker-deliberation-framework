@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `6dd87ba837ccd418acd4a11b5332471d8916fbfef41745618c341f5edb467869`
+- source SHA-256: `71bef6677e38c2af567230d5391337a5b1386cb28598a058f39ea466757e1fa7`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -31,7 +31,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | `P2-024A` | `RM-024` | `completed` | `RM-006`, `RM-023` | Context envelope policy, schema, ownership, lineage, and allowlists. |
 | `P2-010A` | `RM-010` | `completed` | `RM-006`, `RM-007`, `RM-023`, `P2-024A` | Typed pure phase services with serial execution and no persistence integration. |
 | `P2-011A` | `RM-011` | `completed` | `RM-023`, `P2-010A` | Strict budget schema, fake clock, serial accounting, and retry classification. |
-| `P2-027A` | `RM-027` | `not_started` | `RM-023`, `P2-024A` | Classification, retention, expiry, quarantine, and disposition policy/schema only. |
+| `P2-027A` | `RM-027` | `in_progress` | `RM-023`, `P2-024A` | Classification, retention, expiry, quarantine, and disposition policy/schema only. |
 | `P2-012A` | `RM-012` | `not_started` | `RM-023`, `P2-010A`, `P2-011A`, `P2-027A` | Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation. |
 | `P2-010B` | `RM-010` | `not_started` | `P2-012A` | Phase service integration with durable transition ordering and fault injection. |
 | `P2-011B` | `RM-011` | `not_started` | `P2-012A` | Durable usage/resume, reservations, concurrency, cancellation, and RM-028 interface. |
@@ -72,7 +72,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | `RM-024` | Context lifecycle contract | `phase-2` | `P1` | `completed` | `RM-006`, `RM-023` | `P2-024A` | `approved_scope` |
 | `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P2` | `proposed` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `n/a` | `pending` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `pending` |
-| `RM-027` | Local data lifecycle | `phase-2` | `P1` | `planned` | `RM-023`, `RM-024` | `P2-027B` | `approved_scope` |
+| `RM-027` | Local data lifecycle | `phase-2` | `P1` | `in_progress` | `RM-023`, `RM-024` | `P2-027B` | `approved_scope` |
 | `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `pending` |
 
 ## Synchronization contract

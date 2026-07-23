@@ -1,5 +1,12 @@
 # Architecture
 
+## P2-027A local-data policy boundary
+
+`local_data_policy.py` は strict versioned values、canonical hash、分類、retention、expiry、
+protection、quarantine/disposition candidate、bounded audit metadata を提供する pure domain
+module である。injected UTC clock 以外の effect を持たず、filesystem、RunStore、orchestrator、
+provider、approval ledger、CLI へ接続しない。cleanup executor は P2-027B の別承認対象である。
+
 ## Components
 
 The Codex-native layer and the Python orchestrator are separate execution surfaces. The Codex-native

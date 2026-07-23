@@ -100,7 +100,7 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(12, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
-    assert items["RM-027"]["status"] == "planned"
+    assert items["RM-027"]["status"] == "in_progress"
     assert items["RM-023"]["completion_evidence"]
     assert items["RM-024"]["completion_evidence"]["commits"] == [
         "fc2e41dd4fbde2962373ff7ea29019bff2999505"
@@ -236,9 +236,9 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
     )
     assert document["milestone_approvals"]["P2-027A"] == reference
     assert document["milestone_approvals"]["P2-027B"] is None
-    assert document["milestone_progress"]["P2-027A"]["state"] == "not_started"
+    assert document["milestone_progress"]["P2-027A"]["state"] == "in_progress"
     assert document["milestone_progress"]["P2-027B"]["state"] == "not_started"
-    assert rm_027["status"] == "planned"
+    assert rm_027["status"] == "in_progress"
     assert rm_027["human_approval"]["topics"] == record["topics"]
     assert scope["policy_decisions"] == record["topics"]
     assert scope["item_contract"]["capabilities"] == [
@@ -667,10 +667,11 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 3,
-        "not_started": 9,
+        "in_progress": 1,
+        "not_started": 8,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-027A"]
-    assert doctor()["roadmap"]["implementation_ready_ids"] == ["RM-027"]
+    assert doctor()["roadmap"]["milestone_ready_ids"] == []
+    assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
     assert generate_roadmap_status(["--check"]) == 0

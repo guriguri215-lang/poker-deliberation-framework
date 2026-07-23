@@ -10,6 +10,12 @@ Codexネイティブ層とPythonオーケストレーター層は別実行面で
 
 RM実装状態の正はpackage resourceとして設定したtracked JSON
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+
+P2-027A は versioned local-data classification/retention/expiry policy と pure disposition
+evaluation を提供します。これは filesystem cleanup ではありません。RunStore・orchestrator・CLI の
+挙動は変更せず、暗号化、scan、quarantine move、delete、secure erase、receipt/tombstone は
+実装していません。詳細は
+[`docs/local-data-policy.md`](docs/local-data-policy.md)を参照してください。
 source/editable checkoutでの読込はcontract test対象ですが、wheel/sdist同梱はRM-018Aまで`UNKNOWN`です。
 人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。

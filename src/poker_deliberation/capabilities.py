@@ -79,9 +79,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "local_data_lifecycle_policy",
-        "planned",
-        "The approved P2-027A policy/schema scope is frozen, but pure evaluation is not yet "
-        "implemented.",
+        "implemented",
+        "P2-027A provides strict versioned local-data policy values, canonical hashes, and "
+        "pure lifecycle evaluation without filesystem mutation.",
     ),
     Capability(
         "local_data_cleanup_executor",

@@ -33,7 +33,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `codex_python_runtime_bridge` | **unavailable** | Codexネイティブ層とPythonオーケストレーター層は別実行面であり、Codex実行をPython runへ記録するbridgeはない。 |
-| `local_data_lifecycle_policy` | **planned** | P2-027Aのexact scopeは承認済みだが、pure policy/schema評価はまだ実装していない。 |
+| `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
 | `local_data_cleanup_executor` | **unavailable** | filesystem scan、quarantine、delete、secure erase、receipt、reconciliation executorはない。 |
 | `phase_1_hardening` | **implemented** | typed tool contract、contract v2の数値区分、実行時verification、ローカルoracle/metamorphic testを実装済み。 |
 

@@ -78,6 +78,18 @@ CAPABILITIES: tuple[Capability, ...] = (
         "no runtime bridge records Codex executions in Python run artifacts.",
     ),
     Capability(
+        "local_data_lifecycle_policy",
+        "planned",
+        "The approved P2-027A policy/schema scope is frozen, but pure evaluation is not yet "
+        "implemented.",
+    ),
+    Capability(
+        "local_data_cleanup_executor",
+        "unavailable",
+        "No local-data scan, quarantine, deletion, secure-erase, receipt, or reconciliation "
+        "executor is implemented.",
+    ),
+    Capability(
         "phase_1_hardening",
         "implemented",
         "Phase 1 typed tool contracts, numeric exactness, executable verification, and local "

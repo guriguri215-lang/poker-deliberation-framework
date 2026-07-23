@@ -99,7 +99,8 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert items["RM-011"]["status"] == "in_progress"
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(12, 18))
     assert items["RM-024"]["status"] == "completed"
-    assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in range(25, 29))
+    assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
+    assert items["RM-027"]["status"] == "planned"
     assert items["RM-023"]["completion_evidence"]
     assert items["RM-024"]["completion_evidence"]["commits"] == [
         "fc2e41dd4fbde2962373ff7ea29019bff2999505"
@@ -188,21 +189,22 @@ def test_update_validation_rejects_rewritten_history_and_approval_rebinding() ->
 def test_scoped_proposed_item_can_be_frozen_exactly_once() -> None:
     previous = load_roadmap()
     planned = deepcopy(previous)
-    rm_027 = next(item for item in planned["items"] if item["id"] == "RM-027")
-    rm_027["status"] = "planned"
-    rm_027["targets"] = [
-        "src/poker_deliberation/lifecycle_policy.py",
-        "src/poker_deliberation/storage",
+    rm_028 = next(item for item in planned["items"] if item["id"] == "RM-028")
+    rm_028["status"] = "planned"
+    rm_028["targets"] = [
+        "src/poker_deliberation/isolation.py",
+        "src/poker_deliberation/providers",
     ]
-    rm_027["tests"] = [
-        "tests/unit/test_lifecycle_policy.py",
-        "tests/integration/test_lifecycle_policy.py",
+    rm_028["tests"] = [
+        "tests/unit/test_isolation.py",
+        "tests/integration/test_provider_isolation.py",
     ]
-    planned["status_history"]["RM-027"].append("planned")
-    topics = ["test-approved P2-027A scope"]
-    reference = "test-rm027-scope-freeze"
-    planned["approval_records"][reference] = _scoped_approval_record(planned, rm_027, topics)
-    rm_027["human_approval"] = {
+    planned["status_history"]["RM-028"].append("planned")
+    topics = ["test-approved P2-028A scope"]
+    reference = "test-rm028-scope-freeze"
+    planned["approval_records"][reference] = _scoped_approval_record(planned, rm_028, topics)
+    planned["milestone_approvals"]["P2-028A"] = reference
+    rm_028["human_approval"] = {
         "required": True,
         "state": "approved_scope",
         "topics": topics,
@@ -215,10 +217,48 @@ def test_scoped_proposed_item_can_be_frozen_exactly_once() -> None:
     validate_roadmap_update(previous, planned, {"irrelevant-compatibility-value"})
 
     mutated_after_freeze = deepcopy(planned)
-    mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-027")
+    mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-028")
     mutated["targets"].append("src/poker_deliberation/security.py")
     with pytest.raises(ValueError, match="approval scope contract does not match item"):
         validate_roadmap(mutated_after_freeze)
+
+
+def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
+    document = load_roadmap()
+    reference = "goal-rm027-p2-027a-2026-07-23"
+    record = document["approval_records"][reference]
+    rm_027 = next(item for item in document["items"] if item["id"] == "RM-027")
+    scope = record["scope"]
+    decisions = "\n".join(record["topics"])
+
+    assert record["scope_digest"] == (
+        "c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d"
+    )
+    assert document["milestone_approvals"]["P2-027A"] == reference
+    assert document["milestone_approvals"]["P2-027B"] is None
+    assert document["milestone_progress"]["P2-027A"]["state"] == "not_started"
+    assert document["milestone_progress"]["P2-027B"]["state"] == "not_started"
+    assert rm_027["status"] == "planned"
+    assert rm_027["human_approval"]["topics"] == record["topics"]
+    assert scope["policy_decisions"] == record["topics"]
+    assert scope["item_contract"]["capabilities"] == [
+        "local_data_lifecycle_policy",
+        "local_data_cleanup_executor",
+    ]
+    required_terms = {
+        "public run 365",
+        "internal run 90",
+        "sensitive run 30",
+        "restricted 0",
+        "quarantine_candidate",
+        "delete_candidate",
+        "require encryption before sensitive persistence",
+        "retention_started_at",
+        "retention_expires_at",
+        "typed non-retryable lifecycle failure taxonomy",
+        "filesystem discovery, read, write, scan, move, rename, quarantine, delete",
+    }
+    assert not {term for term in required_terms if term not in decisions}
 
 
 def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
@@ -629,8 +669,8 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
         "completed": 3,
         "not_started": 9,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == []
-    assert doctor()["roadmap"]["implementation_ready_ids"] == []
+    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-027A"]
+    assert doctor()["roadmap"]["implementation_ready_ids"] == ["RM-027"]
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
     assert generate_roadmap_status(["--check"]) == 0

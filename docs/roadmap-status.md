@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `72fd3578f291b423815ca40efefaf973682247157f4f731843d482bd3c35b5af`
+- source SHA-256: `6dd87ba837ccd418acd4a11b5332471d8916fbfef41745618c341f5edb467869`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -72,7 +72,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | `RM-024` | Context lifecycle contract | `phase-2` | `P1` | `completed` | `RM-006`, `RM-023` | `P2-024A` | `approved_scope` |
 | `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P2` | `proposed` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `n/a` | `pending` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `pending` |
-| `RM-027` | Local data lifecycle | `phase-2` | `P1` | `proposed` | `RM-023`, `RM-024` | `P2-027B` | `pending` |
+| `RM-027` | Local data lifecycle | `phase-2` | `P1` | `planned` | `RM-023`, `RM-024` | `P2-027B` | `approved_scope` |
 | `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `pending` |
 
 ## Synchronization contract

@@ -236,7 +236,7 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
     )
     assert document["milestone_approvals"]["P2-027A"] == reference
     assert document["milestone_approvals"]["P2-027B"] is None
-    assert document["milestone_progress"]["P2-027A"]["state"] == "in_progress"
+    assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
     assert document["milestone_progress"]["P2-027B"]["state"] == "not_started"
     assert rm_027["status"] == "in_progress"
     assert rm_027["human_approval"]["topics"] == record["topics"]
@@ -666,8 +666,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 3,
-        "in_progress": 1,
+        "completed": 4,
         "not_started": 8,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

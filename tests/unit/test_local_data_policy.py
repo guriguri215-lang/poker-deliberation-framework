@@ -8,15 +8,21 @@ from pydantic import ValidationError
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     DEFAULT_LOCAL_DATA_POLICY,
+    ClassificationEvidence,
     ClassificationSource,
+    EncryptionCapabilityState,
     EncryptionRequirement,
+    EvidenceVerificationState,
     LifecycleDisposition,
     LifecyclePolicyError,
     LifecyclePolicyFailureCode,
     LifecycleSubject,
+    OwnershipProvenance,
     ProtectionReason,
     QuarantineReason,
     RetentionAnchorKind,
+    RunVerificationBasis,
+    SubjectEncryptionState,
     SubjectKind,
     SubjectState,
     canonical_local_data_json,
@@ -35,6 +41,7 @@ def _run_subject(**updates: object) -> LifecycleSubject:
         "subject_id": "subject-1",
         "logical_name": "input.json",
         "classification": ContextClassification.INTERNAL,
+        "encryption_state": SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
         "state": SubjectState.VERIFIED_TERMINAL,
         "retention_anchor_kind": RetentionAnchorKind.VERIFIED_TERMINAL_PUBLISHED,
         "retention_started_at": ANCHOR,
@@ -42,9 +49,10 @@ def _run_subject(**updates: object) -> LifecycleSubject:
         "revision": 1,
         "subject_sha256": "a" * 64,
         "source_sha256": "b" * 64,
-        "owned_by_application": True,
-        "integrity_verified": True,
-        "lineage_verified": True,
+        "run_verification_basis": RunVerificationBasis.FUTURE_VERIFIED_REVISION_V1,
+        "ownership_provenance": OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1,
+        "integrity_state": EvidenceVerificationState.VERIFIED,
+        "lineage_state": EvidenceVerificationState.VERIFIED,
         "legal_hold": False,
     }
     values.update(updates)
@@ -155,11 +163,13 @@ def test_classification_is_source_monotone_and_credential_safe() -> None:
         "final_report.json",
         explicit_classification=ContextClassification.PUBLIC,
         explicit_source_trusted=True,
+        restricted_secret_check_completed=True,
     )
     restricted = classify_artifact(
         "final_report.json",
         explicit_classification=ContextClassification.PUBLIC,
         explicit_source_trusted=True,
+        restricted_secret_check_completed=True,
         contains_restricted_secret=True,
     )
 
@@ -194,12 +204,20 @@ def test_exact_expiry_boundary_proposes_but_never_executes_deletion() -> None:
 
 
 def test_protection_and_quarantine_precede_destructive_eligibility() -> None:
-    protected = _audit(_run_subject(state=SubjectState.ACTIVE))
+    protected = _audit(
+        _run_subject(
+            state=SubjectState.ACTIVE,
+            run_verification_basis=RunVerificationBasis.NOT_APPLICABLE,
+            ownership_provenance=OwnershipProvenance.RUN_CONTRACT_V1,
+        )
+    )
     quarantined = _audit(
         _run_subject(
             state=SubjectState.CORRUPT,
             retention_anchor_kind=RetentionAnchorKind.NOT_APPLICABLE,
             retention_started_at=None,
+            run_verification_basis=RunVerificationBasis.NOT_APPLICABLE,
+            ownership_provenance=OwnershipProvenance.RUN_CONTRACT_V1,
         )
     )
     legacy = _audit(
@@ -207,6 +225,8 @@ def test_protection_and_quarantine_precede_destructive_eligibility() -> None:
             state=SubjectState.LEGACY_UNVERIFIED,
             retention_anchor_kind=RetentionAnchorKind.NOT_APPLICABLE,
             retention_started_at=None,
+            run_verification_basis=RunVerificationBasis.LEGACY_V1_UNVERIFIED,
+            ownership_provenance=OwnershipProvenance.RUN_CONTRACT_V1,
         )
     )
 
@@ -224,19 +244,27 @@ def test_encryption_and_attempt_context_policy_are_fail_closed_values() -> None:
         _run_subject(
             classification=ContextClassification.SENSITIVE,
             classification_source=ClassificationSource.SOURCE_INHERITANCE,
+            classification_evidence=ClassificationEvidence(
+                source_classifications=(ContextClassification.SENSITIVE,)
+            ),
         )
     )
     encrypted = _audit(
         _run_subject(
             classification=ContextClassification.SENSITIVE,
             classification_source=ClassificationSource.SOURCE_INHERITANCE,
+            classification_evidence=ClassificationEvidence(
+                source_classifications=(ContextClassification.SENSITIVE,)
+            ),
+            encryption_state=SubjectEncryptionState.ENCRYPTED_VERIFIED,
         ),
-        encryption_available=True,
+        encryption_capability=EncryptionCapabilityState.AVAILABLE,
     )
     restricted = _audit(
         _run_subject(
             classification=ContextClassification.RESTRICTED,
             classification_source=ClassificationSource.CREDENTIAL_DETECTION,
+            classification_evidence=ClassificationEvidence(contains_restricted_secret=True),
         )
     )
     attempt = _audit(
@@ -244,10 +272,11 @@ def test_encryption_and_attempt_context_policy_are_fail_closed_values() -> None:
             subject_kind=SubjectKind.ATTEMPT_CONTEXT,
             subject_id="context-1",
             logical_name="attempt-context",
+            encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
             state=SubjectState.ACTIVE,
-            owned_by_application=True,
-            integrity_verified=True,
-            lineage_verified=True,
+            ownership_provenance=OwnershipProvenance.TYPED_APPLICATION_METADATA_V1,
+            integrity_state=EvidenceVerificationState.VERIFIED,
+            lineage_state=EvidenceVerificationState.VERIFIED,
             legal_hold=False,
         )
     )
@@ -268,9 +297,12 @@ def test_subject_overrides_use_typed_anchors_and_fixed_utc_days() -> None:
             state=SubjectState.VERIFIED_TERMINAL,
             retention_anchor_kind=RetentionAnchorKind.APPLICATION_CREATED,
             retention_started_at=NOW - timedelta(days=7),
-            owned_by_application=True,
-            integrity_verified=True,
-            lineage_verified=True,
+            subject_sha256="c" * 64,
+            source_sha256="d" * 64,
+            encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
+            ownership_provenance=OwnershipProvenance.TYPED_APPLICATION_METADATA_V1,
+            integrity_state=EvidenceVerificationState.VERIFIED,
+            lineage_state=EvidenceVerificationState.VERIFIED,
             legal_hold=False,
         )
     )
@@ -282,23 +314,45 @@ def test_subject_overrides_use_typed_anchors_and_fixed_utc_days() -> None:
             state=SubjectState.VERIFIED_TERMINAL,
             retention_anchor_kind=RetentionAnchorKind.APPLICATION_CREATED,
             retention_started_at=NOW - timedelta(days=1),
-            owned_by_application=True,
-            integrity_verified=True,
-            lineage_verified=True,
+            subject_sha256="e" * 64,
+            source_sha256="f" * 64,
+            encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
+            ownership_provenance=OwnershipProvenance.TYPED_APPLICATION_METADATA_V1,
+            integrity_state=EvidenceVerificationState.VERIFIED,
+            lineage_state=EvidenceVerificationState.VERIFIED,
+            legal_hold=False,
+        )
+    )
+    quarantine = _audit(
+        LifecycleSubject(
+            subject_kind=SubjectKind.QUARANTINE_PAYLOAD,
+            subject_id="quarantine-1",
+            logical_name="quarantine-1",
+            state=SubjectState.QUARANTINED,
+            retention_anchor_kind=RetentionAnchorKind.QUARANTINE_ENTERED,
+            retention_started_at=NOW - timedelta(days=30),
+            subject_sha256="1" * 64,
+            source_sha256="2" * 64,
+            encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
+            ownership_provenance=OwnershipProvenance.TYPED_APPLICATION_METADATA_V1,
+            integrity_state=EvidenceVerificationState.VERIFIED,
+            lineage_state=EvidenceVerificationState.VERIFIED,
             legal_hold=False,
         )
     )
 
     assert cache.retention_expires_at == NOW
     assert temporary.retention_expires_at == NOW
+    assert quarantine.retention_expires_at == NOW
     assert cache.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE
     assert temporary.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE
+    assert quarantine.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE
 
 
 def test_classification_source_and_lifecycle_metadata_invariants_are_strict() -> None:
-    with pytest.raises(ValidationError, match="default classification source"):
+    with pytest.raises(ValidationError, match="classification does not match"):
         _run_subject(classification=ContextClassification.PUBLIC)
-    with pytest.raises(ValidationError, match="credential detection"):
+    with pytest.raises(ValidationError, match="classification does not match"):
         _run_subject(
             classification_source=ClassificationSource.CREDENTIAL_DETECTION,
         )
@@ -311,14 +365,50 @@ def test_classification_source_and_lifecycle_metadata_invariants_are_strict() ->
             logical_name="lifecycle-audit",
             classification=ContextClassification.SENSITIVE,
             classification_source=ClassificationSource.EXPLICIT_TRUSTED,
+            classification_evidence=ClassificationEvidence(
+                explicit_classification=ContextClassification.SENSITIVE,
+                explicit_source_trusted=True,
+            ),
+            encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
             state=SubjectState.VERIFIED_TERMINAL,
             retention_anchor_kind=RetentionAnchorKind.DECISION_COMMITTED,
             retention_started_at=NOW,
-            owned_by_application=True,
-            integrity_verified=True,
-            lineage_verified=True,
+            ownership_provenance=OwnershipProvenance.TYPED_APPLICATION_METADATA_V1,
+            integrity_state=EvidenceVerificationState.VERIFIED,
+            lineage_state=EvidenceVerificationState.VERIFIED,
             legal_hold=False,
         )
+
+
+def test_verified_run_requires_revision_identity_and_protects_unverified_provenance() -> None:
+    values = _run_subject().model_dump(mode="python")
+    for field in ("run_id", "revision", "subject_sha256", "source_sha256"):
+        incomplete = {**values, field: None}
+        with pytest.raises(ValidationError, match="revision identity and hashes"):
+            LifecycleSubject.model_validate(incomplete)
+
+    unverified = LifecycleSubject.model_validate(
+        {
+            **values,
+            "ownership_provenance": OwnershipProvenance.UNVERIFIED,
+        }
+    )
+    audit = _audit(unverified)
+    assert audit.proposed_disposition is LifecycleDisposition.PROTECTED
+    assert ProtectionReason.OWNERSHIP_UNVERIFIED in audit.protection_reasons
+
+
+def test_encryption_mismatch_is_auditable_quarantine_candidate() -> None:
+    audit = _audit(
+        _run_subject(
+            encryption_state=SubjectEncryptionState.REQUIREMENT_MISMATCH,
+        )
+    )
+
+    assert audit.proposed_disposition is LifecycleDisposition.QUARANTINE_CANDIDATE
+    assert audit.quarantine_reasons == (QuarantineReason.ENCRYPTION_REQUIREMENT_MISMATCH,)
+    assert audit.encryption_capability is EncryptionCapabilityState.UNAVAILABLE
+    assert audit.subject_encryption_state is SubjectEncryptionState.REQUIREMENT_MISMATCH
 
 
 def test_audit_metadata_is_bounded_and_contains_hashes_not_raw_content() -> None:
@@ -332,6 +422,8 @@ def test_audit_metadata_is_bounded_and_contains_hashes_not_raw_content() -> None
     assert dumped["policy_sha256"] == DEFAULT_LOCAL_DATA_POLICY.canonical_sha256
     assert dumped["subject_sha256"] == "a" * 64
     assert dumped["source_sha256"] == "b" * 64
+    assert dumped["run_verification_basis"] == "future_verified_revision_v1"
+    assert dumped["ownership_provenance"] == "future_verified_manifest_v1"
     assert dumped["approval_reference"] == "approval/local-data-1"
     assert "raw_content" not in dumped
     assert "secret" not in dumped

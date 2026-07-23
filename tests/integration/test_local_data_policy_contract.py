@@ -4,16 +4,20 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from poker_deliberation.capabilities import CAPABILITIES
-from poker_deliberation.cli import doctor
+from poker_deliberation.cli import build_parser, doctor
 from poker_deliberation.context_lifecycle import (
     ATTEMPT_MEMORY_ONLY_RETENTION_POLICY,
     CONTEXT_SCHEMA_VERSION,
     ContextPolicy,
 )
 from poker_deliberation.local_data_policy import (
+    EvidenceVerificationState,
     LifecycleDisposition,
     LifecycleSubject,
+    OwnershipProvenance,
     RetentionAnchorKind,
+    RunVerificationBasis,
+    SubjectEncryptionState,
     SubjectKind,
     SubjectState,
     evaluate_local_data,
@@ -36,9 +40,15 @@ def test_context_use_expiry_is_separate_from_storage_retention() -> None:
         state=SubjectState.VERIFIED_TERMINAL,
         retention_anchor_kind=RetentionAnchorKind.VERIFIED_TERMINAL_PUBLISHED,
         retention_started_at=NOW - timedelta(days=90),
-        owned_by_application=True,
-        integrity_verified=True,
-        lineage_verified=True,
+        run_id="run-report-1",
+        revision=1,
+        subject_sha256="a" * 64,
+        source_sha256="b" * 64,
+        run_verification_basis=RunVerificationBasis.FUTURE_VERIFIED_REVISION_V1,
+        encryption_state=SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED,
+        ownership_provenance=OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1,
+        integrity_state=EvidenceVerificationState.VERIFIED,
+        lineage_state=EvidenceVerificationState.VERIFIED,
         legal_hold=False,
     )
     result = evaluate_local_data(subject, clock=lambda: NOW)
@@ -81,3 +91,15 @@ def test_no_cleanup_command_or_runstore_integration_is_documented() -> None:
     assert "unavailable" in policy_doc
     assert "cleanup CLI" in policy_doc
     assert "poker-deliberate cleanup" not in readme
+
+    parser = build_parser()
+    subparser_action = next(
+        action for action in parser._actions if getattr(action, "choices", None)
+    )
+    assert "cleanup" not in subparser_action.choices
+    for relative in (
+        "src/poker_deliberation/cli.py",
+        "src/poker_deliberation/orchestrator.py",
+        "src/poker_deliberation/storage/run_store.py",
+    ):
+        assert "local_data_policy" not in (ROOT / relative).read_text(encoding="utf-8")

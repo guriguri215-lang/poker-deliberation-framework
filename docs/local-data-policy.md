@@ -21,6 +21,9 @@ typed application ownership と logical subject kind が必要である。Git ig
 所有権の根拠ではない。`user_materials/`、goal の `tmp/`、review/test output、unowned pytest
 session、tracked source/docs、未知 logical name は対象外で、未知 artifact は fail closed になる。
 current v1 artifact は `legacy_unverified` として protected/manual review であり、削除候補にならない。
+分類結果は canonical な content-source classification vector、trusted explicit source flag、
+restricted-secret check の完了状態、credential 検出状態へ束縛する。所有権は boolean ではなく
+typed provenance で表し、除外領域の provenance は常に protected になる。
 
 ## Retention と expiry
 
@@ -37,6 +40,9 @@ application cache は profile と7日の小さい方、application temp は prof
 lifecycle audit metadata と future disposition receipt は365日、quarantine review window は30日である。
 run は future verified terminal publication、cache/temp は typed application creation、audit/receipt は
 decision commit、quarantine は quarantine entry を retention anchor とする。filesystem mtime は使わない。
+capability availability と subject の encryption state は別の strict enum である。sensitive は
+capability `available` と `encrypted_verified` の両方を必要とし、`requirement_mismatch` は
+quarantine candidate になる。両方を audit へ記録し、P2-027A 自身は暗号化を実行しない。
 
 `ContextPolicy.expires_at` は provider use-expiry のままであり、storage の
 `retention_started_at` / `retention_expires_at` と分離する。`now >= retention_expires_at` は
@@ -51,6 +57,8 @@ blockする。incomplete、corrupt、orphan transaction、および明示され�
 path-confinement failure、encryption mismatch は保護条件がなければ quarantine candidate になる。
 delete candidate は verified terminal または already quarantined で retention boundary 以後の場合だけ
 提案できる。P2-027A は filesystem/domain mutation を常にゼロに保つ。
+現在の evaluator は manual-review ケースを `protected` +
+`manual_review_required=true` で表し、`manual_review` は schema vocabulary の予約値として保持する。
 
 ## Failure と audit
 

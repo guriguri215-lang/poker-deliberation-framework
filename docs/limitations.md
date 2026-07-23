@@ -43,8 +43,8 @@
   a durable authenticity trust anchor, execute retries, or connect Codex and Python runtimes.
 - Run artifacts are confined. JSON and text replacement writes use a temporary file per artifact,
   but JSONL evidence is appended directly and is not crash-atomic. There is no versioned run
-  manifest, whole-run atomic completion protocol, retention/deletion policy, migration contract, or
-  at-rest encryption.
+  manifest, whole-run atomic completion protocol, retention/deletion enforcement, migration
+  contract, or at-rest encryption. P2-027A provides the pure policy only; RunStore does not apply it.
 - Budget accounting is serial and in-memory. It does not reserve concurrent work, meter an external
   provider's actual invoice, persist a usage manifest, or settle usage across durable resume. The
   injected provider's execution class and preflight cost estimate are trusted declarations. For

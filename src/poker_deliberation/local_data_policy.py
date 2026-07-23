@@ -27,6 +27,11 @@ LOCAL_DATA_EVALUATOR_VERSION: Final = "p2-027a-pure-evaluator-v1"
 
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_SECRET_METADATA = re.compile(
+    r"(?:\bsk-[A-Za-z0-9_-]{8,}\b|\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b|"
+    r"(?:api[_-]?key|password|passwd|secret|token)\s*[:=])",
+    re.IGNORECASE,
+)
 _REPORT_ARTIFACT = re.compile(r"^agent_reports/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$")
 _TOOL_INPUT_ARTIFACT = re.compile(r"^tool_results/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.input\.json$")
 _TOOL_RESULT_ARTIFACT = re.compile(r"^tool_results/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$")
@@ -86,6 +91,41 @@ class EncryptionRequirement(StrEnum):
     DEFERRED_NO_CLAIM = "deferred_no_claim"
     REQUIRED_BEFORE_PERSISTENCE = "required_before_persistence"
     PERSISTENCE_FORBIDDEN = "persistence_forbidden"
+
+
+class EncryptionCapabilityState(StrEnum):
+    UNAVAILABLE = "unavailable"
+    AVAILABLE = "available"
+
+
+class SubjectEncryptionState(StrEnum):
+    UNKNOWN_OR_UNENCRYPTED = "unknown_or_unencrypted"
+    ENCRYPTED_VERIFIED = "encrypted_verified"
+    REQUIREMENT_MISMATCH = "requirement_mismatch"
+
+
+class RunVerificationBasis(StrEnum):
+    NOT_APPLICABLE = "not_applicable"
+    FUTURE_VERIFIED_REVISION_V1 = "future_verified_revision_v1"
+    LEGACY_V1_UNVERIFIED = "legacy_v1_unverified"
+
+
+class OwnershipProvenance(StrEnum):
+    RUN_CONTRACT_V1 = "run_contract_v1"
+    TYPED_APPLICATION_METADATA_V1 = "typed_application_metadata_v1"
+    FUTURE_VERIFIED_MANIFEST_V1 = "future_verified_manifest_v1"
+    UNVERIFIED = "unverified"
+    EXCLUDED_USER_MATERIAL = "excluded_user_material"
+    EXCLUDED_GOAL_MANAGEMENT = "excluded_goal_management"
+    EXCLUDED_REVIEW_TEST_OUTPUT = "excluded_review_test_output"
+    EXCLUDED_PYTEST_SESSION = "excluded_pytest_session"
+    EXCLUDED_TRACKED_SOURCE = "excluded_tracked_source"
+
+
+class EvidenceVerificationState(StrEnum):
+    VERIFIED = "verified"
+    UNVERIFIED = "unverified"
+    MISMATCH = "mismatch"
 
 
 class ClassificationSource(StrEnum):
@@ -281,12 +321,42 @@ DEFAULT_LOCAL_DATA_POLICY = LocalDataPolicy(
 )
 
 
+class ClassificationEvidence(_LocalDataModel):
+    source_classifications: tuple[ContextClassification, ...] = ()
+    explicit_classification: ContextClassification | None = None
+    explicit_source_trusted: bool = False
+    restricted_secret_check_completed: bool = False
+    contains_restricted_secret: bool = False
+
+    @field_validator("source_classifications")
+    @classmethod
+    def canonical_source_classifications(
+        cls,
+        value: tuple[ContextClassification, ...],
+    ) -> tuple[ContextClassification, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("source classifications must be unique")
+        if value != tuple(sorted(value, key=lambda item: _CLASSIFICATION_RANK[item])):
+            raise ValueError("source classifications must use canonical sensitivity order")
+        return value
+
+
 class ArtifactClassification(_LocalDataModel):
     schema_version: Literal["1.0.0"] = LOCAL_DATA_POLICY_SCHEMA_VERSION
     logical_name: str = Field(min_length=1, max_length=256)
     subject_kind: ArtifactSubjectKind
     classification: ContextClassification
     classification_source: ClassificationSource
+    classification_evidence: ClassificationEvidence
+
+    @model_validator(mode="after")
+    def validate_artifact_mapping(self) -> ArtifactClassification:
+        if _artifact_kind(self.logical_name) is not self.subject_kind:
+            raise ValueError("logical artifact name does not match its approved kind")
+        expected = _classification_outcome(self.classification_evidence)
+        if expected != (self.classification, self.classification_source):
+            raise ValueError("artifact classification does not match its evidence")
+        return self
 
 
 class LifecycleSubject(_LocalDataModel):
@@ -296,6 +366,8 @@ class LifecycleSubject(_LocalDataModel):
     logical_name: str = Field(min_length=1, max_length=256)
     classification: ContextClassification = ContextClassification.INTERNAL
     classification_source: ClassificationSource = ClassificationSource.DEFAULT_INTERNAL
+    classification_evidence: ClassificationEvidence = Field(default_factory=ClassificationEvidence)
+    encryption_state: SubjectEncryptionState
     state: SubjectState
     retention_anchor_kind: RetentionAnchorKind = RetentionAnchorKind.NOT_APPLICABLE
     retention_started_at: datetime | None = None
@@ -303,10 +375,18 @@ class LifecycleSubject(_LocalDataModel):
     revision: int | None = Field(default=None, ge=0)
     subject_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    owned_by_application: bool
-    integrity_verified: bool
-    lineage_verified: bool
+    run_verification_basis: RunVerificationBasis = RunVerificationBasis.NOT_APPLICABLE
+    ownership_provenance: OwnershipProvenance
+    integrity_state: EvidenceVerificationState
+    lineage_state: EvidenceVerificationState
     legal_hold: bool
+
+    @field_validator("subject_id", "logical_name", "run_id")
+    @classmethod
+    def reject_secret_metadata(cls, value: str | None) -> str | None:
+        if value is not None and _SECRET_METADATA.search(value):
+            raise ValueError("subject metadata must not contain a secret shape")
+        return value
 
     @field_validator("retention_started_at")
     @classmethod
@@ -315,21 +395,9 @@ class LifecycleSubject(_LocalDataModel):
 
     @model_validator(mode="after")
     def validate_anchor_contract(self) -> LifecycleSubject:
-        if (
-            self.classification_source is ClassificationSource.DEFAULT_INTERNAL
-            and self.classification is not ContextClassification.INTERNAL
-        ):
-            raise ValueError("default classification source is internal only")
-        if (
-            self.classification_source is ClassificationSource.SOURCE_INHERITANCE
-            and self.classification is ContextClassification.PUBLIC
-        ):
-            raise ValueError("source inheritance cannot lower the internal classification floor")
-        if (
-            self.classification_source is ClassificationSource.CREDENTIAL_DETECTION
-            and self.classification is not ContextClassification.RESTRICTED
-        ):
-            raise ValueError("credential detection requires restricted classification")
+        expected_classification = _classification_outcome(self.classification_evidence)
+        if expected_classification != (self.classification, self.classification_source):
+            raise ValueError("subject classification does not match its evidence")
         if (
             self.subject_kind
             in {
@@ -339,6 +407,20 @@ class LifecycleSubject(_LocalDataModel):
             and self.classification is not ContextClassification.INTERNAL
         ):
             raise ValueError("lifecycle metadata subject kinds must be internal")
+        if self.subject_kind not in {
+            SubjectKind.RUN_PAYLOAD,
+            SubjectKind.RUN_AUDIT,
+            SubjectKind.RUN_REPORT,
+        } and not _PORTABLE_ID.fullmatch(self.logical_name):
+            raise ValueError("non-run logical name must be an opaque portable identifier")
+        if self.state is SubjectState.QUARANTINED and (
+            self.subject_kind is not SubjectKind.QUARANTINE_PAYLOAD
+        ):
+            raise ValueError("quarantined state requires a quarantine payload")
+        if self.subject_kind is SubjectKind.QUARANTINE_PAYLOAD and (
+            self.state is not SubjectState.QUARANTINED
+        ):
+            raise ValueError("quarantine payload requires quarantined state")
         expected = {
             SubjectKind.ATTEMPT_CONTEXT: RetentionAnchorKind.NOT_APPLICABLE,
             SubjectKind.APPLICATION_CACHE: RetentionAnchorKind.APPLICATION_CREATED,
@@ -362,11 +444,38 @@ class LifecycleSubject(_LocalDataModel):
         }:
             if _artifact_kind(self.logical_name) is not self.subject_kind:
                 raise ValueError("run subject logical name does not match its approved kind")
-            if self.state is SubjectState.VERIFIED_TERMINAL and (
-                self.retention_anchor_kind is not RetentionAnchorKind.VERIFIED_TERMINAL_PUBLISHED
-                or self.retention_started_at is None
-            ):
-                raise ValueError("verified terminal run data requires its publish anchor")
+            if self.state is SubjectState.VERIFIED_TERMINAL:
+                if (
+                    self.retention_anchor_kind
+                    is not RetentionAnchorKind.VERIFIED_TERMINAL_PUBLISHED
+                    or self.retention_started_at is None
+                ):
+                    raise ValueError("verified terminal run data requires its publish anchor")
+                if (
+                    self.run_verification_basis
+                    is not RunVerificationBasis.FUTURE_VERIFIED_REVISION_V1
+                    or self.run_id is None
+                    or self.revision is None
+                    or self.subject_sha256 is None
+                    or self.source_sha256 is None
+                ):
+                    raise ValueError(
+                        "verified terminal run data requires revision identity and hashes"
+                    )
+            elif self.state is SubjectState.LEGACY_UNVERIFIED:
+                if (
+                    self.run_verification_basis is not RunVerificationBasis.LEGACY_V1_UNVERIFIED
+                    or self.encryption_state is not SubjectEncryptionState.UNKNOWN_OR_UNENCRYPTED
+                    or self.ownership_provenance is not OwnershipProvenance.RUN_CONTRACT_V1
+                ):
+                    raise ValueError(
+                        "legacy run data requires its unverified basis, ownership, "
+                        "and encryption label"
+                    )
+            elif self.run_verification_basis is not RunVerificationBasis.NOT_APPLICABLE:
+                raise ValueError("nonterminal run data cannot claim a verification basis")
+            elif self.ownership_provenance is OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1:
+                raise ValueError("nonterminal run data cannot claim verified manifest ownership")
             if self.state is not SubjectState.VERIFIED_TERMINAL and (
                 self.retention_anchor_kind
                 not in {
@@ -375,6 +484,12 @@ class LifecycleSubject(_LocalDataModel):
                 }
             ):
                 raise ValueError("run data uses an invalid retention anchor")
+        elif self.run_verification_basis is not RunVerificationBasis.NOT_APPLICABLE:
+            raise ValueError("non-run subject cannot claim a run verification basis")
+        if self.subject_kind is SubjectKind.QUARANTINE_PAYLOAD and (
+            self.subject_sha256 is None or self.source_sha256 is None
+        ):
+            raise ValueError("quarantine payload requires subject and source hashes")
         return self
 
 
@@ -412,6 +527,14 @@ class LifecycleAuditMetadata(_LocalDataModel):
     source_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     classification: ContextClassification
     classification_source: ClassificationSource
+    classification_evidence: ClassificationEvidence
+    encryption_requirement: EncryptionRequirement
+    encryption_capability: EncryptionCapabilityState
+    subject_encryption_state: SubjectEncryptionState
+    run_verification_basis: RunVerificationBasis
+    ownership_provenance: OwnershipProvenance
+    integrity_state: EvidenceVerificationState
+    lineage_state: EvidenceVerificationState
     retention_anchor_kind: RetentionAnchorKind
     retention_started_at: datetime | None
     retention_expires_at: datetime | None
@@ -436,6 +559,13 @@ class LifecycleAuditMetadata(_LocalDataModel):
     def validate_audit_utc(cls, value: datetime | None) -> datetime | None:
         return None if value is None else _require_utc(value, "audit timestamp")
 
+    @field_validator("subject_id", "logical_name", "run_id", "approval_reference")
+    @classmethod
+    def reject_audit_secret_metadata(cls, value: str | None) -> str | None:
+        if value is not None and _SECRET_METADATA.search(value):
+            raise ValueError("audit metadata must not contain a secret shape")
+        return value
+
     @field_validator("protection_reasons")
     @classmethod
     def canonical_protection_reasons(
@@ -453,6 +583,205 @@ class LifecycleAuditMetadata(_LocalDataModel):
         if value != tuple(sorted(set(value), key=lambda item: item.value)):
             raise ValueError("quarantine reasons must be sorted and unique")
         return value
+
+    @model_validator(mode="after")
+    def validate_audit_consistency(self) -> LifecycleAuditMetadata:
+        if self.policy_sha256 != DEFAULT_LOCAL_DATA_POLICY.canonical_sha256:
+            raise ValueError("audit policy hash does not match the approved policy")
+        if (self.retention_started_at is None) != (self.retention_expires_at is None):
+            raise ValueError("retention timestamps must either both be present or both be absent")
+        if (
+            self.retention_started_at is not None
+            and self.retention_expires_at is not None
+            and (
+                self.retention_expires_at < self.retention_started_at
+                or self.evaluated_at < self.retention_started_at
+            )
+        ):
+            raise ValueError("audit retention timestamps are inconsistent")
+        if (
+            self.subject_kind
+            in {
+                SubjectKind.RUN_PAYLOAD,
+                SubjectKind.RUN_AUDIT,
+                SubjectKind.RUN_REPORT,
+            }
+            and _artifact_kind(self.logical_name) is not self.subject_kind
+        ):
+            raise ValueError("audit run logical name does not match its approved kind")
+        if _classification_outcome(self.classification_evidence) != (
+            self.classification,
+            self.classification_source,
+        ):
+            raise ValueError("audit classification does not match its evidence")
+        try:
+            audit_subject = LifecycleSubject(
+                subject_kind=self.subject_kind,
+                subject_id=self.subject_id,
+                logical_name=self.logical_name,
+                classification=self.classification,
+                classification_source=self.classification_source,
+                classification_evidence=self.classification_evidence,
+                encryption_state=self.subject_encryption_state,
+                state=self.subject_state,
+                retention_anchor_kind=self.retention_anchor_kind,
+                retention_started_at=self.retention_started_at,
+                run_id=self.run_id,
+                revision=self.revision,
+                subject_sha256=self.subject_sha256,
+                source_sha256=self.source_sha256,
+                run_verification_basis=self.run_verification_basis,
+                ownership_provenance=self.ownership_provenance,
+                integrity_state=self.integrity_state,
+                lineage_state=self.lineage_state,
+                legal_hold=ProtectionReason.LEGAL_HOLD in self.protection_reasons,
+            )
+        except ValidationError as exc:
+            raise ValueError("audit subject metadata is inconsistent") from exc
+        if self.protection_reasons != _protection_reasons(audit_subject):
+            raise ValueError("audit protection reasons do not match subject evidence")
+        state_quarantine = _state_quarantine_reasons(audit_subject)
+        if not state_quarantine <= set(self.quarantine_reasons):
+            raise ValueError("audit quarantine reasons omit subject evidence")
+        profile = DEFAULT_LOCAL_DATA_POLICY.profile_for(self.classification)
+        if self.encryption_requirement is not profile.encryption:
+            raise ValueError("audit encryption requirement does not match the policy")
+        retention_days = _retention_days(
+            audit_subject,
+            profile,
+            DEFAULT_LOCAL_DATA_POLICY,
+        )
+        try:
+            expected_expiry = (
+                self.retention_started_at + timedelta(days=retention_days)
+                if self.retention_started_at is not None
+                else None
+            )
+        except (OverflowError, ValueError) as exc:
+            raise ValueError("audit retention expiry cannot be represented") from exc
+        if self.retention_expires_at != expected_expiry:
+            raise ValueError("audit retention expiry does not match the approved policy")
+        if self.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE:
+            run_subject = self.subject_kind in {
+                SubjectKind.RUN_PAYLOAD,
+                SubjectKind.RUN_AUDIT,
+                SubjectKind.RUN_REPORT,
+            }
+            if (
+                self.protection_reasons
+                or self.quarantine_reasons
+                or self.failure_code is not None
+                or self.retention_expires_at is None
+                or self.evaluated_at < self.retention_expires_at
+                or self.subject_sha256 is None
+                or self.source_sha256 is None
+            ):
+                raise ValueError("delete candidate lacks clean expiry and hash evidence")
+            if self.subject_state is SubjectState.VERIFIED_TERMINAL:
+                if run_subject and (
+                    self.run_verification_basis
+                    is not RunVerificationBasis.FUTURE_VERIFIED_REVISION_V1
+                    or self.run_id is None
+                    or self.revision is None
+                ):
+                    raise ValueError("verified run delete candidate lacks revision evidence")
+            elif not (
+                self.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
+                and self.subject_state is SubjectState.QUARANTINED
+            ):
+                raise ValueError("delete candidate uses an ineligible subject state")
+            expected_ownership = (
+                OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1
+                if run_subject
+                else OwnershipProvenance.TYPED_APPLICATION_METADATA_V1
+            )
+            if (
+                self.ownership_provenance is not expected_ownership
+                or self.integrity_state is not EvidenceVerificationState.VERIFIED
+                or self.lineage_state is not EvidenceVerificationState.VERIFIED
+            ):
+                raise ValueError("delete candidate lacks verified provenance and evidence")
+        elif self.proposed_disposition is LifecycleDisposition.PROTECTED:
+            if not self.protection_reasons or self.failure_code is None:
+                raise ValueError("protected audit requires protection reasons and a failure code")
+            if (
+                self.subject_state
+                in {
+                    SubjectState.LEGACY_UNVERIFIED,
+                    SubjectState.UNSUPPORTED_FUTURE_VERSION,
+                }
+                or ProtectionReason.OWNERSHIP_UNVERIFIED in self.protection_reasons
+            ) and not self.manual_review_required:
+                raise ValueError("protected audit omits required manual review")
+        elif self.proposed_disposition is LifecycleDisposition.QUARANTINE_CANDIDATE:
+            if (
+                not self.quarantine_reasons
+                or self.protection_reasons
+                or self.failure_code is not None
+            ):
+                raise ValueError("quarantine candidate requires only quarantine reasons")
+        elif self.proposed_disposition is LifecycleDisposition.DENY_PERSISTENCE:
+            if self.failure_code not in {
+                LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED,
+                LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN,
+            }:
+                raise ValueError("persistence denial requires its typed failure code")
+            if (
+                self.failure_code is LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN
+                and self.classification is not ContextClassification.RESTRICTED
+                and self.subject_kind is not SubjectKind.ATTEMPT_CONTEXT
+            ):
+                raise ValueError("persistence-forbidden audit lacks a forbidden subject")
+            if (
+                self.failure_code is LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED
+                and self.classification is not ContextClassification.SENSITIVE
+            ):
+                raise ValueError("encryption denial requires sensitive classification")
+        elif self.proposed_disposition is LifecycleDisposition.MANUAL_REVIEW:
+            if (
+                not self.manual_review_required
+                or not self.protection_reasons
+                or self.failure_code is None
+            ):
+                raise ValueError("manual review requires protection evidence")
+        elif self.proposed_disposition is LifecycleDisposition.RETAIN:
+            if (
+                self.protection_reasons
+                or self.quarantine_reasons
+                or self.failure_code is not None
+                or (
+                    (
+                        self.subject_state is SubjectState.VERIFIED_TERMINAL
+                        or (
+                            self.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
+                            and self.subject_state is SubjectState.QUARANTINED
+                        )
+                    )
+                    and self.retention_expires_at is not None
+                    and self.evaluated_at >= self.retention_expires_at
+                )
+            ):
+                raise ValueError("retain audit conflicts with lifecycle evidence")
+        if self.manual_review_required and self.proposed_disposition not in {
+            LifecycleDisposition.PROTECTED,
+            LifecycleDisposition.MANUAL_REVIEW,
+        }:
+            raise ValueError("manual review flag requires a protected disposition")
+        if (
+            self.classification is ContextClassification.SENSITIVE
+            and self.proposed_disposition
+            not in {
+                LifecycleDisposition.DENY_PERSISTENCE,
+                LifecycleDisposition.PROTECTED,
+                LifecycleDisposition.QUARANTINE_CANDIDATE,
+            }
+            and (
+                self.encryption_capability is not EncryptionCapabilityState.AVAILABLE
+                or self.subject_encryption_state is not SubjectEncryptionState.ENCRYPTED_VERIFIED
+            )
+        ):
+            raise ValueError("sensitive audit lacks verified encryption evidence")
+        return self
 
     @property
     def canonical_sha256(self) -> str:
@@ -532,104 +861,154 @@ _CLASSIFICATION_RANK = {
 }
 
 
+def _classification_outcome(
+    evidence: ClassificationEvidence,
+) -> tuple[ContextClassification, ClassificationSource]:
+    sources = evidence.source_classifications
+    inherited = max(
+        (ContextClassification.INTERNAL, *sources),
+        key=lambda item: _CLASSIFICATION_RANK[item],
+    )
+    if evidence.contains_restricted_secret:
+        return (
+            ContextClassification.RESTRICTED,
+            ClassificationSource.CREDENTIAL_DETECTION,
+        )
+    requested = evidence.explicit_classification
+    if requested is None:
+        return (
+            inherited,
+            ClassificationSource.SOURCE_INHERITANCE
+            if sources
+            else ClassificationSource.DEFAULT_INTERNAL,
+        )
+    if not evidence.explicit_source_trusted:
+        raise ValueError("explicit classification requires a trusted source")
+    if requested is ContextClassification.PUBLIC and not evidence.restricted_secret_check_completed:
+        raise ValueError("public classification requires a completed clean restricted-secret check")
+    source_floor = (
+        max(sources, key=lambda item: _CLASSIFICATION_RANK[item])
+        if sources
+        else ContextClassification.PUBLIC
+    )
+    if _CLASSIFICATION_RANK[requested] < _CLASSIFICATION_RANK[source_floor]:
+        raise ValueError("classification downgrade is denied")
+    return requested, ClassificationSource.EXPLICIT_TRUSTED
+
+
 def classify_artifact(
     logical_name: str,
     *,
     source_classifications: Iterable[ContextClassification] = (),
     explicit_classification: ContextClassification | None = None,
     explicit_source_trusted: bool = False,
+    restricted_secret_check_completed: bool = False,
     contains_restricted_secret: bool = False,
-    policy: LocalDataPolicy = DEFAULT_LOCAL_DATA_POLICY,
+    policy: LocalDataPolicy | Mapping[str, Any] = DEFAULT_LOCAL_DATA_POLICY,
 ) -> ArtifactClassification:
     """Classify one known logical artifact without touching a path."""
 
+    try:
+        effective_policy = LocalDataPolicy.model_validate(policy)
+    except ValidationError as exc:
+        code = _validation_failure_code(exc)
+        raise LifecyclePolicyError(
+            _failure(
+                code,
+                "local-data policy validation failed",
+                manual_review_required=code
+                in {
+                    LifecyclePolicyFailureCode.UNKNOWN_POLICY,
+                    LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
+                    LifecyclePolicyFailureCode.UNSUPPORTED_SCHEMA,
+                },
+            )
+        ) from exc
+    if not isinstance(logical_name, str):
+        raise LifecyclePolicyError(
+            _failure(
+                LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND,
+                "logical artifact kind is not approved",
+                policy=effective_policy,
+                manual_review_required=True,
+            )
+        )
     kind = _artifact_kind(logical_name)
     if kind is None:
         raise LifecyclePolicyError(
             _failure(
                 LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND,
                 "logical artifact kind is not approved",
-                policy=policy,
+                policy=effective_policy,
+                manual_review_required=True,
             )
         )
     try:
-        sources = tuple(ContextClassification(item) for item in source_classifications)
-    except (TypeError, ValueError) as exc:
+        raw_sources = tuple(source_classifications)
+        if any(not isinstance(item, ContextClassification) for item in raw_sources):
+            raise TypeError
+        canonical_sources = tuple(
+            sorted(set(raw_sources), key=lambda item: _CLASSIFICATION_RANK[item])
+        )
+        evidence = ClassificationEvidence(
+            source_classifications=canonical_sources,
+            explicit_classification=explicit_classification,
+            explicit_source_trusted=explicit_source_trusted,
+            restricted_secret_check_completed=restricted_secret_check_completed,
+            contains_restricted_secret=contains_restricted_secret,
+        )
+    except Exception as exc:
+        code = (
+            LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION
+            if isinstance(exc, TypeError)
+            or (
+                isinstance(exc, ValidationError)
+                and any(
+                    "classification" in str(part) for error in exc.errors() for part in error["loc"]
+                )
+            )
+            else LifecyclePolicyFailureCode.INVALID_POLICY
+        )
         raise LifecyclePolicyError(
             _failure(
-                LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
-                "source classification is not approved",
-                policy=policy,
-                manual_review_required=True,
+                code,
+                "classification evidence is invalid",
+                policy=effective_policy,
+                manual_review_required=code is LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
             )
         ) from exc
-
-    inherited = max(
-        (ContextClassification.INTERNAL, *sources),
-        key=lambda item: _CLASSIFICATION_RANK[item],
-    )
-    classification = inherited
-    source = (
-        ClassificationSource.SOURCE_INHERITANCE
-        if sources
-        else ClassificationSource.DEFAULT_INTERNAL
-    )
-    if explicit_classification is not None:
-        try:
-            requested = ContextClassification(explicit_classification)
-        except (TypeError, ValueError) as exc:
-            raise LifecyclePolicyError(
-                _failure(
-                    LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
-                    "explicit classification is not approved",
-                    policy=policy,
-                    manual_review_required=True,
-                )
-            ) from exc
-        if requested is ContextClassification.PUBLIC and not explicit_source_trusted:
-            raise LifecyclePolicyError(
-                _failure(
-                    LifecyclePolicyFailureCode.CLASSIFICATION_DOWNGRADE_DENIED,
-                    "public classification requires a trusted explicit source",
-                    policy=policy,
-                )
+    try:
+        classification, source = _classification_outcome(evidence)
+    except ValueError as exc:
+        raise LifecyclePolicyError(
+            _failure(
+                LifecyclePolicyFailureCode.CLASSIFICATION_DOWNGRADE_DENIED,
+                str(exc),
+                policy=effective_policy,
             )
-        source_floor = (
-            max(sources, key=lambda item: _CLASSIFICATION_RANK[item])
-            if sources
-            else ContextClassification.PUBLIC
-        )
-        if _CLASSIFICATION_RANK[requested] < _CLASSIFICATION_RANK[source_floor]:
-            raise LifecyclePolicyError(
-                _failure(
-                    LifecyclePolicyFailureCode.CLASSIFICATION_DOWNGRADE_DENIED,
-                    "classification downgrade is denied",
-                    policy=policy,
-                )
-            )
-        classification = requested
-        source = ClassificationSource.EXPLICIT_TRUSTED
-    if contains_restricted_secret:
-        classification = ContextClassification.RESTRICTED
-        source = ClassificationSource.CREDENTIAL_DETECTION
+        ) from exc
     return ArtifactClassification(
         logical_name=logical_name,
         subject_kind=kind,
         classification=classification,
         classification_source=source,
+        classification_evidence=evidence,
     )
 
 
 def _validation_failure_code(exc: ValidationError) -> LifecyclePolicyFailureCode:
     locations = {str(part) for error in exc.errors() for part in error["loc"]}
+    messages = " ".join(str(error["msg"]) for error in exc.errors())
     if "schema_version" in locations:
         return LifecyclePolicyFailureCode.UNSUPPORTED_SCHEMA
-    if "classification" in locations:
+    if any("classification" in location for location in locations):
         return LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION
     if "policy_id" in locations:
         return LifecyclePolicyFailureCode.UNKNOWN_POLICY
     if "retention_started_at" in locations:
         return LifecyclePolicyFailureCode.INVALID_UTC
+    if "logical artifact" in messages or "logical name" in messages:
+        return LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND
     return LifecyclePolicyFailureCode.INVALID_POLICY
 
 
@@ -661,11 +1040,25 @@ def _protection_reasons(subject: LifecycleSubject) -> tuple[ProtectionReason, ..
         reasons.add(ProtectionReason.APPROVAL_PENDING)
     if subject.legal_hold:
         reasons.add(ProtectionReason.LEGAL_HOLD)
-    if not subject.owned_by_application:
+    run_subject = subject.subject_kind in {
+        SubjectKind.RUN_PAYLOAD,
+        SubjectKind.RUN_AUDIT,
+        SubjectKind.RUN_REPORT,
+    }
+    verified_ownership = (
+        subject.ownership_provenance
+        in {
+            OwnershipProvenance.RUN_CONTRACT_V1,
+            OwnershipProvenance.FUTURE_VERIFIED_MANIFEST_V1,
+        }
+        if run_subject
+        else subject.ownership_provenance is OwnershipProvenance.TYPED_APPLICATION_METADATA_V1
+    )
+    if not verified_ownership:
         reasons.add(ProtectionReason.OWNERSHIP_UNVERIFIED)
-    if not subject.integrity_verified:
+    if subject.integrity_state is EvidenceVerificationState.UNVERIFIED:
         reasons.add(ProtectionReason.INTEGRITY_UNVERIFIED)
-    if not subject.lineage_verified:
+    if subject.lineage_state is EvidenceVerificationState.UNVERIFIED:
         reasons.add(ProtectionReason.LINEAGE_UNVERIFIED)
     if subject.state is SubjectState.UNSUPPORTED_FUTURE_VERSION:
         reasons.add(ProtectionReason.UNSUPPORTED_FUTURE_VERSION)
@@ -682,6 +1075,12 @@ def _state_quarantine_reasons(subject: LifecycleSubject) -> set[QuarantineReason
         reasons.add(QuarantineReason.CORRUPT)
     if subject.state is SubjectState.ORPHAN_TRANSACTION:
         reasons.add(QuarantineReason.ORPHAN_TRANSACTION)
+    if subject.integrity_state is EvidenceVerificationState.MISMATCH:
+        reasons.add(QuarantineReason.INTEGRITY_MISMATCH)
+    if subject.lineage_state is EvidenceVerificationState.MISMATCH:
+        reasons.add(QuarantineReason.LINEAGE_MISMATCH)
+    if subject.encryption_state is SubjectEncryptionState.REQUIREMENT_MISMATCH:
+        reasons.add(QuarantineReason.ENCRYPTION_REQUIREMENT_MISMATCH)
     return reasons
 
 
@@ -695,7 +1094,7 @@ def evaluate_local_data(
     clock: Clock,
     policy: LocalDataPolicy | Mapping[str, Any] = DEFAULT_LOCAL_DATA_POLICY,
     expected_policy_sha256: str | None = None,
-    encryption_available: bool = False,
+    encryption_capability: EncryptionCapabilityState = EncryptionCapabilityState.UNAVAILABLE,
     quarantine_reasons: Iterable[QuarantineReason] = (),
     approval_reference: str | None = None,
     action_digest: str | None = None,
@@ -726,11 +1125,18 @@ def evaluate_local_data(
                 code,
                 "local-data subject validation failed",
                 policy=effective_policy,
-                manual_review_required=code is LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
+                manual_review_required=code
+                in {
+                    LifecyclePolicyFailureCode.UNKNOWN_ARTIFACT_KIND,
+                    LifecyclePolicyFailureCode.UNKNOWN_CLASSIFICATION,
+                    LifecyclePolicyFailureCode.UNKNOWN_POLICY,
+                    LifecyclePolicyFailureCode.UNSUPPORTED_SCHEMA,
+                },
             )
         )
     if expected_policy_sha256 is not None and (
-        not _SHA256.fullmatch(expected_policy_sha256)
+        not isinstance(expected_policy_sha256, str)
+        or not _SHA256.fullmatch(expected_policy_sha256)
         or expected_policy_sha256 != effective_policy.canonical_sha256
     ):
         return _failed_result(
@@ -782,8 +1188,11 @@ def evaluate_local_data(
         )
 
     try:
-        explicit_quarantine = {QuarantineReason(item) for item in quarantine_reasons}
-    except (TypeError, ValueError):
+        explicit_quarantine_items = tuple(quarantine_reasons)
+        if any(not isinstance(item, QuarantineReason) for item in explicit_quarantine_items):
+            raise TypeError
+        explicit_quarantine = set(explicit_quarantine_items)
+    except Exception:
         return _failed_result(
             _failure(
                 LifecyclePolicyFailureCode.INVALID_POLICY,
@@ -805,18 +1214,9 @@ def evaluate_local_data(
     )
 
     failure_code: LifecyclePolicyFailureCode | None = None
-    if (
-        candidate.classification is ContextClassification.RESTRICTED
-        or candidate.subject_kind is SubjectKind.ATTEMPT_CONTEXT
-    ):
+    if candidate.subject_kind is SubjectKind.ATTEMPT_CONTEXT:
         disposition = LifecycleDisposition.DENY_PERSISTENCE
         failure_code = LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN
-    elif (
-        profile.encryption is EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE
-        and not encryption_available
-    ):
-        disposition = LifecycleDisposition.DENY_PERSISTENCE
-        failure_code = LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED
     elif protections:
         disposition = LifecycleDisposition.PROTECTED
         if ProtectionReason.OWNERSHIP_UNVERIFIED in protections:
@@ -827,10 +1227,27 @@ def evaluate_local_data(
             failure_code = LifecyclePolicyFailureCode.LINEAGE_UNVERIFIED
         else:
             failure_code = LifecyclePolicyFailureCode.SUBJECT_PROTECTED
+    elif candidate.classification is ContextClassification.RESTRICTED:
+        disposition = LifecycleDisposition.DENY_PERSISTENCE
+        failure_code = LifecyclePolicyFailureCode.PERSISTENCE_FORBIDDEN
+    elif candidate.encryption_state is SubjectEncryptionState.REQUIREMENT_MISMATCH:
+        disposition = LifecycleDisposition.QUARANTINE_CANDIDATE
+    elif profile.encryption is EncryptionRequirement.REQUIRED_BEFORE_PERSISTENCE and (
+        encryption_capability is not EncryptionCapabilityState.AVAILABLE
+        or candidate.encryption_state is not SubjectEncryptionState.ENCRYPTED_VERIFIED
+    ):
+        disposition = LifecycleDisposition.DENY_PERSISTENCE
+        failure_code = LifecyclePolicyFailureCode.ENCRYPTION_REQUIRED
     elif canonical_quarantine:
         disposition = LifecycleDisposition.QUARANTINE_CANDIDATE
     elif (
-        candidate.state in {SubjectState.VERIFIED_TERMINAL, SubjectState.QUARANTINED}
+        (
+            candidate.state is SubjectState.VERIFIED_TERMINAL
+            or (
+                candidate.subject_kind is SubjectKind.QUARANTINE_PAYLOAD
+                and candidate.state is SubjectState.QUARANTINED
+            )
+        )
         and retention_expires_at is not None
         and evaluated_at >= retention_expires_at
     ):
@@ -854,6 +1271,14 @@ def evaluate_local_data(
             source_sha256=candidate.source_sha256,
             classification=candidate.classification,
             classification_source=candidate.classification_source,
+            classification_evidence=candidate.classification_evidence,
+            encryption_requirement=profile.encryption,
+            encryption_capability=encryption_capability,
+            subject_encryption_state=candidate.encryption_state,
+            run_verification_basis=candidate.run_verification_basis,
+            ownership_provenance=candidate.ownership_provenance,
+            integrity_state=candidate.integrity_state,
+            lineage_state=candidate.lineage_state,
             retention_anchor_kind=candidate.retention_anchor_kind,
             retention_started_at=candidate.retention_started_at,
             retention_expires_at=retention_expires_at,
@@ -888,8 +1313,11 @@ def utc_datetime(year: int, month: int, day: int) -> datetime:
 __all__ = [
     "DEFAULT_LOCAL_DATA_POLICY",
     "ArtifactClassification",
+    "ClassificationEvidence",
     "ClassificationSource",
+    "EncryptionCapabilityState",
     "EncryptionRequirement",
+    "EvidenceVerificationState",
     "LifecycleAuditMetadata",
     "LifecycleDisposition",
     "LifecycleEvaluationResult",
@@ -898,10 +1326,13 @@ __all__ = [
     "LifecyclePolicyFailureCode",
     "LifecycleSubject",
     "LocalDataPolicy",
+    "OwnershipProvenance",
     "ProtectionReason",
     "QuarantineReason",
     "RetentionAnchorKind",
     "RetentionProfile",
+    "RunVerificationBasis",
+    "SubjectEncryptionState",
     "SubjectKind",
     "SubjectState",
     "canonical_local_data_json",

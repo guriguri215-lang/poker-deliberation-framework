@@ -57,6 +57,7 @@ from poker_deliberation.storage.revision_models import (
     RevisionPublishRequestV1,
     SourceBindingV1,
     ToolBindingV1,
+    validate_control_string,
 )
 from poker_deliberation.tools.contracts import contract_by_name
 
@@ -288,10 +289,18 @@ def parse_canonical_json(data: bytes) -> Any:
 
 def parse_canonical_model(data: bytes, model: type[T]) -> T:
     parse_canonical_json(data)
+    adapter = TypeAdapter(model)
     try:
-        value = TypeAdapter(model).validate_json(data, strict=True)
+        value = adapter.validate_json(data, strict=True)
     except ValidationError as exc:
-        raise CanonicalStorageError("canonical JSON violates its strict schema") from exc
+        if not exc.errors() or any(error["type"] != "datetime_type" for error in exc.errors()):
+            raise CanonicalStorageError("canonical JSON violates its strict schema") from exc
+        try:
+            value = adapter.validate_json(data, strict=False)
+        except ValidationError as fallback_exc:
+            raise CanonicalStorageError(
+                "canonical JSON violates its strict datetime schema"
+            ) from fallback_exc
     if canonical_json_bytes(value) != data:
         raise CanonicalStorageError("strict model canonical bytes mismatch")
     return value
@@ -299,10 +308,18 @@ def parse_canonical_model(data: bytes, model: type[T]) -> T:
 
 def parse_canonical_model_list(data: bytes, model: type[T]) -> tuple[T, ...]:
     parse_canonical_json(data)
+    adapter = TypeAdapter(list[model])  # type: ignore[valid-type]
     try:
-        values = TypeAdapter(list[model]).validate_json(data, strict=True)  # type: ignore[valid-type]
+        values = adapter.validate_json(data, strict=True)
     except ValidationError as exc:
-        raise CanonicalStorageError("canonical JSON list violates its strict schema") from exc
+        if not exc.errors() or any(error["type"] != "datetime_type" for error in exc.errors()):
+            raise CanonicalStorageError("canonical JSON list violates its strict schema") from exc
+        try:
+            values = adapter.validate_json(data, strict=False)
+        except ValidationError as fallback_exc:
+            raise CanonicalStorageError(
+                "canonical JSON list violates its strict datetime schema"
+            ) from fallback_exc
     if canonical_json_bytes(values) != data:
         raise CanonicalStorageError("strict model list canonical bytes mismatch")
     return tuple(values)
@@ -350,6 +367,10 @@ def validate_run_id(run_id: str) -> str:
     if not isinstance(run_id, str) or not _RUN_ID.fullmatch(run_id):
         raise CanonicalStorageError("invalid portable run ID")
     _require_nfc_string(run_id)
+    try:
+        validate_control_string(run_id)
+    except ValueError as exc:
+        raise CanonicalStorageError("run ID contains unsafe control metadata") from exc
     if run_id.endswith((".", " ")):
         raise CanonicalStorageError("run ID cannot end in dot or space")
     if run_id.split(".", maxsplit=1)[0].upper() in _WINDOWS_RESERVED:
@@ -391,6 +412,10 @@ def validate_logical_name(logical_name: str) -> str:
         or PurePosixPath(logical_name).is_absolute()
     ):
         raise CanonicalStorageError("logical name is not a relative POSIX path")
+    try:
+        validate_control_string(logical_name)
+    except ValueError as exc:
+        raise CanonicalStorageError("logical name contains unsafe control metadata") from exc
     for segment in logical_name.split("/"):
         _validate_segment(segment)
     return logical_name
@@ -434,11 +459,11 @@ def artifact_table_entry(logical_name: str) -> _ArtifactTableValue:
 def payload_order_key(logical_name: str) -> tuple[int, bytes]:
     if logical_name in _PAYLOAD_ORDER_PREFIX:
         return (_PAYLOAD_ORDER_PREFIX.index(logical_name), b"")
-    if logical_name.startswith("agent_reports/"):
-        return (8, logical_name.encode("utf-8"))
     if logical_name.endswith(".input.json") and logical_name.startswith("tool_results/"):
-        return (9, logical_name.encode("utf-8"))
+        return (8, logical_name.encode("utf-8"))
     if logical_name.startswith("tool_results/"):
+        return (9, logical_name.encode("utf-8"))
+    if logical_name.startswith("agent_reports/"):
         return (10, logical_name.encode("utf-8"))
     if logical_name == "disputes.json":
         return (11, b"")
@@ -499,7 +524,7 @@ def canonicalize_bindings(
             for binding in owned
         ),
         key=lambda item: (
-            tuple(str(part).encode("utf-8") for part in item[0]),
+            tuple(part if isinstance(part, int) else str(part).encode("utf-8") for part in item[0]),
             item[1],
         ),
     )
@@ -718,6 +743,28 @@ def _validate_source_graph(
     by_name = {entry.logical_name: entry for entry in inventories}
     order = {entry.logical_name: index for index, entry in enumerate(inventories)}
     for entry in inventories:
+        allowed_binding_kinds = {"local_data", "source"}
+        if entry.logical_name == "approvals.json":
+            allowed_binding_kinds.add("approval_decision")
+        elif (
+            entry.logical_name == "agent_execution_records.json"
+            or _VARIABLE_AGENT_REPORT.fullmatch(entry.logical_name)
+        ):
+            allowed_binding_kinds.update({"context", "phase"})
+        elif _VARIABLE_TOOL_INPUT.fullmatch(entry.logical_name) or _VARIABLE_TOOL_RESULT.fullmatch(
+            entry.logical_name
+        ):
+            allowed_binding_kinds.update({"phase", "tool"})
+        elif entry.logical_name == "final_report.json":
+            allowed_binding_kinds.update({"context", "phase", "budget_policy"})
+        elif entry.logical_name == "final_report.md":
+            allowed_binding_kinds.add("report")
+        actual_binding_kinds = {binding.kind for binding in entry.provenance_bindings}
+        if not actual_binding_kinds <= allowed_binding_kinds:
+            raise CanonicalStorageError(
+                f"{entry.logical_name} carries a provenance binding kind outside its contract"
+            )
+    for entry in inventories:
         sources = [
             binding for binding in entry.provenance_bindings if isinstance(binding, SourceBindingV1)
         ]
@@ -735,6 +782,14 @@ def _validate_source_graph(
                 != domain_sha256(USER_INPUT_SOURCE_HASH_DOMAIN, parsed_bytes(entry, parsed))
             ):
                 raise CanonicalStorageError("input.json user-input source mismatch")
+        elif any(source.source_kind == "user_input" for source in sources):
+            raise CanonicalStorageError("user-input source is only admitted for input.json")
+        if entry.logical_name not in {"evidence.jsonl", "approvals.json"} and any(
+            source.source_kind == "external_evidence" for source in sources
+        ):
+            raise CanonicalStorageError(
+                "external-evidence source is not admitted for this artifact"
+            )
         for source in sources:
             if source.source_kind != "payload_artifact":
                 continue
@@ -758,8 +813,7 @@ def _validate_source_graph(
         actual = [
             binding.source_logical_name
             for binding in entry.provenance_bindings
-            if isinstance(binding, SourceBindingV1)
-            and binding.source_kind == "payload_artifact"
+            if isinstance(binding, SourceBindingV1) and binding.source_kind == "payload_artifact"
         ]
         if len(actual) != len(expected) or set(actual) != expected:
             raise CanonicalStorageError(
@@ -849,9 +903,7 @@ def _validate_source_graph(
             _VARIABLE_TOOL_INPUT.fullmatch(logical_name),
         ).group("identifier")
         bindings = [
-            binding
-            for binding in entry.provenance_bindings
-            if isinstance(binding, ToolBindingV1)
+            binding for binding in entry.provenance_bindings if isinstance(binding, ToolBindingV1)
         ]
         if len(bindings) != 1:
             raise CanonicalStorageError("tool input requires exactly one tool binding")
@@ -896,9 +948,7 @@ def _validate_source_graph(
         entry = by_name[logical_name]
         result = cast(ToolResult, parsed[logical_name])
         bindings = [
-            binding
-            for binding in entry.provenance_bindings
-            if isinstance(binding, ToolBindingV1)
+            binding for binding in entry.provenance_bindings if isinstance(binding, ToolBindingV1)
         ]
         if len(bindings) != 1:
             raise CanonicalStorageError("tool result requires exactly one tool binding")
@@ -920,8 +970,7 @@ def _validate_source_graph(
             or binding.result_tool_name != result.tool_name
             or binding.result_artifact_sha256 != entry.sha256
             or binding.request_input_artifact_sha256 != input_entry.sha256
-            or binding.materialized_result_input_sha256
-            != phase_canonical_sha256(result.input)
+            or binding.materialized_result_input_sha256 != phase_canonical_sha256(result.input)
             or binding.result_contract_version != result.contract_version
             or binding.supported_contract_version != binding.result_contract_version
         ):
@@ -952,8 +1001,7 @@ def _validate_source_graph(
         external = {
             binding.source_id: binding
             for binding in entry.provenance_bindings
-            if isinstance(binding, SourceBindingV1)
-            and binding.source_kind == "external_evidence"
+            if isinstance(binding, SourceBindingV1) and binding.source_kind == "external_evidence"
         }
         if set(external) != set(evidence_records):
             raise CanonicalStorageError("evidence JSONL external source set mismatch")
@@ -1031,21 +1079,14 @@ def _validate_source_graph(
                 context_binding.context_sha256 != execution_record.context_sha256
                 or context_binding.parent_context_id != execution_record.parent_context_id
                 or context_binding.schema_version != execution_record.context_schema_version
-                or context_binding.classification.value
-                != execution_record.context_classification
-                or context_binding.payload_sha256
-                != execution_record.context_payload_sha256
-                or context_binding.source_sha256
-                != execution_record.context_source_sha256
-                or context_binding.policy_sha256
-                != execution_record.context_policy_sha256
-                or context_binding.envelope_sha256
-                != execution_record.context_envelope_sha256
+                or context_binding.classification.value != execution_record.context_classification
+                or context_binding.payload_sha256 != execution_record.context_payload_sha256
+                or context_binding.source_sha256 != execution_record.context_source_sha256
+                or context_binding.policy_sha256 != execution_record.context_policy_sha256
+                or context_binding.envelope_sha256 != execution_record.context_envelope_sha256
                 or context_binding.expires_at != execution_record.context_expires_at
-                or context_binding.producer_runtime
-                != execution_record.context_producer_runtime
-                or context_binding.consumer_runtime
-                != execution_record.context_consumer_runtime
+                or context_binding.producer_runtime != execution_record.context_producer_runtime
+                or context_binding.consumer_runtime != execution_record.context_consumer_runtime
             ):
                 raise CanonicalStorageError("agent execution context correlation mismatch")
         if records and not phase_bindings:
@@ -1131,9 +1172,8 @@ def _validate_source_graph(
             for binding in markdown_entry.provenance_bindings
             if isinstance(binding, ReportBindingV1)
         ]
-        if (
-            len(report_bindings) != 1
-            or cast(str, parsed["final_report.md"]) != render_markdown(final_report)
+        if len(report_bindings) != 1 or cast(str, parsed["final_report.md"]) != render_markdown(
+            final_report
         ):
             raise CanonicalStorageError("markdown report renderer correlation mismatch")
         report_binding = report_bindings[0]
@@ -1160,9 +1200,7 @@ def _validate_source_graph(
             if isinstance(binding, SourceBindingV1) and binding.source_kind == "external_evidence"
         }
         decided_ids = {
-            approval.approval_id
-            for approval in approvals
-            if approval.status.value != "pending"
+            approval.approval_id for approval in approvals if approval.status.value != "pending"
         }
         if set(decision_bindings) != decided_ids:
             raise CanonicalStorageError("approval decision provenance set mismatch")

@@ -22,15 +22,21 @@ from poker_deliberation.storage.revision_canonical import (
     canonical_json_bytes,
     classification_evidence_sha256,
     domain_sha256,
+    legacy_root_identity_sha256,
+    run_id_sha256,
     run_lock_key_sha256,
+    sha256_bytes,
 )
 from poker_deliberation.storage.revision_lock import (
     LockBusyError,
+    LockUnavailableError,
     acquire_authority,
 )
 from poker_deliberation.storage.revision_models import (
     APPROVED_LOCAL_DATA_POLICY_SHA256,
     LocalDataBindingV1,
+    OwnershipMarkerV1,
+    RecoveryClaimRequestV1,
     RevisionArtifactV1,
     RevisionPublishRequestV1,
     RootInitializationRequestV1,
@@ -41,6 +47,7 @@ from poker_deliberation.storage.revision_models import (
 from poker_deliberation.storage.revision_store import (
     RunRevisionStore,
     initialize_revision_root,
+    reconcile_revision_root,
 )
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
@@ -188,13 +195,18 @@ def test_reader_observes_complete_old_then_complete_new_pointer(short_tmp: Path)
     )
     thread.start()
     assert before_replace.wait(timeout=10)
-    assert base_store.read_current("Run-concurrency").current_revision == 1
+    observed = [base_store.read_current("Run-concurrency").current_revision for _index in range(25)]
     allow_replace.set()
+    while thread.is_alive():
+        observed.append(base_store.read_current("Run-concurrency").current_revision)
     thread.join(timeout=10)
 
     assert not thread.is_alive()
     assert result == ["published"]
-    assert base_store.read_current("Run-concurrency").current_revision == 2
+    observed.append(base_store.read_current("Run-concurrency").current_revision)
+    assert set(observed) <= {1, 2}
+    assert observed[0] == 1
+    assert observed[-1] == 2
 
 
 def test_root_initializers_serialize_and_different_root_id_is_refused(
@@ -241,6 +253,64 @@ def test_root_initializers_serialize_and_different_root_id_is_refused(
         initialize_revision_root(second_request)
     assert different.value.failure.code is RunStorageFailureCode.RUN_NAMESPACE_CONFLICT
     assert initialize_revision_root(first_request).outcome_kind == "already_initialized"
+
+
+def test_initializer_and_reconciler_share_the_root_authority(
+    short_tmp: Path,
+) -> None:
+    legacy = short_tmp / "legacy-reconcile"
+    legacy.mkdir()
+    revision = short_tmp / "revision-reconcile"
+    request = RootInitializationRequestV1(
+        revision_root=revision,
+        legacy_runs_root=legacy,
+        root_id="root-" + "3" * 32,
+        initialized_at=NOW,
+        producer_id="poker-deliberation",
+        producer_version="0.1.0",
+    )
+
+    def leave_partial(hook: str) -> None:
+        if hook == "root.before_runs_rename":
+            raise OSError("synthetic partial root")
+
+    with pytest.raises(RunStorageError):
+        initialize_revision_root(request, fault_injector=leave_partial)
+    marker = OwnershipMarkerV1(
+        root_id=request.root_id,
+        legacy_runs_root_identity_sha256=legacy_root_identity_sha256(legacy),
+        initialized_at=request.initialized_at,
+        producer_id=request.producer_id,
+        producer_version=request.producer_version,
+    )
+    marker_sha = sha256_bytes(canonical_json_bytes(marker))
+    acquired = threading.Event()
+    release = threading.Event()
+    outcomes: list[str] = []
+
+    def hold_reconciler(hook: str) -> None:
+        if hook == "authority.after_kernel_acquire" and not acquired.is_set():
+            acquired.set()
+            assert release.wait(timeout=10)
+
+    thread = threading.Thread(
+        target=lambda: outcomes.append(
+            reconcile_revision_root(
+                request,
+                expected_ownership_marker_sha256=marker_sha,
+                fault_injector=hold_reconciler,
+            ).outcome_kind
+        )
+    )
+    thread.start()
+    assert acquired.wait(timeout=10)
+    with pytest.raises(RunStorageError) as overlap:
+        initialize_revision_root(request)
+    assert overlap.value.failure.code is RunStorageFailureCode.RUN_LOCKED
+    release.set()
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert outcomes == ["initialized"]
 
 
 def test_first_use_case_aliases_share_one_authority(short_tmp: Path) -> None:
@@ -347,3 +417,124 @@ def test_windows_adapter_locks_exactly_byte_zero_through_one(
         (0, msvcrt.LK_NBLCK, 1),
         (0, msvcrt.LK_UNLCK, 1),
     ]
+
+
+def test_root_missing_to_existing_transition_keeps_the_intent_reserved(
+    short_tmp: Path,
+) -> None:
+    legacy = short_tmp / "legacy"
+    legacy.mkdir()
+    revision = short_tmp / "revision"
+    request = RootInitializationRequestV1(
+        revision_root=revision,
+        legacy_runs_root=legacy,
+        root_id="root-" + "7" * 32,
+        initialized_at=NOW,
+        producer_id="poker-deliberation",
+        producer_version="0.1.0",
+    )
+    created = threading.Event()
+    release = threading.Event()
+    outcomes: list[str] = []
+
+    def inject(hook: str) -> None:
+        if hook == "root.after_mkdir_before_authority":
+            created.set()
+            assert release.wait(timeout=10)
+
+    thread = threading.Thread(
+        target=lambda: outcomes.append(
+            initialize_revision_root(request, fault_injector=inject).outcome_kind
+        )
+    )
+    thread.start()
+    assert created.wait(timeout=10)
+    alias_request = request.model_copy(
+        update={"revision_root": revision / ".", "root_id": "root-" + "8" * 32}
+    )
+    with pytest.raises(RunStorageError) as overlap:
+        initialize_revision_root(alias_request)
+    assert overlap.value.failure.code is RunStorageFailureCode.RUN_LOCKED
+    release.set()
+    thread.join(timeout=10)
+    assert outcomes == ["initialized"]
+
+
+def test_post_reserve_fault_releases_registry_before_kernel_acquire(
+    short_tmp: Path,
+) -> None:
+    authority = short_tmp / "authority.lock"
+    authority.write_bytes(b"\0")
+
+    def inject(hook: str) -> None:
+        if hook == "registry.after_reserve":
+            raise OSError("synthetic registry boundary")
+
+    with pytest.raises(LockUnavailableError):
+        acquire_authority(
+            authority,
+            registry_keys=("post-reserve-cleanup",),
+            bootstrap=False,
+            injector=inject,
+        )
+    lease = acquire_authority(
+        authority,
+        registry_keys=("post-reserve-cleanup",),
+        bootstrap=False,
+    )
+    lease.release()
+
+
+def test_competing_recovery_claims_serialize_then_are_idempotent_or_conflict(
+    short_tmp: Path,
+) -> None:
+    revision, legacy = _root(short_tmp)
+    request = _first_request()
+
+    def stop_before_current(hook: str) -> None:
+        if hook == "current.before_replace":
+            raise OSError("leave orphan")
+
+    with pytest.raises(RunStorageError):
+        RunRevisionStore(revision, legacy, fault_injector=stop_before_current).publish(request)
+    inspection = RunRevisionStore(revision, legacy).inspect_orphans(request.run_id)
+    orphan = inspection.revision_orphans[0]
+    assert orphan.transaction_sha256 is not None
+    claim = RecoveryClaimRequestV1(
+        run_id_sha256=run_id_sha256(request.run_id),
+        transaction_id=request.transaction_id,
+        transaction_sha256=orphan.transaction_sha256,
+        observed_pointer_sha256=None,
+        orphan_form="unreferenced_revision",
+        claim_id="claim-" + "a" * 32,
+        claimant_token="owner-" + "a" * 32,
+        claimed_at=NOW,
+    )
+    acquired = threading.Event()
+    release = threading.Event()
+    results: list[str] = []
+
+    def pause_after_lock(hook: str) -> None:
+        if hook == "authority.after_kernel_acquire" and not acquired.is_set():
+            acquired.set()
+            assert release.wait(timeout=10)
+
+    first_store = RunRevisionStore(revision, legacy, fault_injector=pause_after_lock)
+    thread = threading.Thread(
+        target=lambda: results.append(first_store.claim_orphan(request.run_id, claim).claim_sha256)
+    )
+    thread.start()
+    assert acquired.wait(timeout=10)
+    with pytest.raises(RunStorageError) as overlap:
+        RunRevisionStore(revision, legacy).claim_orphan(request.run_id, claim)
+    assert overlap.value.failure.code is RunStorageFailureCode.RUN_LOCKED
+    release.set()
+    thread.join(timeout=10)
+    assert len(results) == 1
+
+    store = RunRevisionStore(revision, legacy)
+    assert store.claim_orphan(request.run_id, claim).claim_sha256 == results[0]
+    different = claim.model_copy(update={"claim_id": "claim-" + "b" * 32})
+    with pytest.raises(RunStorageError) as conflict:
+        store.claim_orphan(request.run_id, different)
+    assert conflict.value.failure.code is RunStorageFailureCode.RECOVERY_CLAIM_CONFLICT

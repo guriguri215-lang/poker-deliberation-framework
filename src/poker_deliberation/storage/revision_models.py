@@ -8,12 +8,14 @@ completion marker or a product run-status contract.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Final, Literal, TypeAlias
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -45,15 +47,43 @@ _OWNER_TOKEN = re.compile(r"^owner-[0-9a-f]{32}$")
 _CLAIM_ID = re.compile(r"^claim-[0-9a-f]{32}$")
 _ROOT_ID = re.compile(r"^root-[0-9a-f]{32}$")
 _SOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,191}$")
+_SECRET_METADATA = re.compile(
+    r"(?:\bsk-[A-Za-z0-9_-]{8,}\b|\bgh[pousr]_[A-Za-z0-9]{20,}\b|"
+    r"\bgithub_pat_[A-Za-z0-9_]{20,}\b|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|"
+    r"\bAIza[A-Za-z0-9_-]{20,}\b|"
+    r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b|"
+    r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b|\bnpm_[A-Za-z0-9]{20,}\b|"
+    r"\b(?:rk|sk)_(?:live|test)_[A-Za-z0-9]{10,}\b|"
+    r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b|"
+    r"(?:api[_-]?key|password|passwd|secret|token)\s*[:=])",
+    re.IGNORECASE,
+)
+
+
+def validate_control_string(value: str) -> str:
+    if unicodedata.normalize("NFC", value) != value:
+        raise ValueError("control metadata must be NFC")
+    if any(unicodedata.category(character) == "Cc" for character in value):
+        raise ValueError("control metadata cannot contain control characters")
+    if _SECRET_METADATA.search(value):
+        raise ValueError("control metadata must not contain a secret shape")
+    return value
+
 
 Sha256 = Annotated[str, Field(pattern=_SHA256.pattern)]
-PortableId = Annotated[str, Field(pattern=_PORTABLE_ID.pattern)]
-Version = Annotated[str, Field(pattern=_VERSION.pattern)]
+PortableId = Annotated[
+    str,
+    Field(pattern=_PORTABLE_ID.pattern),
+    AfterValidator(validate_control_string),
+]
+Version = Annotated[str, Field(pattern=_VERSION.pattern), AfterValidator(validate_control_string)]
 TransactionId = Annotated[str, Field(pattern=_TRANSACTION_ID.pattern)]
 OwnerToken = Annotated[str, Field(pattern=_OWNER_TOKEN.pattern)]
 ClaimId = Annotated[str, Field(pattern=_CLAIM_ID.pattern)]
 RootId = Annotated[str, Field(pattern=_ROOT_ID.pattern)]
-SourceId = Annotated[str, Field(pattern=_SOURCE_ID.pattern)]
+SourceId = Annotated[
+    str, Field(pattern=_SOURCE_ID.pattern), AfterValidator(validate_control_string)
+]
 PlatformAdapter = Literal["windows_msvcrt", "posix_fcntl"]
 Serialization = Literal[
     "poker-run-storage-json-v1",
@@ -134,6 +164,7 @@ class ArtifactIntentSnapshotV1(_RevisionModel):
     @field_validator("relative_path")
     @classmethod
     def safe_relative_path(cls, value: str) -> str:
+        validate_control_string(value)
         if (
             "\\" in value
             or ":" in value
@@ -265,8 +296,8 @@ class SourceBindingV1(_RevisionModel):
                 raise ValueError("payload source requires logical name and schema version")
             if self.consumer_record_id is not None:
                 raise ValueError("payload source cannot identify a consumer record")
-        elif self.source_schema_version is not None:
-            raise ValueError("non-payload source cannot carry a schema version")
+        elif self.source_logical_name is not None or self.source_schema_version is not None:
+            raise ValueError("non-payload source cannot carry logical name or schema version")
         return self
 
 

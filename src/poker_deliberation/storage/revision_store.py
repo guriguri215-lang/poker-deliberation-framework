@@ -104,6 +104,21 @@ class _StorageBoundaryError(RuntimeError):
         self.__cause__ = cause
 
 
+class _PublishBoundaryError(RuntimeError):
+    def __init__(self, *, invoked: bool, boundary: str, cause: BaseException) -> None:
+        self.invoked = invoked
+        self.boundary = boundary
+        super().__init__(boundary)
+        self.__cause__ = cause
+
+
+class _ArtifactBoundaryError(CanonicalStorageError):
+    def __init__(self, code: RunStorageFailureCode, cause: BaseException) -> None:
+        self.code = code
+        super().__init__(code.value)
+        self.__cause__ = cause
+
+
 def _default_clock() -> datetime:
     return datetime.now(UTC)
 
@@ -121,10 +136,27 @@ def _directory_is_reparse(path: Path) -> bool:
     return bool(attributes & reparse_flag)
 
 
+def _reject_linked_path_chain(path: Path) -> Path:
+    absolute = Path(os.path.abspath(path))
+    components = (*reversed(absolute.parents), absolute)
+    for component in components:
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            break
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
+            raise CanonicalStorageError("root path chain contains a link or reparse point")
+    return absolute
+
+
 def _strict_root_paths(revision_root: Path, legacy_runs_root: Path) -> tuple[Path, Path]:
-    revision = revision_root.resolve(strict=False)
+    revision_input = _reject_linked_path_chain(revision_root)
+    legacy_input = _reject_linked_path_chain(legacy_runs_root)
+    revision = revision_input.resolve(strict=False)
     try:
-        legacy = legacy_runs_root.resolve(strict=True)
+        legacy = legacy_input.resolve(strict=True)
     except OSError as exc:
         raise CanonicalStorageError("legacy runs root must already exist") from exc
     if _directory_is_reparse(legacy):
@@ -138,14 +170,58 @@ def _strict_root_paths(revision_root: Path, legacy_runs_root: Path) -> tuple[Pat
     return revision, legacy
 
 
-def _directory_sync(path: Path) -> str:
+def _directory_sync(
+    path: Path,
+    *,
+    injector: FaultInjector | None = None,
+    hook: str = "directory_sync",
+) -> str:
+    verify_directory(path)
     if os.name == "nt":
         return "unavailable"
-    descriptor = os.open(path, os.O_RDONLY)
+    descriptor: int | None = None
     try:
+        if injector is not None:
+            injector(f"{hook}.before_open")
+        descriptor = os.open(path, os.O_RDONLY)
+        if injector is not None:
+            injector(f"{hook}.after_open")
+    except Exception as exc:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+        raise _StorageBoundaryError("write", f"{hook}.open", exc) from exc
+    try:
+        if injector is not None:
+            injector(f"{hook}.before_fsync")
         os.fsync(descriptor)
-    finally:
+        if injector is not None:
+            injector(f"{hook}.after_fsync")
+    except Exception as exc:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+        raise _StorageBoundaryError("durability", f"{hook}.fsync", exc) from exc
+    try:
+        if injector is not None:
+            injector(f"{hook}.before_close")
         os.close(descriptor)
+        descriptor = None
+        if injector is not None:
+            injector(f"{hook}.after_close")
+    except Exception as exc:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+        raise _StorageBoundaryError("write", f"{hook}.close", exc) from exc
+    try:
+        if injector is not None:
+            injector(f"{hook}.before_identity_reread")
+        verify_directory(path)
+        if injector is not None:
+            injector(f"{hook}.after_identity_reread")
+    except Exception as exc:
+        raise _StorageBoundaryError("verification", f"{hook}.identity", exc) from exc
     return "confirmed"
 
 
@@ -222,13 +298,115 @@ def _write_exclusive_verified(
         raise _StorageBoundaryError("verification", f"{hook}.verification", exc) from exc
 
 
-def _read_control(path: Path, model: type[T], *, max_bytes: int) -> tuple[T, bytes, str]:
-    verify_regular_single_link(path)
+def _mkdir_verified(
+    path: Path,
+    *,
+    injector: FaultInjector | None,
+    hook: str,
+) -> None:
+    try:
+        if injector is not None:
+            injector(f"{hook}.before_mkdir")
+        path.mkdir()
+        if injector is not None:
+            injector(f"{hook}.after_mkdir")
+    except Exception as exc:
+        raise _StorageBoundaryError("write", f"{hook}.mkdir", exc) from exc
+    try:
+        verify_directory(path)
+    except Exception as exc:
+        raise _StorageBoundaryError("verification", f"{hook}.identity", exc) from exc
+    _directory_sync(
+        path.parent,
+        injector=injector,
+        hook=f"{hook}.parent_sync",
+    )
+
+
+def _read_control(
+    path: Path,
+    model: type[T],
+    *,
+    max_bytes: int,
+    injector: FaultInjector | None = None,
+    hook: str | None = None,
+    allowed_link_counts: frozenset[int] = frozenset({1}),
+) -> tuple[T, bytes, str]:
+    if injector is not None and hook is not None:
+        injector(f"{hook}.before_reread")
+    if allowed_link_counts == frozenset({1}):
+        verify_regular_single_link(path)
+    else:
+        info = path.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or attributes & reparse_flag
+            or info.st_nlink not in allowed_link_counts
+        ):
+            raise CanonicalStorageError("control file has an unrecognized link state")
     data = path.read_bytes()
+    if injector is not None and hook is not None:
+        injector(f"{hook}.after_reread")
     if len(data) > max_bytes:
         raise CanonicalStorageError("control artifact exceeds exact byte limit")
+    if injector is not None and hook is not None:
+        injector(f"{hook}.before_hash")
+    digest = sha256_bytes(data)
+    if injector is not None and hook is not None:
+        injector(f"{hook}.after_hash")
+        injector(f"{hook}.before_schema")
     value = parse_canonical_model(data, model)
-    return value, data, sha256_bytes(data)
+    if injector is not None and hook is not None:
+        injector(f"{hook}.after_schema")
+    return value, data, digest
+
+
+def _read_recovery_claim(
+    path: Path,
+    *,
+    max_bytes: int,
+    injector: FaultInjector | None = None,
+    hook: str | None = None,
+) -> tuple[RecoveryClaimV1, bytes, str]:
+    claim, data, digest = _read_control(
+        path,
+        RecoveryClaimV1,
+        max_bytes=max_bytes,
+        injector=injector,
+        hook=hook,
+    )
+    projection = claim.model_dump(mode="python")
+    recorded_digest = cast(str, projection.pop("claim_sha256"))
+    if injector is not None and hook is not None:
+        injector(f"{hook}.before_claim_hash")
+    if recovery_claim_sha256(projection) != recorded_digest:
+        raise CanonicalStorageError("recovery claim digest mismatch")
+    if injector is not None and hook is not None:
+        injector(f"{hook}.after_claim_hash")
+    return claim, data, digest
+
+
+def _read_control_verified(
+    path: Path,
+    model: type[T],
+    *,
+    max_bytes: int,
+    injector: FaultInjector | None,
+    hook: str,
+) -> tuple[T, bytes, str]:
+    try:
+        return _read_control(
+            path,
+            model,
+            max_bytes=max_bytes,
+            injector=injector,
+            hook=hook,
+        )
+    except Exception as exc:
+        raise _StorageBoundaryError("verification", hook, exc) from exc
 
 
 def _root_durability(
@@ -503,9 +681,14 @@ def initialize_revision_root(
     except RunStorageError:
         raise
     except (CanonicalStorageError, OSError, ValidationError) as exc:
+        message = str(exc)
         raise _root_failure(
             request,
-            RunStorageFailureCode.PATH_CONFINEMENT_FAILED,
+            (
+                RunStorageFailureCode.LINK_OR_REPARSE_DETECTED
+                if "link" in message or "reparse" in message
+                else RunStorageFailureCode.PATH_CONFINEMENT_FAILED
+            ),
             stage="root_preflight",
         ) from exc
 
@@ -513,24 +696,50 @@ def initialize_revision_root(
         f"root-intent:{root.parent.stat().st_dev}:{root.parent.stat().st_ino}:"
         f"{ascii_casefold(root.name)}"
     )
-    alias_key = f"root-alias:{os.path.normcase(str(root))}"
     authority = root / ".revision-init.authority.lock"
     root_created = False
 
     def prepare_root() -> None:
         nonlocal root_created
-        if not root.exists():
-            root.mkdir()
-            root_created = True
-        verify_directory(root)
+        try:
+            if not root.exists():
+                if fault_injector is not None:
+                    fault_injector("root.before_mkdir")
+                root.mkdir()
+                root_created = True
+                if fault_injector is not None:
+                    fault_injector("root.after_mkdir_before_authority")
+                _directory_sync(
+                    root.parent,
+                    injector=fault_injector,
+                    hook="root.parent_sync",
+                )
+        except Exception as exc:
+            boundary_kind = exc.kind if isinstance(exc, _StorageBoundaryError) else "write"
+            raise LockUnavailableError(
+                control_changed=root_created,
+                boundary_kind=boundary_kind,
+            ) from exc
+        try:
+            verify_directory(root)
+        except Exception as exc:
+            raise LockUnavailableError(
+                control_changed=root_created,
+                boundary_kind="verification",
+            ) from exc
+
+    def root_identity_keys() -> tuple[str, ...]:
+        identity = root.stat()
+        return (f"root-identity:{identity.st_dev}:{identity.st_ino}",)
 
     try:
         lease = acquire_authority(
             authority,
-            registry_keys=(intent_key, alias_key),
+            registry_keys=(intent_key,),
             bootstrap=True,
             injector=fault_injector,
             prepare=prepare_root,
+            additional_registry_keys=root_identity_keys,
         )
     except LockBusyError as exc:
         raise _root_failure(
@@ -540,25 +749,41 @@ def initialize_revision_root(
             effect="control_only" if exc.control_changed or root_created else "none",
         ) from exc
     except LockUnavailableError as exc:
+        code = {
+            "unavailable": RunStorageFailureCode.LOCK_UNAVAILABLE,
+            "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+            "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+            "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+        }[exc.boundary_kind]
         raise _root_failure(
             request,
-            RunStorageFailureCode.LOCK_UNAVAILABLE,
+            code,
             stage="root_initialization",
             effect="control_only" if exc.control_changed or root_created else "none",
             reconciliation=exc.control_changed or root_created,
         ) from exc
 
+    outcome: RootInitializationOutcomeV1 | None = None
     try:
+        if legacy_root_identity_sha256(legacy) != legacy_identity:
+            raise _root_failure(
+                request,
+                RunStorageFailureCode.RUN_NAMESPACE_CONFLICT,
+                stage="root_initialization",
+                effect="control_only" if lease.control_changed else "none",
+            )
         inspection = inspect_root_initialization(
             root,
             legacy,
             max_artifact_bytes=max_artifact_bytes,
         )
         if inspection.status == "initialized":
-            marker, _data, marker_sha = _read_control(
+            marker, _data, marker_sha = _read_control_verified(
                 root / "ownership.json",
                 OwnershipMarkerV1,
                 max_bytes=max_artifact_bytes,
+                injector=fault_injector,
+                hook="root.existing_ownership",
             )
             if (
                 marker.root_id != request.root_id
@@ -573,15 +798,16 @@ def initialize_revision_root(
                     stage="root_initialization",
                     effect="control_only" if lease.control_changed else "none",
                 )
-            return RootInitializationOutcomeV1(
+            outcome = RootInitializationOutcomeV1(
                 outcome_kind="already_initialized",
                 root_id=request.root_id,
                 ownership_marker_sha256=marker_sha,
                 filesystem_effect="none",
                 durability_evidence=_idle_durability(),
             )
+            return outcome
         if inspection.status not in {"uninitialized"}:
-            return RootInitializationOutcomeV1(
+            outcome = RootInitializationOutcomeV1(
                 outcome_kind="reconciliation_required",
                 root_id=request.root_id,
                 ownership_marker_sha256=None,
@@ -592,6 +818,7 @@ def initialize_revision_root(
                     reconciliation="required",
                 ),
             )
+            return outcome
 
         marker = marker_plan
         marker_bytes = marker_plan_bytes
@@ -606,27 +833,79 @@ def initialize_revision_root(
             injector=fault_injector,
             hook="root.ownership",
         )
-        control_temp.mkdir()
-        (control_temp / "locks").mkdir()
-        runs_temp.mkdir()
-        if fault_injector is not None:
-            fault_injector("root.before_control_rename")
-        control_temp.rename(root / ".revision-control")
-        if fault_injector is not None:
-            fault_injector("root.before_runs_rename")
-        runs_temp.rename(root / "runs")
-        if fault_injector is not None:
-            fault_injector("root.before_marker_replace")
-        os.replace(ownership_temp, root / "ownership.json")
-        marker_check, _data, marker_check_sha = _read_control(
+        _mkdir_verified(
+            control_temp,
+            injector=fault_injector,
+            hook="root.control_temp",
+        )
+        _mkdir_verified(
+            control_temp / "locks",
+            injector=fault_injector,
+            hook="root.locks_temp",
+        )
+        _mkdir_verified(
+            runs_temp,
+            injector=fault_injector,
+            hook="root.runs_temp",
+        )
+        for source, target, hook in (
+            (control_temp, root / ".revision-control", "root.control_rename"),
+            (runs_temp, root / "runs", "root.runs_rename"),
+        ):
+            invoked = False
+            try:
+                if fault_injector is not None:
+                    fault_injector(
+                        "root.before_control_rename"
+                        if hook == "root.control_rename"
+                        else "root.before_runs_rename"
+                    )
+                    fault_injector(f"{hook}.before")
+                invoked = True
+                source.rename(target)
+                if fault_injector is not None:
+                    fault_injector(f"{hook}.after")
+            except Exception as exc:
+                raise _PublishBoundaryError(
+                    invoked=invoked,
+                    boundary=hook,
+                    cause=exc,
+                ) from exc
+            _directory_sync(
+                root,
+                injector=fault_injector,
+                hook=f"{hook}.parent_sync",
+            )
+        marker_replace_invoked = False
+        try:
+            if fault_injector is not None:
+                fault_injector("root.before_marker_replace")
+                fault_injector("root.marker_replace.before")
+            marker_replace_invoked = True
+            os.replace(ownership_temp, root / "ownership.json")
+            if fault_injector is not None:
+                fault_injector("root.marker_replace.after")
+        except Exception as exc:
+            raise _PublishBoundaryError(
+                invoked=marker_replace_invoked,
+                boundary="root.marker_replace",
+                cause=exc,
+            ) from exc
+        marker_check, _data, marker_check_sha = _read_control_verified(
             root / "ownership.json",
             OwnershipMarkerV1,
             max_bytes=max_artifact_bytes,
+            injector=fault_injector,
+            hook="root.final_ownership",
         )
         if marker_check != marker or marker_check_sha != marker_sha:
             raise CanonicalStorageError("ownership marker reconciliation failed")
-        directory_state = _directory_sync(root)
-        return RootInitializationOutcomeV1(
+        directory_state = _directory_sync(
+            root,
+            injector=fault_injector,
+            hook="root.directory_sync",
+        )
+        outcome = RootInitializationOutcomeV1(
             outcome_kind="initialized",
             root_id=request.root_id,
             ownership_marker_sha256=marker_sha,
@@ -637,6 +916,7 @@ def initialize_revision_root(
                 reconciliation="confirmed",
             ),
         )
+        return outcome
     except RunStorageError:
         raise
     except _StorageBoundaryError as exc:
@@ -653,6 +933,23 @@ def initialize_revision_root(
             reconciliation=True,
             durability=_root_durability(
                 file_sync="failed" if exc.kind == "durability" else "not_attempted",
+                directory_sync="not_attempted",
+                reconciliation="required",
+            ),
+        ) from exc
+    except _PublishBoundaryError as exc:
+        raise _root_failure(
+            request,
+            (
+                RunStorageFailureCode.EFFECT_UNKNOWN
+                if exc.invoked
+                else RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED
+            ),
+            stage="root_initialization",
+            effect="control_only",
+            reconciliation=True,
+            durability=_root_durability(
+                file_sync="confirmed",
                 directory_sync="not_attempted",
                 reconciliation="required",
             ),
@@ -678,7 +975,7 @@ def initialize_revision_root(
                 request,
                 RunStorageFailureCode.EFFECT_UNKNOWN,
                 stage="root_initialization",
-                effect="control_only",
+                effect=(outcome.filesystem_effect if outcome is not None else "control_only"),
                 reconciliation=True,
             ) from exc
 
@@ -716,9 +1013,14 @@ def reconcile_revision_root(
     except RunStorageError:
         raise
     except (CanonicalStorageError, OSError, ValidationError) as exc:
+        message = str(exc)
         raise _root_failure(
             request,
-            RunStorageFailureCode.PATH_CONFINEMENT_FAILED,
+            (
+                RunStorageFailureCode.LINK_OR_REPARSE_DETECTED
+                if "link" in message or "reparse" in message
+                else RunStorageFailureCode.PATH_CONFINEMENT_FAILED
+            ),
             stage="root_preflight",
         ) from exc
 
@@ -726,13 +1028,18 @@ def reconcile_revision_root(
         f"root-intent:{root.parent.stat().st_dev}:{root.parent.stat().st_ino}:"
         f"{ascii_casefold(root.name)}"
     )
-    alias_key = f"root-alias:{os.path.normcase(str(root))}"
+
+    def root_identity_keys() -> tuple[str, ...]:
+        identity = root.stat()
+        return (f"root-identity:{identity.st_dev}:{identity.st_ino}",)
+
     try:
         lease = acquire_authority(
             root / ".revision-init.authority.lock",
-            registry_keys=(intent_key, alias_key),
+            registry_keys=(intent_key,),
             bootstrap=True,
             injector=fault_injector,
+            additional_registry_keys=root_identity_keys,
         )
     except LockBusyError as exc:
         raise _root_failure(
@@ -742,15 +1049,23 @@ def reconcile_revision_root(
             effect="control_only" if exc.control_changed else "none",
         ) from exc
     except LockUnavailableError as exc:
+        code = {
+            "unavailable": RunStorageFailureCode.LOCK_UNAVAILABLE,
+            "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+            "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+            "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+        }[exc.boundary_kind]
         raise _root_failure(
             request,
-            RunStorageFailureCode.LOCK_UNAVAILABLE,
+            code,
             stage="root_initialization",
             effect="control_only" if exc.control_changed else "none",
             reconciliation=exc.control_changed,
         ) from exc
 
+    outcome: RootInitializationOutcomeV1 | None = None
     try:
+        expected_legacy_identity = legacy_root_identity_sha256(legacy)
         locked_inspection = inspect_root_initialization(
             root,
             legacy,
@@ -763,13 +1078,14 @@ def reconcile_revision_root(
                     RunStorageFailureCode.RUN_NAMESPACE_CONFLICT,
                     stage="root_initialization",
                 )
-            return RootInitializationOutcomeV1(
+            outcome = RootInitializationOutcomeV1(
                 outcome_kind="already_initialized",
                 root_id=request.root_id,
                 ownership_marker_sha256=expected_ownership_marker_sha256,
                 filesystem_effect="none",
                 durability_evidence=_idle_durability(),
             )
+            return outcome
         if locked_inspection.status != "incomplete" or locked_inspection.root_id != request.root_id:
             raise _root_failure(
                 request,
@@ -779,14 +1095,16 @@ def reconcile_revision_root(
                 reconciliation=True,
             )
         marker_temp = root / f"ownership.{request.root_id}.tmp"
-        marker, marker_bytes, marker_sha = _read_control(
+        marker, marker_bytes, marker_sha = _read_control_verified(
             marker_temp,
             OwnershipMarkerV1,
             max_bytes=max_artifact_bytes,
+            injector=fault_injector,
+            hook="root.reconcile.ownership_temp",
         )
         expected_marker = OwnershipMarkerV1(
             root_id=request.root_id,
-            legacy_runs_root_identity_sha256=legacy_root_identity_sha256(legacy),
+            legacy_runs_root_identity_sha256=expected_legacy_identity,
             initialized_at=request.initialized_at,
             producer_id=request.producer_id,
             producer_version=request.producer_version,
@@ -837,7 +1155,25 @@ def reconcile_revision_root(
                 raise CanonicalStorageError("partial control temp is not exact")
             if any((control_temp / "locks").iterdir()):
                 raise CanonicalStorageError("partial lock temp is not empty")
-            control_temp.rename(control_final)
+            invoked = False
+            try:
+                if fault_injector is not None:
+                    fault_injector("root.reconcile.control_rename.before")
+                invoked = True
+                control_temp.rename(control_final)
+                if fault_injector is not None:
+                    fault_injector("root.reconcile.control_rename.after")
+            except Exception as exc:
+                raise _PublishBoundaryError(
+                    invoked=invoked,
+                    boundary="root.reconcile.control_rename",
+                    cause=exc,
+                ) from exc
+            _directory_sync(
+                root,
+                injector=fault_injector,
+                hook="root.reconcile.control_parent_sync",
+            )
         if runs_final.exists():
             verify_directory(runs_final)
             if any(runs_final.iterdir()):
@@ -846,19 +1182,54 @@ def reconcile_revision_root(
             verify_directory(runs_temp)
             if any(runs_temp.iterdir()):
                 raise CanonicalStorageError("partial runs temp is not empty")
-            runs_temp.rename(runs_final)
-        if fault_injector is not None:
-            fault_injector("root.reconcile.before_marker_replace")
-        os.replace(marker_temp, root / "ownership.json")
-        final_marker, _final_bytes, final_sha = _read_control(
+            invoked = False
+            try:
+                if fault_injector is not None:
+                    fault_injector("root.reconcile.runs_rename.before")
+                invoked = True
+                runs_temp.rename(runs_final)
+                if fault_injector is not None:
+                    fault_injector("root.reconcile.runs_rename.after")
+            except Exception as exc:
+                raise _PublishBoundaryError(
+                    invoked=invoked,
+                    boundary="root.reconcile.runs_rename",
+                    cause=exc,
+                ) from exc
+            _directory_sync(
+                root,
+                injector=fault_injector,
+                hook="root.reconcile.runs_parent_sync",
+            )
+        marker_invoked = False
+        try:
+            if fault_injector is not None:
+                fault_injector("root.reconcile.before_marker_replace")
+            marker_invoked = True
+            os.replace(marker_temp, root / "ownership.json")
+            if fault_injector is not None:
+                fault_injector("root.reconcile.after_marker_replace")
+        except Exception as exc:
+            raise _PublishBoundaryError(
+                invoked=marker_invoked,
+                boundary="root.reconcile.marker_replace",
+                cause=exc,
+            ) from exc
+        final_marker, _final_bytes, final_sha = _read_control_verified(
             root / "ownership.json",
             OwnershipMarkerV1,
             max_bytes=max_artifact_bytes,
+            injector=fault_injector,
+            hook="root.reconcile.final_ownership",
         )
         if final_marker != expected_marker or final_sha != expected_ownership_marker_sha256:
             raise CanonicalStorageError("reconciled ownership marker mismatch")
-        directory_state = _directory_sync(root)
-        return RootInitializationOutcomeV1(
+        directory_state = _directory_sync(
+            root,
+            injector=fault_injector,
+            hook="root.directory_sync",
+        )
+        outcome = RootInitializationOutcomeV1(
             outcome_kind="initialized",
             root_id=request.root_id,
             ownership_marker_sha256=final_sha,
@@ -869,8 +1240,39 @@ def reconcile_revision_root(
                 reconciliation="confirmed",
             ),
         )
+        return outcome
     except RunStorageError:
         raise
+    except _StorageBoundaryError as exc:
+        code = {
+            "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+            "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+            "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+        }[exc.kind]
+        raise _root_failure(
+            request,
+            code,
+            stage="root_initialization",
+            effect="control_only",
+            reconciliation=True,
+            durability=_root_durability(
+                file_sync="failed" if exc.kind == "durability" else "not_attempted",
+                directory_sync="not_attempted",
+                reconciliation="required",
+            ),
+        ) from exc
+    except _PublishBoundaryError as exc:
+        raise _root_failure(
+            request,
+            (
+                RunStorageFailureCode.EFFECT_UNKNOWN
+                if exc.invoked
+                else RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED
+            ),
+            stage="root_initialization",
+            effect="control_only",
+            reconciliation=True,
+        ) from exc
     except Exception as exc:
         raise _root_failure(
             request,
@@ -892,7 +1294,7 @@ def reconcile_revision_root(
                 request,
                 RunStorageFailureCode.EFFECT_UNKNOWN,
                 stage="root_initialization",
-                effect="control_only",
+                effect=(outcome.filesystem_effect if outcome is not None else "control_only"),
                 reconciliation=True,
             ) from exc
 
@@ -954,6 +1356,11 @@ class RunRevisionStore:
             revision_root,
             legacy_runs_root,
         )
+        self._revision_root_identity: tuple[int, int] | None = None
+        if self.revision_root.exists():
+            verify_directory(self.revision_root)
+            root_stat = self.revision_root.stat()
+            self._revision_root_identity = (root_stat.st_dev, root_stat.st_ino)
         self.clock = clock
         self.id_factory = id_factory
         self.fault_injector = fault_injector
@@ -970,6 +1377,13 @@ class RunRevisionStore:
 
     def _ownership(self, run_id: str) -> tuple[OwnershipMarkerV1, str]:
         try:
+            root_stat = self.revision_root.stat()
+            observed_root_identity = (root_stat.st_dev, root_stat.st_ino)
+            if (
+                self._revision_root_identity is not None
+                and observed_root_identity != self._revision_root_identity
+            ):
+                raise CanonicalStorageError("revision root identity changed")
             inspection = inspect_root_initialization(
                 self.revision_root,
                 self.legacy_runs_root,
@@ -981,6 +1395,8 @@ class RunRevisionStore:
                 self.revision_root / "ownership.json",
                 OwnershipMarkerV1,
                 max_bytes=self.max_artifact_bytes,
+                injector=self.fault_injector,
+                hook="ownership",
             )
             if marker.legacy_runs_root_identity_sha256 != legacy_root_identity_sha256(
                 self.legacy_runs_root
@@ -991,6 +1407,8 @@ class RunRevisionStore:
                 or marker.producer_version != self.producer_version
             ):
                 raise CanonicalStorageError("ownership producer does not match configured store")
+            if self._revision_root_identity is None:
+                self._revision_root_identity = observed_root_identity
             return marker, marker_sha
         except (CanonicalStorageError, OSError, ValidationError) as exc:
             raise _run_failure(
@@ -1178,7 +1596,27 @@ class RunRevisionStore:
                         stage="locked_admission",
                     )
 
-    def _validate_existing_namespace(self, run_id: str) -> None:
+    def _validate_existing_namespace(
+        self,
+        run_id: str,
+        *,
+        verify_immutable_revisions: bool = True,
+    ) -> None:
+        key = run_lock_key_sha256(run_id)
+        allowed_lock_names = {
+            f"{key}.authority.lock",
+            f"{key}.metadata.json",
+        }
+        metadata_temp = re.compile(rf"^{re.escape(key)}\.owner-[0-9a-f]{{32}}\.metadata\.tmp$")
+        for path in self.locks_root.glob(f"{key}*"):
+            if path.name not in allowed_lock_names and metadata_temp.fullmatch(path.name) is None:
+                raise CanonicalStorageError("run lock namespace has unknown entries")
+            info = verify_regular_single_link(path)
+            if path.name.endswith((".metadata.json", ".metadata.tmp")) and (
+                info.st_size > self.max_artifact_bytes
+            ):
+                raise CanonicalStorageError("metadata exceeds exact byte limit")
+
         run = self.runs_root / run_id
         if not run.exists():
             return
@@ -1205,13 +1643,36 @@ class RunRevisionStore:
                 if _TRANSACTION_DIR.fullmatch(path.name) is None:
                     raise CanonicalStorageError("transaction namespace has unknown entries")
                 verify_directory(path)
+                entries = {item.name: item for item in path.iterdir()}
+                if set(entries) - {"transaction.json", "manifest.json", "payload"}:
+                    raise CanonicalStorageError("staging transaction has unknown entries")
+                for control_name in ("transaction.json", "manifest.json"):
+                    if control_name in entries:
+                        verify_regular_single_link(entries[control_name])
+                payload = entries.get("payload")
+                if payload is not None:
+                    verify_directory(payload)
+                    for item in payload.rglob("*"):
+                        relative = item.relative_to(payload).as_posix()
+                        if item.is_dir():
+                            verify_directory(item)
+                            if relative not in {"agent_reports", "tool_results"}:
+                                raise CanonicalStorageError(
+                                    "staging payload has an unknown directory"
+                                )
+                        else:
+                            verify_regular_single_link(item)
+                            artifact_table_entry(relative)
 
         revisions = control_entries.get("revisions")
         if revisions is not None:
             for path in revisions.iterdir():
                 if _REVISION_DIR.fullmatch(path.name) is None:
                     raise CanonicalStorageError("revision namespace has unknown entries")
-                verify_directory(path)
+                if verify_immutable_revisions:
+                    self._verify_revision_directory(path, run_id=run_id)
+                else:
+                    verify_directory(path)
 
         claims = control_entries.get("recovery-claims")
         if claims is not None:
@@ -1228,19 +1689,6 @@ class RunRevisionStore:
                     verify_regular_single_link(path)
                 else:
                     raise CanonicalStorageError("recovery claim namespace has unknown entries")
-
-        key = run_lock_key_sha256(run_id)
-        allowed_lock_names = {
-            f"{key}.authority.lock",
-            f"{key}.metadata.json",
-        }
-        metadata_temp = re.compile(
-            rf"^{re.escape(key)}\.owner-[0-9a-f]{{32}}\.metadata\.tmp$"
-        )
-        for path in self.locks_root.glob(f"{key}*"):
-            if path.name not in allowed_lock_names and metadata_temp.fullmatch(path.name) is None:
-                raise CanonicalStorageError("run lock namespace has unknown entries")
-            verify_regular_single_link(path)
 
     def _authority(
         self,
@@ -1270,9 +1718,15 @@ class RunRevisionStore:
                 effect="control_only" if exc.control_changed else "none",
             ) from exc
         except LockUnavailableError as exc:
+            code = {
+                "unavailable": RunStorageFailureCode.LOCK_UNAVAILABLE,
+                "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+                "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+                "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+            }[exc.boundary_kind]
             raise _run_failure(
                 run_id,
-                RunStorageFailureCode.LOCK_UNAVAILABLE,
+                code,
                 stage="lock_bootstrap",
                 effect="control_only" if exc.control_changed else "none",
                 reconciliation=exc.control_changed,
@@ -1317,17 +1771,29 @@ class RunRevisionStore:
             injector=self.fault_injector,
             hook="metadata",
         )
-        if self.fault_injector is not None:
-            self.fault_injector("metadata.before_replace")
-        os.replace(temp, final)
+        replace_invoked = False
         try:
             if self.fault_injector is not None:
+                self.fault_injector("metadata.before_replace")
+            replace_invoked = True
+            os.replace(temp, final)
+            if self.fault_injector is not None:
                 self.fault_injector("metadata.after_replace")
+        except Exception as exc:
+            raise _PublishBoundaryError(
+                invoked=replace_invoked,
+                boundary="metadata.replace",
+                cause=exc,
+            ) from exc
+        try:
+            if self.fault_injector is not None:
                 self.fault_injector("metadata.before_final_reread")
             parsed, reread, _digest = _read_control(
                 final,
                 LockMetadataV1,
                 max_bytes=self.max_artifact_bytes,
+                injector=self.fault_injector,
+                hook="metadata.final",
             )
             if self.fault_injector is not None:
                 self.fault_injector("metadata.after_final_reread")
@@ -1371,16 +1837,50 @@ class RunRevisionStore:
                     raise CanonicalStorageError("existing namespace has unknown entries")
                 continue
             if self.fault_injector is not None:
-                self.fault_injector(f"namespace.before_mkdir.{index}")
-            path.mkdir()
-            verify_directory(path)
+                try:
+                    self.fault_injector(f"namespace.before_mkdir.{index}")
+                except Exception as exc:
+                    raise _StorageBoundaryError(
+                        "write",
+                        f"namespace.before_mkdir.{index}",
+                        exc,
+                    ) from exc
+            try:
+                path.mkdir()
+            except Exception as exc:
+                raise _StorageBoundaryError(
+                    "write",
+                    f"namespace.mkdir.{index}",
+                    exc,
+                ) from exc
+            try:
+                verify_directory(path)
+            except Exception as exc:
+                raise _StorageBoundaryError(
+                    "verification",
+                    f"namespace.identity.{index}",
+                    exc,
+                ) from exc
             if self.fault_injector is not None:
-                self.fault_injector(f"namespace.after_mkdir.{index}")
+                try:
+                    self.fault_injector(f"namespace.after_mkdir.{index}")
+                except Exception as exc:
+                    raise _StorageBoundaryError(
+                        "write",
+                        f"namespace.after_mkdir.{index}",
+                        exc,
+                    ) from exc
+            _directory_sync(
+                path.parent,
+                injector=self.fault_injector,
+                hook=f"namespace.parent_sync.{index}",
+            )
         return run / ".revision-store"
 
     def _run_physical_bytes(self, run_id: str) -> int:
         key = run_lock_key_sha256(run_id)
         paths: list[Path] = []
+        counted_identities: set[tuple[int, int]] = set()
         run = self.runs_root / run_id
         if run.exists():
             for item in run.rglob("*"):
@@ -1393,6 +1893,10 @@ class RunRevisionStore:
                     continue
                 if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise CanonicalStorageError("nonregular or hardlinked namespace entry")
+                identity = (info.st_dev, info.st_ino)
+                if identity in counted_identities:
+                    continue
+                counted_identities.add(identity)
                 paths.append(item)
         for item in self.locks_root.glob(f"{key}*"):
             verify_regular_single_link(item)
@@ -1405,6 +1909,7 @@ class RunRevisionStore:
         entry: PayloadInventoryEntryV1,
         *,
         run_id: str,
+        injector: FaultInjector | None = None,
     ) -> RevisionArtifactV1:
         expected_table = artifact_table_entry(entry.logical_name)
         if entry.revision_relative_path != f"payload/{entry.logical_name}":
@@ -1417,10 +1922,46 @@ class RunRevisionStore:
         ) != expected_table:
             raise CanonicalStorageError("stored artifact admission table mismatch")
         payload = revision_dir / entry.revision_relative_path
-        verify_regular_single_link(payload)
-        data = payload.read_bytes()
+        try:
+            if injector is not None:
+                injector(f"immutable_payload.{entry.logical_name}.before_reread")
+            if not payload.exists():
+                raise FileNotFoundError(payload)
+            verify_regular_single_link(payload)
+            data = payload.read_bytes()
+            if injector is not None:
+                injector(f"immutable_payload.{entry.logical_name}.after_reread")
+        except FileNotFoundError as exc:
+            raise _ArtifactBoundaryError(
+                RunStorageFailureCode.ARTIFACT_MISSING,
+                exc,
+            ) from exc
+        except Exception as exc:
+            raise _ArtifactBoundaryError(
+                RunStorageFailureCode.ARTIFACT_SCHEMA_ERROR,
+                exc,
+            ) from exc
+        if injector is not None:
+            try:
+                injector(f"immutable_payload.{entry.logical_name}.before_hash")
+            except Exception as exc:
+                raise _ArtifactBoundaryError(
+                    RunStorageFailureCode.ARTIFACT_HASH_MISMATCH,
+                    exc,
+                ) from exc
         if len(data) != entry.size_bytes or sha256_bytes(data) != entry.sha256:
-            raise CanonicalStorageError("stored payload size/hash mismatch")
+            raise _ArtifactBoundaryError(
+                RunStorageFailureCode.ARTIFACT_HASH_MISMATCH,
+                CanonicalStorageError("stored payload size/hash mismatch"),
+            )
+        if injector is not None:
+            try:
+                injector(f"immutable_payload.{entry.logical_name}.after_hash")
+            except Exception as exc:
+                raise _ArtifactBoundaryError(
+                    RunStorageFailureCode.ARTIFACT_HASH_MISMATCH,
+                    exc,
+                ) from exc
         local_bindings = [
             binding
             for binding in entry.provenance_bindings
@@ -1429,21 +1970,31 @@ class RunRevisionStore:
         if len(local_bindings) != 1:
             raise CanonicalStorageError("stored payload lacks local-data provenance")
         local = local_bindings[0]
-        artifact = RevisionArtifactV1(
-            logical_name=entry.logical_name,
-            media_type=entry.media_type,
-            artifact_schema_version=entry.artifact_schema_version,
-            serialization=entry.serialization,
-            exact_bytes=data,
-            required=entry.required,
-            classification=entry.classification,
-            classification_source=entry.classification_source,
-            classification_evidence=entry.classification_evidence,
-            policy_sha256=local.policy_sha256,
-            origin_kind=cast(Any, expected_table[3]),
-            provenance_bindings=entry.provenance_bindings,
-        )
-        validate_artifact(artifact, run_id, self.max_artifact_bytes)
+        try:
+            if injector is not None:
+                injector(f"immutable_payload.{entry.logical_name}.before_schema")
+            artifact = RevisionArtifactV1(
+                logical_name=entry.logical_name,
+                media_type=entry.media_type,
+                artifact_schema_version=entry.artifact_schema_version,
+                serialization=entry.serialization,
+                exact_bytes=data,
+                required=entry.required,
+                classification=entry.classification,
+                classification_source=entry.classification_source,
+                classification_evidence=entry.classification_evidence,
+                policy_sha256=local.policy_sha256,
+                origin_kind=cast(Any, expected_table[3]),
+                provenance_bindings=entry.provenance_bindings,
+            )
+            validate_artifact(artifact, run_id, self.max_artifact_bytes)
+            if injector is not None:
+                injector(f"immutable_payload.{entry.logical_name}.after_schema")
+        except Exception as exc:
+            raise _ArtifactBoundaryError(
+                RunStorageFailureCode.ARTIFACT_SCHEMA_ERROR,
+                exc,
+            ) from exc
         return artifact
 
     def _verify_revision_directory(
@@ -1452,6 +2003,7 @@ class RunRevisionStore:
         *,
         run_id: str,
         expected_pointer: StorageRevisionPointerV1 | None = None,
+        injector: FaultInjector | None = None,
     ) -> tuple[
         ReachableRevisionV1,
         StorageRevisionManifestV1,
@@ -1463,85 +2015,176 @@ class RunRevisionStore:
         staging_match = _TRANSACTION_DIR.fullmatch(revision_dir.name)
         if match is None and staging_match is None:
             raise CanonicalStorageError("invalid immutable revision directory name")
-        transaction, transaction_bytes, _transaction_file_sha = _read_control(
-            revision_dir / "transaction.json",
-            RevisionTransactionDescriptorV1,
-            max_bytes=self.max_artifact_bytes,
-        )
-        transaction_projection = transaction.model_dump(mode="python")
-        recorded_transaction_sha = cast(str, transaction_projection.pop("transaction_sha256"))
-        if (
-            transaction_sha256(transaction_projection) != recorded_transaction_sha
-            or transaction.run_id != run_id
-            or (
-                match is not None
-                and (
-                    transaction.transaction_id != match.group("transaction")
-                    or transaction.proposed_revision != int(match.group("revision"))
-                )
+        try:
+            if injector is not None:
+                injector("immutable_control.before_transaction_reread")
+            transaction, transaction_bytes, _transaction_file_sha = _read_control(
+                revision_dir / "transaction.json",
+                RevisionTransactionDescriptorV1,
+                max_bytes=self.max_artifact_bytes,
+                injector=injector,
+                hook="immutable_control.transaction",
             )
-            or (staging_match is not None and transaction.transaction_id != staging_match.group(0))
-        ):
-            raise CanonicalStorageError("immutable transaction identity mismatch")
-        manifest, _manifest_bytes, manifest_sha = _read_control(
-            revision_dir / "manifest.json",
-            StorageRevisionManifestV1,
-            max_bytes=self.max_artifact_bytes,
-        )
-        if (
-            manifest.run_id != run_id
-            or manifest.revision != transaction.proposed_revision
-            or manifest.transaction_id != transaction.transaction_id
-            or manifest.transaction_sha256 != transaction.transaction_sha256
-            or manifest.previous_revision != transaction.expected_revision
-            or manifest.previous_manifest_sha256
-            != transaction.expected_manifest_sha256
-            or manifest.expected_pointer_sha256 != transaction.expected_pointer_sha256
-            or manifest.created_at != transaction.created_at
-            or manifest.producer_id != transaction.producer_id
-            or manifest.producer_version != transaction.producer_version
-            or manifest.producer_id != self.producer_id
-            or manifest.producer_version != self.producer_version
-            or manifest.artifacts != transaction.artifact_plan
-            or manifest.provenance_heads != transaction.provenance_heads
-            or inventory_sha256(manifest.artifacts) != manifest.inventory_sha256
-            or provenance_heads(manifest.artifacts) != manifest.provenance_heads
-        ):
-            raise CanonicalStorageError("immutable manifest/transaction mismatch")
-        payload_root = revision_dir / "payload"
-        verify_directory(payload_root)
-        expected_payload_files = {
-            PurePosixPath(entry.revision_relative_path).relative_to("payload").as_posix()
-            for entry in manifest.artifacts
-        }
-        actual_payload_files: set[str] = set()
-        expected_payload_directories: set[str] = set()
-        for expected_file in expected_payload_files:
-            parent = PurePosixPath(expected_file).parent
-            while parent != PurePosixPath("."):
-                expected_payload_directories.add(parent.as_posix())
-                parent = parent.parent
-        actual_payload_directories: set[str] = set()
-        for item in payload_root.rglob("*"):
-            relative = item.relative_to(payload_root).as_posix()
-            info = item.lstat()
-            attributes = getattr(info, "st_file_attributes", 0)
-            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-            if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
-                raise CanonicalStorageError("payload namespace contains a link or reparse point")
-            if stat.S_ISDIR(info.st_mode):
-                verify_directory(item)
-                actual_payload_directories.add(relative)
-            else:
-                verify_regular_single_link(item)
-                actual_payload_files.add(relative)
-        if (
-            actual_payload_files != expected_payload_files
-            or actual_payload_directories != expected_payload_directories
-        ):
-            raise CanonicalStorageError("payload namespace does not match exact inventory paths")
+            if injector is not None:
+                injector("immutable_control.after_transaction_reread")
+        except Exception as exc:
+            if injector is None:
+                raise
+            raise _StorageBoundaryError(
+                "verification",
+                "immutable_control.transaction",
+                exc,
+            ) from exc
+        try:
+            if injector is not None:
+                injector("immutable_control.transaction.before_identity")
+            transaction_projection = transaction.model_dump(mode="python")
+            recorded_transaction_sha = cast(
+                str,
+                transaction_projection.pop("transaction_sha256"),
+            )
+            if (
+                transaction_sha256(transaction_projection) != recorded_transaction_sha
+                or transaction.run_id != run_id
+                or (
+                    match is not None
+                    and (
+                        transaction.transaction_id != match.group("transaction")
+                        or transaction.proposed_revision != int(match.group("revision"))
+                    )
+                )
+                or (
+                    staging_match is not None
+                    and transaction.transaction_id != staging_match.group(0)
+                )
+            ):
+                raise CanonicalStorageError("immutable transaction identity mismatch")
+            if injector is not None:
+                injector("immutable_control.transaction.after_identity")
+        except Exception as exc:
+            if injector is None:
+                raise
+            raise _StorageBoundaryError(
+                "verification",
+                "immutable_control.transaction.identity",
+                exc,
+            ) from exc
+        try:
+            if injector is not None:
+                injector("immutable_control.before_manifest_reread")
+            manifest, _manifest_bytes, manifest_sha = _read_control(
+                revision_dir / "manifest.json",
+                StorageRevisionManifestV1,
+                max_bytes=self.max_artifact_bytes,
+                injector=injector,
+                hook="immutable_control.manifest",
+            )
+            if injector is not None:
+                injector("immutable_control.after_manifest_reread")
+        except Exception as exc:
+            if injector is None:
+                raise
+            raise _StorageBoundaryError(
+                "verification",
+                "immutable_control.manifest",
+                exc,
+            ) from exc
+        try:
+            if injector is not None:
+                injector("immutable_control.manifest.before_correlation")
+            if (
+                manifest.run_id != run_id
+                or manifest.revision != transaction.proposed_revision
+                or manifest.transaction_id != transaction.transaction_id
+                or manifest.transaction_sha256 != transaction.transaction_sha256
+                or manifest.previous_revision != transaction.expected_revision
+                or manifest.previous_manifest_sha256 != transaction.expected_manifest_sha256
+                or manifest.expected_pointer_sha256 != transaction.expected_pointer_sha256
+                or manifest.created_at != transaction.created_at
+                or manifest.producer_id != transaction.producer_id
+                or manifest.producer_version != transaction.producer_version
+                or manifest.producer_id != self.producer_id
+                or manifest.producer_version != self.producer_version
+                or manifest.artifacts != transaction.artifact_plan
+                or manifest.provenance_heads != transaction.provenance_heads
+            ):
+                raise CanonicalStorageError("immutable manifest/transaction mismatch")
+            if injector is not None:
+                injector("immutable_control.manifest.after_correlation")
+                injector("immutable_control.manifest.before_inventory_digest")
+            if inventory_sha256(manifest.artifacts) != manifest.inventory_sha256:
+                raise CanonicalStorageError("immutable manifest inventory digest mismatch")
+            if injector is not None:
+                injector("immutable_control.manifest.after_inventory_digest")
+                injector("immutable_control.manifest.before_provenance_heads")
+            if provenance_heads(manifest.artifacts) != manifest.provenance_heads:
+                raise CanonicalStorageError("immutable manifest provenance heads mismatch")
+            if injector is not None:
+                injector("immutable_control.manifest.after_provenance_heads")
+        except Exception as exc:
+            if injector is None:
+                raise
+            raise _StorageBoundaryError(
+                "verification",
+                "immutable_control.manifest.correlation",
+                exc,
+            ) from exc
+        try:
+            if injector is not None:
+                injector("immutable_control.manifest.before_inventory_paths")
+            payload_root = revision_dir / "payload"
+            verify_directory(payload_root)
+            expected_payload_files = {
+                PurePosixPath(entry.revision_relative_path).relative_to("payload").as_posix()
+                for entry in manifest.artifacts
+            }
+            actual_payload_files: set[str] = set()
+            expected_payload_directories: set[str] = set()
+            for expected_file in expected_payload_files:
+                parent = PurePosixPath(expected_file).parent
+                while parent != PurePosixPath("."):
+                    expected_payload_directories.add(parent.as_posix())
+                    parent = parent.parent
+            actual_payload_directories: set[str] = set()
+            for item in payload_root.rglob("*"):
+                relative = item.relative_to(payload_root).as_posix()
+                info = item.lstat()
+                attributes = getattr(info, "st_file_attributes", 0)
+                reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
+                    raise CanonicalStorageError(
+                        "payload namespace contains a link or reparse point"
+                    )
+                if stat.S_ISDIR(info.st_mode):
+                    verify_directory(item)
+                    actual_payload_directories.add(relative)
+                else:
+                    verify_regular_single_link(item)
+                    actual_payload_files.add(relative)
+            if (
+                actual_payload_files != expected_payload_files
+                or actual_payload_directories != expected_payload_directories
+            ):
+                raise CanonicalStorageError(
+                    "payload namespace does not match exact inventory paths"
+                )
+            if injector is not None:
+                injector("immutable_control.manifest.after_inventory_paths")
+        except Exception as exc:
+            if injector is None:
+                raise
+            raise _StorageBoundaryError(
+                "verification",
+                "immutable_control.manifest.inventory_paths",
+                exc,
+            ) from exc
         artifacts = tuple(
-            self._verify_inventory_entry(revision_dir, entry, run_id=run_id)
+            self._verify_inventory_entry(
+                revision_dir,
+                entry,
+                run_id=run_id,
+                injector=injector,
+            )
             for entry in manifest.artifacts
         )
         verification_request = RevisionPublishRequestV1(
@@ -1556,12 +2199,28 @@ class RunRevisionStore:
             producer_version=transaction.producer_version,
             artifacts=artifacts,
         )
-        verified_inventory, verified_heads, _parsed = build_inventory(
-            verification_request,
-            max_artifact_bytes=self.max_artifact_bytes,
-        )
-        if verified_inventory != manifest.artifacts or verified_heads != manifest.provenance_heads:
-            raise CanonicalStorageError("stored inventory provenance replay mismatch")
+        try:
+            if injector is not None:
+                injector("immutable_control.manifest.before_inventory_replay")
+            verified_inventory, verified_heads, _parsed = build_inventory(
+                verification_request,
+                max_artifact_bytes=self.max_artifact_bytes,
+            )
+            if (
+                verified_inventory != manifest.artifacts
+                or verified_heads != manifest.provenance_heads
+            ):
+                raise CanonicalStorageError("stored inventory provenance replay mismatch")
+            if injector is not None:
+                injector("immutable_control.manifest.after_inventory_replay")
+        except Exception as exc:
+            if injector is None:
+                raise
+            raise _StorageBoundaryError(
+                "verification",
+                "immutable_control.manifest.inventory_replay",
+                exc,
+            ) from exc
         expected_files = {"transaction.json", "manifest.json", "payload"}
         if {item.name for item in revision_dir.iterdir()} != expected_files:
             raise CanonicalStorageError("immutable revision has unknown entries")
@@ -1585,14 +2244,27 @@ class RunRevisionStore:
         )
         return reachable, manifest, manifest_sha, transaction
 
-    def _read_chain(self, run_id: str) -> _VerifiedChain:
+    def _read_chain(
+        self,
+        run_id: str,
+        *,
+        verify_unreachable: bool = True,
+        injector: FaultInjector | None = None,
+        hook: str | None = None,
+    ) -> _VerifiedChain:
         validate_run_id(run_id)
         self._ownership(run_id)
+        self._validate_existing_namespace(
+            run_id,
+            verify_immutable_revisions=verify_unreachable,
+        )
         current = self.runs_root / run_id / ".revision-store" / "current.json"
         pointer, pointer_bytes, pointer_sha = _read_control(
             current,
             StorageRevisionPointerV1,
             max_bytes=self.max_artifact_bytes,
+            injector=injector,
+            hook=None if hook is None else f"{hook}.current",
         )
         if pointer.run_id != run_id:
             raise CanonicalStorageError("current pointer cross-run mismatch")
@@ -1626,6 +2298,12 @@ class RunRevisionStore:
                             candidate / "manifest.json",
                             StorageRevisionManifestV1,
                             max_bytes=self.max_artifact_bytes,
+                            injector=injector,
+                            hook=(
+                                None
+                                if hook is None
+                                else f"{hook}.lineage_candidate.{expected_revision}"
+                            ),
                         )
                     except (CanonicalStorageError, OSError, ValidationError):
                         continue
@@ -1644,6 +2322,7 @@ class RunRevisionStore:
                 revision_dir,
                 run_id=run_id,
                 expected_pointer=pointer if expected_revision == pointer.revision else None,
+                injector=injector,
             )
             reachable, manifest, manifest_sha, _transaction = entry
             identity = (reachable.revision, reachable.transaction_id)
@@ -1660,7 +2339,12 @@ class RunRevisionStore:
                 raise CanonicalStorageError("lineage decrement mismatch")
             expected_revision = manifest.previous_revision
             expected_manifest_sha = manifest.previous_manifest_sha256
+        if injector is not None and hook is not None:
+            injector(f"{hook}.before_current_consistency_reread")
+        verify_regular_single_link(current)
         pointer_reread = current.read_bytes()
+        if injector is not None and hook is not None:
+            injector(f"{hook}.after_current_consistency_reread")
         if pointer_reread != pointer_bytes:
             raise CanonicalStorageError("current changed during structural read")
         return _VerifiedChain(
@@ -1686,10 +2370,7 @@ class RunRevisionStore:
             except RunStorageError:
                 raise
             except CanonicalStorageError as exc:
-                if (
-                    str(exc) == "current changed during structural read"
-                    and attempt < 2
-                ):
+                if str(exc) == "current changed during structural read" and attempt < 2:
                     continue
                 raise _run_failure(
                     run_id,
@@ -1716,11 +2397,29 @@ class RunRevisionStore:
             reachable_history=tuple(entry[0] for entry in chain.entries),
         )
 
-    def _existing_chain_or_none(self, run_id: str) -> _VerifiedChain | None:
+    def _existing_chain_or_none(
+        self,
+        run_id: str,
+        *,
+        verify_unreachable: bool = True,
+        injector: FaultInjector | None = None,
+        hook: str | None = None,
+    ) -> _VerifiedChain | None:
         current = self.runs_root / run_id / ".revision-store" / "current.json"
+        if injector is not None and hook is not None:
+            injector(f"{hook}.before_exists")
         if not current.exists():
+            if injector is not None and hook is not None:
+                injector(f"{hook}.after_exists")
             return None
-        return self._read_chain(run_id)
+        if injector is not None and hook is not None:
+            injector(f"{hook}.after_exists")
+        return self._read_chain(
+            run_id,
+            verify_unreachable=verify_unreachable,
+            injector=injector,
+            hook=hook,
+        )
 
     def _idempotency_outcome(
         self,
@@ -1782,7 +2481,11 @@ class RunRevisionStore:
             and request.proposed_revision == chain.pointer.revision + 1
         )
 
-    def _replay_orphan_exists(self, prepared: _PreparedRevision) -> bool:
+    def _replay_orphan_effect(
+        self,
+        prepared: _PreparedRevision,
+        chain: _VerifiedChain | None,
+    ) -> Literal["staging_orphan", "unreferenced_revision"] | None:
         request = prepared.request
         control = self.runs_root / request.run_id / ".revision-store"
         staging = control / "transactions" / request.transaction_id
@@ -1795,17 +2498,65 @@ class RunRevisionStore:
                 if path.name.endswith(f"-{request.transaction_id}")
             )
         for candidate in candidates:
+            candidate_effect: Literal[
+                "staging_orphan",
+                "unreferenced_revision",
+            ] = (
+                "staging_orphan"
+                if candidate.parent.name == "transactions"
+                else "unreferenced_revision"
+            )
             descriptor_path = candidate / "transaction.json"
             if not descriptor_path.exists():
-                return True
+                return candidate_effect
+
+            def replay_injector(
+                hook: str,
+                effect: Literal[
+                    "staging_orphan",
+                    "unreferenced_revision",
+                ] = candidate_effect,
+            ) -> None:
+                if self.fault_injector is None:
+                    return
+                try:
+                    self.fault_injector(hook)
+                except Exception as exc:
+                    raise _run_failure(
+                        request.run_id,
+                        RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+                        stage="initial_read",
+                        transaction_id=request.transaction_id,
+                        expected_revision=request.expected_revision,
+                        observed_revision=(None if chain is None else chain.pointer.revision),
+                        effect=effect,
+                        previous_effect=(
+                            "not_applicable" if request.proposed_revision == 1 else "unchanged"
+                        ),
+                        reconciliation=True,
+                    ) from exc
+
             try:
                 descriptor, _data, _digest = _read_control(
                     descriptor_path,
                     RevisionTransactionDescriptorV1,
                     max_bytes=self.max_artifact_bytes,
+                    injector=replay_injector,
+                    hook="replay_orphan.transaction",
                 )
             except (CanonicalStorageError, OSError, ValidationError):
-                return True
+                return candidate_effect
+            descriptor_projection = descriptor.model_dump(mode="python")
+            recorded_descriptor_sha = cast(
+                str,
+                descriptor_projection.pop("transaction_sha256"),
+            )
+            if (
+                transaction_sha256(descriptor_projection) != recorded_descriptor_sha
+                or descriptor.run_id != request.run_id
+                or descriptor.transaction_id != request.transaction_id
+            ):
+                return candidate_effect
             if descriptor.transaction_sha256 != prepared.transaction.transaction_sha256:
                 raise _run_failure(
                     request.run_id,
@@ -1813,13 +2564,14 @@ class RunRevisionStore:
                     stage="initial_read",
                     transaction_id=request.transaction_id,
                     expected_revision=request.expected_revision,
+                    effect=candidate_effect,
                     previous_effect=(
                         "not_applicable" if request.proposed_revision == 1 else "unchanged"
                     ),
                     reconciliation=True,
                 )
-            return True
-        return False
+            return candidate_effect
+        return None
 
     def publish(self, request: RevisionPublishRequestV1) -> RevisionPublishOutcomeV1:
         """Publish one immutable structural revision under a serialized CAS."""
@@ -1845,6 +2597,7 @@ class RunRevisionStore:
         )
         lease = self._authority(request.run_id, marker_sha, bootstrap=True)
         outcome: RevisionPublishOutcomeV1 | None = None
+        pending_failure: RunStorageError | None = None
         release_error: LockReleaseError | None = None
         try:
             self._scan_case_aliases(request.run_id)
@@ -1869,7 +2622,11 @@ class RunRevisionStore:
                     ),
                 ) from exc
             try:
-                chain = self._existing_chain_or_none(request.run_id)
+                chain = self._existing_chain_or_none(
+                    request.run_id,
+                    injector=self.fault_injector,
+                    hook="initial_read",
+                )
             except (CanonicalStorageError, OSError, ValidationError) as exc:
                 raise _run_failure(
                     request.run_id,
@@ -1879,6 +2636,52 @@ class RunRevisionStore:
                     expected_revision=request.expected_revision,
                     reconciliation=True,
                 ) from exc
+
+            control = self.runs_root / request.run_id / ".revision-store"
+            staging_path = control / "transactions" / request.transaction_id
+            reachable_revision_names = (
+                set()
+                if chain is None
+                else {Path(entry[0].revision_relative_path).name for entry in chain.entries}
+            )
+            revisions_path = control / "revisions"
+            has_unreferenced_revision = revisions_path.exists() and any(
+                path.name.endswith(f"-{request.transaction_id}")
+                and path.name not in reachable_revision_names
+                for path in revisions_path.iterdir()
+            )
+            if staging_path.exists():
+                admission_effect = "staging_orphan"
+            elif has_unreferenced_revision:
+                admission_effect = "unreferenced_revision"
+            else:
+                admission_effect = "control_only" if lease.control_changed else "none"
+            admission_requires_reconciliation = admission_effect in {
+                "staging_orphan",
+                "unreferenced_revision",
+            }
+
+            def locked_admission_fault(hook: str) -> None:
+                if self.fault_injector is None:
+                    return
+                try:
+                    self.fault_injector(hook)
+                except Exception as exc:
+                    raise _run_failure(
+                        request.run_id,
+                        RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+                        stage="locked_admission",
+                        transaction_id=request.transaction_id,
+                        expected_revision=request.expected_revision,
+                        observed_revision=(None if chain is None else chain.pointer.revision),
+                        effect=admission_effect,
+                        previous_effect=(
+                            "not_applicable" if request.proposed_revision == 1 else "unchanged"
+                        ),
+                        reconciliation=admission_requires_reconciliation,
+                    ) from exc
+
+            locked_admission_fault("locked_admission.before_byte_count")
             try:
                 current_bytes = self._run_physical_bytes(request.run_id)
             except (CanonicalStorageError, OSError) as exc:
@@ -1895,11 +2698,13 @@ class RunRevisionStore:
                     transaction_id=request.transaction_id,
                     expected_revision=request.expected_revision,
                     observed_revision=None if chain is None else chain.pointer.revision,
-                    effect="control_only" if lease.control_changed else "none",
+                    effect=admission_effect,
                     previous_effect=(
                         "not_applicable" if request.proposed_revision == 1 else "unchanged"
                     ),
+                    reconciliation=admission_requires_reconciliation,
                 ) from exc
+            locked_admission_fault("locked_admission.after_byte_count")
             if current_bytes > self.max_run_bytes:
                 raise _run_failure(
                     request.run_id,
@@ -1908,17 +2713,19 @@ class RunRevisionStore:
                     transaction_id=request.transaction_id,
                     expected_revision=request.expected_revision,
                     observed_revision=None if chain is None else chain.pointer.revision,
-                    effect="control_only" if lease.control_changed else "none",
+                    effect=admission_effect,
                     previous_effect=(
                         "not_applicable" if request.proposed_revision == 1 else "unchanged"
                     ),
+                    reconciliation=admission_requires_reconciliation,
                 )
             idempotent = self._idempotency_outcome(prepared, chain)
             if idempotent is not None:
                 outcome = idempotent
                 return outcome
-            if self._replay_orphan_exists(prepared):
-                return RevisionPublishOutcomeV1(
+            replay_orphan_effect = self._replay_orphan_effect(prepared, chain)
+            if replay_orphan_effect is not None:
+                outcome = RevisionPublishOutcomeV1(
                     outcome_kind="reconciliation_required",
                     run_id_sha256=run_id_sha256(request.run_id),
                     transaction_id=request.transaction_id,
@@ -1927,13 +2734,14 @@ class RunRevisionStore:
                     observed_current_revision=(None if chain is None else chain.pointer.revision),
                     manifest_sha256=None,
                     pointer_sha256=None if chain is None else chain.pointer_sha256,
-                    filesystem_effect="staging_orphan",
+                    filesystem_effect=replay_orphan_effect,
                     domain_effect="current_unchanged",
                     previous_revision_effect=(
                         "not_applicable" if request.proposed_revision == 1 else "unchanged"
                     ),
                     durability_evidence=_reconciliation_durability(),
                 )
+                return outcome
             if not self._cas_matches(request, chain):
                 raise _run_failure(
                     request.run_id,
@@ -1978,17 +2786,14 @@ class RunRevisionStore:
             previous_metadata_bytes = (
                 metadata_final.stat().st_size if metadata_final.exists() else 0
             )
-            projected_after_metadata = (
-                current_bytes - previous_metadata_bytes + len(metadata_bytes)
-            )
+            projected_after_metadata = current_bytes - previous_metadata_bytes + len(metadata_bytes)
             peak_bytes = max(
                 current_bytes + len(metadata_bytes),
                 projected_after_metadata + revision_bytes,
                 projected_after_metadata + revision_bytes + len(prepared.pointer_bytes),
             )
-            if (
-                peak_bytes > self.max_run_bytes
-            ):
+            locked_admission_fault("locked_admission.before_peak_check")
+            if peak_bytes > self.max_run_bytes:
                 raise _run_failure(
                     request.run_id,
                     RunStorageFailureCode.RUN_BUDGET_EXCEEDED,
@@ -2001,6 +2806,7 @@ class RunRevisionStore:
                         "not_applicable" if request.proposed_revision == 1 else "unchanged"
                     ),
                 )
+            locked_admission_fault("locked_admission.after_peak_check")
             try:
                 self._metadata(request, metadata, metadata_bytes, owner_token)
             except RunStorageError:
@@ -2021,12 +2827,29 @@ class RunRevisionStore:
                     previous_effect=(
                         "not_applicable" if request.proposed_revision == 1 else "unchanged"
                     ),
-                    reconciliation=True,
+                    reconciliation=False,
                     durability=(
                         _reconciliation_durability(file_sync="failed")
                         if exc.kind == "durability"
                         else None
                     ),
+                ) from exc
+            except _PublishBoundaryError as exc:
+                raise _run_failure(
+                    request.run_id,
+                    (
+                        RunStorageFailureCode.EFFECT_UNKNOWN
+                        if exc.invoked
+                        else RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED
+                    ),
+                    stage="lock_metadata",
+                    transaction_id=request.transaction_id,
+                    expected_revision=request.expected_revision,
+                    effect="control_only",
+                    previous_effect=(
+                        "not_applicable" if request.proposed_revision == 1 else "unchanged"
+                    ),
+                    reconciliation=exc.invoked,
                 ) from exc
             except Exception as exc:
                 raise _run_failure(
@@ -2043,6 +2866,29 @@ class RunRevisionStore:
                 ) from exc
             try:
                 control = self._bootstrap_namespace(request.run_id)
+            except _StorageBoundaryError as exc:
+                code = {
+                    "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+                    "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+                    "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+                }[exc.kind]
+                raise _run_failure(
+                    request.run_id,
+                    code,
+                    stage="namespace_bootstrap",
+                    transaction_id=request.transaction_id,
+                    expected_revision=request.expected_revision,
+                    effect="control_only",
+                    previous_effect=(
+                        "not_applicable" if request.proposed_revision == 1 else "unchanged"
+                    ),
+                    reconciliation=exc.kind == "verification",
+                    durability=(
+                        _reconciliation_durability(file_sync="failed")
+                        if exc.kind == "durability"
+                        else None
+                    ),
+                ) from exc
             except Exception as exc:
                 raise _run_failure(
                     request.run_id,
@@ -2070,7 +2916,24 @@ class RunRevisionStore:
                     self.fault_injector("staging.before_mkdir")
                 staging.mkdir()
                 staging_created = True
-                (staging / "payload").mkdir()
+                if self.fault_injector is not None:
+                    self.fault_injector("staging.after_mkdir")
+                _directory_sync(
+                    staging.parent,
+                    injector=self.fault_injector,
+                    hook="staging.parent_sync",
+                )
+                payload_root = staging / "payload"
+                _mkdir_verified(
+                    payload_root,
+                    injector=self.fault_injector,
+                    hook="staging.payload_root",
+                )
+                _directory_sync(
+                    staging,
+                    injector=self.fault_injector,
+                    hook="staging.directory_sync",
+                )
                 write_stage = "transaction"
                 _write_exclusive_verified(
                     staging / "transaction.json",
@@ -2083,7 +2946,20 @@ class RunRevisionStore:
                 for entry in prepared.inventories:
                     artifact = prepared.artifacts[entry.logical_name]
                     payload_path = staging / entry.revision_relative_path
-                    payload_path.parent.mkdir(parents=True, exist_ok=True)
+                    if payload_path.parent != payload_root:
+                        if payload_path.parent.exists():
+                            verify_directory(payload_path.parent)
+                        else:
+                            _mkdir_verified(
+                                payload_path.parent,
+                                injector=self.fault_injector,
+                                hook=f"payload_parent.{payload_path.parent.name}",
+                            )
+                    _directory_sync(
+                        payload_path.parent,
+                        injector=self.fault_injector,
+                        hook=f"payload_directory.{entry.logical_name}",
+                    )
                     _write_exclusive_verified(
                         payload_path,
                         artifact.exact_bytes,
@@ -2099,33 +2975,71 @@ class RunRevisionStore:
                     injector=self.fault_injector,
                     hook="manifest",
                 )
-                self._verify_revision_directory(staging, run_id=request.run_id)
+                self._verify_revision_directory(
+                    staging,
+                    run_id=request.run_id,
+                    injector=self.fault_injector,
+                )
+                for directory in sorted(
+                    (path for path in staging.rglob("*") if path.is_dir()),
+                    key=lambda path: len(path.parts),
+                    reverse=True,
+                ):
+                    _directory_sync(
+                        directory,
+                        injector=self.fault_injector,
+                        hook=f"revision_pre_publish.{directory.relative_to(staging).as_posix()}",
+                    )
+                _directory_sync(
+                    staging,
+                    injector=self.fault_injector,
+                    hook="revision_pre_publish.root",
+                )
                 write_stage = "revision_publish"
                 if self.fault_injector is not None:
                     self.fault_injector("revision.before_rename")
                 rename_invoked = True
                 staging.rename(revision_dir)
                 revision_published = True
+                if self.fault_injector is not None:
+                    self.fault_injector("revision.after_rename")
+                _directory_sync(
+                    staging.parent,
+                    injector=self.fault_injector,
+                    hook="revision.transactions_parent_sync",
+                )
+                _directory_sync(
+                    revision_dir.parent,
+                    injector=self.fault_injector,
+                    hook="revision.revisions_parent_sync",
+                )
                 verified_revision = self._verify_revision_directory(
                     revision_dir,
                     run_id=request.run_id,
+                    injector=self.fault_injector,
                 )
                 if verified_revision[2] != prepared.manifest_sha256:
                     raise CanonicalStorageError("published revision manifest hash mismatch")
             except Exception as exc:
-                if not staging_created:
+                if isinstance(exc, _ArtifactBoundaryError):
+                    code = exc.code
+                    effect = "unreferenced_revision" if revision_published else "staging_orphan"
+                    reconciliation = True
+                elif isinstance(exc, _StorageBoundaryError) and exc.kind == "durability":
+                    code = RunStorageFailureCode.DURABILITY_UNCONFIRMED
+                    effect = "unreferenced_revision" if revision_published else "staging_orphan"
+                    reconciliation = True
+                elif not staging_created:
                     code = RunStorageFailureCode.TRANSACTION_WRITE_FAILED
                     effect = "control_only"
                     reconciliation = False
                 elif write_stage != "revision_publish":
                     code = (
                         RunStorageFailureCode.DURABILITY_UNCONFIRMED
-                        if isinstance(exc, _StorageBoundaryError)
-                        and exc.kind == "durability"
+                        if isinstance(exc, _StorageBoundaryError) and exc.kind == "durability"
                         else (
                             RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED
-                            if isinstance(exc, _StorageBoundaryError)
-                            and exc.kind == "verification"
+                            if isinstance(exc, _StorageBoundaryError) and exc.kind == "verification"
                             else RunStorageFailureCode.TRANSACTION_WRITE_FAILED
                         )
                     )
@@ -2137,9 +3051,7 @@ class RunRevisionStore:
                     reconciliation = True
                 elif rename_invoked:
                     code = RunStorageFailureCode.EFFECT_UNKNOWN
-                    effect = (
-                        "unreferenced_revision" if revision_dir.exists() else "staging_orphan"
-                    )
+                    effect = "unreferenced_revision" if revision_dir.exists() else "staging_orphan"
                     reconciliation = True
                 else:
                     code = RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED
@@ -2148,7 +3060,7 @@ class RunRevisionStore:
                 raise _run_failure(
                     request.run_id,
                     code,
-                    stage=write_stage,
+                    stage="payload" if isinstance(exc, _ArtifactBoundaryError) else write_stage,
                     transaction_id=request.transaction_id,
                     expected_revision=request.expected_revision,
                     effect=effect,
@@ -2158,8 +3070,7 @@ class RunRevisionStore:
                     reconciliation=reconciliation,
                     durability=(
                         _reconciliation_durability(file_sync="failed")
-                        if isinstance(exc, _StorageBoundaryError)
-                        and exc.kind == "durability"
+                        if isinstance(exc, _StorageBoundaryError) and exc.kind == "durability"
                         else None
                     ),
                 ) from exc
@@ -2196,7 +3107,14 @@ class RunRevisionStore:
                 ) from exc
             try:
                 replace_invoked = False
-                final_chain = self._existing_chain_or_none(request.run_id)
+                final_cas_verified = False
+                reconciliation_started = False
+                strict_current_pointer_verified = False
+                final_chain = self._existing_chain_or_none(
+                    request.run_id,
+                    injector=self.fault_injector,
+                    hook="final_cas",
+                )
                 if not self._cas_matches(request, final_chain):
                     raise _run_failure(
                         request.run_id,
@@ -2213,6 +3131,7 @@ class RunRevisionStore:
                         ),
                         reconciliation=True,
                     )
+                final_cas_verified = True
                 self._ownership(request.run_id)
                 if self.fault_injector is not None:
                     self.fault_injector("current.before_replace")
@@ -2220,7 +3139,28 @@ class RunRevisionStore:
                 os.replace(pointer_temp, control / "current.json")
                 if self.fault_injector is not None:
                     self.fault_injector("current.after_replace")
-                published_chain = self._read_chain(request.run_id)
+                reconciliation_started = True
+
+                confirmed_pointer, confirmed_pointer_bytes, confirmed_pointer_sha = _read_control(
+                    control / "current.json",
+                    StorageRevisionPointerV1,
+                    max_bytes=self.max_artifact_bytes,
+                    injector=self.fault_injector,
+                    hook="reconciliation.current",
+                )
+                if (
+                    confirmed_pointer != prepared.pointer
+                    or confirmed_pointer_bytes != prepared.pointer_bytes
+                    or confirmed_pointer_sha != prepared.pointer_sha256
+                ):
+                    raise CanonicalStorageError("reconciliation current pointer mismatch")
+                strict_current_pointer_verified = True
+
+                published_chain = self._read_chain(
+                    request.run_id,
+                    injector=self.fault_injector,
+                    hook="reconciliation.lineage",
+                )
                 if (
                     published_chain.pointer != prepared.pointer
                     or published_chain.entries[0][2] != prepared.manifest_sha256
@@ -2232,8 +3172,12 @@ class RunRevisionStore:
                 if not replace_invoked:
                     raise _run_failure(
                         request.run_id,
-                        RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED,
-                        stage="current_replace",
+                        (
+                            RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED
+                            if final_cas_verified
+                            else RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED
+                        ),
+                        stage="current_replace" if final_cas_verified else "final_cas",
                         transaction_id=request.transaction_id,
                         expected_revision=request.expected_revision,
                         effect="unreferenced_revision",
@@ -2244,21 +3188,49 @@ class RunRevisionStore:
                         reconciliation=True,
                         durability=_reconciliation_durability(),
                     ) from exc
-                current_path = control / "current.json"
-                current_advanced = current_path.exists() and sha256_bytes(
-                    current_path.read_bytes()
-                ) == prepared.pointer_sha256
+                if reconciliation_started and not strict_current_pointer_verified:
+                    raise _run_failure(
+                        request.run_id,
+                        RunStorageFailureCode.EFFECT_UNKNOWN,
+                        stage="reconciliation",
+                        transaction_id=request.transaction_id,
+                        expected_revision=request.expected_revision,
+                        observed_revision=None,
+                        effect="current_replace_attempted",
+                        domain_effect="current_may_have_advanced",
+                        previous_effect=(
+                            "not_applicable" if request.proposed_revision == 1 else "unconfirmed"
+                        ),
+                        reconciliation=True,
+                        durability=_reconciliation_durability(
+                            pointer_replace="attempted_unconfirmed"
+                        ),
+                    ) from exc
+                if reconciliation_started:
+                    raise _run_failure(
+                        request.run_id,
+                        RunStorageFailureCode.RUN_CORRUPT,
+                        stage="reconciliation",
+                        transaction_id=request.transaction_id,
+                        expected_revision=request.expected_revision,
+                        observed_revision=request.proposed_revision,
+                        effect="current_advanced",
+                        domain_effect="current_advanced",
+                        previous_effect=(
+                            "not_applicable" if request.proposed_revision == 1 else "unconfirmed"
+                        ),
+                        reconciliation=True,
+                        durability=_reconciliation_durability(pointer_replace="confirmed"),
+                    ) from exc
                 raise _run_failure(
                     request.run_id,
                     RunStorageFailureCode.EFFECT_UNKNOWN,
                     stage="current_replace",
                     transaction_id=request.transaction_id,
                     expected_revision=request.expected_revision,
-                    observed_revision=request.proposed_revision if current_advanced else None,
-                    effect="current_advanced" if current_advanced else "current_replace_attempted",
-                    domain_effect=(
-                        "current_advanced" if current_advanced else "current_may_have_advanced"
-                    ),
+                    observed_revision=None,
+                    effect="current_replace_attempted",
+                    domain_effect="current_may_have_advanced",
                     previous_effect=(
                         "not_applicable" if request.proposed_revision == 1 else "unconfirmed"
                     ),
@@ -2266,7 +3238,11 @@ class RunRevisionStore:
                     durability=_reconciliation_durability(pointer_replace="attempted_unconfirmed"),
                 ) from exc
             try:
-                directory_state = _directory_sync(control)
+                directory_state = _directory_sync(
+                    control,
+                    injector=self.fault_injector,
+                    hook="current.directory_sync",
+                )
             except Exception as exc:
                 raise _run_failure(
                     request.run_id,
@@ -2306,39 +3282,67 @@ class RunRevisionStore:
                 durability_evidence=_published_durability(directory_state),
             )
             return outcome
+        except RunStorageError as exc:
+            pending_failure = exc
+            raise
         finally:
             try:
                 lease.release()
             except LockReleaseError as exc:
                 release_error = exc
             if release_error is not None:
-                effect = "current_advanced" if outcome is not None else "control_only"
+                if pending_failure is not None:
+                    prior = pending_failure.failure
+                    effect = prior.filesystem_effect
+                    domain_effect = prior.domain_effect
+                    observed_revision = prior.observed_revision
+                    previous_effect = prior.previous_revision_effect
+                    durability = prior.durability_evidence or _reconciliation_durability()
+                elif outcome is not None:
+                    effect = outcome.filesystem_effect
+                    domain_effect = outcome.domain_effect
+                    observed_revision = outcome.observed_current_revision
+                    previous_effect = outcome.previous_revision_effect
+                    durability = outcome.durability_evidence
+                else:
+                    effect = "control_only" if lease.control_changed else "none"
+                    domain_effect = "current_unchanged"
+                    observed_revision = None
+                    previous_effect = (
+                        "not_applicable" if request.proposed_revision == 1 else "unconfirmed"
+                    )
+                    durability = _reconciliation_durability()
                 raise _run_failure(
                     request.run_id,
                     RunStorageFailureCode.EFFECT_UNKNOWN,
                     stage="lock_release",
                     transaction_id=request.transaction_id,
                     expected_revision=request.expected_revision,
-                    observed_revision=(
-                        outcome.observed_current_revision if outcome is not None else None
-                    ),
+                    observed_revision=observed_revision,
                     effect=effect,
-                    domain_effect=(
-                        "current_advanced" if outcome is not None else "current_unchanged"
-                    ),
-                    previous_effect=(
-                        "not_applicable" if request.proposed_revision == 1 else "unconfirmed"
-                    ),
+                    domain_effect=domain_effect,
+                    previous_effect=previous_effect,
                     reconciliation=True,
-                    durability=(
-                        outcome.durability_evidence
-                        if outcome is not None
-                        else _reconciliation_durability()
-                    ),
+                    durability=durability,
                 ) from release_error
 
     def _inspect_orphans_locked(self, run_id: str) -> OrphanInspectionV1:
-        chain = self._existing_chain_or_none(run_id)
+        def inspect_fault(hook: str) -> None:
+            if self.fault_injector is None:
+                return
+            try:
+                self.fault_injector(hook)
+            except Exception as exc:
+                raise _run_failure(
+                    run_id,
+                    RunStorageFailureCode.RUN_CORRUPT,
+                    stage="orphan_inspect",
+                    reconciliation=True,
+                ) from exc
+
+        inspect_fault("orphan_inspect.before_current_and_lineage")
+        chain = self._existing_chain_or_none(run_id, verify_unreachable=False)
+        inspect_fault("orphan_inspect.after_current_and_lineage")
         reachable = () if chain is None else tuple(entry[0] for entry in chain.entries)
         reachable_names = {Path(entry.revision_relative_path).name for entry in reachable}
         control = self.runs_root / run_id / ".revision-store"
@@ -2347,6 +3351,7 @@ class RunRevisionStore:
         transactions = control / "transactions"
         if transactions.exists():
             for path in sorted(transactions.iterdir(), key=lambda item: item.name.encode()):
+                inspect_fault(f"orphan_inspect.before_staging.{path.name}")
                 match = _TRANSACTION_DIR.fullmatch(path.name)
                 if match is None:
                     raise CanonicalStorageError("unknown staging entry")
@@ -2354,11 +3359,28 @@ class RunRevisionStore:
                 digest: str | None = None
                 revision: int | None = None
                 try:
+
+                    def staging_injector(hook: str) -> None:
+                        inspect_fault(hook)
+
                     transaction, _data, _file_sha = _read_control(
                         path / "transaction.json",
                         RevisionTransactionDescriptorV1,
                         max_bytes=self.max_artifact_bytes,
+                        injector=staging_injector,
+                        hook=f"orphan_inspect.transaction.{path.name}",
                     )
+                    transaction_projection = transaction.model_dump(mode="python")
+                    recorded_transaction_sha = cast(
+                        str,
+                        transaction_projection.pop("transaction_sha256"),
+                    )
+                    if (
+                        transaction_sha256(transaction_projection) != recorded_transaction_sha
+                        or transaction.run_id != run_id
+                        or transaction.transaction_id != path.name
+                    ):
+                        raise CanonicalStorageError("staging orphan transaction identity mismatch")
                     digest = transaction.transaction_sha256
                     revision = transaction.proposed_revision
                     verification = "descriptor_verified"
@@ -2374,21 +3396,45 @@ class RunRevisionStore:
                         relative_path=f"transactions/{path.name}",
                     )
                 )
+                inspect_fault(f"orphan_inspect.after_staging.{path.name}")
         revisions = control / "revisions"
         if revisions.exists():
             for path in sorted(revisions.iterdir(), key=lambda item: item.name.encode()):
                 if path.name in reachable_names:
                     continue
+                inspect_fault(f"orphan_inspect.before_revision.{path.name}")
                 match = _REVISION_DIR.fullmatch(path.name)
                 if match is None:
                     raise CanonicalStorageError("unknown revision entry")
                 verification = "path_only"
                 digest = None
+                target_faulted = False
+                target_prefix = f"orphan_inspect.revision.{path.name}"
+
+                def target_injector(hook: str, prefix: str = target_prefix) -> None:
+                    nonlocal target_faulted
+                    try:
+                        inspect_fault(f"{prefix}.{hook}")
+                    except RunStorageError:
+                        target_faulted = True
+                        raise
+
                 try:
-                    verified = self._verify_revision_directory(path, run_id=run_id)
+                    verified = self._verify_revision_directory(
+                        path,
+                        run_id=run_id,
+                        injector=target_injector,
+                    )
                     digest = verified[3].transaction_sha256
                     verification = "manifest_verified"
-                except (CanonicalStorageError, OSError, ValidationError):
+                except (
+                    CanonicalStorageError,
+                    OSError,
+                    ValidationError,
+                    _StorageBoundaryError,
+                ):
+                    if target_faulted:
+                        raise
                     pass
                 revision_entries.append(
                     OrphanEntryV1(
@@ -2400,6 +3446,7 @@ class RunRevisionStore:
                         relative_path=f"revisions/{path.name}",
                     )
                 )
+                inspect_fault(f"orphan_inspect.after_revision.{path.name}")
         return OrphanInspectionV1(
             run_id_sha256=run_id_sha256(run_id),
             current_pointer_sha256=None if chain is None else chain.pointer_sha256,
@@ -2414,29 +3461,13 @@ class RunRevisionStore:
         _marker, marker_sha = self._ownership(run_id)
         lease = self._authority(run_id, marker_sha, bootstrap=False)
         try:
-            self._validate_existing_namespace(run_id)
+            self._validate_existing_namespace(
+                run_id,
+                verify_immutable_revisions=False,
+            )
             return self._inspect_orphans_locked(run_id)
         except RunStorageError:
             raise
-        except _StorageBoundaryError as exc:
-            code = {
-                "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
-                "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
-                "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
-            }[exc.kind]
-            raise _run_failure(
-                run_id,
-                code,
-                stage="recovery_claim",
-                transaction_id=request.transaction_id,
-                effect="control_only",
-                reconciliation=temp.exists(),
-                durability=(
-                    _reconciliation_durability(file_sync="failed")
-                    if exc.kind == "durability"
-                    else None
-                ),
-            ) from exc
         except Exception as exc:
             raise _run_failure(
                 run_id,
@@ -2509,7 +3540,77 @@ class RunRevisionStore:
         _marker, marker_sha = self._ownership(run_id)
         lease = self._authority(run_id, marker_sha, bootstrap=False)
         try:
-            self._validate_existing_namespace(run_id)
+
+            def claim_admission_fault(hook: str) -> None:
+                if self.fault_injector is None:
+                    return
+                try:
+                    self.fault_injector(hook)
+                except Exception as exc:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+                        stage="recovery_claim",
+                        transaction_id=request.transaction_id,
+                        effect="control_only",
+                        reconciliation=temp.exists() or final.exists(),
+                    ) from exc
+
+            self._validate_existing_namespace(
+                run_id,
+                verify_immutable_revisions=False,
+            )
+            claim_admission_fault("recovery_claim.admission.before_byte_count")
+            try:
+                physical_bytes = self._run_physical_bytes(run_id)
+            except (CanonicalStorageError, OSError) as exc:
+                message = str(exc)
+                code = (
+                    RunStorageFailureCode.LINK_OR_REPARSE_DETECTED
+                    if "linked" in message or "reparse" in message or "hardlink" in message
+                    else RunStorageFailureCode.RUN_NAMESPACE_CONFLICT
+                )
+                raise _run_failure(
+                    run_id,
+                    code,
+                    stage="recovery_claim",
+                    transaction_id=request.transaction_id,
+                    effect="control_only",
+                    reconciliation=False,
+                ) from exc
+            claim_admission_fault("recovery_claim.admission.after_byte_count")
+            if physical_bytes > self.max_run_bytes:
+                raise _run_failure(
+                    run_id,
+                    RunStorageFailureCode.RUN_BUDGET_EXCEEDED,
+                    stage="recovery_claim",
+                    transaction_id=request.transaction_id,
+                )
+            if final.exists():
+                try:
+                    existing, existing_bytes, _digest = _read_recovery_claim(
+                        final,
+                        max_bytes=self.max_artifact_bytes,
+                        injector=self.fault_injector,
+                        hook="recovery_claim.existing_final",
+                    )
+                except (CanonicalStorageError, OSError, ValidationError) as exc:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.RECOVERY_CLAIM_INCOMPLETE,
+                        stage="recovery_claim",
+                        transaction_id=request.transaction_id,
+                        effect="control_only",
+                        reconciliation=True,
+                    ) from exc
+                if existing != claim or existing_bytes != data:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.RECOVERY_CLAIM_CONFLICT,
+                        stage="recovery_claim",
+                        transaction_id=request.transaction_id,
+                    )
+                return existing
             inspection = self._inspect_orphans_locked(run_id)
             if inspection.current_pointer_sha256 != request.observed_pointer_sha256:
                 raise _run_failure(
@@ -2517,6 +3618,8 @@ class RunRevisionStore:
                     RunStorageFailureCode.RECOVERY_CLAIM_CONFLICT,
                     stage="recovery_claim",
                     transaction_id=request.transaction_id,
+                    effect="control_only" if temp.exists() else "none",
+                    reconciliation=temp.exists(),
                 )
             candidates = {
                 (entry.orphan_form, entry.transaction_id): entry
@@ -2529,6 +3632,8 @@ class RunRevisionStore:
                     RunStorageFailureCode.RECOVERY_CLAIM_CONFLICT,
                     stage="recovery_claim",
                     transaction_id=request.transaction_id,
+                    effect="control_only" if temp.exists() else "none",
+                    reconciliation=temp.exists(),
                 )
             if (
                 target.verification_state == "path_only"
@@ -2540,43 +3645,60 @@ class RunRevisionStore:
                     RunStorageFailureCode.RUN_INCOMPLETE,
                     stage="recovery_claim",
                     transaction_id=request.transaction_id,
+                    effect="control_only" if temp.exists() else "none",
+                    reconciliation=temp.exists(),
                 )
-            physical_bytes = self._run_physical_bytes(run_id)
-            if physical_bytes > self.max_run_bytes:
-                raise _run_failure(
-                    run_id,
-                    RunStorageFailureCode.RUN_BUDGET_EXCEEDED,
-                    stage="recovery_claim",
-                    transaction_id=request.transaction_id,
-                )
-            if final.exists():
-                existing, existing_bytes, _digest = _read_control(
-                    final,
-                    RecoveryClaimV1,
-                    max_bytes=self.max_artifact_bytes,
-                )
-                if existing != claim or existing_bytes != data:
+            temp_already_verified = False
+            if temp.exists():
+                try:
+                    existing_temp, existing_temp_bytes, _digest = _read_recovery_claim(
+                        temp,
+                        max_bytes=self.max_artifact_bytes,
+                        injector=self.fault_injector,
+                        hook="recovery_claim.existing_temp",
+                    )
+                except (CanonicalStorageError, OSError, ValidationError) as exc:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.RECOVERY_CLAIM_INCOMPLETE,
+                        stage="recovery_claim",
+                        transaction_id=request.transaction_id,
+                        effect="control_only",
+                        reconciliation=True,
+                    ) from exc
+                if existing_temp != claim or existing_temp_bytes != data:
                     raise _run_failure(
                         run_id,
                         RunStorageFailureCode.RECOVERY_CLAIM_CONFLICT,
                         stage="recovery_claim",
                         transaction_id=request.transaction_id,
+                        effect="control_only",
+                        reconciliation=True,
                     )
-                return existing
-            if physical_bytes + len(data) > self.max_run_bytes:
+                temp_already_verified = True
+            peak_additional_bytes = 0 if temp_already_verified else len(data)
+            claim_admission_fault("recovery_claim.admission.before_peak_check")
+            if physical_bytes + peak_additional_bytes > self.max_run_bytes:
                 raise _run_failure(
                     run_id,
                     RunStorageFailureCode.RUN_BUDGET_EXCEEDED,
                     stage="recovery_claim",
                     transaction_id=request.transaction_id,
                 )
-            _write_exclusive_verified(
-                temp,
-                data,
-                max_bytes=self.max_artifact_bytes,
-                injector=self.fault_injector,
-                hook="recovery_claim",
-            )
+            claim_admission_fault("recovery_claim.admission.after_peak_check")
+            if not temp_already_verified:
+                _write_exclusive_verified(
+                    temp,
+                    data,
+                    max_bytes=self.max_artifact_bytes,
+                    injector=self.fault_injector,
+                    hook="recovery_claim",
+                )
+                _directory_sync(
+                    temp.parent,
+                    injector=self.fault_injector,
+                    hook="recovery_claim.temp_parent_sync",
+                )
             # Recheck reachability while the same authority is held.
             chain = self._existing_chain_or_none(run_id)
             if chain is not None and any(
@@ -2588,17 +3710,128 @@ class RunRevisionStore:
                     stage="recovery_claim",
                     transaction_id=request.transaction_id,
                 )
-            os.replace(temp, final)
-            verified, verified_bytes, _digest = _read_control(
-                final,
-                RecoveryClaimV1,
-                max_bytes=self.max_artifact_bytes,
-            )
-            if verified != claim or verified_bytes != data:
-                raise CanonicalStorageError("recovery claim final verification failed")
+            if self.fault_injector is not None:
+                self.fault_injector("recovery_claim.before_final_recheck")
+            if final.exists():
+                try:
+                    existing, existing_bytes, _digest = _read_recovery_claim(
+                        final,
+                        max_bytes=self.max_artifact_bytes,
+                        injector=self.fault_injector,
+                        hook="recovery_claim.final_recheck",
+                    )
+                except (CanonicalStorageError, OSError, ValidationError) as exc:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.RECOVERY_CLAIM_INCOMPLETE,
+                        stage="recovery_claim",
+                        transaction_id=request.transaction_id,
+                        effect="control_only",
+                        reconciliation=True,
+                    ) from exc
+                if existing != claim or existing_bytes != data:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.RECOVERY_CLAIM_CONFLICT,
+                        stage="recovery_claim",
+                        transaction_id=request.transaction_id,
+                        effect="control_only",
+                    ) from None
+                return existing
+            if self.fault_injector is not None:
+                self.fault_injector("recovery_claim.after_final_recheck")
+            finalize_invoked = False
+            try:
+                if self.fault_injector is not None:
+                    self.fault_injector("recovery_claim.before_finalize")
+                finalize_invoked = True
+                os.replace(temp, final)
+                if self.fault_injector is not None:
+                    self.fault_injector("recovery_claim.after_finalize")
+                _directory_sync(
+                    control,
+                    injector=self.fault_injector,
+                    hook="recovery_claim.final_parent_sync",
+                )
+                _directory_sync(
+                    temp.parent,
+                    injector=self.fault_injector,
+                    hook="recovery_claim.temp_parent_after_finalize_sync",
+                )
+            except Exception as exc:
+                if isinstance(exc, _StorageBoundaryError):
+                    boundary_code = {
+                        "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+                        "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+                        "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+                    }[exc.kind]
+                else:
+                    boundary_code = (
+                        RunStorageFailureCode.EFFECT_UNKNOWN
+                        if finalize_invoked
+                        else RunStorageFailureCode.TRANSACTION_PUBLISH_FAILED
+                    )
+                raise _run_failure(
+                    run_id,
+                    boundary_code,
+                    stage="recovery_claim",
+                    transaction_id=request.transaction_id,
+                    effect="control_only",
+                    reconciliation=True,
+                ) from exc
+            try:
+                if self.fault_injector is not None:
+                    self.fault_injector("recovery_claim.before_final_reread")
+                verified, verified_bytes, _digest = _read_recovery_claim(
+                    final,
+                    max_bytes=self.max_artifact_bytes,
+                    injector=self.fault_injector,
+                    hook="recovery_claim.final",
+                )
+                if verified != claim or verified_bytes != data:
+                    raise CanonicalStorageError("recovery claim final verification failed")
+                if self.fault_injector is not None:
+                    self.fault_injector("recovery_claim.after_final_reread")
+                    self.fault_injector("recovery_claim.before_post_reconcile")
+                post_chain = self._existing_chain_or_none(run_id)
+                if post_chain is not None and any(
+                    entry[0].transaction_id == request.transaction_id
+                    for entry in post_chain.entries
+                ):
+                    raise CanonicalStorageError("claimed transaction became reachable")
+                if self.fault_injector is not None:
+                    self.fault_injector("recovery_claim.after_post_reconcile")
+            except (CanonicalStorageError, OSError, ValidationError) as exc:
+                raise _run_failure(
+                    run_id,
+                    RunStorageFailureCode.RECOVERY_CLAIM_INCOMPLETE,
+                    stage="recovery_claim",
+                    transaction_id=request.transaction_id,
+                    effect="control_only",
+                    reconciliation=True,
+                ) from exc
             return verified
         except RunStorageError:
             raise
+        except _StorageBoundaryError as exc:
+            code = {
+                "write": RunStorageFailureCode.TRANSACTION_WRITE_FAILED,
+                "durability": RunStorageFailureCode.DURABILITY_UNCONFIRMED,
+                "verification": RunStorageFailureCode.TRANSACTION_VERIFICATION_FAILED,
+            }[exc.kind]
+            raise _run_failure(
+                run_id,
+                code,
+                stage="recovery_claim",
+                transaction_id=request.transaction_id,
+                effect="control_only",
+                reconciliation=temp.exists(),
+                durability=(
+                    _reconciliation_durability(file_sync="failed")
+                    if exc.kind == "durability"
+                    else None
+                ),
+            ) from exc
         except Exception as exc:
             raise _run_failure(
                 run_id,

@@ -15,6 +15,7 @@ from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     build_inventory,
     canonical_json_bytes,
+    canonicalize_bindings,
     classification_evidence_sha256,
     domain_sha256,
     parse_canonical_json,
@@ -35,6 +36,7 @@ from poker_deliberation.storage.revision_models import (
     SourceBindingV1,
     StorageRevisionManifestV1,
     StorageRevisionPointerV1,
+    ToolBindingV1,
 )
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
@@ -186,6 +188,7 @@ def test_canonical_json_rejects_duplicate_keys_nonnfc_and_noncanonical_time() ->
         "e\u0301",
         "C:run",
         "a/b",
+        "sk-abcdefghijk",
     ],
 )
 def test_run_id_rejects_nonportable_or_alias_prone_values(value: str) -> None:
@@ -202,6 +205,7 @@ def test_run_id_rejects_nonportable_or_alias_prone_values(value: str) -> None:
         "tool_results\\x.json",
         "tool_results/x:stream.json",
         "tool_results/CON.json",
+        "agent_reports/sk-abcdefghijk.json",
     ],
 )
 def test_logical_paths_reject_traversal_ads_devices_and_slash_mismatch(value: str) -> None:
@@ -337,3 +341,54 @@ def test_artifact_byte_limit_accepts_equality_and_rejects_one_over() -> None:
     )
     assert isinstance(inventory[0], PayloadInventoryEntryV1)
     assert inventory[0].size_bytes == len(data)
+
+
+def _tool_binding(ordinal: int, result_id: str) -> ToolBindingV1:
+    return ToolBindingV1(
+        run_id="Run-tool-order",
+        phase_attempt_id="phase-attempt",
+        ordinal=ordinal,
+        request_id=f"request-{result_id}",
+        request_tool_name="pot-odds",
+        requested_by="phase",
+        requires_approval=False,
+        requested_contract_version="1.0.0",
+        tool_request_sha256="1" * 64,
+        request_input_artifact_sha256="2" * 64,
+        result_id=result_id,
+        result_tool_name="pot-odds",
+        result_artifact_sha256="3" * 64,
+        request_input_sha256="4" * 64,
+        validated_result_input_sha256="4" * 64,
+        materialized_result_input_sha256="4" * 64,
+        supported_contract_version="1.0.0",
+        result_contract_version="1.0.0",
+    )
+
+
+def test_provenance_order_keeps_tool_ordinal_as_a_typed_integer() -> None:
+    ordered = canonicalize_bindings(
+        (
+            _tool_binding(10, "result-ten"),
+            _tool_binding(2, "result-two"),
+        )
+    )
+    assert [binding.ordinal for binding in ordered if isinstance(binding, ToolBindingV1)] == [2, 10]
+
+
+def test_source_control_metadata_rejects_nonpayload_paths_and_secret_shapes() -> None:
+    with pytest.raises(ValidationError):
+        SourceBindingV1(
+            source_id="external",
+            source_kind="external_evidence",
+            trust_kind="declared_external_evidence",
+            source_logical_name="C:/private/secret",
+            source_sha256="a" * 64,
+        )
+    with pytest.raises(ValidationError):
+        SourceBindingV1(
+            source_id="sk-abcdefghijk",
+            source_kind="external_evidence",
+            trust_kind="declared_external_evidence",
+            source_sha256="a" * 64,
+        )

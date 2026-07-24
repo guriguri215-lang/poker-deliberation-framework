@@ -272,9 +272,9 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
     record = document["approval_records"][reference]
     scope = record["scope"]
     rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
-    canonical = json.dumps(
-        scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
 
     assert hashlib.sha256(canonical).hexdigest() == (
         "abb67567163a58640f693e46c8f5ad43acec24ac6bbf00f2d309a8f8a58698fa"
@@ -551,9 +551,7 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(counterexample)
 
     pending_parent = deepcopy(load_roadmap())
-    pending_parent_rm_012 = next(
-        item for item in pending_parent["items"] if item["id"] == "RM-012"
-    )
+    pending_parent_rm_012 = next(item for item in pending_parent["items"] if item["id"] == "RM-012")
     pending_parent_rm_012["status"] = "planned"
     pending_parent["status_history"]["RM-012"] = ["proposed", "planned"]
     with pytest.raises(ValueError, match="active milestone has inactive parent RM"):

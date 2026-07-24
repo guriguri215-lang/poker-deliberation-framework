@@ -97,7 +97,8 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     }
     assert items["RM-010"]["status"] == "in_progress"
     assert items["RM-011"]["status"] == "in_progress"
-    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(12, 18))
+    assert items["RM-012"]["status"] == "in_progress"
+    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(13, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
     assert items["RM-027"]["status"] == "in_progress"
@@ -287,9 +288,9 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
     assert len(scope["policy_decisions"]) == 65
     assert document["milestone_approvals"]["P2-012A"] == reference
     assert document["milestone_approvals"]["P2-012B"] is None
-    assert document["milestone_progress"]["P2-012A"]["state"] == "not_started"
+    assert document["milestone_progress"]["P2-012A"]["state"] == "in_progress"
     assert document["milestone_progress"]["P2-012B"]["state"] == "not_started"
-    assert rm_012["status"] == "planned"
+    assert rm_012["status"] == "in_progress"
 
 
 def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
@@ -447,6 +448,14 @@ def test_scoped_approval_projection_correction_is_strict_and_append_only() -> No
         "history": ["not_started", "in_progress"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
     }
+    previous["milestone_progress"]["P2-012A"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+    previous_rm_012 = next(item for item in previous["items"] if item["id"] == "RM-012")
+    previous_rm_012["status"] = "planned"
+    previous["status_history"]["RM-012"] = ["proposed", "planned"]
 
     validate_roadmap_update(previous, current)
     validate_roadmap_update(previous, current, {"irrelevant-compatibility-value"})
@@ -542,11 +551,11 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(counterexample)
 
     pending_parent = deepcopy(load_roadmap())
-    pending_parent["milestone_progress"]["P2-012A"]["state"] = "in_progress"
-    pending_parent["milestone_progress"]["P2-012A"]["history"] = [
-        "not_started",
-        "in_progress",
-    ]
+    pending_parent_rm_012 = next(
+        item for item in pending_parent["items"] if item["id"] == "RM-012"
+    )
+    pending_parent_rm_012["status"] = "planned"
+    pending_parent["status_history"]["RM-012"] = ["proposed", "planned"]
     with pytest.raises(ValueError, match="active milestone has inactive parent RM"):
         validate_roadmap(pending_parent)
 
@@ -561,9 +570,11 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(blocked_under_active_parent)
 
     pending_item = deepcopy(load_roadmap())
-    rm_012 = next(item for item in pending_item["items"] if item["id"] == "RM-012")
-    rm_012["status"] = "in_progress"
-    pending_item["status_history"]["RM-012"].append("in_progress")
+    pending_item["milestone_progress"]["P2-012A"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
     with pytest.raises(ValueError, match="in-progress RM lacks active milestone"):
         validate_roadmap(pending_item)
 
@@ -698,10 +709,11 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 4,
-        "not_started": 8,
+        "in_progress": 1,
+        "not_started": 7,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-012A"]
-    assert doctor()["roadmap"]["implementation_ready_ids"] == ["RM-012"]
+    assert doctor()["roadmap"]["milestone_ready_ids"] == []
+    assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
     assert generate_roadmap_status(["--check"]) == 0

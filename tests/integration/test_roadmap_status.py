@@ -437,7 +437,8 @@ def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
     p2_010a_reference = "goal-rm010-p2-010a-2026-07-20"
     original_reference = "goal-rm010-p2-010b-2026-07-24"
     revision_1_reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
-    p2_010b_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
+    revision_2_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
+    p2_010b_reference = "goal-rm010-p2-010b-scope-revision-3-2026-07-24"
     record = document["approval_records"][p2_010b_reference]
     canonical = json.dumps(
         record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -445,13 +446,13 @@ def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
 
     assert original_reference in document["approval_records"]
     assert revision_1_reference in document["approval_records"]
+    assert revision_2_reference in document["approval_records"]
     assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
     assert record["topics"] == record["scope"]["policy_decisions"]
-    assert record["scope"]["milestone_implementation_scope"]["targets"][-3:] == [
-        "tests/__init__.py",
-        "tests/unit/__init__.py",
-        "tests/integration/__init__.py",
-    ]
+    targets = record["scope"]["milestone_implementation_scope"]["targets"]
+    assert targets[-1] == "tests/unit/__init__.py"
+    assert "tests/__init__.py" not in targets
+    assert "tests/integration/__init__.py" not in targets
     assert document["milestone_approvals"]["P2-010A"] == p2_010a_reference
     assert document["milestone_approvals"]["P2-010B"] == p2_010b_reference
     assert document["milestone_progress"]["P2-010B"]["state"] == "in_progress"
@@ -491,6 +492,7 @@ def test_milestone_approval_binding_is_append_only() -> None:
 
 def test_bounded_semantic_scope_revision_is_strict_and_append_only() -> None:
     current = deepcopy(load_roadmap())
+    current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-3-2026-07-24")
     current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-2-2026-07-24")
     current["milestone_approvals"]["P2-010B"] = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
     previous = deepcopy(current)
@@ -535,7 +537,9 @@ def test_bounded_semantic_scope_revision_is_strict_and_append_only() -> None:
 
 
 def test_second_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
-    current = load_roadmap()
+    current = deepcopy(load_roadmap())
+    current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-3-2026-07-24")
+    current["milestone_approvals"]["P2-010B"] = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
     previous = deepcopy(current)
     old_reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
     reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
@@ -581,32 +585,13 @@ def test_second_bounded_semantic_scope_revision_is_exact_and_append_only() -> No
         validate_roadmap_update(previous, changed_progress)
 
 
-def _append_minimal_p2_010b_scope_revision(document: dict[str, object]) -> str:
+def test_third_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
+    current = load_roadmap()
+    previous = deepcopy(current)
     old_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
     reference = "goal-rm010-p2-010b-scope-revision-3-2026-07-24"
-    scope = deepcopy(document["approval_records"][old_reference]["scope"])  # type: ignore[index]
-    targets = scope["milestone_implementation_scope"]["targets"]  # type: ignore[index]
-    assert targets.pop(19) == "tests/integration/__init__.py"  # type: ignore[union-attr]
-    assert targets.pop(17) == "tests/__init__.py"  # type: ignore[union-attr]
-    scope["milestone_implementation_scope"]["acceptance_criteria"][24] = (  # type: ignore[index]
-        "Use only the content-free unit package marker."
-    )
-    scope["policy_decisions"][41] = "Use the minimal package-marker commit sequence."  # type: ignore[index]
-    document["approval_records"][reference] = {  # type: ignore[index]
-        "source_label": "explicit human reapproval of minimal corrected P2-010B exact scope",
-        "topics": scope["policy_decisions"],
-        "scope": scope,
-        "scope_digest": _scope_digest(scope),
-    }
-    document["milestone_approvals"]["P2-010B"] = reference  # type: ignore[index]
-    return reference
-
-
-def test_third_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
-    previous = load_roadmap()
-    current = deepcopy(previous)
-    old_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
-    reference = _append_minimal_p2_010b_scope_revision(current)
+    previous["approval_records"].pop(reference)
+    previous["milestone_approvals"]["P2-010B"] = old_reference
 
     validate_roadmap(current)
     validate_roadmap_update(previous, current)

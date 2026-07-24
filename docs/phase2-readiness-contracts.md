@@ -718,14 +718,16 @@ RM、およびsplitを持たないcompleted RMの既存binding ruleは変更し�
 
 ## P2-010B bounded scoped reapproval
 
-The append-only approval history admits exactly one semantic scoped reapproval:
-`goal-rm010-p2-010b-2026-07-24` to
-`goal-rm010-p2-010b-scope-revision-1-2026-07-24`. The old record remains
-unchanged. The new record must use the exact explicit-human-reapproval source
-label, carry a digest-valid full scope, preserve the scope schema, RM,
-milestone contract, and item contract, and be appended with the milestone
-binding change. That binding commit cannot change P2-010B state, history, or
-completion evidence. No other semantic reapproval pair is admitted.
+The append-only approval history admits exactly this semantic scoped-reapproval
+chain: `goal-rm010-p2-010b-2026-07-24` to
+`goal-rm010-p2-010b-scope-revision-1-2026-07-24` to
+`goal-rm010-p2-010b-scope-revision-2-2026-07-24`. Every earlier record remains
+unchanged. Each new record must use its pair-specific exact
+explicit-human-reapproval source label, carry a digest-valid full scope,
+preserve the scope schema, RM, milestone contract, and item contract, and be
+appended with the milestone binding change. Neither binding commit can change
+P2-010B state, history, or completion evidence. No other semantic reapproval
+pair is admitted.
 
 ## P2-012A completion boundary
 

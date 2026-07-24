@@ -77,6 +77,15 @@
 - P2-012A は opt-in の structural revision foundation であり、既存 CLI/product run を durable
   revision に切り替えない。verified structural revision は completed、resumable、terminal を
   意味しない。
+- `poker-final-report-artifact-v2` も internal `structural_nonterminal` であり、product の
+  terminal/read/resume format ではない。v1 は readable かつ immutable で、old v1-only build
+  は v2 を support しない。`product_integrated_durable_run` は planned のままである。
+- P2-010B の v2 使用は producer `p2-010b-phase-revision` version `0.2.0` の専用 root と
+  initially empty な target-run revision history を前提とする。exact same-process
+  `current_committed` replay 以外は例外にしない。
+- same-canonical-build、no-mixed-build、no-rolling access は trusted deployment assumption
+  である。変更していない ownership/manifest/pointer schema は mixed-build violation を
+  attest、detect、prevent できない。
 - current の atomic visibility は cooperating local writer/reader に限る。power-loss、
   hardware cache、UNC/SMB/NFS/distributed filesystem、cross-volume rename、Windows directory
   durability、malicious writer authenticity は保証しない。

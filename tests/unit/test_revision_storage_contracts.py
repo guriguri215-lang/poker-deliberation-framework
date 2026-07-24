@@ -13,6 +13,7 @@ from poker_deliberation.local_data_policy import (
 from poker_deliberation.schemas import CaseInput
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
+    artifact_table_entry,
     build_inventory,
     canonical_json_bytes,
     canonicalize_bindings,
@@ -40,6 +41,29 @@ from poker_deliberation.storage.revision_models import (
 )
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
+
+
+def test_final_report_artifact_table_dispatch_preserves_v1_and_admits_only_v2() -> None:
+    v1 = (
+        "application/json",
+        "poker-run-storage-json-v1",
+        "poker-final-report-artifact-v1",
+        "final_report_json",
+    )
+    v2 = (
+        "application/json",
+        "poker-run-storage-json-v1",
+        "poker-final-report-artifact-v2",
+        "final_report_json",
+    )
+
+    assert artifact_table_entry("final_report.json") == v1
+    assert artifact_table_entry("final_report.json", v1[2]) == v1
+    assert artifact_table_entry("final_report.json", v2[2]) == v2
+    with pytest.raises(CanonicalStorageError, match="unknown final-report"):
+        artifact_table_entry("final_report.json", "poker-final-report-artifact-v3")
+    with pytest.raises(CanonicalStorageError, match="schema version mismatch"):
+        artifact_table_entry("input.json", v2[2])
 
 
 def _evidence() -> ClassificationEvidence:

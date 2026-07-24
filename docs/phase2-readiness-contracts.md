@@ -176,6 +176,20 @@ checkpointやproduct statusではない。state checkpointをterminal manifest g
 completion marker、verified product reader/status、migration、resume integration、lifecycle hookを
 提供する責務はP2-012Bに残る。
 
+この seam が使用する `poker-final-report-artifact-v2` は internal
+`structural_nonterminal` contract である。v1 の canonical bytes、lexical tool-result order、
+mandatory final-report context は変更しない。v2 だけが byte-identical な tool input/result
+binding、unique contiguous ordinal、ordinal 順の embedded result、provider trace の有無と
+一致する final-report context を要求する。inventory の schema version が唯一の dispatch で、
+unknown/cross-labelled version は拒否する。
+
+P2-010B は producer `p2-010b-phase-revision` version `0.2.0` が所有する専用 root と、
+初回 publication 前に revision がない target run を使用する。同一 process で freeze した
+元 request/plan の exact `current_committed` replay だけを例外とする。same-build、
+no-mixed-build、no-rolling access は trusted deployment assumption であり、現行 schema は
+検出・防止を証明しない。old build は v2 を support せず、`product_integrated_durable_run` は
+P2-012B が完了するまで planned のままである。
+
 Human approval:
 
 - calculation assignment artifactの互換方針

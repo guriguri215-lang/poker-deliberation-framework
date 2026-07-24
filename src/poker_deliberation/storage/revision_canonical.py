@@ -79,6 +79,8 @@ RECOVERY_CLAIM_HASH_DOMAIN = "poker-run-recovery-claim-v1"
 APPROVAL_REASON_HASH_DOMAIN = "poker-approval-decision-reason-v1"
 APPROVAL_EVIDENCE_HASH_DOMAIN = "poker-approval-decision-evidence-v1"
 EVIDENCE_SOURCE_HASH_DOMAIN = "poker-evidence-record-source-v1"
+FINAL_REPORT_ARTIFACT_V1 = "poker-final-report-artifact-v1"
+FINAL_REPORT_ARTIFACT_V2 = "poker-final-report-artifact-v2"
 
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _VARIABLE_AGENT_REPORT = re.compile(
@@ -160,7 +162,7 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
     "final_report.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
-        "poker-final-report-artifact-v1",
+        FINAL_REPORT_ARTIFACT_V1,
         "final_report_json",
     ),
     "final_report.md": (
@@ -421,38 +423,68 @@ def validate_logical_name(logical_name: str) -> str:
     return logical_name
 
 
-def artifact_table_entry(logical_name: str) -> _ArtifactTableValue:
+def artifact_table_entry(
+    logical_name: str,
+    artifact_schema_version: str | None = None,
+) -> _ArtifactTableValue:
     validate_logical_name(logical_name)
     fixed = _FIXED_ARTIFACT_TABLE.get(logical_name)
     if fixed is not None:
+        if logical_name == "final_report.json":
+            version = (
+                FINAL_REPORT_ARTIFACT_V1
+                if artifact_schema_version is None
+                else artifact_schema_version
+            )
+            if version == FINAL_REPORT_ARTIFACT_V1:
+                return fixed
+            if version == FINAL_REPORT_ARTIFACT_V2:
+                return (
+                    fixed[0],
+                    fixed[1],
+                    FINAL_REPORT_ARTIFACT_V2,
+                    fixed[3],
+                )
+            raise CanonicalStorageError("unknown final-report artifact schema version")
+        if artifact_schema_version is not None and artifact_schema_version != fixed[2]:
+            raise CanonicalStorageError("logical artifact schema version mismatch")
         return fixed
     match = _VARIABLE_AGENT_REPORT.fullmatch(logical_name)
     if match is not None:
         validate_run_id(match.group("identifier"))
-        return (
+        value = (
             "application/json",
             CONTROL_CANONICALIZATION,
             "poker-agent-report-artifact-v1",
             "agent_report",
         )
+        if artifact_schema_version is not None and artifact_schema_version != value[2]:
+            raise CanonicalStorageError("logical artifact schema version mismatch")
+        return value
     match = _VARIABLE_TOOL_INPUT.fullmatch(logical_name)
     if match is not None:
         validate_run_id(match.group("identifier"))
-        return (
+        value = (
             "application/json",
             CONTROL_CANONICALIZATION,
             "poker-tool-input-artifact-v1",
             "tool_input",
         )
+        if artifact_schema_version is not None and artifact_schema_version != value[2]:
+            raise CanonicalStorageError("logical artifact schema version mismatch")
+        return value
     match = _VARIABLE_TOOL_RESULT.fullmatch(logical_name)
     if match is not None:
         validate_run_id(match.group("identifier"))
-        return (
+        value = (
             "application/json",
             CONTROL_CANONICALIZATION,
             "poker-tool-result-artifact-v1",
             "tool_result",
         )
+        if artifact_schema_version is not None and artifact_schema_version != value[2]:
+            raise CanonicalStorageError("logical artifact schema version mismatch")
+        return value
     raise CanonicalStorageError("logical artifact is not admitted by P2-012A")
 
 
@@ -715,7 +747,10 @@ def validate_artifact(
     max_artifact_bytes: int,
 ) -> Any:
     validate_logical_name(artifact.logical_name)
-    expected = artifact_table_entry(artifact.logical_name)
+    expected = artifact_table_entry(
+        artifact.logical_name,
+        artifact.artifact_schema_version,
+    )
     actual = (
         artifact.media_type,
         artifact.serialization,
@@ -742,6 +777,12 @@ def _validate_source_graph(
 ) -> None:
     by_name = {entry.logical_name: entry for entry in inventories}
     order = {entry.logical_name: index for index, entry in enumerate(inventories)}
+    final_report_schema_version = (
+        by_name["final_report.json"].artifact_schema_version
+        if "final_report.json" in by_name
+        else None
+    )
+    final_report_v2 = final_report_schema_version == FINAL_REPORT_ARTIFACT_V2
     for entry in inventories:
         allowed_binding_kinds = {"local_data", "source"}
         if entry.logical_name == "approvals.json":
@@ -895,6 +936,7 @@ def _validate_source_graph(
         ),
         key=lambda item: item.encode("utf-8"),
     )
+    tool_bindings_by_result: dict[str, ToolBindingV1] = {}
     for logical_name in tool_input_names:
         require_payload_sources(logical_name, {"input.json", "normalized_case.json"})
         entry = by_name[logical_name]
@@ -953,6 +995,14 @@ def _validate_source_graph(
         if len(bindings) != 1:
             raise CanonicalStorageError("tool result requires exactly one tool binding")
         binding = bindings[0]
+        input_bindings = bindings_of_type(paired_input, ToolBindingV1)
+        if final_report_v2 and (
+            len(input_bindings) != 1
+            or canonical_json_bytes(input_bindings[0]) != canonical_json_bytes(binding)
+        ):
+            raise CanonicalStorageError(
+                "final-report v2 tool input/result bindings must be byte-identical"
+            )
         input_entry = by_name.get(paired_input)
         input_value = cast(dict[str, Any], parsed.get(paired_input))
         tool_request = ToolRequest(
@@ -991,6 +1041,26 @@ def _validate_source_graph(
             )
         except ValidationError as exc:
             raise CanonicalStorageError("tool execution binding replay failed") from exc
+        tool_bindings_by_result[logical_name] = binding
+
+    if final_report_v2:
+        input_ids = {
+            cast(re.Match[str], _VARIABLE_TOOL_INPUT.fullmatch(name)).group("identifier")
+            for name in tool_input_names
+        }
+        result_ids = {
+            cast(re.Match[str], _VARIABLE_TOOL_RESULT.fullmatch(name)).group("identifier")
+            for name in tool_result_names
+        }
+        if input_ids != result_ids:
+            raise CanonicalStorageError(
+                "final-report v2 requires exactly one input/result pair per tool execution"
+            )
+        ordinals = sorted(binding.ordinal for binding in tool_bindings_by_result.values())
+        if ordinals != list(range(len(tool_bindings_by_result))):
+            raise CanonicalStorageError(
+                "final-report v2 tool ordinals must be unique and contiguous from zero"
+            )
 
     evidence_records = {
         record.evidence_id: record
@@ -1150,10 +1220,38 @@ def _validate_source_graph(
         for ledger_name, embedded in ledger_pairs:
             if tuple(cast(Sequence[Any], parsed[ledger_name])) != embedded:
                 raise CanonicalStorageError("final report embedded ledger mismatch")
-        tool_results = tuple(cast(ToolResult, parsed[name]) for name in tool_result_names)
+        if final_report_v2:
+            ordered_tool_result_names = sorted(
+                tool_result_names,
+                key=lambda name: tool_bindings_by_result[name].ordinal,
+            )
+        else:
+            ordered_tool_result_names = tool_result_names
+        tool_results = tuple(cast(ToolResult, parsed[name]) for name in ordered_tool_result_names)
         if tuple(final_report_json.tool_results) != tool_results:
             raise CanonicalStorageError("final report embedded tool results mismatch")
-        if not bindings_of_type("final_report.json", ContextBindingV1):
+        final_contexts = bindings_of_type("final_report.json", ContextBindingV1)
+        if final_report_v2:
+            provider_trace_present = bool(report_names) or bool(
+                cast(Sequence[Any], parsed["agent_execution_records.json"])
+            )
+            if provider_trace_present:
+                if not final_contexts:
+                    raise CanonicalStorageError(
+                        "final-report v2 lacks required provider context provenance"
+                    )
+                if not execution_contexts or any(
+                    canonical_json_bytes(binding) not in execution_contexts
+                    for binding in final_contexts
+                ):
+                    raise CanonicalStorageError(
+                        "final-report v2 context is absent from the execution ledger"
+                    )
+            elif final_contexts:
+                raise CanonicalStorageError(
+                    "final-report v2 carries spurious provider context provenance"
+                )
+        elif not final_contexts:
             raise CanonicalStorageError("final report lacks context provenance")
         if not bindings_of_type("final_report.json", PhaseBindingV1):
             raise CanonicalStorageError("final report lacks phase provenance")

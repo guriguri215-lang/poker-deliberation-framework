@@ -106,3 +106,18 @@ metadata-only recovery claim を担当する。
 resume、migration、retention action を所有しない。P2-010A/P2-011A の phase/budget value は
 typed provenance として相関できるが、durable scheduler、budget reservation、phase state
 persistence には変換しない。詳細は `docs/run-revision-storage.md` を参照する。
+
+### Versioned final-report admission
+
+`revision_canonical.py` は `final_report.json` の inventory
+`artifact_schema_version` を唯一の semantic dispatch とし、完全な admission tuple を選ぶ。
+v1 は immutable/readable のまま lexical tool-result comparison と mandatory context を使う。
+v2 だけが tool binding の pair equality、contiguous execution ordinal、ordinal-based report
+correlation、および provider trace と一致する context presence を追加する。storage protocol、
+manifest/pointer/transaction、canonicalization、path/inventory ordering は変更しない。
+
+この v2 artifact は internal `structural_nonterminal` で、terminal/product reader/resume
+interface ではない。P2-010B coordinator は専用 producer-owned root と初回 target-run
+history 条件を強制するが、same-build/no-rolling は trusted deployment assumption である。
+現行 schema は mixed build を attest、detect、prevent せず、old v1-only reader は v2 を
+unknown version として拒否する。product integration は P2-012B に残る。

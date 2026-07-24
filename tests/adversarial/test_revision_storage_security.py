@@ -15,14 +15,16 @@ from poker_deliberation.local_data_policy import (
     ClassificationEvidence,
     ClassificationSource,
 )
-from poker_deliberation.schemas import CaseInput
+from poker_deliberation.schemas import CaseInput, FinalReport
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
+    artifact_table_entry,
     build_inventory,
     canonical_json_bytes,
     classification_evidence_sha256,
     domain_sha256,
     parse_canonical_json,
+    validate_artifact,
 )
 from poker_deliberation.storage.revision_models import (
     APPROVED_LOCAL_DATA_POLICY_SHA256,
@@ -103,6 +105,57 @@ def _request(artifact: RevisionArtifactV1) -> RevisionPublishRequestV1:
         producer_version="0.1.0",
         artifacts=(artifact,),
     )
+
+
+def test_v2_is_unknown_to_v1_tuple_admission_and_unknown_versions_fail_closed() -> None:
+    evidence = ClassificationEvidence(
+        source_classifications=(ContextClassification.PUBLIC,),
+        restricted_secret_check_completed=True,
+    )
+    local = LocalDataBindingV1(
+        logical_name="final_report.json",
+        classification=ContextClassification.INTERNAL,
+        classification_source=ClassificationSource.SOURCE_INHERITANCE,
+        classification_evidence=evidence,
+        classification_evidence_sha256=classification_evidence_sha256(evidence),
+    )
+    data = canonical_json_bytes(
+        FinalReport(
+            run_id="Run-v2-reader",
+            conclusion="Version dispatch evidence",
+            generated_at=NOW,
+        )
+    )
+    v2 = RevisionArtifactV1(
+        logical_name="final_report.json",
+        media_type="application/json",
+        artifact_schema_version="poker-final-report-artifact-v2",
+        serialization="poker-run-storage-json-v1",
+        exact_bytes=data,
+        required=True,
+        classification=ContextClassification.INTERNAL,
+        classification_source=ClassificationSource.SOURCE_INHERITANCE,
+        classification_evidence=evidence,
+        policy_sha256=APPROVED_LOCAL_DATA_POLICY_SHA256,
+        origin_kind="final_report_json",
+        provenance_bindings=(local,),
+    )
+    v1_only_tuple = artifact_table_entry("final_report.json")
+    actual_v2_tuple = (
+        v2.media_type,
+        v2.serialization,
+        v2.artifact_schema_version,
+        v2.origin_kind,
+    )
+
+    assert actual_v2_tuple != v1_only_tuple
+    assert validate_artifact(v2, "Run-v2-reader", 1_000_000)
+    with pytest.raises(CanonicalStorageError, match="unknown final-report"):
+        validate_artifact(
+            v2.model_copy(update={"artifact_schema_version": "poker-final-report-artifact-v999"}),
+            "Run-v2-reader",
+            1_000_000,
+        )
 
 
 def _initialized_store(tmp_path: Path) -> tuple[RunRevisionStore, Path]:

@@ -71,6 +71,33 @@ context、phase、budget、tool、report の binding は、対応する typed re
 相関検証する。future/self/circular/cross-run/duplicate/conflicting source、未登録 tool contract、
 不一致の final-report ledger/markdown renderer は拒否する。
 
+### final-report artifact schema
+
+`final_report.json` は inventory の `artifact_schema_version` だけで意味を dispatch する。
+reader はその未信頼値を canonical table に渡し、media type、serialization、schema version、
+origin kind の完全な tuple を選択してから inventory と比較する。未知、欠落、downgrade、
+cross-label は fail closed であり、path・inventory・manifest・source graph の順序は引き続き
+UTF-8 lexical/canonical order である。
+
+`poker-final-report-artifact-v1` の canonical bytes、lexical `ToolResult` 比較、final report に
+`ContextBindingV1` を必須とする規則は不変で、既存 v1 revision はそのまま readable である。
+`poker-final-report-artifact-v2` だけが、各 tool input/result pair の exactly one かつ
+byte-identical な `ToolBindingV1`、ordinal の unique contiguous `0..n-1`、ordinal 順の
+`FinalReport.tool_results` 一致を要求する。v2 の final-report context は
+`agent_reports` または `agent_execution_records` が非空なら一つ以上必要で execution ledger
+と一致し、両方が空なら exactly zero でなければならない。
+
+v2 は内部 `structural_nonterminal` artifact contract であり、product の terminal/read/resume
+format ではない。old v1-only build は v2 schema version を unknown として拒否する。
+P2-010B で v2 を使用する場合、ownership marker が
+`producer_id=p2-010b-phase-revision`、`producer_version=0.2.0` の専用 revision root と、
+初回 publication 前に revision が存在しない target run を要求する。例外は同一 process で
+freeze した元の request/plan bundle の exact `current_committed` replay だけである。
+same-canonical-build、no-mixed-build、no-rolling access は trusted deployment assumption であり、
+変更していない ownership/manifest/pointer schema はこれを attest、detect、prevent しない。
+`product_integrated_durable_run` は planned のままで、terminal reader/status、completion marker、
+migration、resume integration は P2-012B の別範囲である。
+
 ## publish と read
 
 publish は process registry と kernel lock の下で次の順序を取る。

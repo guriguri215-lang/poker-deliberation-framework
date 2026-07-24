@@ -1911,7 +1911,10 @@ class RunRevisionStore:
         run_id: str,
         injector: FaultInjector | None = None,
     ) -> RevisionArtifactV1:
-        expected_table = artifact_table_entry(entry.logical_name)
+        expected_table = artifact_table_entry(
+            entry.logical_name,
+            (entry.artifact_schema_version if entry.logical_name == "final_report.json" else None),
+        )
         if entry.revision_relative_path != f"payload/{entry.logical_name}":
             raise CanonicalStorageError("stored payload path is not canonical")
         if (

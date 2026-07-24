@@ -2422,22 +2422,16 @@ class RunRevisionStore:
                 revisions: list[StructuralArtifactRevisionV1] = []
                 for reachable, manifest, manifest_sha, _transaction in chain.entries:
                     matches = tuple(
-                        entry
-                        for entry in manifest.artifacts
-                        if entry.logical_name == logical_name
+                        entry for entry in manifest.artifacts if entry.logical_name == logical_name
                     )
                     if len(matches) != 1:
-                        raise CanonicalStorageError(
-                            "structural artifact is missing or duplicated"
-                        )
+                        raise CanonicalStorageError("structural artifact is missing or duplicated")
                     entry = matches[0]
                     if (
                         artifact_schema_version is not None
                         and entry.artifact_schema_version != artifact_schema_version
                     ):
-                        raise CanonicalStorageError(
-                            "structural artifact schema version mismatch"
-                        )
+                        raise CanonicalStorageError("structural artifact schema version mismatch")
                     revision_dir = (
                         self.runs_root
                         / run_id
@@ -2461,16 +2455,12 @@ class RunRevisionStore:
                             exact_bytes=artifact.exact_bytes,
                         )
                     )
-                current_path = (
-                    self.runs_root / run_id / ".revision-store" / "current.json"
-                )
+                current_path = self.runs_root / run_id / ".revision-store" / "current.json"
                 verify_regular_single_link(current_path)
                 if sha256_bytes(current_path.read_bytes()) != chain.pointer_sha256:
                     if attempt < 2:
                         continue
-                    raise CanonicalStorageError(
-                        "current changed during structural artifact read"
-                    )
+                    raise CanonicalStorageError("current changed during structural artifact read")
                 return StructuralArtifactHistoryV1(
                     run_id=run_id,
                     logical_name=logical_name,
@@ -2487,10 +2477,7 @@ class RunRevisionStore:
             except RunStorageError:
                 raise
             except CanonicalStorageError as exc:
-                if (
-                    str(exc) == "current changed during structural read"
-                    and attempt < 2
-                ):
+                if str(exc) == "current changed during structural read" and attempt < 2:
                     continue
                 raise _run_failure(
                     run_id,

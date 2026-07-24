@@ -790,9 +790,7 @@ class StructuralArtifactHistoryV1(_RevisionModel):
     """Verified current-to-genesis artifact bytes from a structural root only."""
 
     schema_version: Literal["1.0.0"] = STORAGE_SCHEMA_VERSION
-    verification_kind: Literal["structural_artifact_history"] = (
-        "structural_artifact_history"
-    )
+    verification_kind: Literal["structural_artifact_history"] = "structural_artifact_history"
     run_id: PortableId
     logical_name: str = Field(min_length=1, max_length=256)
     current_revision: int = Field(ge=1)

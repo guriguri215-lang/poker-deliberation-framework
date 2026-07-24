@@ -928,6 +928,10 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "The strategy resists every exploit.",
         "この戦略を搾取することは不可能である。",
         "この戦略は搾取に対して無敵である。",
+        "The strategy is exploit-proof.",
+        "The strategy is exploitation-proof.",
+        "この戦略は搾取不能である。",
+        "この戦略は搾取不可能である。",
         "これはプリフロップレンジである。正確である。",
         "レンジを計算した。結果は厳密である。",
     ),
@@ -1085,6 +1089,10 @@ def test_nonframework_parallel_vocabulary_remains_publishable(
             EpistemicLabel.ESTIMATE,
         ),
         ("相手の過剰フォールドを搾取する。", EpistemicLabel.INFERENCE),
+        (
+            "This mixed strategy is resistant to exploitation.",
+            EpistemicLabel.INFERENCE,
+        ),
     ),
 )
 def test_active_exploitative_adjustment_claim_remains_publishable(

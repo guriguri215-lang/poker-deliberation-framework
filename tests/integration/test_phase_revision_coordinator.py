@@ -834,6 +834,16 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "No GTO is proven despite exact GTO being proven.",
         "外部ソルバー未実行のため、GTO均衡であるがGTO均衡であるとは言えない。",
         "外部ソルバー未実行のため、GTO均衡である一方GTO均衡であるとは言えない。",
+        "The exact preflop NLHE range is proven.",
+        "The exact calling range is established.",
+        "Exact ranges are proven.",
+        "The exact pre-flop ranges are established.",
+        "The Nash equilibria are proven.",
+        "Both equilibria are exact.",
+        "The exploitabilities are exactly zero.",
+        "The strategy is unexploitable.",
+        "正確なプリフロップレンジが証明された。",
+        "厳密なBTNオープンレンジが確定した。",
     ),
 )
 def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(

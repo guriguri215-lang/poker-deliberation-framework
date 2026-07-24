@@ -505,6 +505,54 @@ def test_success_after_cancel_request_is_settled_effect_unknown(
     assert state.failure_latch.code is DurableFailureCode.EFFECT_UNKNOWN
 
 
+def test_unacknowledged_cancelled_result_is_settled_effect_unknown(
+    store: DurableBudgetStore,
+) -> None:
+    cancel = threading.Event()
+    cancel.set()
+
+    def returns_cancelled_without_acknowledgment(
+        token: CooperativeCancellationToken,
+        _lineage: ExecutionLineageV1,
+    ) -> EffectResultV1:
+        while not token.requested:
+            threading.Event().wait(0.001)
+        return EffectResultV1(
+            status=EffectStatus.CANCELLED,
+            actual=ResourceAmountsV1(
+                tool_attempts=1,
+                tool_input_bytes=10,
+                tool_output_bytes=10,
+                run_bytes=10,
+                concurrency_slots=1,
+            ),
+            cancellation_evidence_sha256=hashlib_sha("untrusted-cancel-result"),
+            idempotency=IdempotencyStatus.IDEMPOTENT,
+        )
+
+    task = DurableExecutionTask(
+        task_id="unacknowledged-cancel-task",
+        execution_ordinal=0,
+        reservation=_reservation("unacknowledged-cancel-task"),
+        lineage=_lineage(0),
+        effect=returns_cancelled_without_acknowledgment,
+    )
+    result = DurableBoundedExecutor(store, "Run-executor").execute(
+        (task,),
+        cancel_event=cancel,
+        cancellation_grace_seconds=1,
+    )
+
+    assert result.cancellation_state is CancellationState.EFFECT_UNKNOWN
+    assert result.records[0].final_status is EffectStatus.EFFECT_UNKNOWN
+    state = store.load("Run-executor")
+    assert state.cancellations[0].state is CancellationState.EFFECT_UNKNOWN
+    assert state.settlements[0].status.value == "effect_unknown"
+    assert state.failure_latch is not None
+    assert state.failure_latch.code is DurableFailureCode.EFFECT_UNKNOWN
+    assert not state.active_permits
+
+
 def test_isolation_requirement_refuses_before_reservation(
     store: DurableBudgetStore,
 ) -> None:

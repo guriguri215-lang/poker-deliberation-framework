@@ -852,7 +852,12 @@ class DurableBoundedExecutor:
             result = completed[task.task_id]
             token = prepared[task.task_id][-1]
             if token.requested:
-                if result.status is EffectStatus.CANCELLED and token.acknowledged:
+                cancellation_confirmed = (
+                    result.status is EffectStatus.CANCELLED
+                    and token.acknowledged
+                    and result.cancellation_evidence_sha256 == token.evidence_sha256
+                )
+                if cancellation_confirmed:
                     self.store.record_cancellation(
                         self.run_id,
                         operation_id=f"{task.task_id}.cancel-acknowledged",
@@ -870,20 +875,23 @@ class DurableBoundedExecutor:
                         worker_live=False,
                     )
                     cancellation_state = CancellationState.CANCELLED
-                elif result.status is not EffectStatus.CANCELLED:
+                else:
+                    unknown_evidence = result.effect_evidence_sha256 or _constant_evidence(
+                        "cooperative-cancellation-not-confirmed"
+                    )
                     self.store.record_cancellation(
                         self.run_id,
                         operation_id=f"{task.task_id}.cancel-effect-unknown",
                         permit_id=prepared[task.task_id][3],
                         state_value=CancellationState.EFFECT_UNKNOWN,
-                        evidence_sha256=result.effect_evidence_sha256,
+                        evidence_sha256=unknown_evidence,
                         worker_live=False,
                     )
                     cancellation_state = CancellationState.EFFECT_UNKNOWN
                     result = EffectResultV1(
                         status=EffectStatus.EFFECT_UNKNOWN,
                         actual=result.actual,
-                        effect_evidence_sha256=result.effect_evidence_sha256,
+                        effect_evidence_sha256=unknown_evidence,
                         failure_category=FailureCategory.EXTERNAL_EFFECT_UNKNOWN,
                         idempotency=IdempotencyStatus.UNKNOWN,
                         external_cost_actual_authenticated=(

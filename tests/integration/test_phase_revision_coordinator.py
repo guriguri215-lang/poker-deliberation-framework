@@ -728,7 +728,7 @@ def test_published_revision_authorizes_exact_orchestrator_transition(
     assert machine.events[-1].reason == "durable synthesis revision committed"
 
 
-def test_structured_user_claim_prefix_is_exact_and_ordered(
+def test_structured_case_claim_prefix_is_exact_ordered_and_warning_bound(
     short_tmp: Path,
 ) -> None:
     _orchestrator, _machine, _coordinator, bundle = build_valid_scenario(short_tmp)
@@ -744,14 +744,42 @@ def test_structured_user_claim_prefix_is_exact_and_ordered(
             text="This line exploits the opponent's folding leak.",
             label=EpistemicLabel.USER_CLAIM,
         ),
+        Claim(
+            claim_id="claim with space",
+            text="This schema-valid source claim retains its original label.",
+            label=EpistemicLabel.FACT,
+        ),
     )
     case = original_request.input.case.model_copy(update={"claims": list(claims)})
+    replay_request = make_phase_request(
+        run_id=original_request.run_id,
+        phase_id=PhaseId.ADJUDICATION,
+        attempt_id="test-source-claim-replay",
+        policy_snapshot_hash=original_request.policy_snapshot_hash,
+        input_value=AdjudicationInput(
+            case=case,
+            tool_results=original_request.input.tool_results,
+        ),
+    )
+    replay_outcome = AdjudicationService().run(replay_request)
+    assert replay_outcome.output is not None
+    replay_data_quality = replay_outcome.output.data_quality
+    assert replay_data_quality
 
-    def structured_request(actual: tuple[Claim, ...]):
+    def structured_request(
+        actual: tuple[Claim, ...],
+        *,
+        include_replay_data_quality: bool = True,
+    ):
         synthesis_input = original_request.input.model_copy(
             update={
                 "case": case,
                 "claim_assessments": actual,
+                "data_quality": (
+                    (*original_request.input.data_quality, *replay_data_quality)
+                    if include_replay_data_quality
+                    else original_request.input.data_quality
+                ),
             }
         )
         return make_phase_request(
@@ -764,6 +792,9 @@ def test_structured_user_claim_prefix_is_exact_and_ordered(
         )
 
     assert _claim_assessments_match_structured_sources(structured_request(claims))
+    assert not _claim_assessments_match_structured_sources(
+        structured_request(claims, include_replay_data_quality=False)
+    )
     assert not _claim_assessments_match_structured_sources(
         structured_request(tuple(reversed(claims)))
     )

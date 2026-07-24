@@ -103,7 +103,6 @@ COORDINATOR_PRODUCER_ID = "p2-010b-phase-revision"
 COORDINATOR_PRODUCER_VERSION = "0.2.0"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_CLAIM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SECRET_KEY = re.compile(
     r"api[-_]?key|authorization|bearer|cookie|password|passwd|secret|token|"
     r"private[-_]?key|client[-_]?(?:secret|credential)|credential",
@@ -365,11 +364,7 @@ def _claim_assessments_match_structured_sources(
 ) -> bool:
     synthesis_input = synthesis_request.input
     claim_ids = tuple(claim.claim_id for claim in synthesis_input.claim_assessments)
-    if len(claim_ids) != len(set(claim_ids)) or any(
-        _CLAIM_ID.fullmatch(claim_id) is None for claim_id in claim_ids
-    ):
-        return False
-    if any(claim.label is not EpistemicLabel.USER_CLAIM for claim in synthesis_input.case.claims):
+    if len(claim_ids) != len(set(claim_ids)):
         return False
     replay_request = make_phase_request(
         run_id=synthesis_request.run_id,
@@ -387,6 +382,13 @@ def _claim_assessments_match_structured_sources(
     expected = replay_outcome.output.claim_assessments
     actual = synthesis_input.claim_assessments
     if actual[: len(expected)] != expected:
+        return False
+    replay_data_quality = replay_outcome.output.data_quality
+    if replay_data_quality and not any(
+        synthesis_input.data_quality[start : start + len(replay_data_quality)]
+        == replay_data_quality
+        for start in range(len(synthesis_input.data_quality) - len(replay_data_quality) + 1)
+    ):
         return False
     return all(
         _is_closed_authoritative_exception(claim, synthesis_input.tool_results)

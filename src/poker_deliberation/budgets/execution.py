@@ -39,7 +39,9 @@ from poker_deliberation.budgets.retry import (
 )
 from poker_deliberation.context_lifecycle import (
     ContextEnvelope,
+    ContextLifecycleError,
     build_retry_context_envelope,
+    validate_context_envelope,
 )
 from poker_deliberation.schemas import AgentAssignment, AgentContext
 
@@ -277,7 +279,35 @@ EffectCallable = Callable[
     [CooperativeCancellationToken, ExecutionLineageV1],
     EffectResultV1,
 ]
-RetryLineageFactory = Callable[[ExecutionLineageV1, int], ExecutionLineageV1]
+
+
+class DurableRetryContextV1(_ExecutionModel):
+    """Attempt-memory-only retry context evidence; never part of durable state."""
+
+    schema_version: Literal["1.0.0"] = DURABLE_BUDGET_SCHEMA_VERSION
+    lineage: ExecutionLineageV1
+    envelope: ContextEnvelope
+    assignment: AgentAssignment
+
+    @model_validator(mode="after")
+    def envelope_matches_durable_lineage(self) -> DurableRetryContextV1:
+        envelope_lineage = self.envelope.lineage
+        if (
+            self.lineage.assignment_id != self.assignment.assignment_id
+            or self.lineage.role != self.assignment.agent_role
+            or self.lineage.assignment_id != envelope_lineage.assignment_id
+            or self.lineage.attempt_id != envelope_lineage.attempt_id
+            or self.lineage.context_id != envelope_lineage.context_id
+            or self.lineage.parent_context_id != envelope_lineage.parent_context_id
+            or self.lineage.context_source_sha256 != envelope_lineage.source_sha256
+            or self.lineage.context_policy_sha256 != self.envelope.policy_sha256
+            or self.lineage.context_integrity_sha256 != self.envelope.integrity_sha256
+        ):
+            raise ValueError("retry envelope and durable lineage differ")
+        return self
+
+
+RetryLineageFactory = Callable[[ExecutionLineageV1, int], DurableRetryContextV1]
 
 
 @dataclass(frozen=True)
@@ -364,7 +394,7 @@ def build_durable_retry_lineage(
     attempt_id: str,
     idempotency_key: str,
     idempotency_request_sha256: str,
-) -> tuple[ExecutionLineageV1, ContextEnvelope]:
+) -> DurableRetryContextV1:
     """Build and bind one fresh retry ContextEnvelope without persisting payload."""
 
     if (
@@ -404,7 +434,11 @@ def build_durable_retry_lineage(
         idempotency_key=idempotency_key,
         idempotency_request_sha256=idempotency_request_sha256,
     )
-    return lineage, retry
+    return DurableRetryContextV1(
+        lineage=lineage,
+        envelope=retry,
+        assignment=assignment,
+    )
 
 
 def _constant_evidence(label: str) -> str:
@@ -886,10 +920,29 @@ class DurableBoundedExecutor:
                     break
                 completed_retries += 1
                 assert task.retry_lineage_factory is not None
-                retry_lineage = task.retry_lineage_factory(
-                    current_lineage,
-                    completed_retries,
-                )
+                try:
+                    retry_context = DurableRetryContextV1.model_validate(
+                        task.retry_lineage_factory(
+                            current_lineage,
+                            completed_retries,
+                        ),
+                        strict=True,
+                    )
+                    retry_lineage = retry_context.lineage
+                    validate_context_envelope(
+                        retry_context.envelope,
+                        retry_context.assignment,
+                        run_id=self.run_id,
+                        expected_context_id=retry_lineage.context_id,
+                        attempt_id=retry_lineage.attempt_id,
+                        now=self.store.wall_clock(),
+                        expected_parent_context_id=current_lineage.context_id,
+                        expected_source_sha256=current_lineage.context_source_sha256,
+                    )
+                except (ContextLifecycleError, TypeError, ValueError):
+                    raise DurableBudgetError(
+                        self._retry_failure(f"{task.task_id}.retry-{completed_retries}")
+                    ) from None
                 if (
                     retry_lineage.attempt_id == current_lineage.attempt_id
                     or retry_lineage.context_id == current_lineage.context_id
@@ -988,6 +1041,7 @@ __all__ = [
     "DurableExecutionRecordV1",
     "DurableExecutionResultV1",
     "DurableExecutionTask",
+    "DurableRetryContextV1",
     "EffectResultV1",
     "EffectStatus",
     "ExecutionAttemptResultV1",

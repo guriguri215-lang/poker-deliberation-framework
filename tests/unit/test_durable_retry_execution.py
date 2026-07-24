@@ -32,6 +32,7 @@ from poker_deliberation.budgets.execution import (
     CooperativeCancellationToken,
     DurableBoundedExecutor,
     DurableExecutionTask,
+    DurableRetryContextV1,
     EffectResultV1,
     EffectStatus,
     IsolationRequirementV1,
@@ -43,6 +44,7 @@ from poker_deliberation.budgets.retry import (
     IdempotencyStatus,
 )
 from poker_deliberation.context_lifecycle import (
+    ContextEnvelope,
     build_context_envelope,
     context_payload,
 )
@@ -115,6 +117,49 @@ def _lineage(ordinal: int) -> ExecutionLineageV1:
         idempotency_key=f"effect-{ordinal}-0",
         idempotency_request_sha256=HASH,
     )
+
+
+def _context_retry_root(
+    *,
+    run_id: str = "Run-executor",
+) -> tuple[AgentContext, AgentAssignment, ContextEnvelope, ExecutionLineageV1]:
+    context = AgentContext(
+        kind="calculation",
+        objective="calculate",
+    )
+    assignment = AgentAssignment(
+        assignment_id="assignment-context-retry",
+        agent_role="calculator",
+        task="calculate",
+        context_keys=sorted(context_payload(context)),
+    )
+    envelope = build_context_envelope(
+        context,
+        assignment,
+        run_id=run_id,
+        expires_at=NOW + timedelta(minutes=5),
+        clock=lambda: NOW,
+        context_id="context-retry-root",
+        attempt_id="attempt-retry-root",
+    )
+    lineage = ExecutionLineageV1(
+        owner_kind=OwnerKind.TOOL,
+        owner_id="owner-context-retry",
+        role=assignment.agent_role,
+        phase_id="tool_research",
+        assignment_id=assignment.assignment_id,
+        root_attempt_id=envelope.lineage.attempt_id,
+        attempt_id=envelope.lineage.attempt_id,
+        root_context_id=envelope.lineage.context_id,
+        context_id=envelope.lineage.context_id,
+        context_source_sha256=envelope.lineage.source_sha256,
+        context_policy_sha256=envelope.policy_sha256,
+        context_integrity_sha256=envelope.integrity_sha256,
+        execution_ordinal=0,
+        idempotency_key="context-effect-root",
+        idempotency_request_sha256=HASH,
+    )
+    return context, assignment, envelope, lineage
 
 
 def _reservation(task_id: str) -> ResourceReservationV1:
@@ -219,6 +264,7 @@ def test_transient_idempotent_failure_retries_once_with_fresh_lineage(
     store: DurableBudgetStore,
 ) -> None:
     calls: list[str] = []
+    context, assignment, parent_envelope, initial_lineage = _context_retry_root()
 
     def effect(_token, lineage: ExecutionLineageV1) -> EffectResultV1:
         calls.append(lineage.attempt_id)
@@ -242,23 +288,17 @@ def test_transient_idempotent_failure_retries_once_with_fresh_lineage(
     def retry_lineage(
         parent: ExecutionLineageV1,
         attempt_index: int,
-    ) -> ExecutionLineageV1:
-        return ExecutionLineageV1(
-            owner_kind=parent.owner_kind,
-            owner_id=parent.owner_id,
-            role=parent.role,
-            phase_id=parent.phase_id,
-            assignment_id=parent.assignment_id,
-            root_attempt_id=parent.root_attempt_id,
-            parent_attempt_id=parent.attempt_id,
-            attempt_id=f"attempt-0-{attempt_index}",
-            root_context_id=parent.root_context_id,
-            parent_context_id=parent.context_id,
-            context_id=f"context-0-{attempt_index}",
-            context_source_sha256=parent.context_source_sha256,
-            context_policy_sha256=parent.context_policy_sha256,
-            context_integrity_sha256=hashlib_sha(f"integrity-{attempt_index}"),
-            execution_ordinal=parent.execution_ordinal,
+    ) -> DurableRetryContextV1:
+        return build_durable_retry_lineage(
+            parent,
+            parent_envelope,
+            context,
+            assignment,
+            run_id="Run-executor",
+            expires_at=NOW + timedelta(minutes=5),
+            clock=lambda: NOW,
+            context_id=f"context-retry-{attempt_index}",
+            attempt_id=f"attempt-retry-{attempt_index}",
             idempotency_key=f"effect-0-{attempt_index}",
             idempotency_request_sha256=parent.idempotency_request_sha256,
         )
@@ -267,7 +307,7 @@ def test_transient_idempotent_failure_retries_once_with_fresh_lineage(
         task_id="retry-task",
         execution_ordinal=0,
         reservation=_reservation("retry-task"),
-        lineage=_lineage(0),
+        lineage=initial_lineage,
         effect=effect,
         retry_lineage_factory=retry_lineage,
     )
@@ -275,12 +315,73 @@ def test_transient_idempotent_failure_retries_once_with_fresh_lineage(
     result = executor.execute((task,))
     replay = executor.execute((task,))
 
-    assert calls == ["attempt-0-0", "attempt-0-1"]
+    assert calls == ["attempt-retry-root", "attempt-retry-1"]
     assert len(result.records[0].attempts) == 2
     assert result.records[0].final_status is EffectStatus.SUCCEEDED
     assert replay.records == result.records
     assert replay.peak_concurrency == result.peak_concurrency
     assert store.load("Run-executor").usage.retry_attempts == 1
+
+
+def test_expired_retry_envelope_is_refused_before_reservation(
+    store: DurableBudgetStore,
+) -> None:
+    context, assignment, parent_envelope, initial_lineage = _context_retry_root()
+    calls = 0
+
+    def effect(_token, _lineage: ExecutionLineageV1) -> EffectResultV1:
+        nonlocal calls
+        calls += 1
+        return EffectResultV1(
+            status=EffectStatus.FAILED,
+            actual=ResourceAmountsV1(
+                tool_attempts=1,
+                tool_input_bytes=40,
+                tool_output_bytes=40,
+                run_bytes=40,
+                concurrency_slots=1,
+            ),
+            effect_evidence_sha256=hashlib_sha("transient-expired-context"),
+            failure_category=FailureCategory.TOOL_TRANSIENT,
+            idempotency=IdempotencyStatus.IDEMPOTENT,
+        )
+
+    def expired_retry(
+        parent: ExecutionLineageV1,
+        attempt_index: int,
+    ) -> DurableRetryContextV1:
+        return build_durable_retry_lineage(
+            parent,
+            parent_envelope,
+            context,
+            assignment,
+            run_id="Run-executor",
+            expires_at=NOW + timedelta(seconds=1),
+            clock=lambda: NOW,
+            context_id=f"context-expired-{attempt_index}",
+            attempt_id=f"attempt-expired-{attempt_index}",
+            idempotency_key=f"effect-expired-{attempt_index}",
+            idempotency_request_sha256=HASH,
+        )
+
+    store.wall_clock = lambda: NOW + timedelta(seconds=2)
+    task = DurableExecutionTask(
+        task_id="expired-context-task",
+        execution_ordinal=0,
+        reservation=_reservation("expired-context-task"),
+        lineage=initial_lineage,
+        effect=effect,
+        retry_lineage_factory=expired_retry,
+    )
+
+    with pytest.raises(DurableBudgetError) as refused:
+        DurableBoundedExecutor(store, "Run-executor").execute((task,))
+
+    assert refused.value.failure.code is DurableFailureCode.RETRY_FORBIDDEN
+    assert calls == 1
+    state = store.load("Run-executor")
+    assert len(state.attempts) == 1
+    assert not state.active_permits
 
 
 def test_unconfirmed_cooperative_cancellation_is_not_success(
@@ -468,7 +569,7 @@ def test_retry_context_helper_uses_fresh_existing_lifecycle_contract() -> None:
         idempotency_request_sha256=HASH,
     )
 
-    lineage, envelope = build_durable_retry_lineage(
+    retry_context = build_durable_retry_lineage(
         parent_lineage,
         parent,
         context,
@@ -482,6 +583,8 @@ def test_retry_context_helper_uses_fresh_existing_lifecycle_contract() -> None:
         idempotency_request_sha256=HASH,
     )
 
+    lineage = retry_context.lineage
+    envelope = retry_context.envelope
     assert lineage.parent_attempt_id == "attempt-parent"
     assert lineage.parent_context_id == "context-parent"
     assert envelope.canonical_payload == parent.canonical_payload

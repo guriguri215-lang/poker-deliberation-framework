@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
+from threading import RLock
 
 from poker_deliberation.budgets import (
     BudgetFailure,
@@ -98,6 +101,7 @@ class WorkflowStateMachine:
     ledger: SerialUsageLedger = field(init=False)
     _tool_retry_limit: int = field(init=False)
     _last_budget_failure: BudgetFailure | None = field(init=False, default=None)
+    _transition_lock: RLock = field(init=False, default_factory=RLock, repr=False)
 
     def __post_init__(self) -> None:
         legacy_retry_limit = (
@@ -157,10 +161,18 @@ class WorkflowStateMachine:
         return machine
 
     def transition(self, target: RunState, reason: str) -> None:
-        if target not in ALLOWED_TRANSITIONS[self.state]:
-            raise ValueError(f"illegal state transition: {self.state} -> {target}")
-        self.events.append(StateEvent(source=self.state, target=target, reason=reason))
-        self.state = target
+        with self._transition_lock:
+            if target not in ALLOWED_TRANSITIONS[self.state]:
+                raise ValueError(f"illegal state transition: {self.state} -> {target}")
+            self.events.append(StateEvent(source=self.state, target=target, reason=reason))
+            self.state = target
+
+    @contextmanager
+    def transition_authority(self) -> Iterator[None]:
+        """Serialize one orchestrator-owned preview/apply decision."""
+
+        with self._transition_lock:
+            yield
 
     def enforce_runtime(self) -> bool:
         """Fail closed after a completed step exceeds the run budget."""

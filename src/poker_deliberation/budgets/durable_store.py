@@ -1218,6 +1218,8 @@ class DurableBudgetStore:
                 )
         if deterministic_tool_evidence is not None and (
             deterministic_tool_evidence.execution_ordinal != permit.lineage.execution_ordinal
+            or deterministic_tool_evidence.tool_request_bytes_sha256
+            != permit.lineage.idempotency_request_sha256
             or deterministic_tool_evidence.tool_result_bytes_sha256 != result_sha256
         ):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)

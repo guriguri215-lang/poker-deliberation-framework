@@ -13,6 +13,7 @@ from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.budgets.durable_models import (
     AttemptStatus,
     CancellationState,
+    DeterministicToolEvidenceV1,
     DurableBudgetPolicyV1,
     DurableFailureCode,
     ExecutionActivationV1,
@@ -480,6 +481,54 @@ def test_settlement_rejects_non_boolean_authentication_flag(
 
     assert invalid_category.value.failure.code is DurableFailureCode.INVALID_INPUT
     assert store.load("Run-budget-store").generation == started.state.generation
+
+
+def test_deterministic_tool_request_hash_must_match_permit_lineage(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-tool-evidence",
+        permit_id="permit-tool-evidence",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    started = store.start(
+        "Run-budget-store",
+        operation_id="start-tool-evidence",
+        permit_id="permit-tool-evidence",
+    )
+
+    with pytest.raises(DurableBudgetError) as blocked:
+        store.settle(
+            "Run-budget-store",
+            operation_id="settle-tool-evidence",
+            settlement_id="settlement-tool-evidence",
+            permit_id="permit-tool-evidence",
+            actual=ResourceAmountsV1(
+                tool_attempts=1,
+                tool_input_bytes=10,
+                tool_output_bytes=10,
+                run_bytes=10,
+                concurrency_slots=1,
+            ),
+            status=SettlementStatus.SUCCEEDED,
+            result_sha256="b" * 64,
+            effect_evidence_sha256="c" * 64,
+            deterministic_tool_evidence=DeterministicToolEvidenceV1(
+                tool_request_bytes_sha256="d" * 64,
+                tool_result_bytes_sha256="b" * 64,
+                contract_version="1.0.0",
+                reproduction_metadata_sha256="e" * 64,
+                execution_ordinal=0,
+            ),
+        )
+
+    assert blocked.value.failure.code is DurableFailureCode.INVALID_INPUT
+    state = store.load("Run-budget-store")
+    assert state.generation == started.state.generation
+    assert state.settlements == ()
 
 
 def test_committed_settlement_remains_authoritative_over_late_cancel(

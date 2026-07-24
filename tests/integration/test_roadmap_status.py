@@ -361,10 +361,36 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
     assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
     assert len(scope["policy_decisions"]) == 65
     assert document["milestone_approvals"]["P2-012A"] == reference
-    assert document["milestone_approvals"]["P2-012B"] is None
+    assert document["milestone_approvals"]["P2-012B"] == ("goal-rm012-p2-012b-2026-07-25")
     assert document["milestone_progress"]["P2-012A"]["state"] == "completed"
     assert document["milestone_progress"]["P2-012B"]["state"] == "not_started"
     assert rm_012["status"] == "in_progress"
+
+
+def test_p2_012b_scope_freeze_binds_the_exact_approved_proposal() -> None:
+    document = load_roadmap()
+    reference = "goal-rm012-p2-012b-2026-07-25"
+    record = document["approval_records"][reference]
+    scope = record["scope"]
+    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
+
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "1b6c003f9ba8d982f30f5e6c2d2b1af07da0c0461abe36760d838e3b3249976f"
+    )
+    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
+    assert record["topics"] == scope["policy_decisions"]
+    assert len(scope["milestone_implementation_scope"]["targets"]) == 29
+    assert len(scope["milestone_implementation_scope"]["tests"]) == 69
+    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
+    assert len(scope["policy_decisions"]) == 35
+    assert document["milestone_approvals"]["P2-012B"] == reference
+    assert document["milestone_progress"]["P2-012B"] == {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
 
 
 def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
@@ -1111,7 +1137,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
         "completed": 7,
         "not_started": 5,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == []
+    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-012B"]
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)

@@ -7,7 +7,7 @@ import json
 import pytest
 from pydantic import ValidationError
 
-from poker_deliberation.budgets import BudgetPolicyV2
+from poker_deliberation.budgets import BudgetPolicyV2, ExecutionClass
 from poker_deliberation.budgets.durable_models import (
     RESOURCE_ORDER,
     DurableBudgetFailureV1,
@@ -116,6 +116,20 @@ def test_permit_requires_exactly_one_slot_and_valid_start_order() -> None:
         ResourceReservationV1(
             reservation_id="reservation-2",
             requested=ResourceAmountsV1(concurrency_slots=0),
+            request_sha256=HASH,
+        )
+    with pytest.raises(ValidationError, match="unknown execution"):
+        ResourceReservationV1(
+            reservation_id="reservation-unknown",
+            requested=ResourceAmountsV1(concurrency_slots=1),
+            execution_class=ExecutionClass.UNKNOWN,
+            request_sha256=HASH,
+        )
+    with pytest.raises(ValidationError, match="authenticated positive"):
+        ResourceReservationV1(
+            reservation_id="reservation-external",
+            requested=ResourceAmountsV1(concurrency_slots=1),
+            execution_class=ExecutionClass.EXTERNAL,
             request_sha256=HASH,
         )
     with pytest.raises(ValidationError, match="precedes"):

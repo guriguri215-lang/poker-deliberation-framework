@@ -14,7 +14,7 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from poker_deliberation.budgets.contracts import BudgetPolicyV2
+from poker_deliberation.budgets.contracts import BudgetPolicyV2, ExecutionClass
 
 DURABLE_BUDGET_SCHEMA_VERSION: Final[Literal["1.0.0"]] = "1.0.0"
 DURABLE_BUDGET_ARTIFACT_SCHEMA: Final[
@@ -157,6 +157,11 @@ class OperationOutcome(StrEnum):
     EXACT_REPLAY = "exact_replay"
     REFUSED = "refused"
     RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+class MutationStatus(StrEnum):
+    APPLIED = "applied"
+    EXACT_REPLAY = "exact_replay"
 
 
 class DurableFailureCode(StrEnum):
@@ -340,6 +345,8 @@ class ResourceReservationV1(_DurableModel):
     schema_version: Literal["1.0.0"] = DURABLE_BUDGET_SCHEMA_VERSION
     reservation_id: str
     requested: ResourceAmountsV1
+    execution_class: ExecutionClass = ExecutionClass.LOCAL_FREE
+    external_cost_estimate_authenticated: bool = False
     request_sha256: str
 
     _reservation_id = field_validator("reservation_id")(_validate_identifier)
@@ -355,6 +362,18 @@ class ResourceReservationV1(_DurableModel):
     def reserve_exactly_one_slot(self) -> ResourceReservationV1:
         if self.requested.concurrency_slots != 1:
             raise ValueError("each permit must reserve exactly one concurrency slot")
+        if self.execution_class is ExecutionClass.UNKNOWN:
+            raise ValueError("unknown execution class cannot be reserved")
+        if self.execution_class is ExecutionClass.LOCAL_FREE and (
+            self.requested.external_cost_micro_usd != 0
+            or self.external_cost_estimate_authenticated
+        ):
+            raise ValueError("local-free execution must reserve zero external cost")
+        if self.execution_class is ExecutionClass.EXTERNAL and (
+            self.requested.external_cost_micro_usd <= 0
+            or not self.external_cost_estimate_authenticated
+        ):
+            raise ValueError("external execution requires an authenticated positive estimate")
         return self
 
 
@@ -633,7 +652,6 @@ class DurableBudgetStateV1(_DurableModel):
     events: tuple[DurableEventV1, ...] = ()
     failure_latch: DurableBudgetFailureV1 | None = None
     active_runtime_remaining_ns: int = Field(ge=0)
-    last_monotonic_ns: int | None = Field(default=None, ge=0)
 
     _run_id = field_validator("run_id")(_validate_identifier)
 
@@ -700,6 +718,30 @@ class DurableBudgetStateV1(_DurableModel):
         return canonical_durable_bytes(self)
 
 
+class DurableMutationResultV1(_DurableModel):
+    schema_version: Literal["1.0.0"] = DURABLE_BUDGET_SCHEMA_VERSION
+    status: MutationStatus
+    operation_id: str
+    operation_request_sha256: str
+    subject_id: str | None = None
+    storage_outcome: Literal["published", "current_committed", "historical_committed"]
+    state: DurableBudgetStateV1
+
+    _operation_id = field_validator("operation_id")(_validate_identifier)
+
+    @field_validator("subject_id")
+    @classmethod
+    def validate_mutation_subject(cls, value: str | None) -> str | None:
+        return None if value is None else _validate_identifier(value)
+
+    @field_validator("operation_request_sha256")
+    @classmethod
+    def validate_mutation_hash(cls, value: str) -> str:
+        if not _SHA256.fullmatch(value):
+            raise ValueError("mutation request hash must be lowercase SHA-256")
+        return value
+
+
 __all__ = [
     "DURABLE_BUDGET_ARTIFACT_SCHEMA",
     "DURABLE_BUDGET_CANONICALIZATION",
@@ -718,12 +760,14 @@ __all__ = [
     "DurableCancellationV1",
     "DurableEventV1",
     "DurableFailureCode",
+    "DurableMutationResultV1",
     "DurablePermitV1",
     "DurableSettlementV1",
     "DurableUsageV1",
     "ExecutionActivationV1",
     "ExecutionLineageV1",
     "IdempotencyRecordV1",
+    "MutationStatus",
     "OperationKind",
     "OperationOutcome",
     "OwnerKind",

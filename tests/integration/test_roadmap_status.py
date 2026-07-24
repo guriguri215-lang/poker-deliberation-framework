@@ -74,7 +74,20 @@ def _scope_digest(scope: object) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _rewind_split_rm_010(document: dict[str, object]) -> None:
+    rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
+    rm_010["status"] = "in_progress"
+    rm_010["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
+    document["status_history"]["RM-010"] = ["proposed", "planned", "in_progress"]
+    document["milestone_progress"]["P2-010B"] = {
+        "state": "in_progress",
+        "history": ["not_started", "in_progress"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+
+
 def _complete_split_rm_010(document: dict[str, object]) -> tuple[str, list[str], list[str]]:
+    _rewind_split_rm_010(document)
     rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
     milestone = next(
         item for item in document["implementation_milestones"] if item["id"] == "P2-010B"
@@ -139,11 +152,11 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert set(items) == EXPECTED_RM_IDS
 
     completed = {rm_id for rm_id, item in items.items() if item["status"] == "completed"}
-    assert completed == {f"RM-{number:03d}" for number in range(1, 10)} | {
+    assert completed == {f"RM-{number:03d}" for number in range(1, 11)} | {
         "RM-023",
         "RM-024",
     }
-    assert items["RM-010"]["status"] == "in_progress"
+    assert items["RM-010"]["status"] == "completed"
     assert items["RM-011"]["status"] == "in_progress"
     assert items["RM-012"]["status"] == "in_progress"
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(13, 18))
@@ -229,6 +242,7 @@ def test_update_validation_rejects_rewritten_history_and_approval_rebinding() ->
         validate_roadmap_update(previous, changed_scope)
 
     remapped = deepcopy(previous)
+    _rewind_split_rm_010(remapped)
     active = next(item for item in remapped["items"] if item["id"] == "RM-010")
     active["completion_milestone"] = "P2-010A"
     with pytest.raises(ValueError, match="approval scope contract does not match item"):
@@ -455,7 +469,13 @@ def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
     assert "tests/integration/__init__.py" not in targets
     assert document["milestone_approvals"]["P2-010A"] == p2_010a_reference
     assert document["milestone_approvals"]["P2-010B"] == p2_010b_reference
-    assert document["milestone_progress"]["P2-010B"]["state"] == "in_progress"
+    assert document["milestone_progress"]["P2-010B"]["state"] == "completed"
+    assert document["milestone_progress"]["P2-010B"]["history"] == [
+        "not_started",
+        "in_progress",
+        "completed",
+    ]
+    assert len(document["milestone_progress"]["P2-010B"]["completion_evidence"]["commits"]) == 22
     assert "P2-010B" not in roadmap_summary(document)["milestone_ready_ids"]
 
     digest_mismatch = deepcopy(document)
@@ -470,6 +490,7 @@ def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
         validate_roadmap(rebound)
 
     activated = deepcopy(document)
+    _rewind_split_rm_010(activated)
     activated["milestone_approvals"]["P2-010B"] = None
     with pytest.raises(ValueError, match="active milestone lacks scoped approval"):
         validate_roadmap(activated)
@@ -492,6 +513,7 @@ def test_milestone_approval_binding_is_append_only() -> None:
 
 def test_bounded_semantic_scope_revision_is_strict_and_append_only() -> None:
     current = deepcopy(load_roadmap())
+    _rewind_split_rm_010(current)
     current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-3-2026-07-24")
     current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-2-2026-07-24")
     current["milestone_approvals"]["P2-010B"] = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
@@ -538,6 +560,7 @@ def test_bounded_semantic_scope_revision_is_strict_and_append_only() -> None:
 
 def test_second_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
     current = deepcopy(load_roadmap())
+    _rewind_split_rm_010(current)
     current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-3-2026-07-24")
     current["milestone_approvals"]["P2-010B"] = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
     previous = deepcopy(current)
@@ -587,6 +610,7 @@ def test_second_bounded_semantic_scope_revision_is_exact_and_append_only() -> No
 
 def test_third_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
     current = load_roadmap()
+    _rewind_split_rm_010(current)
     previous = deepcopy(current)
     old_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
     reference = "goal-rm010-p2-010b-scope-revision-3-2026-07-24"
@@ -638,6 +662,7 @@ def test_third_bounded_semantic_scope_revision_is_exact_and_append_only() -> Non
 
 def test_scoped_approval_projection_correction_is_strict_and_append_only() -> None:
     current = deepcopy(load_roadmap())
+    _rewind_split_rm_010(current)
     current["milestone_progress"]["P2-012A"] = {
         "state": "not_started",
         "history": ["not_started"],
@@ -925,6 +950,7 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(blocked_under_active_parent)
 
     pending_item = deepcopy(load_roadmap())
+    _rewind_split_rm_010(pending_item)
     pending_item["milestone_progress"]["P2-012A"] = {
         "state": "not_started",
         "history": ["not_started"],
@@ -1068,8 +1094,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 5,
-        "in_progress": 1,
+        "completed": 6,
         "not_started": 6,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

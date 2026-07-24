@@ -142,13 +142,13 @@ _EXPLICIT_SOLVER_LIMITATION_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
+        rf"(?!no\s)(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
         rf"[a-z0-9\s-]+\s+(?:is|are|was|were|remains?)\s+not\s+"
         rf"{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
+        rf"(?!no\s)(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
         rf"[a-z0-9\s-]+\s+(?:cannot|can't)\s+be\s+"
         rf"{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
         re.IGNORECASE,
@@ -164,12 +164,24 @@ _EXPLICIT_SOLVER_LIMITATION_PATTERNS = (
         re.IGNORECASE,
     ),
 )
-_MATRIX_GAME_SCOPE = re.compile(
-    r"\b(?:zero[\s-]+sum[\s-]+matrix|"
-    r"finite[\s-]+two[\s-]+player[\s-]+zero[\s-]+sum[\s-]+normal[\s-]+form|"
-    r"matrix[\s-]+game)\b|"
-    r"\u30bc\u30ed\u548c\u884c\u5217",
-    re.IGNORECASE,
+_QUALIFIED_MATRIX_CLAIM_PATTERNS = (
+    re.compile(
+        r"(?:the\s+)?(?:verified\s+)?"
+        r"(?:finite\s+two[\s-]+player\s+)?zero[\s-]+sum\s+matrix[\s-]+game\s+"
+        r"(?:equilibrium|exploitability)\s+"
+        r"(?:is|uses|has|equals|matches)\s+"
+        r"(?:the\s+)?(?:reported|verified|calculated)\s+"
+        r"(?:strategies|strategy|value|result|gap)[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:the\s+)?(?:verified\s+)?zero[\s-]+sum\s+matrix\s+"
+        r"(?:equilibrium|exploitability)\s+"
+        r"(?:is|uses|has|equals|matches)\s+"
+        r"(?:the\s+)?(?:reported|verified|calculated)\s+"
+        r"(?:strategies|strategy|value|result|gap)[.!]?",
+        re.IGNORECASE,
+    ),
 )
 _GTO_OR_EXACT_RANGE = re.compile(
     r"\bgto\b|\bexact(?:[\s-]+)range\b|"
@@ -216,13 +228,16 @@ def _has_qualified_matrix_evidence(
 ) -> bool:
     if (
         _GTO_OR_EXACT_RANGE.search(claim.text)
-        or not _MATRIX_GAME_SCOPE.search(claim.text)
-        or not claim.evidence_ids
+        or not any(
+            pattern.fullmatch(" ".join(claim.text.strip().split())) is not None
+            for pattern in _QUALIFIED_MATRIX_CLAIM_PATTERNS
+        )
+        or len(claim.evidence_ids) != 1
     ):
         return False
-    evidence_ids = set(claim.evidence_ids)
+    evidence_id = claim.evidence_ids[0]
     return any(
-        result.result_id in evidence_ids
+        result.result_id == evidence_id
         and result.tool_name == "matrix_game"
         and result.status is ToolStatus.SUCCESS
         and result.numeric_exactness

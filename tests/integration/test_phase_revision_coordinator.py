@@ -823,6 +823,10 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "No qualified solver is available; nevertheless Exact GTO equilibrium range is proven.",
         "GTO equilibrium is proven, not approximate.",
         "No-Limit Hold'em GTO is proven.",
+        "No GTO is not proven.",
+        "No equilibrium cannot be proven.",
+        "No exact range is not established.",
+        "The matrix-game result proves the full NLHE equilibrium.",
     ),
 )
 def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(
@@ -909,6 +913,62 @@ def test_unbound_matrix_equilibrium_claim_is_mutation_zero_invalid_trace(
                 text="The verified zero-sum matrix equilibrium uses the reported strategies.",
                 label=EpistemicLabel.CALCULATED,
                 confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    denied = coordinator.publish(bundle)
+
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
+
+
+def test_matrix_equilibrium_claim_rejects_nonexact_evidence_binding(
+    short_tmp: Path,
+) -> None:
+    matrix_result_id = "matrix-result"
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=((matrix_result_id, 0),),
+        tool_name="matrix_game",
+        tool_input={"matrix": [[1, -1], [-1, 1]]},
+        claim_assessments=(
+            Claim(
+                claim_id="multi-evidence-matrix-equilibrium-claim",
+                text="The verified zero-sum matrix equilibrium uses the reported strategies.",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+                evidence_ids=[matrix_result_id, "unbound-result"],
+            ),
+        ),
+    )
+
+    denied = coordinator.publish(bundle)
+
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
+
+
+def test_matrix_evidence_cannot_authorize_full_nlhe_equilibrium_claim(
+    short_tmp: Path,
+) -> None:
+    matrix_result_id = "matrix-result"
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=((matrix_result_id, 0),),
+        tool_name="matrix_game",
+        tool_input={"matrix": [[1, -1], [-1, 1]]},
+        claim_assessments=(
+            Claim(
+                claim_id="full-nlhe-from-matrix-claim",
+                text="The matrix-game result proves the full NLHE equilibrium.",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+                evidence_ids=[matrix_result_id],
             ),
         ),
     )

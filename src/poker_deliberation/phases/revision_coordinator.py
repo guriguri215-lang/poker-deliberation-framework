@@ -143,6 +143,14 @@ _RANGE_CLAIM_TOKEN = re.compile(
     re.IGNORECASE,
 )
 _GTO_CLAIM_TOKEN = re.compile(_GTO_CLAIM_PATTERN, re.IGNORECASE)
+_GAME_THEORY_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])game(?:[\s_-]+)theor(?:y|etical(?:ly)?)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_OPTIMAL_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:optimal(?:ity|ly)?|optimum)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 _RESTRICTED_SOLVER_LABELS = frozenset(
     {
         EpistemicLabel.FACT,
@@ -150,6 +158,93 @@ _RESTRICTED_SOLVER_LABELS = frozenset(
         EpistemicLabel.INFERENCE,
         EpistemicLabel.ESTIMATE,
     }
+)
+_SOLVER_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])solver(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_EXTERNAL_SOLVER_QUALIFIER_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:external(?:ly)?|third[\s_-]+party|pio)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_SOLVER_CAPABILITY_STATE_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:execut(?:e|ed|es|ing|ion)|converg(?:e|ed|es|ing|ence)|"
+    r"available|complet(?:e|ed|es|ing|ion)|solv(?:e|ed|es|ing)|ran|run)"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_FULL_NLHE_SOLUTION_TOKENS = re.compile(
+    r"(?=.*(?<![A-Za-z0-9])full(?![A-Za-z0-9]))"
+    r"(?=.*(?<![A-Za-z0-9])nlhe(?![A-Za-z0-9]))"
+    r"(?=.*(?<![A-Za-z0-9])solution(?![A-Za-z0-9]))",
+    re.IGNORECASE,
+)
+_AGENT_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])agents?(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_PARALLEL_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:parallel(?:ism)?|simultaneous(?:ly)?|concurren(?:cy|t|tly))"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_RETRY_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])retr(?:y|ies|ied)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_AUTOMATIC_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])automatic(?:ally)?(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_CANCELLATION_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])cancel(?:lation|led|ed|s|ing)?(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_CANCELLATION_PROPAGATION_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:fan[\s_-]*out|propagat(?:e|ed|es|ing|ion))"
+    r"(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+_EXPLICIT_CAPABILITY_LIMITATION_PATTERNS = (
+    re.compile(
+        r"(?:the\s+)?external\s+solver\s+"
+        r"(?:is|was|remains?)\s+"
+        r"(?:unavailable|disabled|not\s+available|not\s+configured|not\s+executed)"
+        r"[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"no\s+external\s+solver\s+(?:is|was)\s+"
+        r"(?:available|configured|executed)[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"agents?\s+(?:did\s+not|do\s+not)\s+"
+        r"(?:run|analy[sz]e)\s+in\s+parallel[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"parallel\s+agent\s+execution\s+(?:is|was)\s+"
+        r"(?:disabled|not\s+used)[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"peak\s+agent\s+concurrency\s+(?:is|was)\s+(?:one|1)[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"automatic\s+retr(?:y|ies)\s+(?:is|are|was|were)\s+"
+        r"(?:disabled|not\s+used)[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"cancellation\s+fan[\s-]*out\s+(?:is|was|remains?)\s+"
+        r"(?:unavailable|disabled|not\s+implemented)[.!]?",
+        re.IGNORECASE,
+    ),
 )
 _ADVERSATIVE_SOLVER_CLAIM = re.compile(
     r"[;\uff1b]|\b(?:although|but|despite|however|nevertheless|nonetheless|"
@@ -263,10 +358,55 @@ def _contains_exact_range_claim(text: str) -> bool:
     return bool(_EXACT_CLAIM_TOKEN.search(normalized) and _RANGE_CLAIM_TOKEN.search(normalized))
 
 
+def _contains_gto_claim(text: str) -> bool:
+    normalized = _normalize_claim_text(text)
+    return bool(_GTO_CLAIM_TOKEN.search(normalized)) or bool(
+        _GAME_THEORY_CLAIM_TOKEN.search(normalized) and _OPTIMAL_CLAIM_TOKEN.search(normalized)
+    )
+
+
 def _contains_restricted_solver_term(text: str) -> bool:
     normalized = _normalize_claim_text(text)
-    return bool(_RESTRICTED_SOLVER_TERM.search(normalized)) or _contains_exact_range_claim(
-        normalized
+    return (
+        bool(_RESTRICTED_SOLVER_TERM.search(normalized))
+        or _contains_gto_claim(normalized)
+        or _contains_exact_range_claim(normalized)
+    )
+
+
+def _contains_unimplemented_capability_claim(text: str) -> bool:
+    normalized = _normalize_claim_text(text)
+    external_solver_claim = bool(
+        _SOLVER_CLAIM_TOKEN.search(normalized)
+        and _EXTERNAL_SOLVER_QUALIFIER_TOKEN.search(normalized)
+        and _SOLVER_CAPABILITY_STATE_TOKEN.search(normalized)
+    )
+    parallel_agent_claim = bool(
+        _AGENT_CLAIM_TOKEN.search(normalized) and _PARALLEL_CLAIM_TOKEN.search(normalized)
+    )
+    automatic_retry_claim = bool(
+        _RETRY_CLAIM_TOKEN.search(normalized) and _AUTOMATIC_CLAIM_TOKEN.search(normalized)
+    )
+    cancellation_propagation_claim = bool(
+        _CANCELLATION_CLAIM_TOKEN.search(normalized)
+        and _CANCELLATION_PROPAGATION_TOKEN.search(normalized)
+    )
+    return (
+        external_solver_claim
+        or bool(_FULL_NLHE_SOLUTION_TOKENS.search(normalized))
+        or parallel_agent_claim
+        or automatic_retry_claim
+        or cancellation_propagation_claim
+    )
+
+
+def _is_explicit_capability_limitation(text: str) -> bool:
+    normalized = _normalize_claim_text(text)
+    if _ADVERSATIVE_SOLVER_CLAIM.search(normalized):
+        return False
+    return any(
+        pattern.fullmatch(normalized) is not None
+        for pattern in _EXPLICIT_CAPABILITY_LIMITATION_PATTERNS
     )
 
 
@@ -276,7 +416,7 @@ def _has_qualified_matrix_evidence(
 ) -> bool:
     normalized_text = _normalize_claim_text(claim.text)
     if (
-        _GTO_CLAIM_TOKEN.search(normalized_text)
+        _contains_gto_claim(normalized_text)
         or _contains_exact_range_claim(normalized_text)
         or not any(
             pattern.fullmatch(normalized_text) is not None
@@ -302,13 +442,17 @@ def _has_qualified_matrix_evidence(
     )
 
 
-def _violates_solver_claim_policy(
+def _violates_claim_capability_policy(
     claim: Claim,
     tool_results: tuple[ToolResult, ...],
 ) -> bool:
-    if claim.label not in _RESTRICTED_SOLVER_LABELS or not _contains_restricted_solver_term(
+    if claim.label not in _RESTRICTED_SOLVER_LABELS:
+        return False
+    if _contains_unimplemented_capability_claim(
         claim.text
-    ):
+    ) and not _is_explicit_capability_limitation(claim.text):
+        return True
+    if not _contains_restricted_solver_term(claim.text):
         return False
     return not _is_explicit_solver_limitation(claim.text) and not _has_qualified_matrix_evidence(
         claim, tool_results
@@ -1047,7 +1191,7 @@ class PhaseRevisionCoordinator:
         ):
             raise ValueError
         if any(
-            _violates_solver_claim_policy(claim, synthesis_input.tool_results)
+            _violates_claim_capability_policy(claim, synthesis_input.tool_results)
             for claim in synthesis_input.claim_assessments
         ):
             raise ValueError

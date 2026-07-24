@@ -846,6 +846,10 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "The \uff27\uff34\uff2f range is proven.",
         "The G\u200bTO equilibrium is proven.",
         "The game-theoretically optimal range is proven.",
+        "The strategy's game-theory optimality is proven.",
+        "Game theoretical optimality was established.",
+        "The strategy is optimal in game theory.",
+        "Game theory proves this strategy optimal.",
         "The equilibrium_strategy is verified.",
         "The exploitability_score is exactly zero.",
         "The Nash_equilibria are established.",
@@ -871,6 +875,20 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "The ranges have verified exactness.",
         "The precision of the preflop range is established.",
         "The preflop range is precise.",
+        "An external solver was executed and converged.",
+        "The external solver is available.",
+        "PioSOLVER completed the full NLHE solution.",
+        "Agents analyzed this hand in parallel.",
+        "Peak agent concurrency was four.",
+        "Automatic retries recovered the run.",
+        "Cancellation fan-out completed successfully.",
+        "A solver was executed externally and converged.",
+        "A third-party solver executed the analysis.",
+        "Pio Solver completed the full solution.",
+        "The agents used parallelism.",
+        "The run retried automatically.",
+        "A retry occurred automatically.",
+        "Cancellation propagated to every agent.",
         "これはプリフロップレンジである。正確である。",
         "レンジを計算した。結果は厳密である。",
     ),
@@ -942,6 +960,36 @@ def test_explicit_japanese_no_solver_limitation_remains_publishable(
                 claim_id="japanese-gto-limitation",
                 text="外部ソルバー未実行のため、GTO均衡であるとは言えない。",
                 label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    authorization = coordinator.publish(bundle)
+
+    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "The external solver is unavailable.",
+        "Peak agent concurrency was one.",
+        "Automatic retries are disabled.",
+        "Cancellation fan-out is not implemented.",
+    ),
+)
+def test_explicit_unimplemented_capability_limitation_remains_publishable(
+    short_tmp: Path,
+    text: str,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        claim_assessments=(
+            Claim(
+                claim_id="unimplemented-capability-limitation",
+                text=text,
+                label=EpistemicLabel.FACT,
                 confidence=ConfidenceGrade.A,
             ),
         ),

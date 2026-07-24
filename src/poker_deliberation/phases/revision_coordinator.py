@@ -136,9 +136,16 @@ _RESTRICTED_SOLVER_TERM = re.compile(
 _UNEXPLOITABLE_CLAIM = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?:(?:cannot|can't|can\s+not)\s+be\s+exploited|"
-    r"no\b[^.!?]*\bcan\s+exploit)"
+    r"no\b[^.!?]*\bcan\s+exploit|"
+    r"(?:impossible|immune|invulnerable|resistant|proof)\s+"
+    r"(?:to|against)\s+(?:every\s+)?exploit(?:ation)?|"
+    r"no\b[^.!?]*\bexploit\b[^.!?]*\b(?:exists?|possible)|"
+    r"resists?\s+(?:all|any|every)\s+exploits?)"
     r"(?![A-Za-z0-9])|"
-    r"\u643e\u53d6(?:\u3055\u308c\u306a\u3044|\u3067\u304d\u306a\u3044)",
+    r"\u643e\u53d6(?:\u3055\u308c\u306a\u3044|\u3067\u304d\u306a\u3044|"
+    r"\u3059\u308b\u3053\u3068\u306f(?:\u4e0d\u53ef\u80fd|\u3067\u304d\u306a\u3044)|"
+    r"\u306b\u5bfe\u3057\u3066(?:\u7121\u6575|\u514d\u75ab)|"
+    r"\u304c\u5b58\u5728\u3057\u306a\u3044)",
     re.IGNORECASE,
 )
 _EXACT_CLAIM_TOKEN = re.compile(

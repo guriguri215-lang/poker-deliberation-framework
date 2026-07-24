@@ -74,6 +74,54 @@ def _scope_digest(scope: object) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _complete_split_rm_010(document: dict[str, object]) -> tuple[str, list[str], list[str]]:
+    rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
+    milestone = next(
+        item for item in document["implementation_milestones"] if item["id"] == "P2-010B"
+    )
+    targets = [
+        "src/poker_deliberation/roadmap.py",
+        "docs/phase2-readiness-contracts.md",
+    ]
+    tests = ["tests/integration/test_roadmap_status.py"]
+    topics = ["test-approved split completion scope"]
+    scope = {
+        "schema_version": APPROVAL_SCOPE_SCHEMA_VERSION,
+        "rm_id": "RM-010",
+        "milestone_contract": deepcopy(milestone),
+        "item_contract": {
+            field: deepcopy(rm_010.get(field)) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
+        },
+        "milestone_implementation_scope": {
+            "targets": targets,
+            "tests": tests,
+            "acceptance_criteria": ["split completion evidence rolls up exactly"],
+        },
+        "policy_decisions": topics,
+    }
+    reference = "test-rm010-p2-010b-split-completion"
+    document["approval_records"][reference] = {
+        "source_label": "test external approval",
+        "topics": topics,
+        "scope": scope,
+        "scope_digest": _scope_digest(scope),
+    }
+    document["milestone_approvals"]["P2-010B"] = reference
+    evidence = {
+        "commits": ["a" * 40],
+        "paths": targets,
+        "tests": tests,
+    }
+    progress = document["milestone_progress"]["P2-010B"]
+    progress["state"] = "completed"
+    progress["history"] = ["not_started", "in_progress", "completed"]
+    progress["completion_evidence"] = deepcopy(evidence)
+    rm_010["status"] = "completed"
+    document["status_history"]["RM-010"].append("completed")
+    rm_010["completion_evidence"] = deepcopy(evidence)
+    return reference, targets, tests
+
+
 def test_packaged_roadmap_loads_outside_repository_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -530,6 +578,154 @@ def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -
         "tests": approved_scope["tests"],
     }
     validate_roadmap(counterexample)
+
+
+def test_split_parent_completion_evidence_rolls_up_from_exact_completion_scope() -> None:
+    document = deepcopy(load_roadmap())
+    rm_010_before = next(item for item in document["items"] if item["id"] == "RM-010")
+    item_contract_before = {
+        field: deepcopy(rm_010_before.get(field))
+        for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
+    }
+    milestone_before = deepcopy(
+        next(
+            milestone
+            for milestone in document["implementation_milestones"]
+            if milestone["id"] == "P2-010B"
+        )
+    )
+
+    _, targets, tests = _complete_split_rm_010(document)
+
+    validate_roadmap(document)
+    rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
+    assert (
+        rm_010["completion_evidence"]
+        == document["milestone_progress"]["P2-010B"]["completion_evidence"]
+    )
+    assert rm_010["completion_evidence"]["paths"] == targets
+    assert rm_010["completion_evidence"]["tests"] == tests
+    assert {
+        field: rm_010.get(field) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
+    } == item_contract_before
+    assert (
+        next(
+            milestone
+            for milestone in document["implementation_milestones"]
+            if milestone["id"] == "P2-010B"
+        )
+        == milestone_before
+    )
+
+    reordered = deepcopy(document)
+    reordered_parent = next(item for item in reordered["items"] if item["id"] == "RM-010")
+    reordered_parent["completion_evidence"]["paths"] = list(reversed(targets))
+    with pytest.raises(ValueError, match="split RM evidence differs from completion milestone"):
+        validate_roadmap(reordered)
+
+    jointly_reordered = deepcopy(document)
+    reordered_paths = list(reversed(targets))
+    next(item for item in jointly_reordered["items"] if item["id"] == "RM-010")[
+        "completion_evidence"
+    ]["paths"] = reordered_paths
+    jointly_reordered["milestone_progress"]["P2-010B"]["completion_evidence"]["paths"] = (
+        reordered_paths
+    )
+    with pytest.raises(
+        ValueError,
+        match="split completion milestone evidence order differs from approved scope",
+    ):
+        validate_roadmap(jointly_reordered)
+
+
+def test_split_completion_repository_commit_and_changed_path_checks_remain_enforced() -> None:
+    document = deepcopy(load_roadmap())
+    _complete_split_rm_010(document)
+    commit = "a" * 40
+    tracked = (
+        {
+            reference.split("::", 1)[0]
+            for item in document["items"]
+            if item["status"] == "completed"
+            for field in ("paths", "tests")
+            for reference in item["completion_evidence"][field]
+        }
+        | {
+            reference.split("::", 1)[0]
+            for progress in document["milestone_progress"].values()
+            if progress["state"] == "completed"
+            for field in ("paths", "tests")
+            for reference in progress["completion_evidence"][field]
+        }
+        | {
+            reference
+            for record in document["approval_records"].values()
+            if isinstance(record.get("scope"), dict)
+            for implementation_scope in [record["scope"].get("milestone_implementation_scope")]
+            if isinstance(implementation_scope, dict)
+            for field in ("targets", "tests")
+            for reference in implementation_scope[field]
+        }
+    )
+    known_commits = {
+        evidence_commit
+        for item in document["items"]
+        if item["status"] == "completed"
+        for evidence_commit in item["completion_evidence"]["commits"]
+    } | {
+        evidence_commit
+        for progress in document["milestone_progress"].values()
+        if progress["state"] == "completed"
+        for evidence_commit in progress["completion_evidence"]["commits"]
+    }
+    commit_paths = {evidence_commit: set(tracked) for evidence_commit in known_commits}
+    changed_paths = {evidence_commit: set(tracked) for evidence_commit in known_commits}
+
+    validate_repository_evidence(
+        document,
+        ROOT,
+        tracked_paths=tracked,
+        known_commits=known_commits,
+        commit_paths=commit_paths,
+        changed_paths=changed_paths,
+    )
+
+    missing_commit_paths = deepcopy(commit_paths)
+    missing_commit_paths[commit] = set()
+    with pytest.raises(ValueError, match="absent from cited commits"):
+        validate_repository_evidence(
+            document,
+            ROOT,
+            tracked_paths=tracked,
+            known_commits=known_commits,
+            commit_paths=missing_commit_paths,
+            changed_paths=changed_paths,
+        )
+    missing_changed_paths = deepcopy(changed_paths)
+    missing_changed_paths[commit] = set()
+    with pytest.raises(ValueError, match="did not change cited scope"):
+        validate_repository_evidence(
+            document,
+            ROOT,
+            tracked_paths=tracked,
+            known_commits=known_commits,
+            commit_paths=commit_paths,
+            changed_paths=missing_changed_paths,
+        )
+
+
+def test_single_milestone_parent_evidence_rule_is_unchanged() -> None:
+    document = deepcopy(load_roadmap())
+    rm_024 = next(item for item in document["items"] if item["id"] == "RM-024")
+    rm_024["completion_evidence"]["commits"] = [
+        *rm_024["completion_evidence"]["commits"],
+        "b" * 40,
+    ]
+    with pytest.raises(
+        ValueError,
+        match="single-milestone RM evidence differs from completion milestone",
+    ):
+        validate_roadmap(document)
 
 
 def test_completed_milestone_requires_parent_dependency_and_evidence_consistency() -> None:

@@ -170,6 +170,12 @@ failureをexception textだけで保存せず、code、phase/attempt/revision、
 Dependencies: P2-024A後にP2-010A（serial pure phase）を実装し、P2-012A後にP2-010B
 （durable integration）を行う。RM-010完了gateはP2-010Bである。
 
+P2-010Bの内部opt-in seamでは、`structural_nonterminal` revisionのpublicationが検証されて
+初めて同一process内のstate transitionをauthorizeできる。このauthorization自体はterminal
+checkpointやproduct statusではない。state checkpointをterminal manifest generationへbindし、
+completion marker、verified product reader/status、migration、resume integration、lifecycle hookを
+提供する責務はP2-012Bに残る。
+
 Human approval:
 
 - calculation assignment artifactの互換方針
@@ -688,6 +694,13 @@ Safe commit units:
 
 各stepは独立commitとし、4品質ゲート、targeted contract/fault test、独立レビューがgreenになるまで
 次へ進めない。
+
+split RMの親をcompletedにする場合、親RMの`completion_evidence`はordered
+`commits`/`paths`/`tests`を含めcompletion milestoneのevidenceと完全一致させる。
+completion milestone側は、そのmilestoneに明示承認されたexact implementation scopeのproposal順、
+tracked repository path、cited commit tree、changed path、append-only historyで検証する。親RMの抽象的な
+targets/tests labelへ実在pathをprefix-bindして代用しない。entry milestoneとcompletion milestoneが同一の
+RM、およびsplitを持たないcompleted RMの既存binding ruleは変更しない。
 
 ## P2-012A completion boundary
 

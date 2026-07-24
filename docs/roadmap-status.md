@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `5058cf48fbe51714dfb41cc860574a31d4cd5f1b05052732d7540e4c3ed9f88e`
+- source SHA-256: `bf9e29670f6cdb1fd1341b47f25b17e14c2636dee32dbd3544449ecbf7e2b0f6`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -25,6 +25,7 @@ Completedの再openは`in_progress`または`blocked`への遷移とし、理由
 ## Phase 2 implementation milestones
 
 RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非循環milestone DAGを正とします。
+entry milestoneとcompletion milestoneが異なるsplit RMをcompletedにする場合、親RMのordered completion evidenceはcompletion milestoneのevidenceと完全一致し、そのmilestoneの承認済みexact implementation scopeで検証されます。
 
 | milestone | RM | state | dependencies | scope |
 |---|---|---|---|---|

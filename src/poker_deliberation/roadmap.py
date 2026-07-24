@@ -545,7 +545,7 @@ def _validate_milestones(
             and progress[completion_milestone]["state"] != "completed"
         ):
             raise ValueError(f"completed RM lacks completed gate milestone: {rm_id}")
-        if items[rm_id]["status"] == "completed" and entry_milestone == completion_milestone:
+        if items[rm_id]["status"] == "completed":
             parent_evidence = _require_dict(
                 items[rm_id]["completion_evidence"], f"{rm_id}.completion_evidence"
             )
@@ -554,7 +554,40 @@ def _validate_milestones(
                 f"{completion_milestone}.completion_evidence",
             )
             if parent_evidence != milestone_evidence:
-                raise ValueError(f"single-milestone RM evidence differs from milestone: {rm_id}")
+                kind = "single-milestone" if entry_milestone == completion_milestone else "split"
+                raise ValueError(f"{kind} RM evidence differs from completion milestone: {rm_id}")
+            if entry_milestone != completion_milestone:
+                approval_reference = milestone_approvals[completion_milestone]
+                approval_record = (
+                    approval_records[approval_reference] if approval_reference is not None else None
+                )
+                approval_scope = (
+                    _require_dict(approval_record["scope"], "approval scope")
+                    if approval_record is not None and "scope" in approval_record
+                    else None
+                )
+                if (
+                    approval_scope is None
+                    or approval_scope.get("schema_version") != APPROVAL_SCOPE_SCHEMA_VERSION
+                ):
+                    raise ValueError(
+                        f"split completion milestone lacks exact approved scope: "
+                        f"{completion_milestone}"
+                    )
+                implementation_scope = _require_dict(
+                    approval_scope["milestone_implementation_scope"],
+                    "milestone implementation scope",
+                )
+                declared_targets = _require_string_list(implementation_scope["targets"], "targets")
+                declared_tests = _require_string_list(implementation_scope["tests"], "tests")
+                if (
+                    _require_string_list(milestone_evidence["paths"], "paths") != declared_targets
+                    or _require_string_list(milestone_evidence["tests"], "tests") != declared_tests
+                ):
+                    raise ValueError(
+                        f"split completion milestone evidence order differs from approved scope: "
+                        f"{completion_milestone}"
+                    )
         owned_states = [
             progress[milestone_id]["state"]
             for milestone_id, milestone in milestones.items()
@@ -666,14 +699,22 @@ def validate_roadmap(document: dict[str, Any]) -> None:
                 raise ValueError(f"completed item lacks path/test evidence: {rm_id}")
             if not evidence_lists["commits"] and item.get("evidence_mode") != "enclosing_commit":
                 raise ValueError(f"completed item lacks commit evidence mode: {rm_id}")
-            declared_evidence = _require_string_list(item["targets"], "targets") + (
-                _require_string_list(item["tests"], "tests")
+            entry_milestone = item.get("entry_milestone")
+            completion_milestone = item.get("completion_milestone")
+            split_milestone = (
+                isinstance(entry_milestone, str)
+                and isinstance(completion_milestone, str)
+                and entry_milestone != completion_milestone
             )
-            if any(
-                not _evidence_is_contract_bound(reference, declared_evidence)
-                for reference in evidence_lists["paths"] + evidence_lists["tests"]
-            ):
-                raise ValueError(f"completion evidence is not bound to targets/tests: {rm_id}")
+            if not split_milestone:
+                declared_evidence = _require_string_list(item["targets"], "targets") + (
+                    _require_string_list(item["tests"], "tests")
+                )
+                if any(
+                    not _evidence_is_contract_bound(reference, declared_evidence)
+                    for reference in evidence_lists["paths"] + evidence_lists["tests"]
+                ):
+                    raise ValueError(f"completion evidence is not bound to targets/tests: {rm_id}")
 
         approval = _require_dict(item.get("human_approval"), f"{rm_id}.human_approval")
         if not isinstance(approval.get("required"), bool):
@@ -1322,6 +1363,11 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
             (
                 "RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非循環"
                 "milestone DAGを正とします。"
+            ),
+            (
+                "entry milestoneとcompletion milestoneが異なるsplit RMをcompletedにする場合、"
+                "親RMのordered completion evidenceはcompletion milestoneのevidenceと完全一致し、"
+                "そのmilestoneの承認済みexact implementation scopeで検証されます。"
             ),
             "",
             "| milestone | RM | state | dependencies | scope |",

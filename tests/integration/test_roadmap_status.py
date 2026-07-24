@@ -435,13 +435,17 @@ def test_exact_rm_and_milestone_sets_are_required() -> None:
 def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
     document = load_roadmap()
     p2_010a_reference = "goal-rm010-p2-010a-2026-07-20"
-    p2_010b_reference = "goal-rm010-p2-010b-2026-07-24"
+    original_reference = "goal-rm010-p2-010b-2026-07-24"
+    p2_010b_reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
     record = document["approval_records"][p2_010b_reference]
     canonical = json.dumps(
         record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
 
+    assert original_reference in document["approval_records"]
     assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
+    assert record["topics"] == record["scope"]["policy_decisions"]
+    assert record["scope"]["milestone_implementation_scope"]["targets"][-1] == ("tests/__init__.py")
     assert document["milestone_approvals"]["P2-010A"] == p2_010a_reference
     assert document["milestone_approvals"]["P2-010B"] == p2_010b_reference
     assert document["milestone_progress"]["P2-010B"]["state"] == "in_progress"
@@ -479,50 +483,17 @@ def test_milestone_approval_binding_is_append_only() -> None:
         validate_roadmap_update(previous, current, {new_reference})
 
 
-def _revised_p2_010b_scope(document: dict[str, object]) -> dict[str, object]:
-    old_reference = "goal-rm010-p2-010b-2026-07-24"
-    scope = deepcopy(document["approval_records"][old_reference]["scope"])  # type: ignore[index]
-    scope["milestone_implementation_scope"]["targets"].append(  # type: ignore[index]
-        "tests/__init__.py"
-    )
-    scope["milestone_implementation_scope"]["acceptance_criteria"].append(  # type: ignore[index]
-        "tests/__init__.py is an empty package marker used only for distinct "
-        "test import identities."
-    )
-    scope["policy_decisions"].extend(  # type: ignore[attr-defined]
-        [
-            "Use one separately approved bounded governance commit and one "
-            "revised-scope binding commit.",
-            "Read candidate and final tests from the current P2-010B milestone approval binding.",
-        ]
-    )
-    return scope
-
-
-def _append_p2_010b_scope_revision(document: dict[str, object]) -> str:
-    reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
-    scope = _revised_p2_010b_scope(document)
-    document["approval_records"][reference] = {  # type: ignore[index]
-        "source_label": "explicit human reapproval of revised P2-010B exact scope",
-        "topics": scope["policy_decisions"],
-        "scope": scope,
-        "scope_digest": _scope_digest(scope),
-    }
-    document["milestone_approvals"]["P2-010B"] = reference  # type: ignore[index]
-    return reference
-
-
 def test_bounded_semantic_scope_revision_is_strict_and_append_only() -> None:
-    previous = load_roadmap()
-    current = deepcopy(previous)
-    reference = _append_p2_010b_scope_revision(current)
+    current = load_roadmap()
+    previous = deepcopy(current)
+    old_reference = "goal-rm010-p2-010b-2026-07-24"
+    reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
+    previous["approval_records"].pop(reference)
+    previous["milestone_approvals"]["P2-010B"] = old_reference
 
     validate_roadmap(current)
     validate_roadmap_update(previous, current)
-    assert (
-        current["approval_records"]["goal-rm010-p2-010b-2026-07-24"]
-        == (previous["approval_records"]["goal-rm010-p2-010b-2026-07-24"])
-    )
+    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
 
     wrong_label = deepcopy(current)
     wrong_label["approval_records"][reference]["source_label"] = "self declared"

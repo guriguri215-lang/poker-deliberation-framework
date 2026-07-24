@@ -827,6 +827,13 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "No equilibrium cannot be proven.",
         "No exact range is not established.",
         "The matrix-game result proves the full NLHE equilibrium.",
+        "No GTO is proven although exact GTO is proven.",
+        "No GTO is proven though exact GTO is proven.",
+        "No GTO is proven while exact GTO is proven.",
+        "No GTO is proven whereas exact GTO is proven.",
+        "No GTO is proven despite exact GTO being proven.",
+        "外部ソルバー未実行のため、GTO均衡であるがGTO均衡であるとは言えない。",
+        "外部ソルバー未実行のため、GTO均衡である一方GTO均衡であるとは言えない。",
     ),
 )
 def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(

@@ -126,7 +126,8 @@ _RESTRICTED_SOLVER_TERM = re.compile(
     re.IGNORECASE,
 )
 _ADVERSATIVE_SOLVER_CLAIM = re.compile(
-    r"[;\uff1b]|\b(?:but|however|nevertheless|nonetheless|yet)\b|"
+    r"[;\uff1b]|\b(?:although|but|despite|however|nevertheless|nonetheless|"
+    r"though|whereas|while|yet)\b|"
     r"(?:\u305d\u308c\u3067\u3082|\u3057\u304b\u3057|"
     r"\u306b\u3082\u304b\u304b\u308f\u3089\u305a)",
     re.IGNORECASE,
@@ -135,29 +136,36 @@ _ENGLISH_LIMITATION_SUFFIX = (
     r"(?:proven|verified|established|supported|available|calculated|known|claimed)"
     r"(?:\s+without\s+(?:a\s+)?(?:qualified\s+)?(?:external\s+)?solver)?"
 )
+_ENGLISH_RESTRICTED_SUBJECT = (
+    r"(?:gto(?:\s+equilibrium)?(?:\s+range)?|"
+    r"equilibrium|exploitability|exact(?:[\s-]+)range)"
+)
+_JAPANESE_RESTRICTED_SUBJECT = (
+    r"(?:gto(?:\u5747\u8861)?|\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027|"
+    r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?\u30ec\u30f3\u30b8)"
+)
 _EXPLICIT_SOLVER_LIMITATION_PATTERNS = (
     re.compile(
-        rf"no\s+(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
-        rf"[a-z0-9\s-]+\s+(?:is|are|was|were)\s+{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
+        rf"no\s+{_ENGLISH_RESTRICTED_SUBJECT}\s+"
+        rf"(?:is|are|was|were)\s+{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"(?!no\s)(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
-        rf"[a-z0-9\s-]+\s+(?:is|are|was|were|remains?)\s+not\s+"
+        rf"(?:the\s+)?{_ENGLISH_RESTRICTED_SUBJECT}\s+"
+        rf"(?:is|are|was|were|remains?)\s+not\s+"
         rf"{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
         re.IGNORECASE,
     ),
     re.compile(
-        rf"(?!no\s)(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
-        rf"[a-z0-9\s-]+\s+(?:cannot|can't)\s+be\s+"
+        rf"(?:the\s+)?{_ENGLISH_RESTRICTED_SUBJECT}\s+"
+        rf"(?:cannot|can't)\s+be\s+"
         rf"{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
         re.IGNORECASE,
     ),
     re.compile(
         rf"(?:\u5916\u90e8)?\u30bd\u30eb\u30d0\u30fc"
         rf"(?:\u304c|\u306f)?\u672a\u5b9f\u884c\u306e\u305f\u3081[\u3001,]\s*"
-        rf"(?=[^\u3002\uff1b]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
-        rf"[^\u3002\uff1b]+(?:\u3067\u3042\u308b)?\u3068\u306f"
+        rf"{_JAPANESE_RESTRICTED_SUBJECT}(?:\u3067\u3042\u308b)?\u3068\u306f"
         rf"(?:\u8a00\u3048\u306a\u3044|\u65ad\u5b9a\u3067\u304d\u306a\u3044|"
         rf"\u8a3c\u660e\u3067\u304d\u306a\u3044|\u78ba\u8a8d\u3067\u304d\u306a\u3044)"
         rf"[\u3002]?",

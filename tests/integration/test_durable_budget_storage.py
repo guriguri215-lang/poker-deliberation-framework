@@ -15,6 +15,11 @@ from poker_deliberation.budgets.durable_models import (
     DURABLE_BUDGET_PRODUCER_VERSION,
     DurableBudgetPolicyV1,
     DurableBudgetStateV1,
+    DurableEventV1,
+    IdempotencyRecordV1,
+    OperationKind,
+    OperationOutcome,
+    canonical_durable_sha256,
 )
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
@@ -56,6 +61,36 @@ def _state(
     previous_state_sha256: str | None = None,
 ) -> DurableBudgetStateV1:
     policy = DurableBudgetPolicyV1()
+    operations = []
+    events = []
+    for ordinal in range(generation):
+        operation_id = f"synthetic-storage-{ordinal}"
+        result_sha256 = canonical_durable_sha256({"ordinal": ordinal})
+        operation = IdempotencyRecordV1(
+            operation_id=operation_id,
+            kind=(OperationKind.INITIALIZE if ordinal == 0 else OperationKind.START),
+            request_sha256=canonical_durable_sha256({"operation_id": operation_id}),
+            outcome=OperationOutcome.APPLIED,
+            result_sha256=result_sha256,
+            subject_id="Run-budget",
+        )
+        event = DurableEventV1(
+            ordinal=ordinal,
+            kind=operation.kind,
+            operation_id=operation_id,
+            subject_id=operation.subject_id,
+            event_sha256=canonical_durable_sha256(
+                {
+                    "ordinal": ordinal,
+                    "kind": operation.kind.value,
+                    "operation_id": operation_id,
+                    "subject_id": operation.subject_id,
+                    "result_sha256": result_sha256,
+                }
+            ),
+        )
+        operations.append(operation)
+        events.append(event)
     return DurableBudgetStateV1(
         run_id="Run-budget",
         generation=generation,
@@ -63,6 +98,8 @@ def _state(
         policy=policy,
         policy_sha256=policy.policy_sha256,
         activation_sha256=policy.activation_sha256,
+        operations=tuple(operations),
+        events=tuple(events),
         active_runtime_remaining_ns=policy.base_policy.runtime_limit_ns,
     )
 

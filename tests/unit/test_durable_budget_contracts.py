@@ -10,15 +10,20 @@ from pydantic import ValidationError
 from poker_deliberation.budgets import BudgetPolicyV2, ExecutionClass
 from poker_deliberation.budgets.durable_models import (
     RESOURCE_ORDER,
+    AttemptRecordV1,
+    AttemptStatus,
     DurableBudgetFailureV1,
     DurableBudgetPolicyV1,
     DurableBudgetStateV1,
+    DurableEventV1,
     DurableFailureCode,
     DurablePermitV1,
     DurableSettlementV1,
     ExecutionActivationV1,
     ExecutionLineageV1,
+    IdempotencyRecordV1,
     OperationKind,
+    OperationOutcome,
     OwnerKind,
     PermitStatus,
     ResourceAmountsV1,
@@ -108,7 +113,7 @@ def test_permit_requires_exactly_one_slot_and_valid_start_order() -> None:
         permit_id="permit-1",
         reservation=reservation,
         lineage=_lineage(),
-        reserved_monotonic_ns=10,
+        reserved_active_runtime_ns=10,
     )
     assert permit.status is PermitStatus.RESERVED
 
@@ -138,8 +143,8 @@ def test_permit_requires_exactly_one_slot_and_valid_start_order() -> None:
             reservation=reservation,
             lineage=_lineage(),
             status=PermitStatus.STARTED,
-            reserved_monotonic_ns=10,
-            started_monotonic_ns=9,
+            reserved_active_runtime_ns=10,
+            started_active_runtime_ns=9,
         )
 
 
@@ -164,7 +169,7 @@ def test_settlement_records_exact_release_and_overrun_without_truncation() -> No
         status=SettlementStatus.SUCCEEDED,
         result_sha256=HASH,
         effect_evidence_sha256=HASH,
-        settled_monotonic_ns=20,
+        settled_active_runtime_ns=20,
     )
     assert normal.actual.tool_output_bytes == 80
 
@@ -181,7 +186,7 @@ def test_settlement_records_exact_release_and_overrun_without_truncation() -> No
         ),
         released=ResourceAmountsV1(),
         status=SettlementStatus.OVERRUN,
-        settled_monotonic_ns=20,
+        settled_active_runtime_ns=20,
     )
     assert overrun.actual.tool_output_bytes == 101
     with pytest.raises(ValidationError, match="overrun status"):
@@ -201,7 +206,31 @@ def test_state_binds_policy_lineage_and_unique_deterministic_identities() -> Non
         permit_id="permit-1",
         reservation=reservation,
         lineage=_lineage(),
-        reserved_monotonic_ns=10,
+        reserved_active_runtime_ns=10,
+    )
+    result_sha256 = canonical_durable_sha256({"run_id": "run-1"})
+    operation = IdempotencyRecordV1(
+        operation_id="initialize-1",
+        kind=OperationKind.INITIALIZE,
+        request_sha256=HASH,
+        outcome=OperationOutcome.APPLIED,
+        result_sha256=result_sha256,
+        subject_id="run-1",
+    )
+    event = DurableEventV1(
+        ordinal=0,
+        kind=operation.kind,
+        operation_id=operation.operation_id,
+        subject_id=operation.subject_id,
+        event_sha256=canonical_durable_sha256(
+            {
+                "ordinal": 0,
+                "kind": operation.kind.value,
+                "operation_id": operation.operation_id,
+                "subject_id": operation.subject_id,
+                "result_sha256": result_sha256,
+            }
+        ),
     )
     state = DurableBudgetStateV1(
         run_id="run-1",
@@ -210,6 +239,15 @@ def test_state_binds_policy_lineage_and_unique_deterministic_identities() -> Non
         policy_sha256=policy.policy_sha256,
         activation_sha256=policy.activation_sha256,
         active_permits=(permit,),
+        attempts=(
+            AttemptRecordV1(
+                permit_id=permit.permit_id,
+                lineage=permit.lineage,
+                status=AttemptStatus.RESERVED,
+            ),
+        ),
+        operations=(operation,),
+        events=(event,),
         active_runtime_remaining_ns=policy.base_policy.runtime_limit_ns,
     )
     assert DurableBudgetStateV1.model_validate_json(state.canonical_bytes()) == state
@@ -224,9 +262,7 @@ def test_state_binds_policy_lineage_and_unique_deterministic_identities() -> Non
             {**state.model_dump(mode="python"), "active_permits": (permit, permit)}
         )
     with pytest.raises(ValidationError, match="previous state hash"):
-        DurableBudgetStateV1.model_validate(
-            {**state.model_dump(mode="python"), "generation": 2}
-        )
+        DurableBudgetStateV1.model_validate({**state.model_dump(mode="python"), "generation": 2})
 
 
 def test_failure_latch_cannot_downgrade_unknown_effect() -> None:

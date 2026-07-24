@@ -17,12 +17,10 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from poker_deliberation.budgets.contracts import BudgetPolicyV2, ExecutionClass
 
 DURABLE_BUDGET_SCHEMA_VERSION: Final[Literal["1.0.0"]] = "1.0.0"
-DURABLE_BUDGET_ARTIFACT_SCHEMA: Final[
-    Literal["poker-durable-budget-state-artifact-v1"]
-] = "poker-durable-budget-state-artifact-v1"
-DURABLE_BUDGET_PRODUCER_ID: Final[Literal["p2-011b-durable-budget"]] = (
-    "p2-011b-durable-budget"
+DURABLE_BUDGET_ARTIFACT_SCHEMA: Final[Literal["poker-durable-budget-state-artifact-v1"]] = (
+    "poker-durable-budget-state-artifact-v1"
 )
+DURABLE_BUDGET_PRODUCER_ID: Final[Literal["p2-011b-durable-budget"]] = "p2-011b-durable-budget"
 DURABLE_BUDGET_PRODUCER_VERSION: Final[Literal["0.1.0"]] = "0.1.0"
 DURABLE_BUDGET_CANONICALIZATION: Final[Literal["poker-durable-budget-json-v1"]] = (
     "poker-durable-budget-json-v1"
@@ -236,8 +234,7 @@ class ResourceAmountsV1(_DurableModel):
 
     def add_cumulative(self, other: ResourceAmountsV1) -> ResourceAmountsV1:
         values = {
-            name: int(getattr(self, name)) + int(getattr(other, name))
-            for name in RESOURCE_ORDER
+            name: int(getattr(self, name)) + int(getattr(other, name)) for name in RESOURCE_ORDER
         }
         return ResourceAmountsV1.model_validate(values)
 
@@ -365,8 +362,7 @@ class ResourceReservationV1(_DurableModel):
         if self.execution_class is ExecutionClass.UNKNOWN:
             raise ValueError("unknown execution class cannot be reserved")
         if self.execution_class is ExecutionClass.LOCAL_FREE and (
-            self.requested.external_cost_micro_usd != 0
-            or self.external_cost_estimate_authenticated
+            self.requested.external_cost_micro_usd != 0 or self.external_cost_estimate_authenticated
         ):
             raise ValueError("local-free execution must reserve zero external cost")
         if self.execution_class is ExecutionClass.EXTERNAL and (
@@ -383,18 +379,18 @@ class DurablePermitV1(_DurableModel):
     reservation: ResourceReservationV1
     lineage: ExecutionLineageV1
     status: PermitStatus = PermitStatus.RESERVED
-    reserved_monotonic_ns: int = Field(ge=0)
-    started_monotonic_ns: int | None = Field(default=None, ge=0)
+    reserved_active_runtime_ns: int = Field(ge=0)
+    started_active_runtime_ns: int | None = Field(default=None, ge=0)
 
     _permit_id = field_validator("permit_id")(_validate_identifier)
 
     @model_validator(mode="after")
     def started_state_has_a_clock_observation(self) -> DurablePermitV1:
-        if (self.status is PermitStatus.STARTED) != (self.started_monotonic_ns is not None):
+        if (self.status is PermitStatus.STARTED) != (self.started_active_runtime_ns is not None):
             raise ValueError("started permit must have exactly one start observation")
         if (
-            self.started_monotonic_ns is not None
-            and self.started_monotonic_ns < self.reserved_monotonic_ns
+            self.started_active_runtime_ns is not None
+            and self.started_active_runtime_ns < self.reserved_active_runtime_ns
         ):
             raise ValueError("permit start observation precedes reservation")
         return self
@@ -452,11 +448,9 @@ class DurableSettlementV1(_DurableModel):
     effect_evidence_sha256: str | None = None
     cancellation_evidence_sha256: str | None = None
     deterministic_tool_evidence: DeterministicToolEvidenceV1 | None = None
-    settled_monotonic_ns: int = Field(ge=0)
+    settled_active_runtime_ns: int = Field(ge=0)
 
-    _ids = field_validator("settlement_id", "permit_id", "operation_id")(
-        _validate_identifier
-    )
+    _ids = field_validator("settlement_id", "permit_id", "operation_id")(_validate_identifier)
 
     @field_validator(
         "operation_request_sha256",
@@ -504,7 +498,7 @@ class DurableCancellationV1(_DurableModel):
     requested_operation_id: str | None = None
     evidence_sha256: str | None = None
     worker_live: bool = False
-    observed_monotonic_ns: int = Field(ge=0)
+    observed_active_runtime_ns: int = Field(ge=0)
 
     _permit_id = field_validator("permit_id")(_validate_identifier)
 
@@ -628,12 +622,10 @@ class DurableEventV1(_DurableModel):
 
 class DurableBudgetStateV1(_DurableModel):
     schema_version: Literal["1.0.0"] = DURABLE_BUDGET_SCHEMA_VERSION
-    artifact_schema: Literal[
-        "poker-durable-budget-state-artifact-v1"
-    ] = DURABLE_BUDGET_ARTIFACT_SCHEMA
-    canonicalization: Literal[
-        "poker-durable-budget-json-v1"
-    ] = DURABLE_BUDGET_CANONICALIZATION
+    artifact_schema: Literal["poker-durable-budget-state-artifact-v1"] = (
+        DURABLE_BUDGET_ARTIFACT_SCHEMA
+    )
+    canonicalization: Literal["poker-durable-budget-json-v1"] = DURABLE_BUDGET_CANONICALIZATION
     hash_algorithm: Literal["sha256"] = DURABLE_BUDGET_HASH_ALGORITHM
     producer_id: Literal["p2-011b-durable-budget"] = DURABLE_BUDGET_PRODUCER_ID
     producer_version: Literal["0.1.0"] = DURABLE_BUDGET_PRODUCER_VERSION
@@ -674,33 +666,135 @@ class DurableBudgetStateV1(_DurableModel):
             raise ValueError("durable state policy hash mismatch")
         if self.activation_sha256 != self.policy.activation_sha256:
             raise ValueError("durable state activation hash mismatch")
-        if self.active_runtime_remaining_ns > self.policy.base_policy.runtime_limit_ns:
-            raise ValueError("remaining runtime exceeds the policy")
+        if self.active_runtime_remaining_ns != max(
+            0,
+            self.policy.base_policy.runtime_limit_ns - self.usage.active_runtime_ns,
+        ):
+            raise ValueError("remaining runtime does not match settled active runtime")
 
         permit_ids = [permit.permit_id for permit in self.active_permits]
         settlement_ids = [settlement.settlement_id for settlement in self.settlements]
         settled_permits = [settlement.permit_id for settlement in self.settlements]
+        attempt_permits = [attempt.permit_id for attempt in self.attempts]
         attempt_ids = [attempt.lineage.attempt_id for attempt in self.attempts]
         context_ids = [attempt.lineage.context_id for attempt in self.attempts]
         operation_ids = [operation.operation_id for operation in self.operations]
         cancellation_permits = [item.permit_id for item in self.cancellations]
-        ordinals = [permit.lineage.execution_ordinal for permit in self.active_permits]
         for name, values in (
             ("permit", permit_ids),
             ("settlement", settlement_ids),
             ("settled permit", settled_permits),
+            ("attempt permit", attempt_permits),
             ("attempt", attempt_ids),
             ("context", context_ids),
             ("operation", operation_ids),
             ("cancellation", cancellation_permits),
-            ("execution ordinal", ordinals),
         ):
             if len(values) != len(set(values)):
                 raise ValueError(f"duplicate durable {name} identity")
+        root_ordinals: dict[str, int] = {}
+        ordinal_roots: dict[int, str] = {}
+        attempts_by_id = {attempt.lineage.attempt_id: attempt.lineage for attempt in self.attempts}
+        for attempt in self.attempts:
+            lineage = attempt.lineage
+            prior_ordinal = root_ordinals.setdefault(
+                lineage.root_attempt_id,
+                lineage.execution_ordinal,
+            )
+            if prior_ordinal != lineage.execution_ordinal:
+                raise ValueError("one root attempt changed execution ordinal")
+            prior_root = ordinal_roots.setdefault(
+                lineage.execution_ordinal,
+                lineage.root_attempt_id,
+            )
+            if prior_root != lineage.root_attempt_id:
+                raise ValueError("duplicate durable execution ordinal")
+            if lineage.parent_attempt_id is None:
+                continue
+            parent = attempts_by_id.get(lineage.parent_attempt_id)
+            if parent is None or parent.context_id != lineage.parent_context_id:
+                raise ValueError("retry parent lineage is missing or mismatched")
+            stable_fields = (
+                "owner_kind",
+                "owner_id",
+                "role",
+                "phase_id",
+                "assignment_id",
+                "root_attempt_id",
+                "root_context_id",
+                "context_source_sha256",
+                "execution_ordinal",
+            )
+            if any(getattr(lineage, field) != getattr(parent, field) for field in stable_fields):
+                raise ValueError("retry ownership or root lineage was substituted")
         if set(permit_ids) & set(settled_permits):
             raise ValueError("a permit cannot be both active and settled")
+        if set(attempt_permits) != set(permit_ids) | set(settled_permits):
+            raise ValueError("every durable permit requires exactly one attempt")
+        attempts_by_permit = {attempt.permit_id: attempt for attempt in self.attempts}
+        cancellations_by_permit = {
+            cancellation.permit_id: cancellation for cancellation in self.cancellations
+        }
+        for permit in self.active_permits:
+            cancellation = cancellations_by_permit.get(permit.permit_id)
+            expected_status = (
+                AttemptStatus.EFFECT_UNKNOWN
+                if cancellation is not None
+                and cancellation.state
+                in {
+                    CancellationState.UNCONFIRMED,
+                    CancellationState.EFFECT_UNKNOWN,
+                }
+                else (
+                    AttemptStatus.RESERVED
+                    if permit.status is PermitStatus.RESERVED
+                    else AttemptStatus.STARTED
+                )
+            )
+            if attempts_by_permit[permit.permit_id].status is not expected_status:
+                raise ValueError("active permit and attempt status mismatch")
+        settlement_attempt_status = {
+            SettlementStatus.SUCCEEDED: AttemptStatus.SUCCEEDED,
+            SettlementStatus.FAILED: AttemptStatus.FAILED,
+            SettlementStatus.CANCELLED: AttemptStatus.CANCELLED,
+            SettlementStatus.RELEASED_NO_EFFECT: AttemptStatus.CANCELLED,
+            SettlementStatus.EFFECT_UNKNOWN: AttemptStatus.EFFECT_UNKNOWN,
+            SettlementStatus.OVERRUN: AttemptStatus.FAILED,
+        }
+        for settlement in self.settlements:
+            if (
+                attempts_by_permit[settlement.permit_id].status
+                is not settlement_attempt_status[settlement.status]
+            ):
+                raise ValueError("settlement and attempt status mismatch")
+        if not set(cancellation_permits).issubset(set(permit_ids) | set(settled_permits)):
+            raise ValueError("cancellation references an unknown permit")
         if tuple(event.ordinal for event in self.events) != tuple(range(len(self.events))):
             raise ValueError("durable event ordinals must be contiguous")
+        if len(self.operations) != self.generation or len(self.events) != self.generation:
+            raise ValueError("each durable generation requires exactly one operation and event")
+        if self.operations[0].kind is not OperationKind.INITIALIZE or any(
+            operation.kind is OperationKind.INITIALIZE for operation in self.operations[1:]
+        ):
+            raise ValueError("durable initialization must occur exactly at generation one")
+        for operation, event in zip(self.operations, self.events, strict=True):
+            if (
+                operation.outcome is not OperationOutcome.APPLIED
+                or event.kind is not operation.kind
+                or event.operation_id != operation.operation_id
+                or event.subject_id != operation.subject_id
+                or event.event_sha256
+                != canonical_durable_sha256(
+                    {
+                        "ordinal": event.ordinal,
+                        "kind": event.kind.value,
+                        "operation_id": event.operation_id,
+                        "subject_id": event.subject_id,
+                        "result_sha256": operation.result_sha256,
+                    }
+                )
+            ):
+                raise ValueError("durable operation and event lineage mismatch")
         active_slots = sum(
             permit.reservation.requested.concurrency_slots for permit in self.active_permits
         )

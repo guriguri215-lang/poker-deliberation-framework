@@ -12,6 +12,7 @@ import pytest
 from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.budgets.durable_models import (
     AttemptStatus,
+    CancellationState,
     DurableBudgetPolicyV1,
     DurableFailureCode,
     ExecutionActivationV1,
@@ -192,6 +193,9 @@ def test_reserve_start_settle_and_exact_replay_survive_restart(
 
     assert settled.state.usage.run_bytes == 80
     assert settled.state.usage.peak_concurrency == 1
+    assert settled.state.usage.active_runtime_ns == 30
+    assert settled.state.settlements[0].actual.active_runtime_ns == 20
+    assert settled.state.settlements[0].settled_active_runtime_ns == 30
     assert not settled.state.active_permits
     assert settle_replay.status is MutationStatus.EXACT_REPLAY
     assert store.load("Run-budget-store") == settled.state
@@ -336,3 +340,151 @@ def test_policy_change_can_only_tighten_above_used_and_reserved(
         )
     assert loosened.value.failure.code is DurableFailureCode.POLICY_MISMATCH
     assert tightened.state.attempts[0].status is AttemptStatus.RESERVED
+
+
+def test_cancellation_before_start_blocks_start_and_ack_is_not_settlement(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-cancel",
+        permit_id="permit-cancel",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    store.request_cancellation(
+        "Run-budget-store",
+        operation_id="request-cancel",
+        permit_id="permit-cancel",
+    )
+
+    with pytest.raises(DurableBudgetError) as blocked:
+        store.start(
+            "Run-budget-store",
+            operation_id="start-cancelled",
+            permit_id="permit-cancel",
+        )
+    assert blocked.value.failure.code is DurableFailureCode.CANCEL_UNCONFIRMED
+
+    acknowledged = store.record_cancellation(
+        "Run-budget-store",
+        operation_id="ack-cancel",
+        permit_id="permit-cancel",
+        state_value=CancellationState.ACKNOWLEDGED,
+        evidence_sha256="a" * 64,
+        worker_live=False,
+    )
+    assert acknowledged.state.settlements == ()
+    assert acknowledged.state.active_permits[0].permit_id == "permit-cancel"
+    assert acknowledged.state.cancellations[0].state is CancellationState.ACKNOWLEDGED
+
+
+def test_committed_settlement_remains_authoritative_over_late_cancel(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-race",
+        permit_id="permit-race",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    store.start(
+        "Run-budget-store",
+        operation_id="start-race",
+        permit_id="permit-race",
+    )
+    settled = store.settle(
+        "Run-budget-store",
+        operation_id="settle-race",
+        settlement_id="settlement-race",
+        permit_id="permit-race",
+        actual=ResourceAmountsV1(
+            tool_attempts=1,
+            tool_input_bytes=50,
+            tool_output_bytes=50,
+            run_bytes=50,
+            concurrency_slots=1,
+        ),
+        status=SettlementStatus.SUCCEEDED,
+        result_sha256="b" * 64,
+        effect_evidence_sha256="c" * 64,
+    )
+
+    with pytest.raises(DurableBudgetError) as late_cancel:
+        store.request_cancellation(
+            "Run-budget-store",
+            operation_id="cancel-after-settle",
+            permit_id="permit-race",
+        )
+    assert late_cancel.value.failure.code is DurableFailureCode.INVALID_INPUT
+    state = store.load("Run-budget-store")
+    assert state.settlements == settled.state.settlements
+    assert state.cancellations == ()
+
+
+def test_restart_rebases_process_clock_and_excludes_wall_downtime(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-restart",
+        permit_id="permit-restart",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    before = store.load("Run-budget-store").usage.active_runtime_ns
+
+    class ManualClock:
+        value = 10**15
+
+        def __call__(self) -> int:
+            return self.value
+
+    clock = ManualClock()
+    restarted = DurableBudgetStore(
+        store.revisions.revision_root,
+        store.revisions.legacy_runs_root,
+        clock=clock,
+        wall_clock=lambda: NOW,
+    )
+    restarted.resume("Run-budget-store")
+    clock.value += 7
+    released = restarted.release_no_effect(
+        "Run-budget-store",
+        operation_id="release-restart",
+        settlement_id="settlement-restart",
+        permit_id="permit-restart",
+        evidence_sha256="d" * 64,
+    )
+
+    assert released.state.usage.active_runtime_ns == before + 7
+    assert released.state.settlements[0].settled_active_runtime_ns == before + 7
+
+
+def test_explicit_clock_rebase_excludes_human_wait_window(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-approval-wait",
+        permit_id="permit-approval-wait",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    before = store.load("Run-budget-store").usage.active_runtime_ns
+    store.rebase_monotonic_clock()
+
+    released = store.release_no_effect(
+        "Run-budget-store",
+        operation_id="release-approval-wait",
+        settlement_id="settlement-approval-wait",
+        permit_id="permit-approval-wait",
+        evidence_sha256="e" * 64,
+    )
+
+    assert released.state.usage.active_runtime_ns == before

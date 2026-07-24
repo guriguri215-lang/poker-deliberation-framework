@@ -30,6 +30,7 @@ from poker_deliberation.budgets.durable_models import (
     DurableMutationResultV1,
     DurablePermitV1,
     DurableSettlementV1,
+    DurableUsageV1,
     ExecutionLineageV1,
     IdempotencyRecordV1,
     MutationStatus,
@@ -135,9 +136,7 @@ def reservation_request_sha256(
             "reservation_id": reservation_id,
             "requested": requested.model_dump(mode="json"),
             "execution_class": execution_class.value,
-            "external_cost_estimate_authenticated": (
-                external_cost_estimate_authenticated
-            ),
+            "external_cost_estimate_authenticated": (external_cost_estimate_authenticated),
         }
     )
 
@@ -236,10 +235,8 @@ def _is_policy_tightening(
     if any(getattr(new_base, field) > getattr(old_base, field) for field in nonincreasing):
         return False
     return (
-        new.activation.max_concurrent_agents
-        <= old.activation.max_concurrent_agents
-        and new.activation.max_automatic_retries
-        <= old.activation.max_automatic_retries
+        new.activation.max_concurrent_agents <= old.activation.max_concurrent_agents
+        and new.activation.max_automatic_retries <= old.activation.max_automatic_retries
     )
 
 
@@ -253,16 +250,134 @@ def _validate_state_successor(
         or newer.previous_state_sha256 != older.canonical_sha256
     ):
         raise ValueError("durable state generation lineage mismatch")
+    if (
+        len(newer.operations) != len(older.operations) + 1
+        or len(newer.events) != len(older.events) + 1
+    ):
+        raise ValueError("durable successor must append one operation and event")
     if newer.operations[: len(older.operations)] != older.operations:
         raise ValueError("durable idempotency history was rewritten")
     if newer.events[: len(older.events)] != older.events:
         raise ValueError("durable event history was rewritten")
+    operation = newer.operations[-1]
+    kind = operation.kind
+    if kind is OperationKind.INITIALIZE:
+        raise ValueError("initialize cannot appear after durable generation one")
+    if newer.events[-1].operation_id != operation.operation_id:
+        raise ValueError("durable successor operation/event mismatch")
     if newer.settlements[: len(older.settlements)] != older.settlements:
         raise ValueError("durable settlement history was rewritten")
+    settlement_delta = len(newer.settlements) - len(older.settlements)
+    if kind in {OperationKind.SETTLE, OperationKind.RELEASE_NO_EFFECT}:
+        if (
+            settlement_delta != 1
+            or newer.settlements[-1].operation_id != operation.operation_id
+            or newer.settlements[-1].settlement_id != operation.subject_id
+        ):
+            raise ValueError("durable settlement transition is inconsistent")
+    elif settlement_delta != 0:
+        raise ValueError("non-settlement operation appended a settlement")
     if older.failure_latch is not None and newer.failure_latch != older.failure_latch:
         raise ValueError("durable failure latch was cleared or rewritten")
+    if (
+        older.failure_latch is None
+        and newer.failure_latch is not None
+        and kind not in {OperationKind.SETTLE, OperationKind.ACKNOWLEDGE_CANCEL}
+    ):
+        raise ValueError("durable failure latch changed outside a terminal observation")
     if newer.policy != older.policy and not _is_policy_tightening(older.policy, newer.policy):
         raise ValueError("durable policy was not monotonically tightened")
+    if (newer.policy != older.policy) != (kind is OperationKind.TIGHTEN_POLICY):
+        raise ValueError("durable policy changed outside its typed operation")
+
+    older_permits = {permit.permit_id: permit for permit in older.active_permits}
+    newer_permits = {permit.permit_id: permit for permit in newer.active_permits}
+    if kind is OperationKind.RESERVE:
+        added = set(newer_permits) - set(older_permits)
+        if (
+            added != {operation.subject_id}
+            or set(older_permits) - set(newer_permits)
+            or any(newer_permits[key] != value for key, value in older_permits.items())
+        ):
+            raise ValueError("durable reserve did not append exactly one permit")
+    elif kind is OperationKind.START:
+        if set(newer_permits) != set(older_permits):
+            raise ValueError("durable start changed permit identities")
+        changed = {key for key, value in older_permits.items() if newer_permits[key] != value}
+        if changed != {operation.subject_id}:
+            raise ValueError("durable start changed the wrong permit")
+    elif kind in {OperationKind.SETTLE, OperationKind.RELEASE_NO_EFFECT}:
+        removed = set(older_permits) - set(newer_permits)
+        if (
+            removed != {newer.settlements[-1].permit_id}
+            or set(newer_permits) - set(older_permits)
+            or any(newer_permits[key] != older_permits[key] for key in newer_permits)
+        ):
+            raise ValueError("durable settlement did not close exactly one permit")
+    elif newer.active_permits != older.active_permits:
+        raise ValueError("operation unexpectedly changed active permits")
+
+    if kind is OperationKind.RESERVE:
+        if (
+            len(newer.attempts) != len(older.attempts) + 1
+            or newer.attempts[: len(older.attempts)] != older.attempts
+            or newer.attempts[-1].permit_id != operation.subject_id
+        ):
+            raise ValueError("durable reserve did not append one attempt")
+    else:
+        if len(newer.attempts) != len(older.attempts):
+            raise ValueError("non-reserve operation changed attempt count")
+        for before, after in zip(older.attempts, newer.attempts, strict=True):
+            if before.permit_id != after.permit_id or before.lineage != after.lineage:
+                raise ValueError("durable attempt identity or lineage was rewritten")
+        changed_attempts = {
+            before.permit_id
+            for before, after in zip(older.attempts, newer.attempts, strict=True)
+            if before != after
+        }
+        mutable_attempt_kinds = {
+            OperationKind.START,
+            OperationKind.SETTLE,
+            OperationKind.RELEASE_NO_EFFECT,
+            OperationKind.ACKNOWLEDGE_CANCEL,
+        }
+        if kind not in mutable_attempt_kinds and newer.attempts != older.attempts:
+            raise ValueError("operation unexpectedly changed attempt status")
+        expected_attempt = (
+            newer.settlements[-1].permit_id
+            if kind in {OperationKind.SETTLE, OperationKind.RELEASE_NO_EFFECT}
+            else operation.subject_id
+        )
+        if kind in {
+            OperationKind.START,
+            OperationKind.SETTLE,
+            OperationKind.RELEASE_NO_EFFECT,
+        } and changed_attempts != {expected_attempt}:
+            raise ValueError("operation changed the wrong attempt status")
+        if kind is OperationKind.ACKNOWLEDGE_CANCEL and frozenset(changed_attempts) not in {
+            frozenset(),
+            frozenset({expected_attempt}),
+        }:
+            raise ValueError("cancel acknowledgment changed unrelated attempts")
+
+    older_cancellations = {
+        cancellation.permit_id: cancellation for cancellation in older.cancellations
+    }
+    newer_cancellations = {
+        cancellation.permit_id: cancellation for cancellation in newer.cancellations
+    }
+    if kind is OperationKind.REQUEST_CANCEL:
+        added = set(newer_cancellations) - set(older_cancellations)
+        if added != {operation.subject_id}:
+            raise ValueError("cancel request did not append its target")
+    elif kind is OperationKind.ACKNOWLEDGE_CANCEL:
+        if set(newer_cancellations) != set(older_cancellations) or {
+            key for key, value in older_cancellations.items() if newer_cancellations[key] != value
+        } != {operation.subject_id}:
+            raise ValueError("cancel acknowledgment changed the wrong target")
+    elif newer.cancellations != older.cancellations:
+        raise ValueError("operation unexpectedly changed cancellation state")
+
     cumulative = {
         "active_runtime_ns",
         "provider_attempts",
@@ -278,6 +393,12 @@ def _validate_state_successor(
             raise ValueError("durable cumulative usage decreased")
         if resource not in cumulative and resource != "concurrency_slots" and current < previous:
             raise ValueError("durable maximum usage decreased")
+        if (
+            resource != "active_runtime_ns"
+            and kind is not OperationKind.SETTLE
+            and current != previous
+        ):
+            raise ValueError("non-settlement operation changed effect usage")
 
 
 class DurableBudgetStore:
@@ -306,7 +427,7 @@ class DurableBudgetStore:
             producer_version=DURABLE_BUDGET_PRODUCER_VERSION,
         )
 
-    def _observe_monotonic(self, operation_id: str) -> int:
+    def _observe_monotonic(self, operation_id: str) -> tuple[int, int]:
         try:
             value = self.clock()
         except Exception as exc:
@@ -326,13 +447,40 @@ class DurableBudgetStore:
                 resource="active_runtime_ns",
                 observed=self._last_monotonic_ns - value,
             )
+        elapsed = 0 if self._last_monotonic_ns is None else value - self._last_monotonic_ns
         self._last_monotonic_ns = value
-        return value
+        return value, elapsed
 
     def rebase_monotonic_clock(self) -> None:
         """Exclude restart or human-approval wait from active-runtime accounting."""
 
         self._last_monotonic_ns = None
+
+    def _charge_active_runtime(
+        self,
+        state: DurableBudgetStateV1,
+        elapsed_ns: int,
+        operation_id: str,
+        *,
+        allow_overrun: bool = False,
+    ) -> tuple[DurableUsageV1, int]:
+        usage = state.usage.apply_actual(ResourceAmountsV1(active_runtime_ns=elapsed_ns))
+        remaining = max(
+            0,
+            state.policy.base_policy.runtime_limit_ns - usage.active_runtime_ns,
+        )
+        if (
+            usage.active_runtime_ns > state.policy.base_policy.runtime_limit_ns
+            and not allow_overrun
+        ):
+            raise _failure(
+                DurableFailureCode.DEADLINE_EXCEEDED,
+                operation_id=operation_id,
+                resource="active_runtime_ns",
+                limit=state.policy.base_policy.runtime_limit_ns,
+                observed=usage.active_runtime_ns,
+            )
+        return usage, remaining
 
     def _map_storage_error(
         self,
@@ -406,11 +554,7 @@ class DurableBudgetStore:
         self.rebase_monotonic_clock()
         state = self.load(run_id)
         started = next(
-            (
-                permit
-                for permit in state.active_permits
-                if permit.status is PermitStatus.STARTED
-            ),
+            (permit for permit in state.active_permits if permit.status is PermitStatus.STARTED),
             None,
         )
         if started is not None:
@@ -420,6 +564,7 @@ class DurableBudgetStore:
                 reconciliation_required=True,
                 effect_unknown=True,
             )
+        self._observe_monotonic("resume")
         return state
 
     def _existing_operation(
@@ -431,11 +576,7 @@ class DurableBudgetStore:
         request_sha256: str,
     ) -> DurableMutationResultV1 | None:
         record = next(
-            (
-                item
-                for item in state.operations
-                if item.operation_id == operation_id
-            ),
+            (item for item in state.operations if item.operation_id == operation_id),
             None,
         )
         if record is None:
@@ -523,9 +664,7 @@ class DurableBudgetStore:
             if current.current_revision != previous.generation:
                 current_state = self.load(successor.run_id)
                 operation_kind = next(
-                    item.kind
-                    for item in successor.operations
-                    if item.operation_id == operation_id
+                    item.kind for item in successor.operations if item.operation_id == operation_id
                 )
                 replay = self._existing_operation(
                     current_state,
@@ -564,9 +703,7 @@ class DurableBudgetStore:
                 current_state,
                 operation_id=operation_id,
                 kind=next(
-                    item.kind
-                    for item in successor.operations
-                    if item.operation_id == operation_id
+                    item.kind for item in successor.operations if item.operation_id == operation_id
                 ),
                 request_sha256=request_sha256,
             )
@@ -664,8 +801,7 @@ class DurableBudgetStore:
         return {
             "active_runtime_ns": policy.runtime_limit_ns,
             "provider_attempts": policy.max_deliberation_rounds,
-            "tool_attempts": policy.max_deliberation_rounds
-            + policy.max_tool_retries,
+            "tool_attempts": policy.max_deliberation_rounds + policy.max_tool_retries,
             "retry_attempts": policy.max_tool_retries,
             "external_cost_micro_usd": policy.max_external_cost_micro_usd,
             "provider_output_bytes": policy.max_provider_output_bytes,
@@ -697,9 +833,7 @@ class DurableBudgetStore:
             reservation_id=reservation.reservation_id,
             requested=reservation.requested,
             execution_class=reservation.execution_class,
-            external_cost_estimate_authenticated=(
-                reservation.external_cost_estimate_authenticated
-            ),
+            external_cost_estimate_authenticated=(reservation.external_cost_estimate_authenticated),
         ):
             raise _failure(
                 DurableFailureCode.INVALID_INPUT,
@@ -723,10 +857,7 @@ class DurableBudgetStore:
             elif resource in cumulative:
                 observed = (
                     int(getattr(state.usage, resource))
-                    + sum(
-                        int(getattr(permit.reservation.requested, resource))
-                        for permit in active
-                    )
+                    + sum(int(getattr(permit.reservation.requested, resource)) for permit in active)
                     + requested
                 )
                 limit = limits[resource]
@@ -747,6 +878,66 @@ class DurableBudgetStore:
                     observed=observed,
                 )
 
+    def _admit_lineage(
+        self,
+        state: DurableBudgetStateV1,
+        lineage: ExecutionLineageV1,
+        operation_id: str,
+    ) -> None:
+        prior = tuple(attempt.lineage for attempt in state.attempts)
+        if any(
+            item.attempt_id == lineage.attempt_id
+            or item.context_id == lineage.context_id
+            or item.idempotency_key == lineage.idempotency_key
+            for item in prior
+        ):
+            raise _failure(
+                DurableFailureCode.IDEMPOTENCY_CONFLICT,
+                operation_id=operation_id,
+            )
+        same_root = tuple(item for item in prior if item.root_attempt_id == lineage.root_attempt_id)
+        if not same_root:
+            if lineage.parent_attempt_id is not None or any(
+                item.execution_ordinal == lineage.execution_ordinal for item in prior
+            ):
+                raise _failure(
+                    DurableFailureCode.INVALID_INPUT,
+                    operation_id=operation_id,
+                )
+            return
+        if lineage.parent_attempt_id is None:
+            raise _failure(
+                DurableFailureCode.IDEMPOTENCY_CONFLICT,
+                operation_id=operation_id,
+            )
+        parent = next(
+            (
+                item
+                for item in same_root
+                if item.attempt_id == lineage.parent_attempt_id
+                and item.context_id == lineage.parent_context_id
+            ),
+            None,
+        )
+        stable_fields = (
+            "owner_kind",
+            "owner_id",
+            "role",
+            "phase_id",
+            "assignment_id",
+            "root_attempt_id",
+            "root_context_id",
+            "context_source_sha256",
+            "execution_ordinal",
+        )
+        if parent is None or any(
+            getattr(lineage, field) != getattr(parent, field) for field in stable_fields
+        ):
+            raise _failure(
+                DurableFailureCode.INVALID_INPUT,
+                operation_id=operation_id,
+            )
+
     def reserve(
         self,
         run_id: str,
@@ -756,7 +947,7 @@ class DurableBudgetStore:
         reservation: ResourceReservationV1,
         lineage: ExecutionLineageV1,
     ) -> DurableMutationResultV1:
-        observed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_payload = {
             "kind": OperationKind.RESERVE.value,
@@ -773,7 +964,18 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
-        self._admit_reservation(state, reservation, operation_id)
+        usage, remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+        )
+        charged_state = _replace(
+            state,
+            usage=usage,
+            active_runtime_remaining_ns=remaining,
+        )
+        self._admit_reservation(charged_state, reservation, operation_id)
+        self._admit_lineage(state, lineage, operation_id)
         all_permit_ids = {
             *(permit.permit_id for permit in state.active_permits),
             *(settlement.permit_id for settlement in state.settlements),
@@ -787,7 +989,7 @@ class DurableBudgetStore:
             permit_id=permit_id,
             reservation=reservation,
             lineage=lineage,
-            reserved_monotonic_ns=observed,
+            reserved_active_runtime_ns=usage.active_runtime_ns,
         )
         attempt = AttemptRecordV1(
             permit_id=permit_id,
@@ -804,6 +1006,8 @@ class DurableBudgetStore:
             updates={
                 "active_permits": (*state.active_permits, permit),
                 "attempts": (*state.attempts, attempt),
+                "usage": usage,
+                "active_runtime_remaining_ns": remaining,
             },
         )
         return self._publish(
@@ -821,7 +1025,7 @@ class DurableBudgetStore:
         operation_id: str,
         permit_id: str,
     ) -> DurableMutationResultV1:
-        observed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -837,6 +1041,11 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
+        usage, remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+        )
         permit = next(
             (item for item in state.active_permits if item.permit_id == permit_id),
             None,
@@ -852,16 +1061,13 @@ class DurableBudgetStore:
         started = _replace(
             permit,
             status=PermitStatus.STARTED,
-            started_monotonic_ns=observed,
+            started_active_runtime_ns=usage.active_runtime_ns,
         )
         permits = tuple(
-            started if item.permit_id == permit_id else item
-            for item in state.active_permits
+            started if item.permit_id == permit_id else item for item in state.active_permits
         )
         attempts = tuple(
-            _replace(item, status=AttemptStatus.STARTED)
-            if item.permit_id == permit_id
-            else item
+            _replace(item, status=AttemptStatus.STARTED) if item.permit_id == permit_id else item
             for item in state.attempts
         )
         successor = self._append_operation(
@@ -871,7 +1077,12 @@ class DurableBudgetStore:
             request_sha256=request_sha256,
             subject_id=permit_id,
             result_payload=started,
-            updates={"active_permits": permits, "attempts": attempts},
+            updates={
+                "active_permits": permits,
+                "attempts": attempts,
+                "usage": usage,
+                "active_runtime_remaining_ns": remaining,
+            },
         )
         return self._publish(
             state,
@@ -910,10 +1121,12 @@ class DurableBudgetStore:
         result_sha256: str | None = None,
         effect_evidence_sha256: str | None = None,
         cancellation_evidence_sha256: str | None = None,
+        failure_category: str | None = None,
         deterministic_tool_evidence: DeterministicToolEvidenceV1 | None = None,
         external_cost_actual_authenticated: bool = False,
+        observed_peak_concurrency: int | None = None,
     ) -> DurableMutationResultV1:
-        observed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_payload = {
             "kind": OperationKind.SETTLE.value,
@@ -924,12 +1137,14 @@ class DurableBudgetStore:
             "result_sha256": result_sha256,
             "effect_evidence_sha256": effect_evidence_sha256,
             "cancellation_evidence_sha256": cancellation_evidence_sha256,
+            "failure_category": failure_category,
             "deterministic_tool_evidence": (
                 None
                 if deterministic_tool_evidence is None
                 else deterministic_tool_evidence.model_dump(mode="json")
             ),
             "external_cost_actual_authenticated": external_cost_actual_authenticated,
+            "observed_peak_concurrency": observed_peak_concurrency,
         }
         request_sha256 = canonical_durable_sha256(request_payload)
         replay = self._existing_operation(
@@ -953,26 +1168,71 @@ class DurableBudgetStore:
             and not external_cost_actual_authenticated
         ):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
-        if (
-            permit.reservation.execution_class is ExecutionClass.LOCAL_FREE
-            and (
-                actual.external_cost_micro_usd != 0
-                or external_cost_actual_authenticated
-            )
+        if permit.reservation.execution_class is ExecutionClass.LOCAL_FREE and (
+            actual.external_cost_micro_usd != 0 or external_cost_actual_authenticated
         ):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
         if status is SettlementStatus.SUCCEEDED and (
             result_sha256 is None or effect_evidence_sha256 is None
         ):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
+        cancellation = next(
+            (item for item in state.cancellations if item.permit_id == permit_id),
+            None,
+        )
+        if cancellation is not None:
+            if cancellation.state in {
+                CancellationState.ACKNOWLEDGED,
+                CancellationState.CANCELLED,
+            } and (
+                status is not SettlementStatus.CANCELLED
+                or cancellation_evidence_sha256 is None
+                or cancellation_evidence_sha256 != cancellation.evidence_sha256
+            ):
+                raise _failure(
+                    DurableFailureCode.INVALID_INPUT,
+                    operation_id=operation_id,
+                )
+            if (
+                cancellation.state
+                in {
+                    CancellationState.REQUESTED,
+                    CancellationState.UNCONFIRMED,
+                    CancellationState.EFFECT_UNKNOWN,
+                }
+                and status is not SettlementStatus.EFFECT_UNKNOWN
+            ):
+                raise _failure(
+                    DurableFailureCode.CANCEL_UNCONFIRMED,
+                    operation_id=operation_id,
+                )
         if deterministic_tool_evidence is not None and (
-            deterministic_tool_evidence.execution_ordinal
-            != permit.lineage.execution_ordinal
-            or deterministic_tool_evidence.tool_result_bytes_sha256
-            != result_sha256
+            deterministic_tool_evidence.execution_ordinal != permit.lineage.execution_ordinal
+            or deterministic_tool_evidence.tool_result_bytes_sha256 != result_sha256
         ):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
-        released, overrun = self._released(permit.reservation.requested, actual)
+        if observed_peak_concurrency is not None and (
+            isinstance(observed_peak_concurrency, bool)
+            or not isinstance(observed_peak_concurrency, int)
+            or observed_peak_concurrency < 1
+            or observed_peak_concurrency > state.policy.activation.max_concurrent_agents
+        ):
+            raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
+        charged_usage, remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+            allow_overrun=True,
+        )
+        measured_runtime = charged_usage.active_runtime_ns - permit.reserved_active_runtime_ns
+        settled_actual = _replace(
+            actual,
+            active_runtime_ns=measured_runtime,
+        )
+        released, overrun = self._released(
+            permit.reservation.requested,
+            settled_actual,
+        )
         effective_status = SettlementStatus.OVERRUN if overrun else status
         settlement = DurableSettlementV1(
             settlement_id=settlement_id,
@@ -980,16 +1240,24 @@ class DurableBudgetStore:
             operation_id=operation_id,
             operation_request_sha256=request_sha256,
             reserved=permit.reservation.requested,
-            actual=actual,
+            actual=settled_actual,
             released=released,
             status=effective_status,
             result_sha256=result_sha256,
             effect_evidence_sha256=effect_evidence_sha256,
             cancellation_evidence_sha256=cancellation_evidence_sha256,
             deterministic_tool_evidence=deterministic_tool_evidence,
-            settled_monotonic_ns=observed,
+            settled_active_runtime_ns=charged_usage.active_runtime_ns,
         )
-        usage = state.usage.apply_actual(actual)
+        usage = charged_usage.apply_actual(_replace(settled_actual, active_runtime_ns=0))
+        if observed_peak_concurrency is not None:
+            usage = _replace(
+                usage,
+                peak_concurrency=max(
+                    usage.peak_concurrency,
+                    observed_peak_concurrency,
+                ),
+            )
         failure_latch = state.failure_latch
         attempt_status = {
             SettlementStatus.SUCCEEDED: AttemptStatus.SUCCEEDED,
@@ -998,11 +1266,11 @@ class DurableBudgetStore:
             SettlementStatus.EFFECT_UNKNOWN: AttemptStatus.EFFECT_UNKNOWN,
             SettlementStatus.OVERRUN: AttemptStatus.FAILED,
         }[effective_status]
-        if effective_status is SettlementStatus.OVERRUN:
+        if effective_status is SettlementStatus.OVERRUN and failure_latch is None:
             exceeded = next(
                 resource
                 for resource in RESOURCE_ORDER
-                if int(getattr(actual, resource))
+                if int(getattr(settled_actual, resource))
                 > int(getattr(permit.reservation.requested, resource))
             )
             failure_latch = DurableBudgetFailureV1(
@@ -1010,11 +1278,11 @@ class DurableBudgetStore:
                 operation_id=operation_id,
                 resource=exceeded,
                 limit=int(getattr(permit.reservation.requested, exceeded)),
-                observed=int(getattr(actual, exceeded)),
+                observed=int(getattr(settled_actual, exceeded)),
                 reconciliation_required=True,
                 evidence_sha256=effect_evidence_sha256,
             )
-        elif effective_status is SettlementStatus.EFFECT_UNKNOWN:
+        elif effective_status is SettlementStatus.EFFECT_UNKNOWN and failure_latch is None:
             failure_latch = DurableBudgetFailureV1(
                 code=DurableFailureCode.EFFECT_UNKNOWN,
                 operation_id=operation_id,
@@ -1026,6 +1294,7 @@ class DurableBudgetStore:
             _replace(
                 item,
                 status=attempt_status,
+                failure_category=failure_category,
                 effect_evidence_sha256=effect_evidence_sha256,
             )
             if item.permit_id == permit_id
@@ -1046,11 +1315,7 @@ class DurableBudgetStore:
                 "settlements": (*state.settlements, settlement),
                 "attempts": attempts,
                 "usage": usage,
-                "active_runtime_remaining_ns": max(
-                    0,
-                    state.policy.base_policy.runtime_limit_ns
-                    - usage.active_runtime_ns,
-                ),
+                "active_runtime_remaining_ns": remaining,
                 "failure_latch": failure_latch,
             },
         )
@@ -1071,7 +1336,7 @@ class DurableBudgetStore:
         permit_id: str,
         evidence_sha256: str,
     ) -> DurableMutationResultV1:
-        observed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1089,6 +1354,12 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
+        usage, remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+            allow_overrun=True,
+        )
         permit = next(
             (item for item in state.active_permits if item.permit_id == permit_id),
             None,
@@ -1105,7 +1376,7 @@ class DurableBudgetStore:
             released=permit.reservation.requested,
             status=SettlementStatus.RELEASED_NO_EFFECT,
             effect_evidence_sha256=evidence_sha256,
-            settled_monotonic_ns=observed,
+            settled_active_runtime_ns=usage.active_runtime_ns,
         )
         attempts = tuple(
             _replace(
@@ -1130,6 +1401,8 @@ class DurableBudgetStore:
                 ),
                 "settlements": (*state.settlements, settlement),
                 "attempts": attempts,
+                "usage": usage,
+                "active_runtime_remaining_ns": remaining,
             },
         )
         return self._publish(
@@ -1147,7 +1420,7 @@ class DurableBudgetStore:
         operation_id: str,
         permit_id: str,
     ) -> DurableMutationResultV1:
-        observed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1163,6 +1436,12 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
+        usage, remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+            allow_overrun=True,
+        )
         if not any(item.permit_id == permit_id for item in state.active_permits):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
         previous = next(
@@ -1179,14 +1458,10 @@ class DurableBudgetStore:
             state=CancellationState.REQUESTED,
             requested_operation_id=operation_id,
             worker_live=True,
-            observed_monotonic_ns=observed,
+            observed_active_runtime_ns=usage.active_runtime_ns,
         )
         cancellations = (
-            *(
-                item
-                for item in state.cancellations
-                if item.permit_id != permit_id
-            ),
+            *(item for item in state.cancellations if item.permit_id != permit_id),
             cancellation,
         )
         successor = self._append_operation(
@@ -1196,7 +1471,11 @@ class DurableBudgetStore:
             request_sha256=request_sha256,
             subject_id=permit_id,
             result_payload=cancellation,
-            updates={"cancellations": cancellations},
+            updates={
+                "cancellations": cancellations,
+                "usage": usage,
+                "active_runtime_remaining_ns": remaining,
+            },
         )
         return self._publish(
             state,
@@ -1216,7 +1495,7 @@ class DurableBudgetStore:
         evidence_sha256: str | None,
         worker_live: bool,
     ) -> DurableMutationResultV1:
-        observed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1235,26 +1514,42 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
+        usage, remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+            allow_overrun=True,
+        )
         previous = next(
             (item for item in state.cancellations if item.permit_id == permit_id),
             None,
         )
+        transition_allowed = previous is not None and (
+            (
+                previous.state is CancellationState.REQUESTED
+                and state_value
+                in {
+                    CancellationState.ACKNOWLEDGED,
+                    CancellationState.UNCONFIRMED,
+                    CancellationState.EFFECT_UNKNOWN,
+                }
+            )
+            or (
+                previous.state is CancellationState.ACKNOWLEDGED
+                and state_value is CancellationState.CANCELLED
+            )
+        )
+        if not transition_allowed:
+            raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
+        assert previous is not None
         if (
-            previous is None
-            or previous.state is not CancellationState.REQUESTED
-            or state_value
-            not in {
+            state_value
+            in {
                 CancellationState.ACKNOWLEDGED,
                 CancellationState.CANCELLED,
-                CancellationState.UNCONFIRMED,
-                CancellationState.EFFECT_UNKNOWN,
             }
+            and evidence_sha256 is None
         ):
-            raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
-        if state_value in {
-            CancellationState.ACKNOWLEDGED,
-            CancellationState.CANCELLED,
-        } and evidence_sha256 is None:
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
         cancellation = DurableCancellationV1(
             permit_id=permit_id,
@@ -1262,7 +1557,7 @@ class DurableBudgetStore:
             requested_operation_id=previous.requested_operation_id,
             evidence_sha256=evidence_sha256,
             worker_live=worker_live,
-            observed_monotonic_ns=observed,
+            observed_active_runtime_ns=usage.active_runtime_ns,
         )
         failure_latch = state.failure_latch
         attempts = state.attempts
@@ -1270,17 +1565,18 @@ class DurableBudgetStore:
             CancellationState.UNCONFIRMED,
             CancellationState.EFFECT_UNKNOWN,
         }:
-            failure_latch = DurableBudgetFailureV1(
-                code=(
-                    DurableFailureCode.CANCEL_UNCONFIRMED
-                    if state_value is CancellationState.UNCONFIRMED
-                    else DurableFailureCode.EFFECT_UNKNOWN
-                ),
-                operation_id=operation_id,
-                reconciliation_required=True,
-                effect_unknown=True,
-                evidence_sha256=evidence_sha256,
-            )
+            if failure_latch is None:
+                failure_latch = DurableBudgetFailureV1(
+                    code=(
+                        DurableFailureCode.CANCEL_UNCONFIRMED
+                        if state_value is CancellationState.UNCONFIRMED
+                        else DurableFailureCode.EFFECT_UNKNOWN
+                    ),
+                    operation_id=operation_id,
+                    reconciliation_required=True,
+                    effect_unknown=True,
+                    evidence_sha256=evidence_sha256,
+                )
             attempts = tuple(
                 _replace(
                     item,
@@ -1292,11 +1588,7 @@ class DurableBudgetStore:
                 for item in attempts
             )
         cancellations = (
-            *(
-                item
-                for item in state.cancellations
-                if item.permit_id != permit_id
-            ),
+            *(item for item in state.cancellations if item.permit_id != permit_id),
             cancellation,
         )
         successor = self._append_operation(
@@ -1310,6 +1602,8 @@ class DurableBudgetStore:
                 "cancellations": cancellations,
                 "failure_latch": failure_latch,
                 "attempts": attempts,
+                "usage": usage,
+                "active_runtime_remaining_ns": remaining,
             },
         )
         return self._publish(
@@ -1328,7 +1622,7 @@ class DurableBudgetStore:
         new_policy: DurableBudgetPolicyV1,
         reason_sha256: str,
     ) -> DurableMutationResultV1:
-        self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1346,9 +1640,15 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
-        if state.failure_latch is not None or not _is_policy_tightening(
-            state.policy,
-            new_policy,
+        usage, _old_remaining = self._charge_active_runtime(
+            state,
+            elapsed,
+            operation_id,
+        )
+        if (
+            state.failure_latch is not None
+            or new_policy == state.policy
+            or not _is_policy_tightening(state.policy, new_policy)
         ):
             raise _failure(
                 DurableFailureCode.POLICY_MISMATCH,
@@ -1368,7 +1668,7 @@ class DurableBudgetStore:
                 observed = len(state.active_permits)
                 limit = new_policy.activation.max_concurrent_agents
             elif resource in cumulative:
-                observed = int(getattr(state.usage, resource)) + sum(
+                observed = int(getattr(usage, resource)) + sum(
                     int(getattr(item.reservation.requested, resource))
                     for item in state.active_permits
                 )
@@ -1376,7 +1676,7 @@ class DurableBudgetStore:
             else:
                 observed = max(
                     (
-                        int(getattr(state.usage, resource)),
+                        int(getattr(usage, resource)),
                         *(
                             int(getattr(item.reservation.requested, resource))
                             for item in state.active_permits
@@ -1407,9 +1707,10 @@ class DurableBudgetStore:
                 "policy": new_policy,
                 "policy_sha256": new_policy.policy_sha256,
                 "activation_sha256": new_policy.activation_sha256,
-                "active_runtime_remaining_ns": (
-                    new_policy.base_policy.runtime_limit_ns
-                    - state.usage.active_runtime_ns
+                "usage": usage,
+                "active_runtime_remaining_ns": max(
+                    0,
+                    new_policy.base_policy.runtime_limit_ns - usage.active_runtime_ns,
                 ),
             },
         )

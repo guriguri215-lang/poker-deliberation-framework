@@ -86,6 +86,14 @@ def _rewind_split_rm_010(document: dict[str, object]) -> None:
     }
 
 
+def _rewind_p2_011b(document: dict[str, object]) -> None:
+    document["milestone_progress"]["P2-011B"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+
+
 def _complete_split_rm_010(document: dict[str, object]) -> tuple[str, list[str], list[str]]:
     _rewind_split_rm_010(document)
     rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
@@ -663,6 +671,7 @@ def test_third_bounded_semantic_scope_revision_is_exact_and_append_only() -> Non
 def test_scoped_approval_projection_correction_is_strict_and_append_only() -> None:
     current = deepcopy(load_roadmap())
     _rewind_split_rm_010(current)
+    _rewind_p2_011b(current)
     current["milestone_progress"]["P2-012A"] = {
         "state": "not_started",
         "history": ["not_started"],
@@ -951,6 +960,7 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
 
     pending_item = deepcopy(load_roadmap())
     _rewind_split_rm_010(pending_item)
+    _rewind_p2_011b(pending_item)
     pending_item["milestone_progress"]["P2-012A"] = {
         "state": "not_started",
         "history": ["not_started"],
@@ -1095,9 +1105,10 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 6,
-        "not_started": 6,
+        "in_progress": 1,
+        "not_started": 5,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-011B"]
+    assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)

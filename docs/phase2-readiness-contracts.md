@@ -688,3 +688,15 @@ Safe commit units:
 
 各stepは独立commitとし、4品質ゲート、targeted contract/fault test、独立レビューがgreenになるまで
 次へ進めない。
+
+## P2-012A completion boundary
+
+P2-012A の完了条件は、専用 root、strict nonterminal schema/canonical bytes、typed provenance、
+process/kernel lock、immutable revision、serialized CAS、structural reader、orphan inspection と
+metadata-only claim、quota/fault/concurrency evidence までである。`RM-012` 全体は
+`in_progress` のまま、`P2-012B` の completion marker、terminal reader/status、product
+integration、migration/lifecycle hook は `not_started` のままにする。
+
+capability は `immutable_revision_storage_foundation` だけを implemented にできる。
+`product_integrated_durable_run` は planned を維持し、P2-010B/P2-011B/P2-012B の readiness
+や approval を暗黙に昇格させない。

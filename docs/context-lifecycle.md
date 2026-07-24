@@ -93,3 +93,11 @@ payload/source hash、policy/envelope hash、expiry、producer/consumer runtime�
 
 `LocalProvider`、CLI exit code、既存run artifact名、calculation caseのprovider非実行、blind decision
 isolationは維持する。外部送信は追加しない。
+
+## P2-012A provenance boundary
+
+P2-012A は raw `ContextEnvelope` や provider payload を保存しない。許可された payload の
+`ContextBindingV1` は、`AgentExecutionRecord` に既にある context/attempt/parent ID、
+schema/classification、payload/source/policy/envelope hash、expiry、producer/consumer runtime
+との scalar correlation だけを保存する。binding は lineage evidence であり、attempt-memory-only
+policy、expiry semantics、handoff authority を durable context persistence へ変更しない。

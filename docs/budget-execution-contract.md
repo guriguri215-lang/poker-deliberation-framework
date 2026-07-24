@@ -90,3 +90,13 @@ values cannot choose a path or become a successful result. Provider reports and 
 are measured before redaction as well as after normalization, so a secret-shaped value cannot shrink
 below a cap through redaction. Artifact/run cap errors are typed budget failures; `Orchestrator.run`
 returns a minimal `failed_with_limitations` value when the cap prevents writing the ordinary report.
+
+## P2-012Aとの関係
+
+revision storage の `BudgetPolicyBindingV1` は current `BudgetPolicyV2` schema version と
+policy SHA-256 の correlation evidence だけを保存する。P2-012A の物理 byte admission は
+dedicated revision root の独立 hard cap であり、P2-011A の in-memory usage ledger、
+cost/runtime settlement、retry classification を復元・予約・永続化しない。
+
+durable usage reservation、resume settlement、multi-process budget CAS、parallel slot、
+automatic retry、cancellation state は P2-011B 以降の別範囲である。

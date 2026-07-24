@@ -92,3 +92,13 @@ outer request/outcome version. No durable usage artifact is added. See
 The existing whole-run atomicity limitation is unchanged: the completion transition can be written
 before a later final-report write fails. P2-012A/P2-010B, not P2-010A, owns durable transition/write
 ordering, manifest revisions, recovery, and fault-atomic completion.
+
+## P2-012A phase provenance
+
+P2-012A の `PhaseBindingV1` は phase request/outcome から run/phase/attempt、context IDs、
+input/policy/output hash、ordered `ArtifactIntent` snapshot を相関用に保存できる。
+nonnull intent content hash は同じ revision の admitted inventory bytes と一致しなければならない。
+`state.json` intent は provenance には残せるが P2-012A payload table には入らない。
+
+この binding は phase 実行、transition、artifact write authority、parallel scheduling を与えない。
+P2-010A の pure/effect ownership と既存 orchestrator order は変更しない。

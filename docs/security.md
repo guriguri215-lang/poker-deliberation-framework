@@ -90,3 +90,16 @@ context tampering/replay/expiry/unknown runtime,
 restricted and unavailable provider call suppression, prohibited-use refusal, prompt-injection event
 recording, pre-approved injection, fake provider claims, secret canaries, command injection names,
 hard compute limits, runtime overruns, duplicate run IDs, and outside-root config.
+
+## Revision storage threat boundary
+
+P2-012A は dedicated root と legacy root の重複を拒否し、ownership/legacy filesystem identity、
+portable run/path grammar、ASCII-case alias、NFC、reserved device、ADS、link/reparse/hardlink、
+unknown namespace entry、cross-run lineage を fail closed で検査する。payload は P2-027A の
+trusted classification evidence と clean restricted-secret check を再実行し、control/provenance
+には raw path、payload excerpt、credential、自由形式 error message を保存しない。
+
+authority は stable file に対する process registry + nonblocking kernel lock である。
+advisory metadata、mtime、PID、claim file は authority ではない。SHA-256 は corruption と
+correlation の検出用であり writer authenticity を証明しない。同権限の malicious writer、
+完全な syscall 間 TOCTOU、ACL hardening、network filesystem、secure erase は非保証である。

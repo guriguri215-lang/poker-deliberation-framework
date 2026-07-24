@@ -93,3 +93,16 @@ High-level `implemented / disabled / unavailable / planned` states are centraliz
 `capabilities.py`, exposed by `doctor`, documented in `docs/capabilities.md`, and checked by contract
 tests. The offline public preflight scans only Git-tracked and non-ignored public candidates; it does
 not enumerate ignored user data or run artifacts.
+
+## P2-012A immutable revision foundation
+
+`storage/revision_models.py`、`revision_canonical.py`、`revision_lock.py`、
+`revision_store.py` は、既存 product 経路から切り離した opt-in の内部 storage layer である。
+専用 root の ownership、domain-separated identity/hash、strict canonical inventory、
+immutable transaction/manifest、serialized CAS、current-to-genesis structural read、
+metadata-only recovery claim を担当する。
+
+この layer は `RunStore` や orchestrator に注入されず、completion marker、terminal state、
+resume、migration、retention action を所有しない。P2-010A/P2-011A の phase/budget value は
+typed provenance として相関できるが、durable scheduler、budget reservation、phase state
+persistence には変換しない。詳細は `docs/run-revision-storage.md` を参照する。

@@ -74,3 +74,14 @@
   make such cleanup unsafe; empty ignored directories are an intentional local-only trade-off.
 - Wheel/sdist contents, clean install, remote CI, and a coverage threshold are not asserted by the
   current Phase 0/1 baseline.
+- P2-012A は opt-in の structural revision foundation であり、既存 CLI/product run を durable
+  revision に切り替えない。verified structural revision は completed、resumable、terminal を
+  意味しない。
+- current の atomic visibility は cooperating local writer/reader に限る。power-loss、
+  hardware cache、UNC/SMB/NFS/distributed filesystem、cross-volume rename、Windows directory
+  durability、malicious writer authenticity は保証しない。
+- recovery claim は metadata-only であり、orphan の cleanup、quarantine、repair、migration、
+  selection、publish を行わない。retention/cleanup executor と secure erase は未実装である。
+- Windows adapter は legacy 260 UTF-16 path bound を保守的に適用する。extended-length path と
+  arbitrary deep clone は未検証である。POSIX adapter code は存在するが、この Windows
+  セッションでの POSIX 実行結果は **UNKNOWN** である。

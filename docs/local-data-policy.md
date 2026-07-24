@@ -74,3 +74,15 @@ unkeyed SHA-256 は corruption/correlation mismatch の検出用であり、writ
 承認 scope digest は
 `c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d` である。
 P2-027B は P2-012B と P2-013A の後に別承認を要する。
+
+## P2-012A storage admission
+
+P2-012A は policy を変更せず、各 `RevisionArtifactV1` について complete
+`ArtifactClassification`、classification source/evidence、固定 policy digest を pure preflight
+と stored reread の両方で再評価する。persist できるのは trusted explicit または source
+inheritance により `public` / `internal` と判定され、restricted-secret check が完了して clean な
+artifact だけである。attempt context、sensitive/restricted/unknown、default-internal、
+policy mismatch、downgrade は拒否する。
+
+storage は retention/disposition を実行せず、P2-027B の scan、quarantine、delete、receipt、
+tombstone、secure erase を先取りしない。

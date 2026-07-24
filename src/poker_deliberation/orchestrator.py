@@ -63,6 +63,21 @@ from poker_deliberation.phases.models import (
     ToolResearchInput,
     ToolResearchOutput,
 )
+from poker_deliberation.phases.revision_coordinator import (
+    TRANSITION_REASON,
+    PhaseRevisionBundleV1,
+    PhaseRevisionCoordinator,
+    PhaseRevisionFailureCode,
+    PhaseRevisionFailureV1,
+    PhaseRevisionTraceV1,
+    PhaseTransitionApplyResultV1,
+    PhaseTransitionAuthorizationV1,
+    PhaseTransitionPlanV1,
+    _domain_digest,
+    _failure,
+    _is_issued_plan,
+    _issue_transition_plan,
+)
 from poker_deliberation.providers import AgentProvider, LocalProvider
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.research import EvidenceLedger
@@ -248,6 +263,125 @@ class Orchestrator:
                 artifact_bytes=artifact_bytes,
                 run_bytes=run_bytes,
             )
+
+    @staticmethod
+    def _revision_event_prefix(machine: WorkflowStateMachine) -> tuple[dict[str, str], ...]:
+        return tuple(
+            {
+                "source": event.source.value,
+                "target": event.target.value,
+                "reason": event.reason,
+            }
+            for event in machine.events
+        )
+
+    def prepare_revision_bundle(
+        self,
+        machine: WorkflowStateMachine,
+        *,
+        run_id: str,
+        trace: PhaseRevisionTraceV1,
+        request: object,
+    ) -> PhaseRevisionBundleV1 | PhaseRevisionFailureV1:
+        """Purely preview one internal P2-010B revision/transition bundle."""
+
+        from poker_deliberation.storage.revision_models import RevisionPublishRequestV1
+
+        try:
+            with machine.transition_authority():
+                if machine.state is not RunState.FINAL_SYNTHESIS:
+                    return _failure(PhaseRevisionFailureCode.INVALID_PLAN)
+                plan = _issue_transition_plan(
+                    run_id=run_id,
+                    events=self._revision_event_prefix(machine),
+                )
+            if not isinstance(request, RevisionPublishRequestV1):
+                return _failure(PhaseRevisionFailureCode.INVALID_TRACE)
+            return PhaseRevisionBundleV1(trace=trace, request=request, plan=plan)
+        except Exception:
+            return _failure(PhaseRevisionFailureCode.INVALID_PLAN)
+
+    @staticmethod
+    def _revision_plan_matches_machine(
+        machine: WorkflowStateMachine,
+        plan: PhaseTransitionPlanV1,
+    ) -> bool:
+        events = tuple(
+            {
+                "source": event.source.value,
+                "target": event.target.value,
+                "reason": event.reason,
+            }
+            for event in machine.events[: plan.event_count]
+        )
+        return (
+            _is_issued_plan(plan)
+            and len(machine.events) == plan.event_count
+            and machine.state is RunState.FINAL_SYNTHESIS
+            and plan.source == machine.state.value
+            and plan.target == RunState.COMPLETED.value
+            and plan.reason == TRANSITION_REASON
+            and plan.event_prefix_sha256
+            == _domain_digest("poker-phase-transition-event-prefix-v1", events)
+        )
+
+    @staticmethod
+    def _revision_transition_already_applied(
+        machine: WorkflowStateMachine,
+        plan: PhaseTransitionPlanV1,
+    ) -> bool:
+        if machine.state is not RunState.COMPLETED or len(machine.events) != plan.event_count + 1:
+            return False
+        prefix = tuple(
+            {
+                "source": event.source.value,
+                "target": event.target.value,
+                "reason": event.reason,
+            }
+            for event in machine.events[: plan.event_count]
+        )
+        event = machine.events[-1]
+        return (
+            plan.event_prefix_sha256
+            == _domain_digest("poker-phase-transition-event-prefix-v1", prefix)
+            and event.source is RunState.FINAL_SYNTHESIS
+            and event.target is RunState.COMPLETED
+            and event.reason == TRANSITION_REASON
+        )
+
+    def apply_revision_transition(
+        self,
+        machine: WorkflowStateMachine,
+        *,
+        coordinator: PhaseRevisionCoordinator,
+        bundle: PhaseRevisionBundleV1,
+        authorization: PhaseTransitionAuthorizationV1,
+        fault_injector: Callable[[str], None] | None = None,
+    ) -> PhaseTransitionApplyResultV1 | PhaseRevisionFailureV1:
+        """Apply one verified same-process authorization under the state lock."""
+
+        with machine.transition_authority():
+            if self._revision_transition_already_applied(machine, bundle.plan):
+                if coordinator.authorization_matches(bundle, authorization):
+                    return PhaseTransitionApplyResultV1(outcome_kind="already_applied")
+                return _failure(PhaseRevisionFailureCode.AUTHORIZATION_MISMATCH)
+            if not self._revision_plan_matches_machine(
+                machine, bundle.plan
+            ) or not coordinator.authorization_matches(bundle, authorization):
+                return _failure(PhaseRevisionFailureCode.AUTHORIZATION_MISMATCH)
+            try:
+                if fault_injector is not None:
+                    fault_injector("before_transition")
+                machine.transition(RunState.COMPLETED, TRANSITION_REASON)
+                if fault_injector is not None:
+                    fault_injector("after_transition")
+                return PhaseTransitionApplyResultV1(outcome_kind="applied")
+            except Exception:
+                if self._revision_transition_already_applied(machine, bundle.plan):
+                    return PhaseTransitionApplyResultV1(outcome_kind="already_applied")
+                if machine.state is RunState.FINAL_SYNTHESIS:
+                    return _failure(PhaseRevisionFailureCode.APPLY_FAILED)
+                return _failure(PhaseRevisionFailureCode.APPLY_UNKNOWN)
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))

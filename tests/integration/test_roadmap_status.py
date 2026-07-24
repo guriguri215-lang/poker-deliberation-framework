@@ -432,18 +432,19 @@ def test_exact_rm_and_milestone_sets_are_required() -> None:
         validate_roadmap(status_on_ordering_node)
 
 
-def test_milestone_approval_is_digest_bound_and_does_not_unlock_p2_010b() -> None:
+def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
     document = load_roadmap()
-    reference = "goal-rm010-p2-010a-2026-07-20"
-    record = document["approval_records"][reference]
+    p2_010a_reference = "goal-rm010-p2-010a-2026-07-20"
+    p2_010b_reference = "goal-rm010-p2-010b-2026-07-24"
+    record = document["approval_records"][p2_010b_reference]
     canonical = json.dumps(
         record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
 
     assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
-    assert document["milestone_approvals"]["P2-010A"] == reference
-    assert document["milestone_approvals"]["P2-010B"] is None
-    assert "P2-010B" not in roadmap_summary(document)["milestone_ready_ids"]
+    assert document["milestone_approvals"]["P2-010A"] == p2_010a_reference
+    assert document["milestone_approvals"]["P2-010B"] == p2_010b_reference
+    assert "P2-010B" in roadmap_summary(document)["milestone_ready_ids"]
 
     digest_mismatch = deepcopy(document)
     item = next(item for item in digest_mismatch["items"] if item["id"] == "RM-010")
@@ -452,11 +453,12 @@ def test_milestone_approval_is_digest_bound_and_does_not_unlock_p2_010b() -> Non
         validate_roadmap(digest_mismatch)
 
     rebound = deepcopy(document)
-    rebound["milestone_approvals"]["P2-010B"] = reference
+    rebound["milestone_approvals"]["P2-010B"] = p2_010a_reference
     with pytest.raises(ValueError, match="approval scope contract does not match milestone"):
         validate_roadmap(rebound)
 
     activated = deepcopy(document)
+    activated["milestone_approvals"]["P2-010B"] = None
     progress = activated["milestone_progress"]["P2-010B"]
     progress["state"] = "in_progress"
     progress["history"].append("in_progress")
@@ -904,7 +906,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
         "completed": 5,
         "not_started": 7,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == []
+    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-010B"]
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)

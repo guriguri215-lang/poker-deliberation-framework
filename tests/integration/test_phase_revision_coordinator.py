@@ -916,6 +916,12 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "Solver analysis succeeded.",
         "ソルバーを実行し収束した。",
         "ソルバーは利用可能である。",
+        "The Nash solution is proven.",
+        "This Nash strategy is exact.",
+        "The strategy cannot be exploited.",
+        "No opponent can exploit the strategy.",
+        "ナッシュ解が証明された。",
+        "この戦略は搾取されない。",
         "これはプリフロップレンジである。正確である。",
         "レンジを計算した。結果は厳密である。",
     ),
@@ -1052,6 +1058,42 @@ def test_nonframework_parallel_vocabulary_remains_publishable(
                 text=text,
                 label=EpistemicLabel.FACT,
                 confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    authorization = coordinator.publish(bundle)
+
+    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+
+
+@pytest.mark.parametrize(
+    ("text", "label"),
+    (
+        (
+            "This line exploits the opponent's folding leak.",
+            EpistemicLabel.INFERENCE,
+        ),
+        (
+            "We can exploit excessive folds with more bluffs.",
+            EpistemicLabel.ESTIMATE,
+        ),
+        ("相手の過剰フォールドを搾取する。", EpistemicLabel.INFERENCE),
+    ),
+)
+def test_active_exploitative_adjustment_claim_remains_publishable(
+    short_tmp: Path,
+    text: str,
+    label: EpistemicLabel,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        claim_assessments=(
+            Claim(
+                claim_id="active-exploitative-adjustment",
+                text=text,
+                label=label,
+                confidence=ConfidenceGrade.B,
             ),
         ),
     )

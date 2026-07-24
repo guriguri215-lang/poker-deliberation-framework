@@ -124,12 +124,21 @@ _GTO_CLAIM_PATTERN = (
 _RESTRICTED_SOLVER_TERM_PATTERN = (
     rf"{_GTO_CLAIM_PATTERN}|"
     r"(?<![A-Za-z0-9])"
-    r"(?:equilibriums?|equilibria|exploitabilit(?:y|ies)|(?:un)?exploitable)"
+    r"(?:equilibriums?|equilibria|nash|exploitabilit(?:y|ies)|"
+    r"(?:un)?exploitable)"
     r"(?![A-Za-z0-9])|"
-    r"\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027"
+    r"\u5747\u8861|\u30ca\u30c3\u30b7\u30e5|\u643e\u53d6\u53ef\u80fd\u6027"
 )
 _RESTRICTED_SOLVER_TERM = re.compile(
     _RESTRICTED_SOLVER_TERM_PATTERN,
+    re.IGNORECASE,
+)
+_UNEXPLOITABLE_CLAIM = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:(?:cannot|can't|can\s+not)\s+be\s+exploited|"
+    r"no\b[^.!?]*\bcan\s+exploit)"
+    r"(?![A-Za-z0-9])|"
+    r"\u643e\u53d6(?:\u3055\u308c\u306a\u3044|\u3067\u304d\u306a\u3044)",
     re.IGNORECASE,
 )
 _EXACT_CLAIM_TOKEN = re.compile(
@@ -309,10 +318,13 @@ _ENGLISH_LIMITATION_SUFFIX = (
 )
 _ENGLISH_RESTRICTED_SUBJECT = (
     r"(?:gto(?:\s+equilibrium)?(?:\s+range)?|"
-    r"equilibrium|exploitability|exact(?:[\s-]+)range)"
+    r"equilibrium|nash(?:\s+(?:equilibrium|solution|strategy))?|"
+    r"exploitability|exact(?:[\s-]+)range)"
 )
 _JAPANESE_RESTRICTED_SUBJECT = (
-    r"(?:gto(?:\u5747\u8861)?|\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027|"
+    r"(?:gto(?:\u5747\u8861)?|\u5747\u8861|"
+    r"\u30ca\u30c3\u30b7\u30e5(?:\u5747\u8861|\u89e3|\u6226\u7565)?|"
+    r"\u643e\u53d6\u53ef\u80fd\u6027|"
     r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?\u30ec\u30f3\u30b8)"
 )
 _EXPLICIT_SOLVER_LIMITATION_PATTERNS = (
@@ -419,6 +431,7 @@ def _contains_restricted_solver_term(text: str) -> bool:
     normalized = _normalize_claim_text(text)
     return (
         bool(_RESTRICTED_SOLVER_TERM.search(normalized))
+        or bool(_UNEXPLOITABLE_CLAIM.search(normalized))
         or _contains_gto_claim(normalized)
         or _contains_exact_range_claim(normalized)
     )

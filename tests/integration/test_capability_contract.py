@@ -52,7 +52,7 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert {item["contract_version"] for item in descriptions} == {"2.0.0"}
     assert all(item["input_schema"] and item["output_schema"] for item in descriptions)
     assert states["codex_python_runtime_bridge"] == "unavailable"
-    assert states["immutable_revision_storage_foundation"] == "planned"
+    assert states["immutable_revision_storage_foundation"] == "implemented"
     assert states["product_integrated_durable_run"] == "planned"
 
 

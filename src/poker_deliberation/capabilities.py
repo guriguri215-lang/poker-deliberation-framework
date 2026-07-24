@@ -91,9 +91,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "immutable_revision_storage_foundation",
-        "planned",
+        "implemented",
         "P2-012A immutable revision, manifest, transaction, lock, recovery-claim, and "
-        "revision-CAS implementation is approved but not yet completed.",
+        "revision-CAS foundation is implemented as an opt-in structural storage layer.",
     ),
     Capability(
         "product_integrated_durable_run",

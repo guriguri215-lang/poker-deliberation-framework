@@ -117,18 +117,21 @@ _SECRET_VALUE = re.compile(
 )
 _RESTRICTED_SOLVER_TERM_PATTERN = (
     r"\b(?:gto|equilibriums?|equilibria|exploitabilit(?:y|ies)|(?:un)?exploitable)\b|"
-    r"\bexact\b[^.!?;\n]*\branges?\b|"
-    r"\branges?\b[^.!?;\n]*\b(?:exact|exactly)\b|"
-    r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?"
-    r"[^\u3001\u3002\uff1b,;\n]*\u30ec\u30f3\u30b8|"
-    r"\u30ec\u30f3\u30b8[^\u3001\u3002\uff1b,;\n]*"
-    r"(?:\u6b63\u78ba|\u53b3\u5bc6)|"
     r"\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027"
 )
 _RESTRICTED_SOLVER_TERM = re.compile(
     _RESTRICTED_SOLVER_TERM_PATTERN,
     re.IGNORECASE,
 )
+_EXACT_CLAIM_TOKEN = re.compile(
+    r"\b(?:exact|exactly)\b|\u6b63\u78ba|\u53b3\u5bc6",
+    re.IGNORECASE,
+)
+_RANGE_CLAIM_TOKEN = re.compile(
+    r"\branges?\b|\u30ec\u30f3\u30b8",
+    re.IGNORECASE,
+)
+_GTO_CLAIM_TOKEN = re.compile(r"\bgto\b", re.IGNORECASE)
 _ADVERSATIVE_SOLVER_CLAIM = re.compile(
     r"[;\uff1b]|\b(?:although|but|despite|however|nevertheless|nonetheless|"
     r"though|whereas|while|yet)\b|"
@@ -195,16 +198,6 @@ _QUALIFIED_MATRIX_CLAIM_PATTERNS = (
         re.IGNORECASE,
     ),
 )
-_GTO_OR_EXACT_RANGE = re.compile(
-    r"\bgto\b|\bexact\b[^.!?;\n]*\branges?\b|"
-    r"\branges?\b[^.!?;\n]*\b(?:exact|exactly)\b|"
-    r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?"
-    r"[^\u3001\u3002\uff1b,;\n]*\u30ec\u30f3\u30b8|"
-    r"\u30ec\u30f3\u30b8[^\u3001\u3002\uff1b,;\n]*"
-    r"(?:\u6b63\u78ba|\u53b3\u5bc6)",
-    re.IGNORECASE,
-)
-
 _EXPECTED_ROLES = {
     "calculation": ("math-auditor", "report-writer"),
     "hand": ("intake", "strategy-analyst", "math-auditor", "skeptic", "adjudicator"),
@@ -238,12 +231,21 @@ def _is_explicit_solver_limitation(text: str) -> bool:
     )
 
 
+def _contains_exact_range_claim(text: str) -> bool:
+    return bool(_EXACT_CLAIM_TOKEN.search(text) and _RANGE_CLAIM_TOKEN.search(text))
+
+
+def _contains_restricted_solver_term(text: str) -> bool:
+    return bool(_RESTRICTED_SOLVER_TERM.search(text)) or _contains_exact_range_claim(text)
+
+
 def _has_qualified_matrix_evidence(
     claim: Claim,
     tool_results: tuple[ToolResult, ...],
 ) -> bool:
     if (
-        _GTO_OR_EXACT_RANGE.search(claim.text)
+        _GTO_CLAIM_TOKEN.search(claim.text)
+        or _contains_exact_range_claim(claim.text)
         or not any(
             pattern.fullmatch(" ".join(claim.text.strip().split())) is not None
             for pattern in _QUALIFIED_MATRIX_CLAIM_PATTERNS
@@ -275,7 +277,7 @@ def _violates_solver_claim_policy(
     if claim.label not in {
         EpistemicLabel.CALCULATED,
         EpistemicLabel.ESTIMATE,
-    } or not _RESTRICTED_SOLVER_TERM.search(claim.text):
+    } or not _contains_restricted_solver_term(claim.text):
         return False
     return not _is_explicit_solver_limitation(claim.text) and not _has_qualified_matrix_evidence(
         claim, tool_results

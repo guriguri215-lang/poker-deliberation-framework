@@ -852,8 +852,15 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "厳密なBTNオープンレンジが確定した。",
         "正確な6max100bbアンテ付き\u30ce\u30fcリミットホールデム"
         "プリフロップBTNオープンレンジが証明された。",
+        "正確な、6max100bbプリフロップレンジが証明された。",
         "プリフロップレンジは正確である。",
+        "プリフロップレンジは、正確である。",
+        "プリフロップレンジ,厳密に確定した。",
         "BTNオープンレンジは厳密に確定した。",
+        "This is the preflop range. It is exact.",
+        "This range is calculated. The result is exact.",
+        "これはプリフロップレンジである。正確である。",
+        "レンジを計算した。結果は厳密である。",
     ),
 )
 def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(

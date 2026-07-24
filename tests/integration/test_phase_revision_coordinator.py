@@ -896,6 +896,26 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "The workers ran simultaneously.",
         "An off-platform solver executed and converged.",
         "A remote solver executed and converged.",
+        "Full NLHE was solved.",
+        "NLHE has been fully solved.",
+        "A complete NLHE solution was computed.",
+        "The complete NLHE game was solved.",
+        "Execution was non-serial.",
+        "The failed phase was re-executed automatically.",
+        "Cancellation was broadcast to all agents.",
+        "外部ソルバーを実行し収束を確認した。",
+        "PioSolverで解析を完了した。",
+        "複数エージェントが並列で解析した。",
+        "ピーク同時実行数は4だった。",
+        "自動再試行で回復した。",
+        "キャンセルを全エージェントへ伝播した。",
+        "NLHE全体を完全に解いた。",
+        "A solver executed and converged.",
+        "The solver is available.",
+        "A solver generated a solution.",
+        "Solver analysis succeeded.",
+        "ソルバーを実行し収束した。",
+        "ソルバーは利用可能である。",
         "これはプリフロップレンジである。正確である。",
         "レンジを計算した。結果は厳密である。",
     ),
@@ -984,6 +1004,11 @@ def test_explicit_japanese_no_solver_limitation_remains_publishable(
         "Peak agent concurrency was one.",
         "Automatic retries are disabled.",
         "Cancellation fan-out is not implemented.",
+        "外部ソルバーは利用できない。",
+        "エージェントの実行は並列ではない。",
+        "ピーク同時実行数は1である。",
+        "自動再試行は無効である。",
+        "キャンセルのファンアウトは未実装である。",
     ),
 )
 def test_explicit_unimplemented_capability_limitation_remains_publishable(
@@ -995,6 +1020,35 @@ def test_explicit_unimplemented_capability_limitation_remains_publishable(
         claim_assessments=(
             Claim(
                 claim_id="unimplemented-capability-limitation",
+                text=text,
+                label=EpistemicLabel.FACT,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    authorization = coordinator.publish(bundle)
+
+    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "Two geometric lines are parallel.",
+        "Players revealed cards simultaneously.",
+        "The concurrent event was unrelated.",
+    ),
+)
+def test_nonframework_parallel_vocabulary_remains_publishable(
+    short_tmp: Path,
+    text: str,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        claim_assessments=(
+            Claim(
+                claim_id="nonframework-parallel-vocabulary",
                 text=text,
                 label=EpistemicLabel.FACT,
                 confidence=ConfidenceGrade.A,

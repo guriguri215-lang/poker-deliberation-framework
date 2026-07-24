@@ -160,54 +160,74 @@ _RESTRICTED_SOLVER_LABELS = frozenset(
     }
 )
 _SOLVER_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])solver(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])solver(?![A-Za-z0-9])|\u30bd\u30eb\u30d0\u30fc",
     re.IGNORECASE,
 )
 _PIO_SOLVER_CLAIM_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])pio[\s_-]*solver(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-_EXTERNAL_SOLVER_QUALIFIER_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:external(?:ly)?|third[\s_-]+party|pio|remote|off[\s_-]+platform)"
-    r"(?![A-Za-z0-9])",
+_NLHE_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])nlhe(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
-_SOLVER_CAPABILITY_STATE_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:execut(?:e|ed|es|ing|ion)|converg(?:e|ed|es|ing|ence)|"
-    r"available|complet(?:e|ed|es|ing|ion)|solv(?:e|ed|es|ing)|ran|run)"
-    r"(?![A-Za-z0-9])",
+_COMPLETE_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:full(?:y)?|complet(?:e|ed|ely))(?![A-Za-z0-9])|"
+    r"(?:\u5168\u4f53|\u5b8c\u5168)",
     re.IGNORECASE,
 )
-_FULL_NLHE_SOLUTION_TOKENS = re.compile(
-    r"(?=.*(?<![A-Za-z0-9])full(?![A-Za-z0-9]))"
-    r"(?=.*(?<![A-Za-z0-9])nlhe(?![A-Za-z0-9]))"
-    r"(?=.*(?<![A-Za-z0-9])solution(?![A-Za-z0-9]))",
+_SOLUTION_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:solution|solv(?:e|ed|es|ing)|comput(?:e|ed|es|ing))"
+    r"(?![A-Za-z0-9])|"
+    r"(?:\u89e3\u3044\u305f|\u89e3\u304f|\u89e3\u6c7a|\u8a08\u7b97)",
     re.IGNORECASE,
 )
 _PARALLEL_CLAIM_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])"
-    r"(?:parallel(?:ism)?|simultaneous(?:ly)?|concurren(?:cy|t|tly))"
-    r"(?![A-Za-z0-9])",
+    r"(?:parallel(?:ism)?|simultaneous(?:ly)?|concurren(?:cy|t|tly)|"
+    r"non[\s_-]+serial)"
+    r"(?![A-Za-z0-9])|"
+    r"(?:\u4e26\u5217|\u540c\u6642\u5b9f\u884c|\u975e\u76f4\u5217)",
+    re.IGNORECASE,
+)
+_PARALLEL_FRAMEWORK_SUBJECT_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"(?:agents?|workers?|analys(?:is|es)|deliberation|workflows?|phases?|"
+    r"execut(?:e|ed|es|ing|ion)|schedulers?|orchestrat(?:e|ed|es|ing|ion)|"
+    r"tasks?|assignments?|runs?)"
+    r"(?![A-Za-z0-9])|"
+    r"(?:\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8|\u4f5c\u696d\u8005|"
+    r"\u89e3\u6790|\u5206\u6790|\u719f\u8b70|\u30ef\u30fc\u30af\u30d5\u30ed\u30fc|"
+    r"\u30d5\u30a7\u30fc\u30ba|\u5b9f\u884c|\u30bf\u30b9\u30af|\u5272\u5f53|\u30e9\u30f3)",
+    re.IGNORECASE,
+)
+_PEAK_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])peak(?![A-Za-z0-9])|\u30d4\u30fc\u30af|\u6700\u5927",
     re.IGNORECASE,
 )
 _RETRY_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])retr(?:y|ies|ied)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])"
+    r"(?:retr(?:y|ies|ied)|re[\s_-]*execut(?:e|ed|es|ing|ion))"
+    r"(?![A-Za-z0-9])|"
+    r"(?:\u518d\u8a66\u884c|\u30ea\u30c8\u30e9\u30a4|\u518d\u5b9f\u884c)",
     re.IGNORECASE,
 )
 _AUTOMATIC_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])automatic(?:ally)?(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])automatic(?:ally)?(?![A-Za-z0-9])|\u81ea\u52d5",
     re.IGNORECASE,
 )
 _CANCELLATION_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])cancel(?:lation|led|ed|s|ing)?(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])cancel(?:lation|led|ed|s|ing)?(?![A-Za-z0-9])|"
+    r"(?:\u30ad\u30e3\u30f3\u30bb\u30eb|\u53d6\u6d88)",
     re.IGNORECASE,
 )
 _CANCELLATION_PROPAGATION_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])"
-    r"(?:fan[\s_-]*out|propagat(?:e|ed|es|ing|ion))"
-    r"(?![A-Za-z0-9])",
+    r"(?:fan[\s_-]*out|propagat(?:e|ed|es|ing|ion)|broadcast(?:s|ed|ing)?)"
+    r"(?![A-Za-z0-9])|"
+    r"(?:\u30d5\u30a1\u30f3\u30a2\u30a6\u30c8|\u4f1d\u64ad|\u914d\u4fe1|"
+    r"\u5168\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8)",
     re.IGNORECASE,
 )
 _EXPLICIT_CAPABILITY_LIMITATION_PATTERNS = (
@@ -245,6 +265,34 @@ _EXPLICIT_CAPABILITY_LIMITATION_PATTERNS = (
     re.compile(
         r"cancellation\s+fan[\s-]*out\s+(?:is|was|remains?)\s+"
         r"(?:unavailable|disabled|not\s+implemented)[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:\u5916\u90e8)?\u30bd\u30eb\u30d0\u30fc\u306f"
+        r"(?:\u5229\u7528\u3067\u304d\u306a\u3044|\u4f7f\u7528\u3067\u304d\u306a\u3044|"
+        r"\u5b9f\u884c\u3057\u306a\u3044|\u5b9f\u884c\u3057\u3066\u3044\u306a\u3044|"
+        r"\u7121\u52b9\u3067\u3042\u308b)[\u3002]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8(?:\u306e)?\u5b9f\u884c\u306f"
+        r"\u4e26\u5217\u3067\u306f\u306a\u3044[\u3002]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\u30d4\u30fc\u30af\u540c\u6642\u5b9f\u884c\u6570\u306f(?:1|\u4e00)"
+        r"\u3067\u3042\u308b[\u3002]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\u81ea\u52d5(?:\u518d\u8a66\u884c|\u30ea\u30c8\u30e9\u30a4|"
+        r"\u518d\u5b9f\u884c)\u306f\u7121\u52b9\u3067\u3042\u308b[\u3002]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\u30ad\u30e3\u30f3\u30bb\u30eb(?:\u306e)?"
+        r"\u30d5\u30a1\u30f3\u30a2\u30a6\u30c8\u306f"
+        r"(?:\u672a\u5b9f\u88c5|\u7121\u52b9)\u3067\u3042\u308b[\u3002]?",
         re.IGNORECASE,
     ),
 )
@@ -378,17 +426,16 @@ def _contains_restricted_solver_term(text: str) -> bool:
 
 def _contains_unimplemented_capability_claim(text: str) -> bool:
     normalized = _normalize_claim_text(text)
-    external_solver_claim = bool(
-        (
-            _PIO_SOLVER_CLAIM_TOKEN.search(normalized)
-            or (
-                _SOLVER_CLAIM_TOKEN.search(normalized)
-                and _EXTERNAL_SOLVER_QUALIFIER_TOKEN.search(normalized)
-            )
-        )
-        and _SOLVER_CAPABILITY_STATE_TOKEN.search(normalized)
+    solver_claim = bool(
+        _SOLVER_CLAIM_TOKEN.search(normalized) or _PIO_SOLVER_CLAIM_TOKEN.search(normalized)
     )
-    parallel_claim = bool(_PARALLEL_CLAIM_TOKEN.search(normalized))
+    parallel_claim = bool(
+        _PARALLEL_CLAIM_TOKEN.search(normalized)
+        and (
+            _PARALLEL_FRAMEWORK_SUBJECT_TOKEN.search(normalized)
+            or _PEAK_CLAIM_TOKEN.search(normalized)
+        )
+    )
     automatic_retry_claim = bool(
         _RETRY_CLAIM_TOKEN.search(normalized) and _AUTOMATIC_CLAIM_TOKEN.search(normalized)
     )
@@ -396,9 +443,14 @@ def _contains_unimplemented_capability_claim(text: str) -> bool:
         _CANCELLATION_CLAIM_TOKEN.search(normalized)
         and _CANCELLATION_PROPAGATION_TOKEN.search(normalized)
     )
+    full_nlhe_solution_claim = bool(
+        _NLHE_CLAIM_TOKEN.search(normalized)
+        and _COMPLETE_CLAIM_TOKEN.search(normalized)
+        and _SOLUTION_CLAIM_TOKEN.search(normalized)
+    )
     return (
-        external_solver_claim
-        or bool(_FULL_NLHE_SOLUTION_TOKENS.search(normalized))
+        solver_claim
+        or full_nlhe_solution_claim
         or parallel_claim
         or automatic_retry_claim
         or cancellation_propagation_claim
@@ -453,9 +505,9 @@ def _violates_claim_capability_policy(
 ) -> bool:
     if claim.label not in _RESTRICTED_SOLVER_LABELS:
         return False
-    if _contains_unimplemented_capability_claim(
-        claim.text
-    ) and not _is_explicit_capability_limitation(claim.text):
+    if _contains_unimplemented_capability_claim(claim.text) and not (
+        _is_explicit_capability_limitation(claim.text) or _is_explicit_solver_limitation(claim.text)
+    ):
         return True
     if not _contains_restricted_solver_term(claim.text):
         return False

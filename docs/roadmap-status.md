@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `8329949c5774ea360fd742e202b11a542785c4565f400716b4d1911e90c990ed`
+- source SHA-256: `602f11f8e616f96aac471a264b47da0a4657c41851d39125ffe54dc18a344d78`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -37,7 +37,7 @@ entry milestoneとcompletion milestoneが異なるsplit RMをcompletedにする�
 | `P2-027A` | `RM-027` | `completed` | `RM-023`, `P2-024A` | Classification, retention, expiry, quarantine, and disposition policy/schema only. |
 | `P2-012A` | `RM-012` | `completed` | `RM-023`, `P2-010A`, `P2-011A`, `P2-027A` | Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation. |
 | `P2-010B` | `RM-010` | `completed` | `P2-012A` | Phase service integration with durable transition ordering and fault injection. |
-| `P2-011B` | `RM-011` | `in_progress` | `P2-012A` | Durable usage/resume, reservations, concurrency, cancellation, and RM-028 interface. |
+| `P2-011B` | `RM-011` | `completed` | `P2-012A` | Durable usage/resume, reservations, concurrency, cancellation, and RM-028 interface. |
 | `P2-012B` | `RM-012` | `not_started` | `P2-010B`, `P2-011B`, `P2-012A` | Completion marker, verified reader/status mapping, migration, and lifecycle hooks. |
 | `P2-013A` | `RM-013` | `not_started` | `P2-012B` | Approval actor, authority, action digest, request/decision idempotency, and CAS transaction. |
 | `P2-027B` | `RM-027` | `not_started` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. |
@@ -58,7 +58,7 @@ entry milestoneとcompletion milestoneが異なるsplit RMをcompletedにする�
 | `RM-008` | Offline public preflight | `phase-0` | `P0` | `completed` | `RM-001`, `RM-003` | `n/a` | `approved_scope` |
 | `RM-009` | Complete Markdown ToolResult metadata | `phase-0` | `P0` | `completed` | `RM-005` | `n/a` | `not_required` |
 | `RM-010` | Orchestrator phase services | `phase-2` | `P1` | `completed` | `RM-006`, `RM-007`, `RM-023`, `RM-024` | `P2-010B` | `approved_scope` |
-| `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `in_progress` | `RM-023`, `RM-024` | `P2-011B` | `approved_scope` |
+| `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-011B` | `approved_scope` |
 | `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `in_progress` | `RM-023`, `RM-024` | `P2-012B` | `approved_scope` |
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `planned` | `RM-012`, `RM-024` | `P2-013B` | `pending` |
 | `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `planned` | `RM-006`, `RM-012` | `n/a` | `pending` |

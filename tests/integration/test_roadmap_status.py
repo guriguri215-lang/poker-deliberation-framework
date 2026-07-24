@@ -87,6 +87,10 @@ def _rewind_split_rm_010(document: dict[str, object]) -> None:
 
 
 def _rewind_p2_011b(document: dict[str, object]) -> None:
+    rm_011 = next(item for item in document["items"] if item["id"] == "RM-011")
+    rm_011["status"] = "in_progress"
+    rm_011["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
+    document["status_history"]["RM-011"] = ["proposed", "planned", "in_progress"]
     document["milestone_progress"]["P2-011B"] = {
         "state": "not_started",
         "history": ["not_started"],
@@ -160,12 +164,12 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert set(items) == EXPECTED_RM_IDS
 
     completed = {rm_id for rm_id, item in items.items() if item["status"] == "completed"}
-    assert completed == {f"RM-{number:03d}" for number in range(1, 11)} | {
+    assert completed == {f"RM-{number:03d}" for number in range(1, 12)} | {
         "RM-023",
         "RM-024",
     }
     assert items["RM-010"]["status"] == "completed"
-    assert items["RM-011"]["status"] == "in_progress"
+    assert items["RM-011"]["status"] == "completed"
     assert items["RM-012"]["status"] == "in_progress"
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(13, 18))
     assert items["RM-024"]["status"] == "completed"
@@ -1104,8 +1108,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 6,
-        "in_progress": 1,
+        "completed": 7,
         "not_started": 5,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

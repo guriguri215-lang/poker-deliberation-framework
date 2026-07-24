@@ -842,6 +842,13 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "Both equilibria are exact.",
         "The exploitabilities are exactly zero.",
         "The strategy is unexploitable.",
+        "The GTO_range is proven.",
+        "The \uff27\uff34\uff2f range is proven.",
+        "The G\u200bTO equilibrium is proven.",
+        "The game-theoretically optimal range is proven.",
+        "The equilibrium_strategy is verified.",
+        "The exploitability_score is exactly zero.",
+        "The Nash_equilibria are established.",
         "The exact six max no limit holdem range is proven.",
         "The exact heads up no limit holdem preflop range is proven.",
         "The exact BTN versus BB single-raised-pot preflop range is proven.",
@@ -859,6 +866,11 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "BTNオープンレンジは厳密に確定した。",
         "This is the preflop range. It is exact.",
         "This range is calculated. The result is exact.",
+        "The exactness of the preflop range is established.",
+        "The range's exactness is proven.",
+        "The ranges have verified exactness.",
+        "The precision of the preflop range is established.",
+        "The preflop range is precise.",
         "これはプリフロップレンジである。正確である。",
         "レンジを計算した。結果は厳密である。",
     ),
@@ -875,6 +887,38 @@ def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(
                 claim_id="contradictory-gto-claim",
                 text=text,
                 label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    denied = coordinator.publish(bundle)
+
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    "label",
+    (
+        EpistemicLabel.FACT,
+        EpistemicLabel.INFERENCE,
+        EpistemicLabel.ESTIMATE,
+    ),
+)
+def test_other_authoritative_labels_cannot_bypass_no_solver_gto_policy(
+    short_tmp: Path,
+    label: EpistemicLabel,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        claim_assessments=(
+            Claim(
+                claim_id="unsupported-gto-label-claim",
+                text="Exact GTO equilibrium range is proven.",
+                label=label,
                 confidence=ConfidenceGrade.A,
             ),
         ),

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 import weakref
 from collections import Counter
 from dataclasses import dataclass, field
@@ -115,8 +116,16 @@ _SECRET_VALUE = re.compile(
     r"\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{12,})",
     re.IGNORECASE,
 )
+_GTO_CLAIM_PATTERN = (
+    r"(?<![A-Za-z0-9])(?:gto|"
+    r"game(?:[\s_-]+)theor(?:y|etical(?:ly)?)(?:[\s_-]+)optimal)"
+    r"(?![A-Za-z0-9])"
+)
 _RESTRICTED_SOLVER_TERM_PATTERN = (
-    r"\b(?:gto|equilibriums?|equilibria|exploitabilit(?:y|ies)|(?:un)?exploitable)\b|"
+    rf"{_GTO_CLAIM_PATTERN}|"
+    r"(?<![A-Za-z0-9])"
+    r"(?:equilibriums?|equilibria|exploitabilit(?:y|ies)|(?:un)?exploitable)"
+    r"(?![A-Za-z0-9])|"
     r"\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027"
 )
 _RESTRICTED_SOLVER_TERM = re.compile(
@@ -124,14 +133,24 @@ _RESTRICTED_SOLVER_TERM = re.compile(
     re.IGNORECASE,
 )
 _EXACT_CLAIM_TOKEN = re.compile(
-    r"\b(?:exact|exactly)\b|\u6b63\u78ba|\u53b3\u5bc6",
+    r"(?<![A-Za-z0-9])(?:exact(?:ly|ness)?|precis(?:e|ely|ion))"
+    r"(?![A-Za-z0-9])|"
+    r"\u6b63\u78ba|\u53b3\u5bc6",
     re.IGNORECASE,
 )
 _RANGE_CLAIM_TOKEN = re.compile(
-    r"\branges?\b|\u30ec\u30f3\u30b8",
+    r"(?<![A-Za-z0-9])ranges?(?![A-Za-z0-9])|\u30ec\u30f3\u30b8",
     re.IGNORECASE,
 )
-_GTO_CLAIM_TOKEN = re.compile(r"\bgto\b", re.IGNORECASE)
+_GTO_CLAIM_TOKEN = re.compile(_GTO_CLAIM_PATTERN, re.IGNORECASE)
+_RESTRICTED_SOLVER_LABELS = frozenset(
+    {
+        EpistemicLabel.FACT,
+        EpistemicLabel.CALCULATED,
+        EpistemicLabel.INFERENCE,
+        EpistemicLabel.ESTIMATE,
+    }
+)
 _ADVERSATIVE_SOLVER_CLAIM = re.compile(
     r"[;\uff1b]|\b(?:although|but|despite|however|nevertheless|nonetheless|"
     r"though|whereas|while|yet)\b|"
@@ -221,8 +240,16 @@ def _domain_digest(domain: str, value: object) -> str:
     return hashlib.sha256(domain.encode("ascii") + b"\x00" + encoded).hexdigest()
 
 
+def _normalize_claim_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text)
+    without_format_controls = "".join(
+        character for character in normalized if unicodedata.category(character) != "Cf"
+    )
+    return " ".join(without_format_controls.strip().split())
+
+
 def _is_explicit_solver_limitation(text: str) -> bool:
-    normalized = " ".join(text.strip().split())
+    normalized = _normalize_claim_text(text)
     if _ADVERSATIVE_SOLVER_CLAIM.search(normalized):
         return False
     return any(
@@ -232,22 +259,27 @@ def _is_explicit_solver_limitation(text: str) -> bool:
 
 
 def _contains_exact_range_claim(text: str) -> bool:
-    return bool(_EXACT_CLAIM_TOKEN.search(text) and _RANGE_CLAIM_TOKEN.search(text))
+    normalized = _normalize_claim_text(text)
+    return bool(_EXACT_CLAIM_TOKEN.search(normalized) and _RANGE_CLAIM_TOKEN.search(normalized))
 
 
 def _contains_restricted_solver_term(text: str) -> bool:
-    return bool(_RESTRICTED_SOLVER_TERM.search(text)) or _contains_exact_range_claim(text)
+    normalized = _normalize_claim_text(text)
+    return bool(_RESTRICTED_SOLVER_TERM.search(normalized)) or _contains_exact_range_claim(
+        normalized
+    )
 
 
 def _has_qualified_matrix_evidence(
     claim: Claim,
     tool_results: tuple[ToolResult, ...],
 ) -> bool:
+    normalized_text = _normalize_claim_text(claim.text)
     if (
-        _GTO_CLAIM_TOKEN.search(claim.text)
-        or _contains_exact_range_claim(claim.text)
+        _GTO_CLAIM_TOKEN.search(normalized_text)
+        or _contains_exact_range_claim(normalized_text)
         or not any(
-            pattern.fullmatch(" ".join(claim.text.strip().split())) is not None
+            pattern.fullmatch(normalized_text) is not None
             for pattern in _QUALIFIED_MATRIX_CLAIM_PATTERNS
         )
         or len(claim.evidence_ids) != 1
@@ -274,10 +306,9 @@ def _violates_solver_claim_policy(
     claim: Claim,
     tool_results: tuple[ToolResult, ...],
 ) -> bool:
-    if claim.label not in {
-        EpistemicLabel.CALCULATED,
-        EpistemicLabel.ESTIMATE,
-    } or not _contains_restricted_solver_term(claim.text):
+    if claim.label not in _RESTRICTED_SOLVER_LABELS or not _contains_restricted_solver_term(
+        claim.text
+    ):
         return False
     return not _is_explicit_solver_limitation(claim.text) and not _has_qualified_matrix_evidence(
         claim, tool_results

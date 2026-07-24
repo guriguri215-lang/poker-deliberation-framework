@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `537cb8a95e946acfdfc1d899473235dea12d0505023167da6a782333106293e3`
+- source SHA-256: `82fb0fa53ffdea3f3f79dcdac55fd21dd3d1fcfac89efffdae67433c5c09c1b2`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -38,7 +38,7 @@ entry milestoneとcompletion milestoneが異なるsplit RMをcompletedにする�
 | `P2-012A` | `RM-012` | `completed` | `RM-023`, `P2-010A`, `P2-011A`, `P2-027A` | Immutable revision storage, manifest, transaction, lock, recovery claim, and revision CAS foundation. |
 | `P2-010B` | `RM-010` | `completed` | `P2-012A` | Phase service integration with durable transition ordering and fault injection. |
 | `P2-011B` | `RM-011` | `completed` | `P2-012A` | Durable usage/resume, reservations, concurrency, cancellation, and RM-028 interface. |
-| `P2-012B` | `RM-012` | `not_started` | `P2-010B`, `P2-011B`, `P2-012A` | Completion marker, verified reader/status mapping, migration, and lifecycle hooks. |
+| `P2-012B` | `RM-012` | `in_progress` | `P2-010B`, `P2-011B`, `P2-012A` | Completion marker, verified reader/status mapping, migration, and lifecycle hooks. |
 | `P2-013A` | `RM-013` | `not_started` | `P2-012B` | Approval actor, authority, action digest, request/decision idempotency, and CAS transaction. |
 | `P2-027B` | `RM-027` | `not_started` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. |
 | `P2-013B` | `RM-013` | `not_started` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. |

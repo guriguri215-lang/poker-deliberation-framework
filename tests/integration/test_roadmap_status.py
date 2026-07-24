@@ -84,6 +84,11 @@ def _rewind_split_rm_010(document: dict[str, object]) -> None:
         "history": ["not_started", "in_progress"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
     }
+    document["milestone_progress"]["P2-012B"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
 
 
 def _rewind_p2_011b(document: dict[str, object]) -> None:
@@ -363,7 +368,7 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
     assert document["milestone_approvals"]["P2-012A"] == reference
     assert document["milestone_approvals"]["P2-012B"] == ("goal-rm012-p2-012b-2026-07-25")
     assert document["milestone_progress"]["P2-012A"]["state"] == "completed"
-    assert document["milestone_progress"]["P2-012B"]["state"] == "not_started"
+    assert document["milestone_progress"]["P2-012B"]["state"] == "in_progress"
     assert rm_012["status"] == "in_progress"
 
 
@@ -387,8 +392,8 @@ def test_p2_012b_scope_freeze_binds_the_exact_approved_proposal() -> None:
     assert len(scope["policy_decisions"]) == 35
     assert document["milestone_approvals"]["P2-012B"] == reference
     assert document["milestone_progress"]["P2-012B"] == {
-        "state": "not_started",
-        "history": ["not_started"],
+        "state": "in_progress",
+        "history": ["not_started", "in_progress"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
     }
 
@@ -1135,9 +1140,10 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 7,
-        "not_started": 5,
+        "in_progress": 1,
+        "not_started": 4,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-012B"]
+    assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)

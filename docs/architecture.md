@@ -144,3 +144,20 @@ verified current chainのrevision、transaction、manifest、pointerと一致し
 このseamはterminal manifest、completion marker、product reader/status、durable resume、
 migration、budget CAS、parallel schedulingを持たない。通常のflat-v1 runとCLIは従来順序を保ち、
 既知のCOMPLETED-before-final-report-write failureも未解決のままである。
+
+## P2-011B durable budget architecture
+
+`budgets/durable_models.py`、`durable_store.py`、`execution.py`は通常product経路から切り離した
+内部layerである。model layerはstrict immutable snapshotとcanonical hash、store layerはP2-012A
+revision/CAS上のtyped mutationとhistory verification、execution layerはbounded callable、
+retry admission、cooperative cancellation、RM-028 evidence interfaceを担当する。依存方向は
+execution → durable store → revision storageで、storage package rootからproduct readerを公開しない。
+
+各mutationはfull state snapshotを1 revisionとしてpublishする。policy/activation、run/generation/
+previous hash、usage、active permits、settlements、attempt/context/owner lineage、cancellation、
+idempotency operations、failure latch、deterministic eventsを結合する。resourceとslotは1 CASで
+atomic reservationされ、result reductionはcompletion timingでなくexecution ordinalに従う。
+
+通常`Orchestrator`、P2-010A phase executor、P2-010B coordinator、`RunStore`、CLI、flat-v1 artifact
+orderにはこのlayerを注入しない。P2-012B product integrationとP2-028A isolation implementationは
+別のarchitecture boundaryである。

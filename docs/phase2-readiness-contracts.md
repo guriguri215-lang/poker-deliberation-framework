@@ -736,8 +736,9 @@ P2-010Bの実装境界は、完全なin-memory phase traceを再検証して専�
 `structural_nonterminal` revisionをpublishし、その後だけsame-process authorizationで
 `FINAL_SYNTHESIS`から`COMPLETED`へのlive machine transitionを適用する内部seamである。
 通常の`run`、`resume`、`load_report`、CLI、flat-v1 layout/orderには接続しない。
-P2-011BとP2-012Bはapproval null・`not_started`を維持し、durable budget、completion marker、
-verified product status、resume、migration、cleanupは実装しない。
+P2-011Bは別の明示承認scopeによりinternal durable budget APIだけを実装する。P2-012Bは
+approval null・`not_started`を維持し、completion marker、verified product status、通常resume、
+migration、cleanupは実装しない。
 
 ## P2-012A completion boundary
 
@@ -750,3 +751,15 @@ integration、migration/lifecycle hook は `not_started` のままにする。
 capability は `immutable_revision_storage_foundation` だけを implemented にできる。
 `product_integrated_durable_run` は planned を維持し、P2-010B/P2-011B/P2-012B の readiness
 や approval を暗黙に昇格させない。
+
+## P2-011B completion boundary
+
+P2-011Bの境界は、専用revision root上のdurable policy/usage/reservation/settlement、verified
+structural resume、revision CASとexact idempotency、bounded internal executor、typed retry、
+ordinal reduction、cooperative cancellation、RM-028 evidence interfaceまでである。通常の
+Orchestrator/CLI/flat-v1、capability state、P2-011A value/schemaを変更しない。
+
+`parallel_deliberation_and_tool_retry`は通常product経路では`disabled`、
+`process_sandbox`は`unavailable`、`immutable_revision_storage_foundation`は`implemented`、
+`product_integrated_durable_run`は`planned`のままである。P2-012B、P2-013A/B、P2-027B、
+P2-028Aを先取りしない。

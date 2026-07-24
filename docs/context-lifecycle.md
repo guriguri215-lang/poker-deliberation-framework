@@ -110,3 +110,15 @@ producer/consumer runtimeを再検証する。revisionへ渡すのはtyped scala
 `ContextBindingV1`とphase hash commitmentsだけである。`ContextEnvelope.canonical_payload`、
 `ContextPolicy`、`AgentContext`、dispatch、provider payload、phase traceは永続化しない。
 provider use-expiryとstorage retentionの意味は引き続き分離する。
+
+## P2-011B retry binding
+
+P2-011Bの内部retry helperは既存`build_retry_context_envelope`だけを使い、retryごとにfresh
+`attempt_id`と`context_id`を作る。parent/root attempt/context、root source hash、policy/envelope
+integrity、assignment allowlist、classification、expiry、blind isolationを再検証し、durable stateには
+IDとapproved scalar hash/provenanceだけを保存する。`ContextEnvelope.canonical_payload`、
+`AgentContext`、provider/tool context、secret、mutable objectは保存しない。
+
+retry admissionはcontext constructionと別で、transientかつidempotent、またはauthoritative
+reconciliation済みの場合だけ進む。fresh factoryがない、ID/context再利用、owner/role/phase/
+assignment/ordinal substitution、source hash mismatchは実行前にfail closedになる。

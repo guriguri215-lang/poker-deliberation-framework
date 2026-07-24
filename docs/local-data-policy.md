@@ -86,3 +86,14 @@ policy mismatch、downgrade は拒否する。
 
 storage は retention/disposition を実行せず、P2-027B の scan、quarantine、delete、receipt、
 tombstone、secure erase を先取りしない。
+
+## P2-011B budget-state classification
+
+専用producer `p2-011b-durable-budget`の`budget_state.json`だけは、logical subject
+`RUN_AUDIT`、classification `internal`、source `default_internal`としてstrict admissionする。
+artifactはschema `poker-durable-budget-state-artifact-v1`で、typed ID、hash、unit、status、
+provenanceだけを含む。raw `ContextEnvelope`、provider input、tool context、credential、exception、
+traceback、secret-shaped valueは拒否する。
+
+この限定例外は他のP2-012A artifactへdefault-internal admissionを拡張しない。budget rootは
+product run rootと別であり、P2-027Aのretention evaluatorやP2-027Bのcleanup authorityを実行しない。

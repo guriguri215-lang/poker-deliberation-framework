@@ -1,4 +1,4 @@
-# P2-011A budget execution contract
+# P2-011A / P2-011B budget execution contract
 
 ## Scope
 
@@ -99,7 +99,56 @@ dedicated revision root の独立 hard cap であり、P2-011A の in-memory usa
 cost/runtime settlement、retry classification を復元・予約・永続化しない。
 
 durable usage reservation、resume settlement、multi-process budget CAS、parallel slot、
-automatic retry、cancellation state は P2-011B 以降の別範囲である。
+automatic retry、cancellation state は通常のP2-011A product経路には追加されない。
+
+## P2-011B internal durable contract
+
+P2-011BはP2-011Aを変更せず、schema `1.0.0`のstrict/frozenな内部contractを別moduleとして
+追加する。`DurableBudgetPolicyV1`はexactな`BudgetPolicyV2`と、既定値
+`max_concurrent_agents=1`、`max_automatic_retries=0`の`ExecutionActivationV1`を束縛する。
+1から32のbounded concurrencyと、既存`max_tool_retries`以下のautomatic retryは、この内部APIを
+明示利用した場合だけ有効である。
+
+canonical resource orderは
+`active_runtime_ns`, `provider_attempts`, `tool_attempts`, `retry_attempts`,
+`external_cost_micro_usd`, `provider_output_bytes`, `tool_input_bytes`,
+`tool_output_bytes`, `artifact_bytes`, `run_bytes`, `concurrency_slots`である。全resourceとslotを
+1回のimmutable successorとrevision CASで予約し、一部だけのpermitは作らない。admissionはsettled
+usageと全active reservationを含む。settlementはobserved actual、exact unused release、result/effect/
+cancellation evidence、statusを一度だけ記録する。actual overrunは切り詰めず、
+`settlement_overrun`をlatchして新規workを拒否する。
+
+active runtimeは注入monotonic clockから測り、process-localの絶対値ではなくrun-local累積値と
+remaining durationだけを保存する。restartではclockをrebaseしてwall downtimeを除外し、人間承認待ちも
+callerが明示rebaseする。rollbackと期限超過は新規work前にfail closedになる。permit/settlement/
+cancellationに保存する時刻も累積active-runtime observationであり、OS monotonic epochではない。
+
+external executionは正のinteger micro-USD estimateと認証済みestimate flagを予約前に要求する。
+settlementはcaller-supplied actualと別の認証済みactual flagを要求し、externalであることだけから
+認証を推論しない。これはprovider invoice meteringやbilling-source authenticityの主張ではない。
+`local_free`はcost 0だけを許可する。
+
+各mutationは`operation_id`とcanonical request SHA-256を持つ。exact replayは記録済み結果を返し、
+bytesが異なるkey reuseは`idempotency_conflict`になる。committed reserved-not-started permitは
+明示的なno-effect releaseだけで閉じる。started-unsettled permitはrestart時に`effect_unknown`/
+`reconciliation_required`となり、blind release、retry、success扱いをしない。run lock、revision CAS、
+current-replace ambiguity、durability uncertainty、effect unknownは別のtyped failureである。
+
+retry admissionは実行から分離し、明示的transientかつidempotent、またはauthoritative reconciliation
+済みのeffectだけを最大N+1 attemptまで許可する。retryごとにfresh attempt/context IDと既存
+`ContextEnvelope` lifecycleを使い、root/parent/source/owner/role/phase/assignment/ordinal lineageを
+再検証する。raw context/provider/tool payloadやsecretはbudget stateへ保存しない。
+
+`DurableBoundedExecutor`はreserve-before-start、bounded worker数、ordinal順reduction、peak concurrency、
+exact settlement replayを実装する内部callable adapterである。完了済みdeterministic calculatorは
+durable settlementから復元し、callable再実行、二重課金、二重settleを行わない。cancellationは
+`requested`、`acknowledged`、`cancelled`、`unconfirmed`、`effect_unknown`を別revisionで記録する。
+acknowledgmentなしのsuccessやlive workerはsuccessにならない。
+
+RM-028はtyped isolation requirement/evidence interfaceだけで、implementationはない。process-tree kill、
+remote cancellation保証、OS CPU/memory/output isolation、external-code isolationが必要なrequestは
+reservation前に`isolation_required`となる。P2-011Bはhard stop、external provider/solver、
+completion marker、product reader/status、flat-v1 migration、通常run/resume統合を実装しない。
 
 ## P2-010B budget correlation
 

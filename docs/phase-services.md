@@ -106,7 +106,8 @@ The orchestrator previews a `FINAL_SYNTHESIS` to `COMPLETED` plan without mutati
 authorization. The orchestrator then applies that exact plan under the state-machine lock.
 Validation, storage uncertainty, stale/reconstructed authority, and pre-apply faults produce no
 transition. A committed structural revision followed by apply failure is not rolled back and is not
-a terminal product run. P2-011B/P2-012B remain separately approval-gated.
+a terminal product run. P2-011Bのinternal budget APIは別root/boundaryであり、P2-012B product
+integrationは引き続き別承認である。
 
 ## P2-012A phase provenance
 
@@ -117,3 +118,14 @@ nonnull intent content hash は同じ revision の admitted inventory bytes と�
 
 この binding は phase 実行、transition、artifact write authority、parallel scheduling を与えない。
 P2-010A の pure/effect ownership と既存 orchestrator order は変更しない。
+
+## P2-011B execution boundary
+
+P2-011Bの`DurableBoundedExecutor`は内部opt-in callable adapterであり、P2-010AのAnalysis/
+ToolResearch executorや通常Orchestratorへ注入されない。typed ownership、fresh retry lineage、
+reserve-before-start、bounded fan-out、ordinal順reduction、cancel fan-out、exactly-once settlementを
+専用budget rootへ記録するが、phase request/outcome schema、provider/tool call order、artifact write、
+state transition authorityを変更しない。
+
+したがって通常product経路はserialのままで、automatic retryを実行しない。P2-011Bのworkerは
+shared mutable payloadを受け取らず、in-process cooperative tokenをhard stopと表現しない。

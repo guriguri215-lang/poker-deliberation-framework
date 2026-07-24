@@ -163,3 +163,20 @@ transition authorizationは`published`またはoriginal same-process bundleのex
 reconciliation-required、effect-unknown、current ambiguityはtransition authorityにならない。
 structural revisionはterminal/product-readable stateではなく、P2-012Bのcompletion marker、
 verified reader、resume、migrationを先取りしない。
+
+## P2-011B dedicated budget-state root
+
+P2-011Bはproducer `p2-011b-durable-budget` version `0.1.0`の専用rootだけを使う。
+`budget_state.json`はartifact schema `poker-durable-budget-state-artifact-v1`、storage protocol
+`poker-run-revision-v1`のstrict internal structural artifactである。flat-v1 product root、
+P2-010B phase-revision rootと共有せず、既存runをadoptしない。
+
+内部structural history readerはcurrent-to-genesis chain、manifest/payload identity、size/hash/schema、
+stable current pointerを全revisionで検証してexact bytesを返す。さらにdurable layerはgeneration、
+previous-state hash、append-only operation/event/settlement、permit/attempt/cancellation lineage、
+monotonic policy tightening、usage非減少、typed transitionを再検証する。cross-run replay、history gap、
+policy/activation substitution、semantic successor forgeryは`reconciliation_required`でfail closedになる。
+
+このreaderは`poker_deliberation.storage` package rootからexportせず、terminal、completed、
+resumable-product、migrated statusへmappingしない。P2-012Aのphysical quotaとP2-011Bのlogical
+resource reservationは独立しており、どちらか厳しい側がfail closedになる。

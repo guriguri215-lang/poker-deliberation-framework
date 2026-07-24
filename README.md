@@ -37,9 +37,15 @@ accounting、retry classification、typed deadline/cancellationを追加して�
 free local providerと決定論calculatorは利用でき、parallel実行とautomatic retryは行いません。詳細は
 [`docs/budget-execution-contract.md`](docs/budget-execution-contract.md)を参照してください。
 
-**FACT**: canonical SSOTではRM-024/P2-024AとP2-010Aを`completed`としている。
-RM-010はP2-010Bの内部revision-only統合を実装中、RM-011はcompletion milestone待ちの
-`in_progress`である。P2-011BとP2-012Bは未承認の`not_started`を維持する。
+P2-011Bでは、P2-012Aのimmutable revision/CASを利用する専用rootに、strictな
+`budget_state.json`、resource reservation、settlement、resume検査、bounded concurrency、
+typed retry、cooperative cancellation、RM-028 evidence interfaceを追加しています。これは
+`poker_deliberation.budgets.durable_*`の内部opt-in APIであり、通常の`Orchestrator`、CLI、
+flat-v1 runには接続しません。通常経路のserial実行、automatic retry 0、capability表示は変わりません。
+P2-012Bのcompletion marker、product reader/status、migration、通常run/resume統合は別承認のままです。
+
+**FACT**: milestone/RMの現在状態とcompletion evidenceの正は、canonical SSOTである
+[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 
 P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
 `structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで

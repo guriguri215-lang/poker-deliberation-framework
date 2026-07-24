@@ -33,7 +33,7 @@
   but the MVP has no OS-level preemptive CPU or memory sandbox. Providers must honor the cooperative
   cancellation contract. Any future external-code executor must use process isolation and true
   time/memory limits.
-- P2-011A deadline/cancellation is cooperative and in-process. It distinguishes requested,
+- Ordinary P2-011A deadline/cancellation is cooperative and in-process. It distinguishes requested,
   acknowledged, and unconfirmed cancellation, but an uncooperative daemon thread may continue after
   the run reports a limitation. There is no process-tree kill, remote cancellation, or durable
   reconciliation.
@@ -45,7 +45,7 @@
   but JSONL evidence is appended directly and is not crash-atomic. There is no versioned run
   manifest, whole-run atomic completion protocol, retention/deletion enforcement, migration
   contract, or at-rest encryption. P2-027A provides the pure policy only; RunStore does not apply it.
-- Budget accounting is serial and in-memory. It does not reserve concurrent work, meter an external
+- Ordinary product-path budget accounting is serial and in-memory. It does not reserve concurrent work, meter an external
   provider's actual invoice, persist a usage manifest, or settle usage across durable resume. The
   injected provider's execution class and preflight cost estimate are trusted declarations. For
   public API compatibility, a pre-P2-011A injected provider that omits the new class is treated as a
@@ -101,3 +101,16 @@
   意味しない。
 - validationとsecret scanは承認済みexact payload familyに限定され、任意PIIやすべてのsecret
   encodingを検出する保証ではない。closed failureは診断詳細より非漏洩を優先する。
+- P2-011Bは専用root上のinternal opt-in durable budget APIであり、通常Orchestrator/CLI/flat-v1へ
+  接続しない。したがって通常product runはparallel scheduling、automatic retry、durable budget
+  resumeを利用しない。
+- P2-011Bのexternal costはstrictなcaller-supplied integer estimate/actualと認証済みflagを検証するが、
+  provider invoice、billing source、remote effect authenticityをmeterまたはattestしない。外部provider/
+  solver自体も実装しない。
+- P2-011B cancellationはrequested/acknowledged/cancelled/unconfirmed/effect_unknownをdurableに区別するが、
+  cooperative threadを強制停止しない。process-tree kill、remote cancellation保証、CPU/memory/output
+  isolationはP2-028Aまで未実装である。
+- P2-011B structural resumeはbudget stateだけをverified historyから再構成する。P2-012Bのcompletion
+  marker、terminal product reader/status、flat-v1 migration、通常run/resume integrationではない。
+- P2-012Aと同様、Windows directory sync unavailable evidence、power-loss、hardware cache、
+  network/distributed filesystem、same-privilege malicious writer authenticityは保証しない。

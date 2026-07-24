@@ -116,3 +116,20 @@ transition authorityは同一process factoryがoriginal bundle identityへ発行
 storage上の権限や認証tokenではない。publish uncertainty、reconciliation requirement、stale plan、
 reconstructed authorityはCOMPLETEDを許可しない。この境界はmalicious same-process code、
 process restart、distributed writer、secure eraseを保証しない。
+
+## Durable budget threat boundary
+
+P2-011Bはportable identifier grammarとsecret-shape rejection、strict canonical request hash、
+exclusive producer/artifact admission、current-to-genesis verification、revision CAS、run lock、
+append-only semantic successor validationでcross-run replay、policy/activation substitution、
+duplicate attempt/context/idempotency/ordinal、owner/role/phase/assignment substitutionを拒否する。
+unknownまたはunauthenticated external costはeffect前/settlement時にfail closedになる。
+
+committed reserved permitはeffect開始証拠ではなく、明示no-effect releaseだけが許される。
+started-unsettled、ambiguous current replace、unconfirmed cancellation、callable exceptionは
+`effect_unknown`または`reconciliation_required`であり、successやautomatic retryに変換しない。
+failure latchは最初のunsafe observationを保持する。
+
+in-process cooperative tokenはprocess-tree kill、remote billing停止、OS resource isolationの証拠ではない。
+それらを要求するtaskは、実装されていないRM-028 boundary evidenceなしに開始しない。unkeyed SHA-256は
+corruption/correlation検出であり、same-privilege malicious writerに対するauthenticityではない。

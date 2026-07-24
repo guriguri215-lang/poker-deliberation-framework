@@ -42,6 +42,10 @@ APPROVAL_SCOPE_REVISIONS = {
         "goal-rm010-p2-010b-scope-revision-1-2026-07-24",
         "goal-rm010-p2-010b-scope-revision-2-2026-07-24",
     ): "explicit human reapproval of corrected P2-010B exact scope",
+    (
+        "goal-rm010-p2-010b-scope-revision-2-2026-07-24",
+        "goal-rm010-p2-010b-scope-revision-3-2026-07-24",
+    ): "explicit human reapproval of minimal corrected P2-010B exact scope",
 }
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
 MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")
@@ -1425,7 +1429,8 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
                 "The semantic scoped reapprovals admitted by this governance version are "
                 "the exact chain `goal-rm010-p2-010b-2026-07-24` -> "
                 "`goal-rm010-p2-010b-scope-revision-1-2026-07-24` -> "
-                "`goal-rm010-p2-010b-scope-revision-2-2026-07-24`. "
+                "`goal-rm010-p2-010b-scope-revision-2-2026-07-24` -> "
+                "`goal-rm010-p2-010b-scope-revision-3-2026-07-24`. "
                 "Every prior record remains immutable, each replacement must be newly "
                 "appended with its pair-specific explicit-human-reapproval label and valid "
                 "full-scope digest, and neither binding commit may change P2-010B progress "

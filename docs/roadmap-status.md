@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `ef7a200abb834c254ef4e960879dbe9f21839ec7993c092a1899eb3353e6b806`
+- source SHA-256: `7674893b89a2f46a5f3d177ed9205d60f0d31411de8bf93426d7fd21a6a7015e`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -22,7 +22,7 @@ RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履
 
 Completedの再openは`in_progress`または`blocked`への遷移とし、理由と直前evidence digestをappend-only eventで同じ変更に記録します。再completedには全旧evidenceを保持したうえで新しいcommit/test/artifact evidenceを要求します。scope変更はschema amendmentを要します。`superseded`はgovernance amendmentなしにはterminalです。
 
-The semantic scoped reapprovals admitted by this governance version are the exact chain `goal-rm010-p2-010b-2026-07-24` -> `goal-rm010-p2-010b-scope-revision-1-2026-07-24` -> `goal-rm010-p2-010b-scope-revision-2-2026-07-24`. Every prior record remains immutable, each replacement must be newly appended with its pair-specific explicit-human-reapproval label and valid full-scope digest, and neither binding commit may change P2-010B progress or evidence.
+The semantic scoped reapprovals admitted by this governance version are the exact chain `goal-rm010-p2-010b-2026-07-24` -> `goal-rm010-p2-010b-scope-revision-1-2026-07-24` -> `goal-rm010-p2-010b-scope-revision-2-2026-07-24` -> `goal-rm010-p2-010b-scope-revision-3-2026-07-24`. Every prior record remains immutable, each replacement must be newly appended with its pair-specific explicit-human-reapproval label and valid full-scope digest, and neither binding commit may change P2-010B progress or evidence.
 
 ## Phase 2 implementation milestones
 

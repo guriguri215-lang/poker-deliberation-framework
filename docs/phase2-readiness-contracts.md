@@ -721,8 +721,9 @@ RM、およびsplitを持たないcompleted RMの既存binding ruleは変更し�
 The append-only approval history admits exactly this semantic scoped-reapproval
 chain: `goal-rm010-p2-010b-2026-07-24` to
 `goal-rm010-p2-010b-scope-revision-1-2026-07-24` to
-`goal-rm010-p2-010b-scope-revision-2-2026-07-24`. Every earlier record remains
-unchanged. Each new record must use its pair-specific exact
+`goal-rm010-p2-010b-scope-revision-2-2026-07-24` to
+`goal-rm010-p2-010b-scope-revision-3-2026-07-24`. Every earlier record
+remains unchanged. Each new record must use its pair-specific exact
 explicit-human-reapproval source label, carry a digest-valid full scope,
 preserve the scope schema, RM, milestone contract, and item contract, and be
 appended with the milestone binding change. Neither binding commit can change

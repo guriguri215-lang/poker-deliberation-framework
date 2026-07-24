@@ -74,6 +74,8 @@ from poker_deliberation.storage.revision_models import (
     RunStorageFailureV1,
     StorageRevisionManifestV1,
     StorageRevisionPointerV1,
+    StructuralArtifactHistoryV1,
+    StructuralArtifactRevisionV1,
     VerifiedStorageRevisionV1,
 )
 
@@ -2399,6 +2401,111 @@ class RunRevisionStore:
             inventory_sha256=current_entry[1].inventory_sha256,
             reachable_history=tuple(entry[0] for entry in chain.entries),
         )
+
+    def _read_structural_artifact_history(
+        self,
+        run_id: str,
+        logical_name: str,
+        *,
+        artifact_schema_version: str | None = None,
+    ) -> StructuralArtifactHistoryV1:
+        """Return verified bytes without assigning product lifecycle status.
+
+        This method is intentionally private and is not exported from
+        :mod:`poker_deliberation.storage`.  It verifies the complete structural
+        chain, each immutable payload, and a stable current pointer.
+        """
+
+        for attempt in range(3):
+            try:
+                chain = self._read_chain(run_id)
+                revisions: list[StructuralArtifactRevisionV1] = []
+                for reachable, manifest, manifest_sha, _transaction in chain.entries:
+                    matches = tuple(
+                        entry
+                        for entry in manifest.artifacts
+                        if entry.logical_name == logical_name
+                    )
+                    if len(matches) != 1:
+                        raise CanonicalStorageError(
+                            "structural artifact is missing or duplicated"
+                        )
+                    entry = matches[0]
+                    if (
+                        artifact_schema_version is not None
+                        and entry.artifact_schema_version != artifact_schema_version
+                    ):
+                        raise CanonicalStorageError(
+                            "structural artifact schema version mismatch"
+                        )
+                    revision_dir = (
+                        self.runs_root
+                        / run_id
+                        / ".revision-store"
+                        / reachable.revision_relative_path
+                    )
+                    artifact = self._verify_inventory_entry(
+                        revision_dir,
+                        entry,
+                        run_id=run_id,
+                    )
+                    revisions.append(
+                        StructuralArtifactRevisionV1(
+                            revision=reachable.revision,
+                            transaction_id=reachable.transaction_id,
+                            manifest_sha256=manifest_sha,
+                            logical_name=entry.logical_name,
+                            artifact_schema_version=entry.artifact_schema_version,
+                            size_bytes=entry.size_bytes,
+                            sha256=entry.sha256,
+                            exact_bytes=artifact.exact_bytes,
+                        )
+                    )
+                current_path = (
+                    self.runs_root / run_id / ".revision-store" / "current.json"
+                )
+                verify_regular_single_link(current_path)
+                if sha256_bytes(current_path.read_bytes()) != chain.pointer_sha256:
+                    if attempt < 2:
+                        continue
+                    raise CanonicalStorageError(
+                        "current changed during structural artifact read"
+                    )
+                return StructuralArtifactHistoryV1(
+                    run_id=run_id,
+                    logical_name=logical_name,
+                    current_revision=chain.pointer.revision,
+                    current_pointer_sha256=chain.pointer_sha256,
+                    revisions=tuple(revisions),
+                )
+            except FileNotFoundError as exc:
+                raise _run_failure(
+                    run_id,
+                    RunStorageFailureCode.RUN_INCOMPLETE,
+                    stage="initial_read",
+                ) from exc
+            except RunStorageError:
+                raise
+            except CanonicalStorageError as exc:
+                if (
+                    str(exc) == "current changed during structural read"
+                    and attempt < 2
+                ):
+                    continue
+                raise _run_failure(
+                    run_id,
+                    RunStorageFailureCode.RUN_CORRUPT,
+                    stage="initial_read",
+                    reconciliation=True,
+                ) from exc
+            except (OSError, ValidationError) as exc:
+                raise _run_failure(
+                    run_id,
+                    RunStorageFailureCode.RUN_CORRUPT,
+                    stage="initial_read",
+                    reconciliation=True,
+                ) from exc
+        raise AssertionError("structural artifact read retry loop ended unexpectedly")
 
     def _existing_chain_or_none(
         self,

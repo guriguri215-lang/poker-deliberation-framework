@@ -932,6 +932,7 @@ _FIXED_RUN_AUDIT_ARTIFACTS = frozenset(
         "state.json",
         "assignments.json",
         "agent_execution_records.json",
+        "budget_state.json",
         "security_events.json",
         "disputes.json",
     }

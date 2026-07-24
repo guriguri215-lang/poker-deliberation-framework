@@ -119,6 +119,14 @@ def test_policy_is_strict_frozen_exact_and_canonical() -> None:
         )
 
 
+def test_budget_state_is_an_internal_run_audit_artifact() -> None:
+    classified = classify_artifact("budget_state.json")
+
+    assert classified.subject_kind is SubjectKind.RUN_AUDIT
+    assert classified.classification is ContextClassification.INTERNAL
+    assert classified.classification_source is ClassificationSource.DEFAULT_INTERNAL
+
+
 @pytest.mark.parametrize(
     ("logical_name", "kind"),
     [

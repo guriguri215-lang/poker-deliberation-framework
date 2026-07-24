@@ -7,6 +7,7 @@ completion marker or a product run-status contract.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import unicodedata
 from datetime import datetime
@@ -106,6 +107,7 @@ OriginKind = Literal[
     "tool_result",
     "final_report_json",
     "final_report_markdown",
+    "budget_state",
 ]
 
 
@@ -754,6 +756,61 @@ class VerifiedStorageRevisionV1(_RevisionModel):
     reachable_history: tuple[ReachableRevisionV1, ...]
 
 
+class StructuralArtifactRevisionV1(_RevisionModel):
+    """One verified immutable payload; it carries no product status meaning."""
+
+    revision: int = Field(ge=1)
+    transaction_id: TransactionId
+    manifest_sha256: Sha256
+    logical_name: str = Field(min_length=1, max_length=256)
+    artifact_schema_version: str = Field(
+        min_length=1,
+        max_length=96,
+        pattern=r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,95}$",
+    )
+    size_bytes: int = Field(ge=0)
+    sha256: Sha256
+    exact_bytes: bytes
+
+    @field_validator("exact_bytes")
+    @classmethod
+    def own_exact_bytes(cls, value: bytes) -> bytes:
+        return bytes(bytearray(value))
+
+    @model_validator(mode="after")
+    def exact_payload_identity(self) -> StructuralArtifactRevisionV1:
+        if len(self.exact_bytes) != self.size_bytes:
+            raise ValueError("structural artifact size mismatch")
+        if hashlib.sha256(self.exact_bytes).hexdigest() != self.sha256:
+            raise ValueError("structural artifact hash mismatch")
+        return self
+
+
+class StructuralArtifactHistoryV1(_RevisionModel):
+    """Verified current-to-genesis artifact bytes from a structural root only."""
+
+    schema_version: Literal["1.0.0"] = STORAGE_SCHEMA_VERSION
+    verification_kind: Literal["structural_artifact_history"] = (
+        "structural_artifact_history"
+    )
+    run_id: PortableId
+    logical_name: str = Field(min_length=1, max_length=256)
+    current_revision: int = Field(ge=1)
+    current_pointer_sha256: Sha256
+    revisions: tuple[StructuralArtifactRevisionV1, ...]
+
+    @model_validator(mode="after")
+    def current_to_genesis_is_exact(self) -> StructuralArtifactHistoryV1:
+        if not self.revisions:
+            raise ValueError("structural artifact history cannot be empty")
+        expected = tuple(range(self.current_revision, 0, -1))
+        if tuple(entry.revision for entry in self.revisions) != expected:
+            raise ValueError("structural artifact history must be current-to-genesis")
+        if any(entry.logical_name != self.logical_name for entry in self.revisions):
+            raise ValueError("structural artifact history logical-name mismatch")
+        return self
+
+
 class OrphanEntryV1(_RevisionModel):
     orphan_form: Literal["staging", "unreferenced_revision"]
     verification_state: Literal["path_only", "descriptor_verified", "manifest_verified"]
@@ -922,6 +979,8 @@ __all__ = [
     "SourceBindingV1",
     "StorageRevisionManifestV1",
     "StorageRevisionPointerV1",
+    "StructuralArtifactHistoryV1",
+    "StructuralArtifactRevisionV1",
     "ToolBindingV1",
     "VerifiedStorageRevisionV1",
 ]

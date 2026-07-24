@@ -15,6 +15,12 @@ from typing import Any, TypeVar, cast
 
 from pydantic import AnyUrl, BaseModel, TypeAdapter, ValidationError
 
+from poker_deliberation.budgets.durable_models import (
+    DURABLE_BUDGET_ARTIFACT_SCHEMA,
+    DURABLE_BUDGET_PRODUCER_ID,
+    DURABLE_BUDGET_PRODUCER_VERSION,
+    DurableBudgetStateV1,
+)
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     DEFAULT_LOCAL_DATA_POLICY,
@@ -170,6 +176,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         TEXT_SERIALIZATION,
         "poker-final-report-markdown-artifact-v1",
         "final_report_markdown",
+    ),
+    "budget_state.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        DURABLE_BUDGET_ARTIFACT_SCHEMA,
+        "budget_state",
     ),
 }
 
@@ -503,6 +515,8 @@ def payload_order_key(logical_name: str) -> tuple[int, bytes]:
         return (12, b"")
     if logical_name == "final_report.md":
         return (13, b"")
+    if logical_name == "budget_state.json":
+        return (14, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -660,10 +674,13 @@ def _classify_and_verify(artifact: RevisionArtifactV1) -> None:
         ContextClassification.INTERNAL,
     }:
         raise CanonicalStorageError("artifact classification cannot be persisted")
-    if artifact.classification_source not in {
+    allowed_sources = {
         ClassificationSource.EXPLICIT_TRUSTED,
         ClassificationSource.SOURCE_INHERITANCE,
-    }:
+    }
+    if artifact.logical_name == "budget_state.json":
+        allowed_sources.add(ClassificationSource.DEFAULT_INTERNAL)
+    if artifact.classification_source not in allowed_sources:
         raise CanonicalStorageError(
             "artifact requires trusted explicit or inherited classification"
         )
@@ -738,6 +755,11 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         return final_report
     if logical_name == "final_report.md":
         return validate_canonical_text(data)
+    if logical_name == "budget_state.json":
+        state = parse_canonical_model(data, DurableBudgetStateV1)
+        if state.run_id != run_id:
+            raise CanonicalStorageError("durable budget state run ID mismatch")
+        return state
     raise CanonicalStorageError("artifact payload has no strict validator")
 
 
@@ -848,6 +870,8 @@ def _validate_source_graph(
                 raise CanonicalStorageError("payload source correlation mismatch")
         if entry.source_sha256 != upstream_source_sha256(entry.provenance_bindings):
             raise CanonicalStorageError("artifact upstream source digest mismatch")
+        if entry.logical_name == "budget_state.json" and sources:
+            raise CanonicalStorageError("durable budget state does not persist source payloads")
 
     def require_payload_sources(logical_name: str, expected: set[str]) -> None:
         entry = by_name[logical_name]
@@ -1366,6 +1390,18 @@ def build_inventory(
     validate_run_id(request.run_id)
     if not request.artifacts:
         raise CanonicalStorageError("revision requires at least one artifact")
+    budget_artifacts = tuple(
+        artifact for artifact in request.artifacts if artifact.logical_name == "budget_state.json"
+    )
+    if budget_artifacts and (
+        len(request.artifacts) != 1
+        or len(budget_artifacts) != 1
+        or request.producer_id != DURABLE_BUDGET_PRODUCER_ID
+        or request.producer_version != DURABLE_BUDGET_PRODUCER_VERSION
+    ):
+        raise CanonicalStorageError(
+            "durable budget state requires its dedicated producer and exclusive revision"
+        )
     parsed: dict[str, Any] = {}
     artifacts = sorted(request.artifacts, key=lambda item: payload_order_key(item.logical_name))
     logical_names: set[str] = set()

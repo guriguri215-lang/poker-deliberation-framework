@@ -163,8 +163,14 @@ _SOLVER_CLAIM_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])solver(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
+_PIO_SOLVER_CLAIM_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])pio[\s_-]*solver(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 _EXTERNAL_SOLVER_QUALIFIER_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?:external(?:ly)?|third[\s_-]+party|pio)(?![A-Za-z0-9])",
+    r"(?<![A-Za-z0-9])"
+    r"(?:external(?:ly)?|third[\s_-]+party|pio|remote|off[\s_-]+platform)"
+    r"(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 _SOLVER_CAPABILITY_STATE_TOKEN = re.compile(
@@ -178,10 +184,6 @@ _FULL_NLHE_SOLUTION_TOKENS = re.compile(
     r"(?=.*(?<![A-Za-z0-9])full(?![A-Za-z0-9]))"
     r"(?=.*(?<![A-Za-z0-9])nlhe(?![A-Za-z0-9]))"
     r"(?=.*(?<![A-Za-z0-9])solution(?![A-Za-z0-9]))",
-    re.IGNORECASE,
-)
-_AGENT_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])agents?(?![A-Za-z0-9])",
     re.IGNORECASE,
 )
 _PARALLEL_CLAIM_TOKEN = re.compile(
@@ -377,13 +379,16 @@ def _contains_restricted_solver_term(text: str) -> bool:
 def _contains_unimplemented_capability_claim(text: str) -> bool:
     normalized = _normalize_claim_text(text)
     external_solver_claim = bool(
-        _SOLVER_CLAIM_TOKEN.search(normalized)
-        and _EXTERNAL_SOLVER_QUALIFIER_TOKEN.search(normalized)
+        (
+            _PIO_SOLVER_CLAIM_TOKEN.search(normalized)
+            or (
+                _SOLVER_CLAIM_TOKEN.search(normalized)
+                and _EXTERNAL_SOLVER_QUALIFIER_TOKEN.search(normalized)
+            )
+        )
         and _SOLVER_CAPABILITY_STATE_TOKEN.search(normalized)
     )
-    parallel_agent_claim = bool(
-        _AGENT_CLAIM_TOKEN.search(normalized) and _PARALLEL_CLAIM_TOKEN.search(normalized)
-    )
+    parallel_claim = bool(_PARALLEL_CLAIM_TOKEN.search(normalized))
     automatic_retry_claim = bool(
         _RETRY_CLAIM_TOKEN.search(normalized) and _AUTOMATIC_CLAIM_TOKEN.search(normalized)
     )
@@ -394,7 +399,7 @@ def _contains_unimplemented_capability_claim(text: str) -> bool:
     return (
         external_solver_claim
         or bool(_FULL_NLHE_SOLUTION_TOKENS.search(normalized))
-        or parallel_agent_claim
+        or parallel_claim
         or automatic_retry_claim
         or cancellation_propagation_claim
     )

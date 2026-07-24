@@ -202,6 +202,8 @@ def build_valid_scenario(
     tmp_path: Path,
     *,
     tool_ordinals: tuple[tuple[str, int], ...] = (),
+    tool_name: str = "solver_status",
+    tool_input: dict[str, object] | None = None,
     with_provider_trace: bool = False,
     claim_assessments: tuple[Claim, ...] | None = None,
 ) -> tuple[
@@ -370,6 +372,7 @@ def build_valid_scenario(
         ...,
     ] = ()
     if tool_ordinals:
+        materialized_tool_input = {} if tool_input is None else tool_input
         ordered_result_ids = tuple(
             result_id
             for result_id, _ordinal in sorted(
@@ -380,8 +383,8 @@ def build_valid_scenario(
         tool_requests = tuple(
             ToolRequest(
                 request_id=f"request-{result_id}",
-                tool_name="solver_status",
-                input={},
+                tool_name=tool_name,
+                input=materialized_tool_input,
                 requested_by="phase",
                 requires_approval=False,
                 contract_version="2.0.0",
@@ -403,8 +406,8 @@ def build_valid_scenario(
         ordered_tool_results = tuple(
             default_registry()
             .execute(
-                "solver_status",
-                {},
+                tool_name,
+                materialized_tool_input,
                 contract_version="2.0.0",
             )
             .model_copy(
@@ -455,9 +458,19 @@ def build_valid_scenario(
             result_id = binding.result.result_id
             input_name = f"tool_results/{result_id}.input.json"
             result_name = f"tool_results/{result_id}.json"
-            input_artifact = by_name[input_name]
+            input_artifact = by_name[input_name].model_copy(
+                update={"exact_bytes": canonical_json_bytes(binding.request.input)}
+            )
             result_artifact = by_name[result_name].model_copy(
-                update={"exact_bytes": canonical_json_bytes(binding.result)}
+                update={
+                    "exact_bytes": canonical_json_bytes(binding.result),
+                    "provenance_bindings": tuple(
+                        revision_storage_fixture._payload_source(input_artifact)
+                        if isinstance(item, SourceBindingV1)
+                        else item
+                        for item in by_name[result_name].provenance_bindings
+                    ),
+                }
             )
             tool_binding = ToolBindingV1(
                 run_id=base.run_id,
@@ -802,6 +815,110 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
     authorization = coordinator.publish(bundle)
 
     assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+
+
+@pytest.mark.parametrize(
+    "text",
+    (
+        "No qualified solver is available; nevertheless Exact GTO equilibrium range is proven.",
+        "GTO equilibrium is proven, not approximate.",
+        "No-Limit Hold'em GTO is proven.",
+    ),
+)
+def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(
+    short_tmp: Path,
+    text: str,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=(("solver-result", 0),),
+        claim_assessments=(
+            Claim(
+                claim_id="contradictory-gto-claim",
+                text=text,
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    denied = coordinator.publish(bundle)
+
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
+
+
+def test_explicit_japanese_no_solver_limitation_remains_publishable(
+    short_tmp: Path,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        claim_assessments=(
+            Claim(
+                claim_id="japanese-gto-limitation",
+                text="外部ソルバー未実行のため、GTO均衡であるとは言えない。",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    authorization = coordinator.publish(bundle)
+
+    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+
+
+def test_verified_matrix_equilibrium_claim_requires_exact_tool_result_binding(
+    short_tmp: Path,
+) -> None:
+    matrix_result_id = "matrix-result"
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=((matrix_result_id, 0),),
+        tool_name="matrix_game",
+        tool_input={"matrix": [[1, -1], [-1, 1]]},
+        claim_assessments=(
+            Claim(
+                claim_id="matrix-equilibrium-claim",
+                text="The verified zero-sum matrix equilibrium uses the reported strategies.",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+                evidence_ids=[matrix_result_id],
+            ),
+        ),
+    )
+
+    authorization = coordinator.publish(bundle)
+
+    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+
+
+def test_unbound_matrix_equilibrium_claim_is_mutation_zero_invalid_trace(
+    short_tmp: Path,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=(("matrix-result", 0),),
+        tool_name="matrix_game",
+        tool_input={"matrix": [[1, -1], [-1, 1]]},
+        claim_assessments=(
+            Claim(
+                claim_id="unbound-matrix-equilibrium-claim",
+                text="The verified zero-sum matrix equilibrium uses the reported strategies.",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    denied = coordinator.publish(bundle)
+
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
 
 
 def test_authorization_is_nonserializable_and_exact_data_is_immutable(

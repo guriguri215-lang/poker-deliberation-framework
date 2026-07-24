@@ -54,6 +54,7 @@ from poker_deliberation.phases.models import (
 )
 from poker_deliberation.phases.services import ContextBuildService, SynthesisService
 from poker_deliberation.schemas import (
+    Claim,
     EpistemicLabel,
     Exactness,
     NumericalExactness,
@@ -114,17 +115,65 @@ _SECRET_VALUE = re.compile(
     r"\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{12,})",
     re.IGNORECASE,
 )
-_UNQUALIFIED_SOLVER_CLAIM = re.compile(
+_RESTRICTED_SOLVER_TERM_PATTERN = (
     r"\b(?:gto|equilibrium|exploitability)\b|"
     r"\bexact(?:[\s-]+)range\b|"
-    r"(?:正確|厳密)な?レンジ|均衡|搾取可能性",
+    r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?\u30ec\u30f3\u30b8|"
+    r"\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027"
+)
+_RESTRICTED_SOLVER_TERM = re.compile(
+    _RESTRICTED_SOLVER_TERM_PATTERN,
     re.IGNORECASE,
 )
-_SOLVER_CLAIM_LIMITATION = re.compile(
-    r"\b(?:not|no|never|cannot|can't|unable|unavailable|unproven|unknown|"
-    r"unsupported|without|insufficient)\b|"
-    r"(?:未確認|未証明|不明|利用不能|根拠不足|"
-    r"(?:証明|確認|算出|断定)(?:されていない|できない|しない))",
+_ADVERSATIVE_SOLVER_CLAIM = re.compile(
+    r"[;\uff1b]|\b(?:but|however|nevertheless|nonetheless|yet)\b|"
+    r"(?:\u305d\u308c\u3067\u3082|\u3057\u304b\u3057|"
+    r"\u306b\u3082\u304b\u304b\u308f\u3089\u305a)",
+    re.IGNORECASE,
+)
+_ENGLISH_LIMITATION_SUFFIX = (
+    r"(?:proven|verified|established|supported|available|calculated|known|claimed)"
+    r"(?:\s+without\s+(?:a\s+)?(?:qualified\s+)?(?:external\s+)?solver)?"
+)
+_EXPLICIT_SOLVER_LIMITATION_PATTERNS = (
+    re.compile(
+        rf"no\s+(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
+        rf"[a-z0-9\s-]+\s+(?:is|are|was|were)\s+{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
+        rf"[a-z0-9\s-]+\s+(?:is|are|was|were|remains?)\s+not\s+"
+        rf"{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?=[a-z0-9\s-]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
+        rf"[a-z0-9\s-]+\s+(?:cannot|can't)\s+be\s+"
+        rf"{_ENGLISH_LIMITATION_SUFFIX}[.!]?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"(?:\u5916\u90e8)?\u30bd\u30eb\u30d0\u30fc"
+        rf"(?:\u304c|\u306f)?\u672a\u5b9f\u884c\u306e\u305f\u3081[\u3001,]\s*"
+        rf"(?=[^\u3002\uff1b]*(?:{_RESTRICTED_SOLVER_TERM_PATTERN}))"
+        rf"[^\u3002\uff1b]+(?:\u3067\u3042\u308b)?\u3068\u306f"
+        rf"(?:\u8a00\u3048\u306a\u3044|\u65ad\u5b9a\u3067\u304d\u306a\u3044|"
+        rf"\u8a3c\u660e\u3067\u304d\u306a\u3044|\u78ba\u8a8d\u3067\u304d\u306a\u3044)"
+        rf"[\u3002]?",
+        re.IGNORECASE,
+    ),
+)
+_MATRIX_GAME_SCOPE = re.compile(
+    r"\b(?:zero[\s-]+sum[\s-]+matrix|"
+    r"finite[\s-]+two[\s-]+player[\s-]+zero[\s-]+sum[\s-]+normal[\s-]+form|"
+    r"matrix[\s-]+game)\b|"
+    r"\u30bc\u30ed\u548c\u884c\u5217",
+    re.IGNORECASE,
+)
+_GTO_OR_EXACT_RANGE = re.compile(
+    r"\bgto\b|\bexact(?:[\s-]+)range\b|"
+    r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?\u30ec\u30f3\u30b8",
     re.IGNORECASE,
 )
 
@@ -151,9 +200,54 @@ def _domain_digest(domain: str, value: object) -> str:
     return hashlib.sha256(domain.encode("ascii") + b"\x00" + encoded).hexdigest()
 
 
-def _is_unqualified_solver_claim(text: str) -> bool:
-    return bool(_UNQUALIFIED_SOLVER_CLAIM.search(text)) and not bool(
-        _SOLVER_CLAIM_LIMITATION.search(text)
+def _is_explicit_solver_limitation(text: str) -> bool:
+    normalized = " ".join(text.strip().split())
+    if _ADVERSATIVE_SOLVER_CLAIM.search(normalized):
+        return False
+    return any(
+        pattern.fullmatch(normalized) is not None
+        for pattern in _EXPLICIT_SOLVER_LIMITATION_PATTERNS
+    )
+
+
+def _has_qualified_matrix_evidence(
+    claim: Claim,
+    tool_results: tuple[ToolResult, ...],
+) -> bool:
+    if (
+        _GTO_OR_EXACT_RANGE.search(claim.text)
+        or not _MATRIX_GAME_SCOPE.search(claim.text)
+        or not claim.evidence_ids
+    ):
+        return False
+    evidence_ids = set(claim.evidence_ids)
+    return any(
+        result.result_id in evidence_ids
+        and result.tool_name == "matrix_game"
+        and result.status is ToolStatus.SUCCESS
+        and result.numeric_exactness
+        in {
+            NumericalExactness.EXACT,
+            NumericalExactness.EXACT_UNDER_MODEL,
+            NumericalExactness.FLOATING_VERIFIED,
+        }
+        and result.model_qualifier == "finite two-player zero-sum normal-form game"
+        and result.reproduce_command is not None
+        for result in tool_results
+    )
+
+
+def _violates_solver_claim_policy(
+    claim: Claim,
+    tool_results: tuple[ToolResult, ...],
+) -> bool:
+    if claim.label not in {
+        EpistemicLabel.CALCULATED,
+        EpistemicLabel.ESTIMATE,
+    } or not _RESTRICTED_SOLVER_TERM.search(claim.text):
+        return False
+    return not _is_explicit_solver_limitation(claim.text) and not _has_qualified_matrix_evidence(
+        claim, tool_results
     )
 
 
@@ -517,7 +611,7 @@ def _validate_tool_result_contract(result: ToolResult) -> None:
             raise ValueError
         return
     validated_output = contract.output_model.model_validate(result.output, strict=True)
-    if validated_output.model_dump(mode="python") != result.output:
+    if validated_output.model_dump(mode="python", exclude_none=True) != result.output:
         raise ValueError
     unavailable = bool(result.output.get("unavailable", False))
     expected_numeric = (
@@ -889,8 +983,7 @@ class PhaseRevisionCoordinator:
         ):
             raise ValueError
         if any(
-            claim.label in {EpistemicLabel.CALCULATED, EpistemicLabel.ESTIMATE}
-            and _is_unqualified_solver_claim(claim.text)
+            _violates_solver_claim_policy(claim, synthesis_input.tool_results)
             for claim in synthesis_input.claim_assessments
         ):
             raise ValueError

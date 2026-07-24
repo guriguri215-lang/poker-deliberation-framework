@@ -842,8 +842,18 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "Both equilibria are exact.",
         "The exploitabilities are exactly zero.",
         "The strategy is unexploitable.",
+        "The exact six max no limit holdem range is proven.",
+        "The exact heads up no limit holdem preflop range is proven.",
+        "The exact BTN versus BB single-raised-pot preflop range is proven.",
+        "The preflop range is exact.",
+        "The calling range was calculated exactly.",
+        "The BTN opening range is mathematically exact.",
         "正確なプリフロップレンジが証明された。",
         "厳密なBTNオープンレンジが確定した。",
+        "正確な6max100bbアンテ付き\u30ce\u30fcリミットホールデム"
+        "プリフロップBTNオープンレンジが証明された。",
+        "プリフロップレンジは正確である。",
+        "BTNオープンレンジは厳密に確定した。",
     ),
 )
 def test_contradictory_or_unqualified_gto_claim_is_mutation_zero_invalid_trace(

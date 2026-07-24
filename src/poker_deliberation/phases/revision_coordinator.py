@@ -117,9 +117,12 @@ _SECRET_VALUE = re.compile(
 )
 _RESTRICTED_SOLVER_TERM_PATTERN = (
     r"\b(?:gto|equilibriums?|equilibria|exploitabilit(?:y|ies)|(?:un)?exploitable)\b|"
-    r"\bexact(?:[\s-]+[a-z0-9_']+){0,4}[\s-]+ranges?\b|"
+    r"\bexact\b[^.!?;\n]*\branges?\b|"
+    r"\branges?\b[^.!?;\n]*\b(?:exact|exactly)\b|"
     r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?"
-    r"[^\s\u3001\u3002\uff1b,;]{0,32}\u30ec\u30f3\u30b8|"
+    r"[^\u3001\u3002\uff1b,;\n]*\u30ec\u30f3\u30b8|"
+    r"\u30ec\u30f3\u30b8[^\u3001\u3002\uff1b,;\n]*"
+    r"(?:\u6b63\u78ba|\u53b3\u5bc6)|"
     r"\u5747\u8861|\u643e\u53d6\u53ef\u80fd\u6027"
 )
 _RESTRICTED_SOLVER_TERM = re.compile(
@@ -193,9 +196,12 @@ _QUALIFIED_MATRIX_CLAIM_PATTERNS = (
     ),
 )
 _GTO_OR_EXACT_RANGE = re.compile(
-    r"\bgto\b|\bexact(?:[\s-]+[a-z0-9_']+){0,4}[\s-]+ranges?\b|"
+    r"\bgto\b|\bexact\b[^.!?;\n]*\branges?\b|"
+    r"\branges?\b[^.!?;\n]*\b(?:exact|exactly)\b|"
     r"(?:\u6b63\u78ba|\u53b3\u5bc6)\u306a?"
-    r"[^\s\u3001\u3002\uff1b,;]{0,32}\u30ec\u30f3\u30b8",
+    r"[^\u3001\u3002\uff1b,;\n]*\u30ec\u30f3\u30b8|"
+    r"\u30ec\u30f3\u30b8[^\u3001\u3002\uff1b,;\n]*"
+    r"(?:\u6b63\u78ba|\u53b3\u5bc6)",
     re.IGNORECASE,
 )
 

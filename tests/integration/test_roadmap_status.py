@@ -265,6 +265,33 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
     assert not {term for term in required_terms if term not in decisions}
 
 
+def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
+    document = load_roadmap()
+    reference = "goal-rm012-p2-012a-2026-07-24"
+    record = document["approval_records"][reference]
+    scope = record["scope"]
+    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
+    canonical = json.dumps(
+        scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "abb67567163a58640f693e46c8f5ad43acec24ac6bbf00f2d309a8f8a58698fa"
+    )
+    assert record["scope_digest"] == rm_012["human_approval"]["scope_digest"]
+    assert record["topics"] == scope["policy_decisions"]
+    assert record["topics"] == rm_012["human_approval"]["topics"]
+    assert len(scope["milestone_implementation_scope"]["targets"]) == 17
+    assert len(scope["milestone_implementation_scope"]["tests"]) == 41
+    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
+    assert len(scope["policy_decisions"]) == 65
+    assert document["milestone_approvals"]["P2-012A"] == reference
+    assert document["milestone_approvals"]["P2-012B"] is None
+    assert document["milestone_progress"]["P2-012A"]["state"] == "not_started"
+    assert document["milestone_progress"]["P2-012B"]["state"] == "not_started"
+    assert rm_012["status"] == "planned"
+
+
 def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
     previous = load_roadmap()
     reopened = deepcopy(previous)
@@ -537,7 +564,7 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
     rm_012 = next(item for item in pending_item["items"] if item["id"] == "RM-012")
     rm_012["status"] = "in_progress"
     pending_item["status_history"]["RM-012"].append("in_progress")
-    with pytest.raises(ValueError, match="in-progress item lacks required approval"):
+    with pytest.raises(ValueError, match="in-progress RM lacks active milestone"):
         validate_roadmap(pending_item)
 
 
@@ -673,8 +700,8 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
         "completed": 4,
         "not_started": 8,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == []
-    assert doctor()["roadmap"]["implementation_ready_ids"] == []
+    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-012A"]
+    assert doctor()["roadmap"]["implementation_ready_ids"] == ["RM-012"]
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
     assert generate_roadmap_status(["--check"]) == 0

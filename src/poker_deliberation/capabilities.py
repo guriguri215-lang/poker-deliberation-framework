@@ -90,6 +90,18 @@ CAPABILITIES: tuple[Capability, ...] = (
         "executor is implemented.",
     ),
     Capability(
+        "immutable_revision_storage_foundation",
+        "planned",
+        "P2-012A immutable revision, manifest, transaction, lock, recovery-claim, and "
+        "revision-CAS implementation is approved but not yet completed.",
+    ),
+    Capability(
+        "product_integrated_durable_run",
+        "planned",
+        "P2-012B completion marker, verified product reader, migration, resume, and lifecycle "
+        "integration remain separately approval-gated.",
+    ),
+    Capability(
         "phase_1_hardening",
         "implemented",
         "Phase 1 typed tool contracts, numeric exactness, executable verification, and local "

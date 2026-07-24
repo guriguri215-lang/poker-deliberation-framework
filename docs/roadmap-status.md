@@ -4,7 +4,7 @@
 RM実装状態の正はJSONであり、`user_materials/ROADMAP.md`やPROGRESS履歴ではありません。
 
 - schema version: `1.1.0`
-- source SHA-256: `ba2f2239d3169a3361c38c58da90e5c9ca86fb5951b22d53dd62df2b7f33aafd`
+- source SHA-256: `68ce4811f875593094577f20a1210d9d18c9d6c51f98ed22986b4a4275876aef`
 - history baseline: Histories before the enclosing genesis commit are migrated status claims backed by listed evidence; append-only previous/current validation starts with that commit.
 - `ready`は保存statusではなく、依存関係と人間承認から計算する派生表示です。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
@@ -56,7 +56,7 @@ RM-010〜013/024/027/028の実装順はitem-level依存ではなく、次の非�
 | `RM-009` | Complete Markdown ToolResult metadata | `phase-0` | `P0` | `completed` | `RM-005` | `n/a` | `not_required` |
 | `RM-010` | Orchestrator phase services | `phase-2` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-023`, `RM-024` | `P2-010B` | `approved_scope` |
 | `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `in_progress` | `RM-023`, `RM-024` | `P2-011B` | `approved_scope` |
-| `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `planned` | `RM-023`, `RM-024` | `P2-012B` | `pending` |
+| `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `planned` | `RM-023`, `RM-024` | `P2-012B` | `approved_scope` |
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `planned` | `RM-012`, `RM-024` | `P2-013B` | `pending` |
 | `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `planned` | `RM-006`, `RM-012` | `n/a` | `pending` |
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `planned` | `RM-014` | `n/a` | `pending` |

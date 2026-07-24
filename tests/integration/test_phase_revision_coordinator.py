@@ -59,7 +59,15 @@ from poker_deliberation.phases.revision_coordinator import (
 )
 from poker_deliberation.phases.services import ContextBuildService, SynthesisService
 from poker_deliberation.reporting import render_markdown
-from poker_deliberation.schemas import CaseInput, FinalReport, ToolRequest, ToolResult
+from poker_deliberation.schemas import (
+    CaseInput,
+    Claim,
+    ConfidenceGrade,
+    EpistemicLabel,
+    FinalReport,
+    ToolRequest,
+    ToolResult,
+)
 from poker_deliberation.state_machine import RunState, WorkflowStateMachine
 from poker_deliberation.storage.revision_canonical import (
     TEXT_SERIALIZATION,
@@ -195,6 +203,7 @@ def build_valid_scenario(
     *,
     tool_ordinals: tuple[tuple[str, int], ...] = (),
     with_provider_trace: bool = False,
+    claim_assessments: tuple[Claim, ...] | None = None,
 ) -> tuple[
     Orchestrator,
     WorkflowStateMachine,
@@ -212,6 +221,24 @@ def build_valid_scenario(
     case = CaseInput.model_validate(
         parse_canonical_json(by_name["normalized_case.json"].exact_bytes)
     )
+    initial_assignments = tuple(select_roles(case))
+    by_name["assignments.json"] = revision_storage_fixture._canonical_artifact(
+        "assignments.json",
+        data=canonical_json_bytes(initial_assignments),
+        schema="poker-agent-assignment-list-artifact-v1",
+        origin="assignment_ledger",
+        sources=(revision_storage_fixture._payload_source(by_name["normalized_case.json"]),),
+    )
+    by_name["agent_execution_records.json"] = revision_storage_fixture._canonical_artifact(
+        "agent_execution_records.json",
+        data=canonical_json_bytes(()),
+        schema="poker-agent-execution-record-list-artifact-v1",
+        origin="agent_execution_ledger",
+        sources=(
+            revision_storage_fixture._payload_source(by_name["assignments.json"]),
+            revision_storage_fixture._payload_source(by_name["normalized_case.json"]),
+        ),
+    )
     base_report = FinalReport.model_validate(
         parse_canonical_json(by_name["final_report.json"].exact_bytes)
     )
@@ -224,7 +251,7 @@ def build_valid_scenario(
     analysis_outputs: tuple[AnalysisOutput, ...] = ()
     if with_provider_trace:
         registered_tools = tuple(default_registry().names())
-        assignment = select_roles(case)[0]
+        assignment = initial_assignments[0]
         context_request = make_phase_request(
             run_id=base.run_id,
             phase_id=PhaseId.CONTEXT_BUILD,
@@ -305,7 +332,7 @@ def build_valid_scenario(
         )
         by_name["assignments.json"] = revision_storage_fixture._canonical_artifact(
             "assignments.json",
-            data=canonical_json_bytes((dispatch.assignment,)),
+            data=canonical_json_bytes((dispatch.assignment, *initial_assignments[1:])),
             schema="poker-agent-assignment-list-artifact-v1",
             origin="assignment_ledger",
             sources=(revision_storage_fixture._payload_source(by_name["normalized_case.json"]),),
@@ -524,7 +551,11 @@ def build_valid_scenario(
             completed=True,
             case=case,
             data_quality=tuple(base_report.data_quality),
-            claim_assessments=tuple(base_report.claim_assessments),
+            claim_assessments=(
+                tuple(base_report.claim_assessments)
+                if claim_assessments is None
+                else claim_assessments
+            ),
             reports=tuple(output.report for output in analysis_outputs),
             execution_records=tuple(output.execution_record for output in analysis_outputs),
             tool_results=ordered_tool_results,
@@ -700,6 +731,7 @@ def test_exact_same_process_replay_is_idempotent(short_tmp: Path) -> None:
     orchestrator, machine, coordinator, bundle = build_valid_scenario(short_tmp)
     first_authorization = coordinator.publish(bundle)
     assert isinstance(first_authorization, PhaseTransitionAuthorizationV1)
+    assert first_authorization.outcome_kind == "published"
     assert isinstance(
         orchestrator._apply_revision_transition(
             machine,
@@ -712,6 +744,7 @@ def test_exact_same_process_replay_is_idempotent(short_tmp: Path) -> None:
 
     replay_authorization = coordinator.publish(bundle)
     assert isinstance(replay_authorization, PhaseTransitionAuthorizationV1)
+    assert replay_authorization.outcome_kind == "current_committed"
     replay = orchestrator._apply_revision_transition(
         machine,
         coordinator=coordinator,
@@ -721,6 +754,54 @@ def test_exact_same_process_replay_is_idempotent(short_tmp: Path) -> None:
 
     assert replay == PhaseTransitionApplyResultV1(outcome_kind="already_applied")
     assert len(machine.events) == 1
+
+
+def test_solver_unavailable_authoritative_gto_claim_is_mutation_zero_invalid_trace(
+    short_tmp: Path,
+) -> None:
+    _orchestrator, machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=(("solver-result", 0),),
+        claim_assessments=(
+            Claim(
+                claim_id="unsupported-gto-claim",
+                text="Exact GTO equilibrium range is proven.",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+    synthesis_output = bundle.trace.synthesis.outcome.output
+    assert synthesis_output is not None
+    assert synthesis_output.report.tool_results[0].status.value == "unavailable"
+
+    denied = coordinator.publish(bundle)
+
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert machine.state is RunState.FINAL_SYNTHESIS
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
+
+
+def test_explicit_no_solver_gto_limitation_remains_publishable(
+    short_tmp: Path,
+) -> None:
+    _orchestrator, _machine, coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        claim_assessments=(
+            Claim(
+                claim_id="gto-limitation",
+                text="No GTO equilibrium range is proven without a qualified solver.",
+                label=EpistemicLabel.CALCULATED,
+                confidence=ConfidenceGrade.A,
+            ),
+        ),
+    )
+
+    authorization = coordinator.publish(bundle)
+
+    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
 
 
 def test_authorization_is_nonserializable_and_exact_data_is_immutable(

@@ -7,6 +7,7 @@ from collections.abc import Generator
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,7 +23,9 @@ from poker_deliberation.state_machine import RunState
 from poker_deliberation.storage.revision_canonical import run_id_sha256
 from poker_deliberation.storage.revision_models import (
     DurabilityEvidenceV1,
+    ReachableRevisionV1,
     RevisionPublishOutcomeV1,
+    VerifiedStorageRevisionV1,
 )
 from tests.integration.test_phase_revision_coordinator import (
     build_valid_scenario,
@@ -169,6 +172,114 @@ def test_valid_looking_outcome_without_verified_current_is_uncertain(
         ),
     )
     monkeypatch.setattr(coordinator.store, "publish", lambda _request: forged)
+
+    result = coordinator.publish(bundle)
+
+    assert result == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.PUBLISH_UNCERTAIN)
+    assert machine.state is RunState.FINAL_SYNTHESIS
+    assert machine.events == []
+
+
+def test_duck_typed_current_never_authorizes_transition(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _orchestrator, machine, coordinator, bundle = build_valid_scenario(short_tmp)
+    _inventories, _heads, expected_transaction_sha256 = coordinator._validate_trace(bundle)
+    forged = RevisionPublishOutcomeV1(
+        outcome_kind="published",
+        run_id_sha256=run_id_sha256(bundle.request.run_id),
+        transaction_id=bundle.request.transaction_id,
+        transaction_sha256=expected_transaction_sha256,
+        revision=bundle.request.proposed_revision,
+        observed_current_revision=bundle.request.proposed_revision,
+        manifest_sha256="1" * 64,
+        pointer_sha256="2" * 64,
+        filesystem_effect="current_advanced",
+        domain_effect="current_advanced",
+        previous_revision_effect="not_applicable",
+        durability_evidence=DurabilityEvidenceV1(
+            platform_adapter="windows_msvcrt" if os.name == "nt" else "posix_fcntl",
+            file_sync="confirmed",
+            directory_sync="confirmed",
+            pointer_replace="confirmed",
+            reconciliation="confirmed",
+        ),
+    )
+    duck_current = SimpleNamespace(
+        run_id=bundle.request.run_id,
+        current_revision=forged.revision,
+        manifest_sha256=forged.manifest_sha256,
+        current_pointer_sha256=forged.pointer_sha256,
+        reachable_history=(
+            SimpleNamespace(
+                revision=forged.revision,
+                transaction_id=bundle.request.transaction_id,
+                transaction_sha256=expected_transaction_sha256,
+                manifest_sha256=forged.manifest_sha256,
+            ),
+        ),
+    )
+    monkeypatch.setattr(coordinator.store, "publish", lambda _request: forged)
+    monkeypatch.setattr(coordinator.store, "read_current", lambda _run_id: duck_current)
+
+    result = coordinator.publish(bundle)
+
+    assert result == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.PUBLISH_UNCERTAIN)
+    assert machine.state is RunState.FINAL_SYNTHESIS
+    assert machine.events == []
+
+
+def test_inconsistent_verified_history_head_never_authorizes_transition(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _orchestrator, machine, coordinator, bundle = build_valid_scenario(short_tmp)
+    _inventories, _heads, expected_transaction_sha256 = coordinator._validate_trace(bundle)
+    forged = RevisionPublishOutcomeV1(
+        outcome_kind="published",
+        run_id_sha256=run_id_sha256(bundle.request.run_id),
+        transaction_id=bundle.request.transaction_id,
+        transaction_sha256=expected_transaction_sha256,
+        revision=bundle.request.proposed_revision,
+        observed_current_revision=bundle.request.proposed_revision,
+        manifest_sha256="1" * 64,
+        pointer_sha256="2" * 64,
+        filesystem_effect="current_advanced",
+        domain_effect="current_advanced",
+        previous_revision_effect="not_applicable",
+        durability_evidence=DurabilityEvidenceV1(
+            platform_adapter="windows_msvcrt" if os.name == "nt" else "posix_fcntl",
+            file_sync="confirmed",
+            directory_sync="confirmed",
+            pointer_replace="confirmed",
+            reconciliation="confirmed",
+        ),
+    )
+    inconsistent_current = VerifiedStorageRevisionV1(
+        run_id=bundle.request.run_id,
+        current_revision=forged.revision,
+        current_pointer_sha256=forged.pointer_sha256,
+        manifest_sha256=forged.manifest_sha256,
+        inventory_sha256="3" * 64,
+        reachable_history=(
+            ReachableRevisionV1(
+                revision=9,
+                transaction_id=bundle.request.transaction_id,
+                revision_relative_path=(
+                    f"revisions/00000000000000000009/{bundle.request.transaction_id}"
+                ),
+                transaction_sha256=expected_transaction_sha256,
+                manifest_sha256="4" * 64,
+            ),
+        ),
+    )
+    monkeypatch.setattr(coordinator.store, "publish", lambda _request: forged)
+    monkeypatch.setattr(
+        coordinator.store,
+        "read_current",
+        lambda _run_id: inconsistent_current,
+    )
 
     result = coordinator.publish(bundle)
 

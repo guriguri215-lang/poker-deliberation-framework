@@ -20,6 +20,7 @@ from typing import Any, Generic, Literal, Never, SupportsIndex, TypeVar, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from poker_deliberation.agents import ROLE_CATALOG
 from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.context_lifecycle import (
     ContextClassification,
@@ -53,6 +54,7 @@ from poker_deliberation.phases.models import (
 )
 from poker_deliberation.phases.services import ContextBuildService, SynthesisService
 from poker_deliberation.schemas import (
+    EpistemicLabel,
     Exactness,
     NumericalExactness,
     ToolResult,
@@ -80,6 +82,7 @@ from poker_deliberation.storage.revision_models import (
     RunStorageError,
     RunStorageFailureCode,
     ToolBindingV1,
+    VerifiedStorageRevisionV1,
 )
 from poker_deliberation.storage.revision_store import RunRevisionStore
 from poker_deliberation.tools.contracts import contract_by_name
@@ -111,6 +114,26 @@ _SECRET_VALUE = re.compile(
     r"\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{12,})",
     re.IGNORECASE,
 )
+_UNQUALIFIED_SOLVER_CLAIM = re.compile(
+    r"\b(?:gto|equilibrium|exploitability)\b|"
+    r"\bexact(?:[\s-]+)range\b|"
+    r"(?:正確|厳密)な?レンジ|均衡|搾取可能性",
+    re.IGNORECASE,
+)
+_SOLVER_CLAIM_LIMITATION = re.compile(
+    r"\b(?:not|no|never|cannot|can't|unable|unavailable|unproven|unknown|"
+    r"unsupported|without|insufficient)\b|"
+    r"(?:未確認|未証明|不明|利用不能|根拠不足|"
+    r"(?:証明|確認|算出|断定)(?:されていない|できない|しない))",
+    re.IGNORECASE,
+)
+
+_EXPECTED_ROLES = {
+    "calculation": ("math-auditor", "report-writer"),
+    "hand": ("intake", "strategy-analyst", "math-auditor", "skeptic", "adjudicator"),
+    "claim": ("math-auditor", "evidence-researcher", "skeptic", "adjudicator"),
+    "strategy": ("strategy-analyst", "math-auditor", "skeptic", "adjudicator"),
+}
 
 
 class _CoordinatorModel(BaseModel):
@@ -126,6 +149,12 @@ def _domain_digest(domain: str, value: object) -> str:
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(domain.encode("ascii") + b"\x00" + encoded).hexdigest()
+
+
+def _is_unqualified_solver_claim(text: str) -> bool:
+    return bool(_UNQUALIFIED_SOLVER_CLAIM.search(text)) and not bool(
+        _SOLVER_CLAIM_LIMITATION.search(text)
+    )
 
 
 class PhaseTransitionPlanV1(_CoordinatorModel):
@@ -757,8 +786,33 @@ class PhaseRevisionCoordinator:
             phase_canonical_sha256(dispatch) for dispatch in used_dispatches
         ):
             raise ValueError
-        if tuple(output.assignment for output in analysis_outputs) != tuple(
-            parsed["assignments.json"]
+        assignments = tuple(parsed["assignments.json"])
+        expected_roles = _EXPECTED_ROLES[parsed["normalized_case.json"].kind]
+        assignment_ids = tuple(assignment.assignment_id for assignment in assignments)
+        if (
+            tuple(assignment.agent_role for assignment in assignments) != expected_roles
+            or len(assignment_ids) != len(set(assignment_ids))
+            or any(
+                assignment.task != ROLE_CATALOG[assignment.agent_role].purpose
+                or assignment.read_only != ROLE_CATALOG[assignment.agent_role].read_only
+                for assignment in assignments
+            )
+        ):
+            raise ValueError
+        assignments_by_id = {assignment.assignment_id: assignment for assignment in assignments}
+        executed_assignment_ids = tuple(
+            output.assignment.assignment_id for output in analysis_outputs
+        )
+        if (
+            len(executed_assignment_ids) != len(set(executed_assignment_ids))
+            or any(
+                assignments_by_id.get(output.assignment.assignment_id) != output.assignment
+                for output in analysis_outputs
+            )
+            or any(
+                assignment.assignment_id not in executed_assignment_ids and assignment.context_keys
+                for assignment in assignments
+            )
         ):
             raise ValueError
         expected_report_names = {
@@ -832,6 +886,12 @@ class PhaseRevisionCoordinator:
             or tuple(synthesis_output.report.tool_results) != tuple(tool_results)
             or tuple(synthesis_output.report.agent_execution_records)
             != synthesis_input.execution_records
+        ):
+            raise ValueError
+        if any(
+            claim.label in {EpistemicLabel.CALCULATED, EpistemicLabel.ESTIMATE}
+            and _is_unqualified_solver_claim(claim.text)
+            for claim in synthesis_input.claim_assessments
         ):
             raise ValueError
 
@@ -945,7 +1005,15 @@ class PhaseRevisionCoordinator:
             if not isinstance(raw_outcome, RevisionPublishOutcomeV1):
                 raise TypeError
             outcome = RevisionPublishOutcomeV1.model_validate(raw_outcome.model_dump(mode="python"))
-            current = self.store.read_current(bundle.request.run_id)
+            raw_current = self.store.read_current(bundle.request.run_id)
+            if not isinstance(raw_current, VerifiedStorageRevisionV1):
+                raise TypeError
+            current = VerifiedStorageRevisionV1.model_validate(
+                raw_current.model_dump(mode="python")
+            )
+            if not current.reachable_history:
+                raise ValueError
+            head = current.reachable_history[0]
             if (
                 outcome.outcome_kind not in {"published", "current_committed"}
                 or outcome.run_id_sha256 != run_id_sha256(bundle.request.run_id)
@@ -960,9 +1028,10 @@ class PhaseRevisionCoordinator:
                 or current.current_revision != outcome.revision
                 or current.manifest_sha256 != outcome.manifest_sha256
                 or current.current_pointer_sha256 != outcome.pointer_sha256
-                or not current.reachable_history
-                or current.reachable_history[0].transaction_id != bundle.request.transaction_id
-                or current.reachable_history[0].transaction_sha256 != expected_transaction_sha256
+                or head.revision != outcome.revision
+                or head.manifest_sha256 != outcome.manifest_sha256
+                or head.transaction_id != bundle.request.transaction_id
+                or head.transaction_sha256 != expected_transaction_sha256
             ):
                 raise ValueError
         except Exception:

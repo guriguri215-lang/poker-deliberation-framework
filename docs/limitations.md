@@ -94,3 +94,10 @@
 - Windows adapter は legacy 260 UTF-16 path bound を保守的に適用する。extended-length path と
   arbitrary deep clone は未検証である。POSIX adapter code は存在するが、この Windows
   セッションでの POSIX 実行結果は **UNKNOWN** である。
+- P2-010Bは内部revision-only seamだけを実装する。通常のflat-v1 run、CLI、product reader、
+  completion marker、durable resume、migration、retention/cleanupへは接続しない。
+- same-process authorizationはprocess restart後に再構築できず、storageはplan hashをattestしない。
+  structural revision publish後のin-memory apply failureはrollbackせず、terminal completionを
+  意味しない。
+- validationとsecret scanは承認済みexact payload familyに限定され、任意PIIやすべてのsecret
+  encodingを検出する保証ではない。closed failureは診断詳細より非漏洩を優先する。

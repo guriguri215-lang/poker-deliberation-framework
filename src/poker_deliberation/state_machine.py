@@ -101,7 +101,7 @@ class WorkflowStateMachine:
     ledger: SerialUsageLedger = field(init=False)
     _tool_retry_limit: int = field(init=False)
     _last_budget_failure: BudgetFailure | None = field(init=False, default=None)
-    _transition_lock: RLock = field(init=False, default_factory=RLock, repr=False)
+    _transition_lock: RLock = field(init=False, default_factory=RLock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         legacy_retry_limit = (

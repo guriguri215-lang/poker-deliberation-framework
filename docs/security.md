@@ -103,3 +103,16 @@ authority は stable file に対する process registry + nonblocking kernel loc
 advisory metadata、mtime、PID、claim file は authority ではない。SHA-256 は corruption と
 correlation の検出用であり writer authenticity を証明しない。同権限の malicious writer、
 完全な syscall 間 TOCTOU、ACL hardening、network filesystem、secure erase は非保証である。
+
+## P2-010B validation and authority boundary
+
+revision coordinatorはpublish前に各admitted payloadをsize制限、strict UTF-8、media別parse、
+recursive restricted-secret pattern、P2-027A classification evidenceで検査する。phase trace、
+context envelope、tool request/result、final-report-v2 provenanceをraw preimageから再検証するが、
+raw trace、provider input、context payload、matched value、例外、tracebackはartifactにも返却値にも
+含めない。失敗はclosed `phase-revision-failure-v1` codeだけに変換する。
+
+transition authorityは同一process factoryがoriginal bundle identityへ発行する非直列化値であり、
+storage上の権限や認証tokenではない。publish uncertainty、reconciliation requirement、stale plan、
+reconstructed authorityはCOMPLETEDを許可しない。この境界はmalicious same-process code、
+process restart、distributed writer、secure eraseを保証しない。

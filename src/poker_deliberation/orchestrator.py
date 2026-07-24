@@ -64,15 +64,33 @@ from poker_deliberation.phases.models import (
     ToolResearchOutput,
 )
 from poker_deliberation.phases.revision_coordinator import (
-    TRANSITION_REASON,
-    PhaseRevisionBundleV1,
-    PhaseRevisionCoordinator,
-    PhaseRevisionFailureCode,
-    PhaseRevisionFailureV1,
-    PhaseRevisionTraceV1,
-    PhaseTransitionApplyResultV1,
-    PhaseTransitionAuthorizationV1,
-    PhaseTransitionPlanV1,
+    TRANSITION_REASON as _TRANSITION_REASON,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseRevisionBundleV1 as _PhaseRevisionBundleV1,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseRevisionCoordinator as _PhaseRevisionCoordinator,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseRevisionFailureCode as _PhaseRevisionFailureCode,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseRevisionFailureV1 as _PhaseRevisionFailureV1,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseRevisionTraceV1 as _PhaseRevisionTraceV1,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseTransitionApplyResultV1 as _PhaseTransitionApplyResultV1,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseTransitionAuthorizationV1 as _PhaseTransitionAuthorizationV1,
+)
+from poker_deliberation.phases.revision_coordinator import (
+    PhaseTransitionPlanV1 as _PhaseTransitionPlanV1,
+)
+from poker_deliberation.phases.revision_coordinator import (
     _domain_digest,
     _failure,
     _is_issued_plan,
@@ -275,14 +293,14 @@ class Orchestrator:
             for event in machine.events
         )
 
-    def prepare_revision_bundle(
+    def _prepare_revision_bundle(
         self,
         machine: WorkflowStateMachine,
         *,
         run_id: str,
-        trace: PhaseRevisionTraceV1,
+        trace: _PhaseRevisionTraceV1,
         request: object,
-    ) -> PhaseRevisionBundleV1 | PhaseRevisionFailureV1:
+    ) -> _PhaseRevisionBundleV1 | _PhaseRevisionFailureV1:
         """Purely preview one internal P2-010B revision/transition bundle."""
 
         from poker_deliberation.storage.revision_models import RevisionPublishRequestV1
@@ -290,21 +308,22 @@ class Orchestrator:
         try:
             with machine.transition_authority():
                 if machine.state is not RunState.FINAL_SYNTHESIS:
-                    return _failure(PhaseRevisionFailureCode.INVALID_PLAN)
+                    return _failure(_PhaseRevisionFailureCode.INVALID_PLAN)
                 plan = _issue_transition_plan(
                     run_id=run_id,
                     events=self._revision_event_prefix(machine),
+                    owner=machine,
                 )
             if not isinstance(request, RevisionPublishRequestV1):
-                return _failure(PhaseRevisionFailureCode.INVALID_TRACE)
-            return PhaseRevisionBundleV1(trace=trace, request=request, plan=plan)
+                return _failure(_PhaseRevisionFailureCode.INVALID_TRACE)
+            return _PhaseRevisionBundleV1(trace=trace, request=request, plan=plan)
         except Exception:
-            return _failure(PhaseRevisionFailureCode.INVALID_PLAN)
+            return _failure(_PhaseRevisionFailureCode.INVALID_PLAN)
 
     @staticmethod
     def _revision_plan_matches_machine(
         machine: WorkflowStateMachine,
-        plan: PhaseTransitionPlanV1,
+        plan: _PhaseTransitionPlanV1,
     ) -> bool:
         events = tuple(
             {
@@ -315,12 +334,12 @@ class Orchestrator:
             for event in machine.events[: plan.event_count]
         )
         return (
-            _is_issued_plan(plan)
+            _is_issued_plan(plan, owner=machine)
             and len(machine.events) == plan.event_count
             and machine.state is RunState.FINAL_SYNTHESIS
             and plan.source == machine.state.value
             and plan.target == RunState.COMPLETED.value
-            and plan.reason == TRANSITION_REASON
+            and plan.reason == _TRANSITION_REASON
             and plan.event_prefix_sha256
             == _domain_digest("poker-phase-transition-event-prefix-v1", events)
         )
@@ -328,7 +347,7 @@ class Orchestrator:
     @staticmethod
     def _revision_transition_already_applied(
         machine: WorkflowStateMachine,
-        plan: PhaseTransitionPlanV1,
+        plan: _PhaseTransitionPlanV1,
     ) -> bool:
         if machine.state is not RunState.COMPLETED or len(machine.events) != plan.event_count + 1:
             return False
@@ -342,46 +361,47 @@ class Orchestrator:
         )
         event = machine.events[-1]
         return (
-            plan.event_prefix_sha256
+            _is_issued_plan(plan, owner=machine)
+            and plan.event_prefix_sha256
             == _domain_digest("poker-phase-transition-event-prefix-v1", prefix)
             and event.source is RunState.FINAL_SYNTHESIS
             and event.target is RunState.COMPLETED
-            and event.reason == TRANSITION_REASON
+            and event.reason == _TRANSITION_REASON
         )
 
-    def apply_revision_transition(
+    def _apply_revision_transition(
         self,
         machine: WorkflowStateMachine,
         *,
-        coordinator: PhaseRevisionCoordinator,
-        bundle: PhaseRevisionBundleV1,
-        authorization: PhaseTransitionAuthorizationV1,
+        coordinator: _PhaseRevisionCoordinator,
+        bundle: _PhaseRevisionBundleV1,
+        authorization: _PhaseTransitionAuthorizationV1,
         fault_injector: Callable[[str], None] | None = None,
-    ) -> PhaseTransitionApplyResultV1 | PhaseRevisionFailureV1:
+    ) -> _PhaseTransitionApplyResultV1 | _PhaseRevisionFailureV1:
         """Apply one verified same-process authorization under the state lock."""
 
         with machine.transition_authority():
             if self._revision_transition_already_applied(machine, bundle.plan):
                 if coordinator.authorization_matches(bundle, authorization):
-                    return PhaseTransitionApplyResultV1(outcome_kind="already_applied")
-                return _failure(PhaseRevisionFailureCode.AUTHORIZATION_MISMATCH)
+                    return _PhaseTransitionApplyResultV1(outcome_kind="already_applied")
+                return _failure(_PhaseRevisionFailureCode.AUTHORIZATION_MISMATCH)
             if not self._revision_plan_matches_machine(
                 machine, bundle.plan
             ) or not coordinator.authorization_matches(bundle, authorization):
-                return _failure(PhaseRevisionFailureCode.AUTHORIZATION_MISMATCH)
+                return _failure(_PhaseRevisionFailureCode.AUTHORIZATION_MISMATCH)
             try:
                 if fault_injector is not None:
                     fault_injector("before_transition")
-                machine.transition(RunState.COMPLETED, TRANSITION_REASON)
+                machine.transition(RunState.COMPLETED, _TRANSITION_REASON)
                 if fault_injector is not None:
                     fault_injector("after_transition")
-                return PhaseTransitionApplyResultV1(outcome_kind="applied")
+                return _PhaseTransitionApplyResultV1(outcome_kind="applied")
             except Exception:
                 if self._revision_transition_already_applied(machine, bundle.plan):
-                    return PhaseTransitionApplyResultV1(outcome_kind="already_applied")
+                    return _PhaseTransitionApplyResultV1(outcome_kind="already_applied")
                 if machine.state is RunState.FINAL_SYNTHESIS:
-                    return _failure(PhaseRevisionFailureCode.APPLY_FAILED)
-                return _failure(PhaseRevisionFailureCode.APPLY_UNKNOWN)
+                    return _failure(_PhaseRevisionFailureCode.APPLY_FAILED)
+                return _failure(_PhaseRevisionFailureCode.APPLY_UNKNOWN)
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))

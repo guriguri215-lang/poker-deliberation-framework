@@ -35,7 +35,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `codex_python_runtime_bridge` | **unavailable** | Codexネイティブ層とPythonオーケストレーター層は別実行面であり、Codex実行をPython runへ記録するbridgeはない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
 | `local_data_cleanup_executor` | **unavailable** | filesystem scan、quarantine、delete、secure erase、receipt、reconciliation executorはない。 |
-| `immutable_revision_storage_foundation` | **implemented** | P2-012Aのimmutable revision、manifest、transaction、lock、recovery claim、revision CAS基盤をopt-inのstructural storageとして実装済み。 |
+| `immutable_revision_storage_foundation` | **implemented** | P2-012Aのimmutable revision、manifest、transaction、lock、recovery claim、revision CAS基盤と、P2-010Bの内部revision-only phase transition authorization seamを実装済み。通常のproduct runには未接続。 |
 | `product_integrated_durable_run` | **planned** | P2-012Bのcompletion marker、verified product reader、migration、resume、lifecycle integrationは別承認待ち。 |
 | `phase_1_hardening` | **implemented** | typed tool contract、contract v2の数値区分、実行時verification、ローカルoracle/metamorphic testを実装済み。 |
 

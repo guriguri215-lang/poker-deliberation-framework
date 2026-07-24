@@ -12,6 +12,7 @@ from threading import Barrier
 import pytest
 
 from poker_deliberation.phases.revision_coordinator import (
+    PhaseRevisionFailureCode,
     PhaseRevisionFailureV1,
     PhaseTransitionApplyResultV1,
     PhaseTransitionAuthorizationV1,
@@ -42,7 +43,7 @@ def test_concurrent_exact_apply_creates_one_terminal_event(
 
     def apply() -> PhaseTransitionApplyResultV1 | PhaseRevisionFailureV1:
         barrier.wait()
-        return orchestrator.apply_revision_transition(
+        return orchestrator._apply_revision_transition(
             machine,
             coordinator=coordinator,
             bundle=bundle,
@@ -77,7 +78,14 @@ def test_concurrent_exact_publish_never_creates_a_successor_revision(
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = tuple(pool.map(lambda _index: publish(), range(2)))
 
-    assert any(isinstance(result, PhaseTransitionAuthorizationV1) for result in results)
+    authorizations = tuple(
+        result for result in results if isinstance(result, PhaseTransitionAuthorizationV1)
+    )
+    failures = tuple(result for result in results if isinstance(result, PhaseRevisionFailureV1))
+    assert Counter(item.outcome_kind for item in authorizations)["published"] == 1
+    assert all(item.outcome_kind in {"published", "current_committed"} for item in authorizations)
+    assert all(item.code is PhaseRevisionFailureCode.PUBLISH_CONFLICT for item in failures)
+    assert len(authorizations) + len(failures) == 2
     assert all(
         isinstance(
             result,

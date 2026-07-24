@@ -150,3 +150,16 @@ compression、snapshot、flat-v1、P2-011B reservation は含まない。
 dedicated root は product `runs_dir` と共有しない。P2-012A の内部 API を通常 CLI に接続しない。
 reconciliation-required または effect-unknown を受けた caller は、typed inspection と同一 request
 による明示的 reconciliation を行い、directory を手動削除・上書き・silent adoption しない。
+
+## P2-010B coordinator boundary
+
+P2-010Bはproducer `p2-010b-phase-revision` version `0.2.0`の専用rootだけを使い、対象runの
+初回publish前historyが空であることを確認する。完全なphase traceとfinal-report-v2 source graphを
+再検証し、artifact intentのnonnull content hashをexact admitted bytesへ一致させる。
+`state.json` intentはprovenanceに残るがpayload化しない。
+
+transition authorizationは`published`またはoriginal same-process bundleのexact
+`current_committed`だけから生成する。historical replay、reconstructed bundle、release failure、
+reconciliation-required、effect-unknown、current ambiguityはtransition authorityにならない。
+structural revisionはterminal/product-readable stateではなく、P2-012Bのcompletion marker、
+verified reader、resume、migrationを先取りしない。

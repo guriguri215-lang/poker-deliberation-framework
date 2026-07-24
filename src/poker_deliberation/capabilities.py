@@ -93,7 +93,8 @@ CAPABILITIES: tuple[Capability, ...] = (
         "immutable_revision_storage_foundation",
         "implemented",
         "P2-012A immutable revision, manifest, transaction, lock, recovery-claim, and "
-        "revision-CAS foundation is implemented as an opt-in structural storage layer.",
+        "revision-CAS foundation plus the P2-010B internal revision-only phase transition "
+        "authorization seam are implemented without product run integration.",
     ),
     Capability(
         "product_integrated_durable_run",

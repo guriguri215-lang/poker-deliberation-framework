@@ -42,9 +42,10 @@ def test_plan_hash_is_deterministic_for_every_ordered_event_prefix(
     raw_events: list[dict[str, str]],
 ) -> None:
     events = tuple(raw_events)
+    owner = object()
 
-    first = _issue_transition_plan(run_id="run-property", events=events)
-    second = _issue_transition_plan(run_id="run-property", events=events)
+    first = _issue_transition_plan(run_id="run-property", events=events, owner=owner)
+    second = _issue_transition_plan(run_id="run-property", events=events, owner=owner)
 
     assert first == second
     assert first.event_count == len(events)
@@ -61,7 +62,7 @@ def test_reconstructed_plan_never_inherits_factory_identity(event_count: int) ->
     events = tuple(
         {"source": "A", "target": "B", "reason": str(index)} for index in range(event_count)
     )
-    issued = _issue_transition_plan(run_id="run-property", events=events)
+    issued = _issue_transition_plan(run_id="run-property", events=events, owner=object())
 
     reconstructed = PhaseTransitionPlanV1.model_validate(issued.model_dump(mode="python"))
 
@@ -71,7 +72,7 @@ def test_reconstructed_plan_never_inherits_factory_identity(event_count: int) ->
 
 @given(st.text(min_size=1, max_size=48))
 def test_any_in_place_plan_tamper_invalidates_issued_identity(reason: str) -> None:
-    issued = _issue_transition_plan(run_id="run-property", events=())
+    issued = _issue_transition_plan(run_id="run-property", events=(), owner=object())
     if reason == issued.reason:
         return
 

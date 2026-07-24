@@ -90,8 +90,23 @@ outer request/outcome version. No durable usage artifact is added. See
 `docs/budget-execution-contract.md` for units, migration, and deferred behavior.
 
 The existing whole-run atomicity limitation is unchanged: the completion transition can be written
-before a later final-report write fails. P2-012A/P2-010B, not P2-010A, owns durable transition/write
-ordering, manifest revisions, recovery, and fault-atomic completion.
+before a later final-report write fails. P2-010B adds a separate opt-in revision-only seam; it does
+not retrofit ordinary flat-v1 execution or claim whole-run fault-atomic completion.
+
+## P2-010B internal revision-only seam
+
+`PhaseRevisionCoordinator` consumes a frozen trace of already-computed ContextBuild, Analysis,
+ToolResearch, and Synthesis requests/outcomes. It revalidates hashes, context and tool provenance,
+exact admitted artifact bytes, classification, and the final-report-v2 graph before
+`RunRevisionStore.publish`. It never invokes a provider, tool, retry loop, state callback, or
+ordinary `RunStore`.
+
+The orchestrator previews a `FINAL_SYNTHESIS` to `COMPLETED` plan without mutation. Only a confirmed
+`published` or exact same-process `current_committed` outcome can create a nonserializable
+authorization. The orchestrator then applies that exact plan under the state-machine lock.
+Validation, storage uncertainty, stale/reconstructed authority, and pre-apply faults produce no
+transition. A committed structural revision followed by apply failure is not rolled back and is not
+a terminal product run. P2-011B/P2-012B remain separately approval-gated.
 
 ## P2-012A phase provenance
 

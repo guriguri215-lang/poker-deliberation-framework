@@ -100,3 +100,11 @@ cost/runtime settlement、retry classification を復元・予約・永続化し
 
 durable usage reservation、resume settlement、multi-process budget CAS、parallel slot、
 automatic retry、cancellation state は P2-011B 以降の別範囲である。
+
+## P2-010B budget correlation
+
+P2-010Bは現在の`BudgetPolicyV2` schema versionとcanonical SHA-256を
+`BudgetPolicyBindingV1`としてfinal-report-v2 provenanceへ相関するだけである。phase traceの
+usage、retry classification、deadline/cancellation値は既存validationを通るが、coordinatorは
+usageを再settleせず、reservation、durable ledger、retry、wait、parallel slot、budget CASを
+開始しない。publishまたはapply失敗も自動retryへ変換しない。

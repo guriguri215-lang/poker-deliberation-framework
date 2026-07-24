@@ -13,6 +13,7 @@ import hashlib
 import json
 import re
 import weakref
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Generic, Literal, Never, SupportsIndex, TypeVar, cast
@@ -50,6 +51,13 @@ from poker_deliberation.phases.models import (
     ToolResearchInput,
     ToolResearchOutput,
 )
+from poker_deliberation.phases.services import ContextBuildService, SynthesisService
+from poker_deliberation.schemas import (
+    Exactness,
+    NumericalExactness,
+    ToolResult,
+    ToolStatus,
+)
 from poker_deliberation.storage.revision_canonical import (
     CONTROL_CANONICALIZATION,
     JSONL_SERIALIZATION,
@@ -74,6 +82,7 @@ from poker_deliberation.storage.revision_models import (
     ToolBindingV1,
 )
 from poker_deliberation.storage.revision_store import RunRevisionStore
+from poker_deliberation.tools.contracts import contract_by_name
 
 TRANSITION_REASON = "durable synthesis revision committed"
 TRANSITION_PLAN_SCHEMA = "1.0.0"
@@ -217,7 +226,10 @@ class _AuthorizationRecord:
     data: tuple[object, ...]
 
 
-_ISSUED_PLANS: dict[int, weakref.ReferenceType[PhaseTransitionPlanV1]] = {}
+_ISSUED_PLANS: dict[
+    int,
+    tuple[weakref.ReferenceType[PhaseTransitionPlanV1], object],
+] = {}
 
 
 def _plan_projection(
@@ -241,6 +253,7 @@ def _issue_transition_plan(
     *,
     run_id: str,
     events: tuple[dict[str, str], ...],
+    owner: object,
 ) -> PhaseTransitionPlanV1:
     event_prefix_sha256 = _domain_digest(TRANSITION_EVENT_PREFIX_DOMAIN, events)
     projection = _plan_projection(
@@ -263,13 +276,20 @@ def _issue_transition_plan(
     def discard(_reference: object, *, key: int = identity) -> None:
         _ISSUED_PLANS.pop(key, None)
 
-    _ISSUED_PLANS[identity] = weakref.ref(plan, discard)
+    _ISSUED_PLANS[identity] = (weakref.ref(plan, discard), owner)
     return plan
 
 
-def _is_issued_plan(plan: PhaseTransitionPlanV1) -> bool:
-    reference = _ISSUED_PLANS.get(id(plan))
-    if reference is None or reference() is not plan:
+def _is_issued_plan(
+    plan: PhaseTransitionPlanV1,
+    *,
+    owner: object | None = None,
+) -> bool:
+    record = _ISSUED_PLANS.get(id(plan))
+    if record is None:
+        return False
+    reference, issued_owner = record
+    if reference() is not plan or (owner is not None and issued_owner is not owner):
         return False
     try:
         return PhaseTransitionPlanV1.model_validate(plan.model_dump(mode="python")) == plan
@@ -437,6 +457,72 @@ def _tool_binding(
     )
 
 
+def _validate_tool_result_contract(result: ToolResult) -> None:
+    contract = contract_by_name().get(result.tool_name)
+    if contract is None:
+        raise ValueError
+    expected_command = (
+        f"poker-deliberate calculate {result.tool_name} --analysis-scope retrospective "
+        "--input <input.json>"
+    )
+    if (
+        result.contract_version != contract.contract_version
+        or result.version != contract.version
+        or tuple(result.assumptions) != contract.assumptions
+        or result.model_qualifier != contract.model_qualifier
+        or result.reproduce_command != expected_command
+    ):
+        raise ValueError
+    try:
+        contract.input_model.model_validate(result.input, strict=True)
+    except Exception:
+        if result.status is not ToolStatus.FAILED:
+            raise ValueError from None
+    if result.status is ToolStatus.FAILED:
+        if (
+            result.output
+            or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
+            or result.exactness is not Exactness.UNAVAILABLE
+            or not result.error
+        ):
+            raise ValueError
+        return
+    validated_output = contract.output_model.model_validate(result.output, strict=True)
+    if validated_output.model_dump(mode="python") != result.output:
+        raise ValueError
+    unavailable = bool(result.output.get("unavailable", False))
+    expected_numeric = (
+        NumericalExactness.UNAVAILABLE
+        if unavailable
+        else contract.resolve_numeric_exactness(result.output)
+    )
+    expected_exactness = (
+        Exactness.UNAVAILABLE
+        if expected_numeric is NumericalExactness.UNAVAILABLE
+        else Exactness.APPROXIMATE
+        if expected_numeric is NumericalExactness.APPROXIMATE
+        else Exactness.EXACT
+    )
+    expected_status = ToolStatus.UNAVAILABLE if unavailable else ToolStatus.SUCCESS
+    if (
+        result.status is not expected_status
+        or result.numeric_exactness is not expected_numeric
+        or result.exactness is not expected_exactness
+    ):
+        raise ValueError
+    if result.tool_name == "solver_status":
+        capability = result.output.get("capability")
+        if (
+            result.status is not ToolStatus.UNAVAILABLE
+            or result.output.get("status") != "unavailable"
+            or result.output.get("result") != {}
+            or not isinstance(capability, dict)
+            or capability.get("available") is not False
+            or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
+        ):
+            raise ValueError
+
+
 def _bindings_of_type(
     artifact: RevisionArtifactV1,
     binding_type: type[RequestT],
@@ -564,6 +650,11 @@ class PhaseRevisionCoordinator:
             expected_run_id=request.run_id,
         )
         synthesis_output = cast(SynthesisOutput, synthesis_outcome.output)
+        replayed_synthesis = revalidate_outcome(
+            synthesis_request,
+            SynthesisService().run(synthesis_request),
+            output_type=SynthesisOutput,
+        )
         if (
             synthesis_outcome.status is not PhaseStatus.SUCCEEDED
             or synthesis_outcome.warnings
@@ -573,11 +664,14 @@ class PhaseRevisionCoordinator:
             or synthesis_request.input.machine_state != "FINAL_SYNTHESIS"
             or not synthesis_request.input.completed
             or synthesis_output.report != parsed["final_report.json"]
+            or synthesis_outcome != replayed_synthesis
         ):
             raise ValueError
 
         seen_attempts = {synthesis_request.attempt_id}
         context_dispatches: list[Any] = []
+        seen_context_ids: set[str] = set()
+        seen_context_attempt_ids: set[str] = set()
         for context_pair in trace.context_builds:
             context_request, context_outcome = self._validate_pair(
                 context_pair,
@@ -590,6 +684,22 @@ class PhaseRevisionCoordinator:
                 raise ValueError
             seen_attempts.add(context_request.attempt_id)
             context_output = cast(ContextBuildOutput, context_outcome.output)
+            replayed_context = revalidate_outcome(
+                context_request,
+                ContextBuildService().run(context_request),
+                output_type=ContextBuildOutput,
+            )
+            if (
+                context_outcome.status is not PhaseStatus.SUCCEEDED
+                or context_outcome != replayed_context
+                or context_request.input.case != parsed["normalized_case.json"]
+                or context_request.context_ids != (context_request.input.context_id,)
+                or context_request.input.context_id in seen_context_ids
+                or context_request.input.context_attempt_id in seen_context_attempt_ids
+            ):
+                raise ValueError
+            seen_context_ids.add(context_request.input.context_id)
+            seen_context_attempt_ids.add(context_request.input.context_attempt_id)
             for dispatch in context_output.dispatches:
                 envelope = dispatch.envelope
                 validated = validate_context_envelope(
@@ -626,6 +736,10 @@ class PhaseRevisionCoordinator:
             seen_attempts.add(analysis_request.attempt_id)
             analysis_output = cast(AnalysisOutput, analysis_outcome.output)
             validate_analysis_output(analysis_request, analysis_output)
+            if analysis_request.context_ids != (
+                analysis_request.input.dispatch.envelope.lineage.context_id,
+            ):
+                raise ValueError
             analysis_outputs.append(analysis_output)
             used_dispatches.append(analysis_request.input.dispatch)
             expected_context_bindings.append(_context_binding(analysis_pair))
@@ -639,9 +753,21 @@ class PhaseRevisionCoordinator:
                 not in _bindings_of_type(report_artifact, ContextBindingV1)
             ):
                 raise ValueError
-        if len(context_dispatches) != len(used_dispatches) or any(
-            dispatch not in used_dispatches for dispatch in context_dispatches
+        if Counter(phase_canonical_sha256(dispatch) for dispatch in context_dispatches) != Counter(
+            phase_canonical_sha256(dispatch) for dispatch in used_dispatches
         ):
+            raise ValueError
+        if tuple(output.assignment for output in analysis_outputs) != tuple(
+            parsed["assignments.json"]
+        ):
+            raise ValueError
+        expected_report_names = {
+            f"agent_reports/{output.report.report_id}.json" for output in analysis_outputs
+        }
+        actual_report_names = {
+            name for name in by_name if name.startswith("agent_reports/") and name.endswith(".json")
+        }
+        if actual_report_names != expected_report_names:
             raise ValueError
 
         tool_results: list[Any] = []
@@ -661,6 +787,7 @@ class PhaseRevisionCoordinator:
             validate_tool_research_output(tool_request, tool_output)
             expected_phase = _phase_binding(tool_request, tool_outcome)
             for binding in tool_output.bindings:
+                _validate_tool_result_contract(binding.result)
                 expected_tool = _tool_binding(tool_pair, binding, by_name)
                 input_artifact = by_name[f"tool_results/{binding.result.result_id}.input.json"]
                 result_artifact = by_name[f"tool_results/{binding.result.result_id}.json"]
@@ -793,7 +920,7 @@ class PhaseRevisionCoordinator:
             return _failure(PhaseRevisionFailureCode.INVALID_TRACE)
 
         try:
-            outcome = self.store.publish(bundle.request)
+            raw_outcome = self.store.publish(bundle.request)
         except RunStorageError as error:
             failure = error.failure
             if (
@@ -814,17 +941,31 @@ class PhaseRevisionCoordinator:
             return _failure(PhaseRevisionFailureCode.PUBLISH_CONFLICT)
         except Exception:
             return _failure(PhaseRevisionFailureCode.PUBLISH_UNCERTAIN)
-        if (
-            outcome.outcome_kind not in {"published", "current_committed"}
-            or outcome.run_id_sha256 != run_id_sha256(bundle.request.run_id)
-            or outcome.transaction_id != bundle.request.transaction_id
-            or outcome.transaction_sha256 != expected_transaction_sha256
-            or outcome.revision != bundle.request.proposed_revision
-            or outcome.observed_current_revision != bundle.request.proposed_revision
-            or outcome.manifest_sha256 is None
-            or outcome.pointer_sha256 is None
-            or outcome.durability_evidence.reconciliation != "confirmed"
-        ):
+        try:
+            if not isinstance(raw_outcome, RevisionPublishOutcomeV1):
+                raise TypeError
+            outcome = RevisionPublishOutcomeV1.model_validate(raw_outcome.model_dump(mode="python"))
+            current = self.store.read_current(bundle.request.run_id)
+            if (
+                outcome.outcome_kind not in {"published", "current_committed"}
+                or outcome.run_id_sha256 != run_id_sha256(bundle.request.run_id)
+                or outcome.transaction_id != bundle.request.transaction_id
+                or outcome.transaction_sha256 != expected_transaction_sha256
+                or outcome.revision != bundle.request.proposed_revision
+                or outcome.observed_current_revision != bundle.request.proposed_revision
+                or outcome.manifest_sha256 is None
+                or outcome.pointer_sha256 is None
+                or outcome.durability_evidence.reconciliation != "confirmed"
+                or current.run_id != bundle.request.run_id
+                or current.current_revision != outcome.revision
+                or current.manifest_sha256 != outcome.manifest_sha256
+                or current.current_pointer_sha256 != outcome.pointer_sha256
+                or not current.reachable_history
+                or current.reachable_history[0].transaction_id != bundle.request.transaction_id
+                or current.reachable_history[0].transaction_sha256 != expected_transaction_sha256
+            ):
+                raise ValueError
+        except Exception:
             return _failure(PhaseRevisionFailureCode.PUBLISH_UNCERTAIN)
         if outcome.outcome_kind == "current_committed" and (
             self._published_bundles.get(id(bundle)) is not bundle

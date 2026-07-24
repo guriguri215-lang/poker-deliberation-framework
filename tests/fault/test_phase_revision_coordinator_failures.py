@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Generator
 from dataclasses import replace
 from pathlib import Path
@@ -18,6 +19,11 @@ from poker_deliberation.phases.revision_coordinator import (
     PhaseTransitionAuthorizationV1,
 )
 from poker_deliberation.state_machine import RunState
+from poker_deliberation.storage.revision_canonical import run_id_sha256
+from poker_deliberation.storage.revision_models import (
+    DurabilityEvidenceV1,
+    RevisionPublishOutcomeV1,
+)
 from tests.integration.test_phase_revision_coordinator import (
     build_valid_scenario,
 )
@@ -122,6 +128,55 @@ def test_storage_fault_never_authorizes_transition(short_tmp: Path) -> None:
     assert machine.events == []
 
 
+def test_none_storage_outcome_is_typed_uncertain_without_raw_exception(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _orchestrator, machine, coordinator, bundle = build_valid_scenario(short_tmp)
+    monkeypatch.setattr(coordinator.store, "publish", lambda _request: None)
+
+    result = coordinator.publish(bundle)
+
+    assert result == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.PUBLISH_UNCERTAIN)
+    assert machine.state is RunState.FINAL_SYNTHESIS
+    assert machine.events == []
+
+
+def test_valid_looking_outcome_without_verified_current_is_uncertain(
+    short_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _orchestrator, machine, coordinator, bundle = build_valid_scenario(short_tmp)
+    _inventories, _heads, expected_transaction_sha256 = coordinator._validate_trace(bundle)
+    forged = RevisionPublishOutcomeV1(
+        outcome_kind="published",
+        run_id_sha256=run_id_sha256(bundle.request.run_id),
+        transaction_id=bundle.request.transaction_id,
+        transaction_sha256=expected_transaction_sha256,
+        revision=bundle.request.proposed_revision,
+        observed_current_revision=bundle.request.proposed_revision,
+        manifest_sha256="1" * 64,
+        pointer_sha256="2" * 64,
+        filesystem_effect="current_advanced",
+        domain_effect="current_advanced",
+        previous_revision_effect="not_applicable",
+        durability_evidence=DurabilityEvidenceV1(
+            platform_adapter="windows_msvcrt" if os.name == "nt" else "posix_fcntl",
+            file_sync="confirmed",
+            directory_sync="confirmed",
+            pointer_replace="confirmed",
+            reconciliation="confirmed",
+        ),
+    )
+    monkeypatch.setattr(coordinator.store, "publish", lambda _request: forged)
+
+    result = coordinator.publish(bundle)
+
+    assert result == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.PUBLISH_UNCERTAIN)
+    assert machine.state is RunState.FINAL_SYNTHESIS
+    assert machine.events == []
+
+
 def test_ambiguous_current_replace_never_authorizes_transition(
     short_tmp: Path,
 ) -> None:
@@ -153,7 +208,7 @@ def test_pre_apply_fault_keeps_committed_revision_and_live_state(
         if hook == "before_transition":
             raise RuntimeError("synthetic pre-apply fault")
 
-    result = orchestrator.apply_revision_transition(
+    result = orchestrator._apply_revision_transition(
         machine,
         coordinator=coordinator,
         bundle=bundle,
@@ -178,7 +233,7 @@ def test_post_apply_response_loss_reconciles_to_already_applied(
         if hook == "after_transition":
             raise RuntimeError("synthetic post-apply response loss")
 
-    result = orchestrator.apply_revision_transition(
+    result = orchestrator._apply_revision_transition(
         machine,
         coordinator=coordinator,
         bundle=bundle,
@@ -199,7 +254,7 @@ def test_state_divergence_after_publish_denies_stale_authorization(
     assert isinstance(authorization, PhaseTransitionAuthorizationV1)
     machine.transition(RunState.FAILED_WITH_LIMITATIONS, "independent failure")
 
-    result = orchestrator.apply_revision_transition(
+    result = orchestrator._apply_revision_transition(
         machine,
         coordinator=coordinator,
         bundle=bundle,

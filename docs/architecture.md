@@ -121,3 +121,26 @@ interface ではない。P2-010B coordinator は専用 producer-owned root と�
 history 条件を強制するが、same-build/no-rolling は trusted deployment assumption である。
 現行 schema は mixed build を attest、detect、prevent せず、old v1-only reader は v2 を
 unknown version として拒否する。product integration は P2-012B に残る。
+
+## P2-010B revision transition ordering
+
+P2-010Bは通常の`Orchestrator.run`経路とは別のinternal APIとして、
+`_prepare_revision_bundle`と`_apply_revision_transition`を追加する。前者は
+`FINAL_SYNTHESIS` machine snapshot、完全なphase preimage trace、canonical
+`RevisionPublishRequestV1`を相関し、mutation-free planを作る。coordinatorは専用rootへの
+structural revision publishを完了してからだけsame-process authorizationを発行する。後者は
+machine lock内で作成元machine identity、fresh preview、plan hash、issuer identity、bundle
+identityを再確認し、exact eventを最大1回だけ追加する。
+
+ContextBuildはcanonical serviceで入力から再生し、normalized case、context/attempt ID、時刻、
+dispatch、Analysis input、assignment ledger、agent-report artifact集合を一対一で照合する。
+Synthesisもcanonical serviceで再生する。ToolResearchは各結果をcanonical `ToolContract`の
+input/output schema、contract version、numeric/legacy exactness、status、assumptions、
+model qualifier、再現コマンドへ照合する。`solver_status`は`unavailable`、空のsolver result、
+`capability.available=false`以外を拒否する。storage outcomeはstrict modelで再検証した後、
+verified current chainのrevision、transaction、manifest、pointerと一致した場合だけauthorityに
+変換する。
+
+このseamはterminal manifest、completion marker、product reader/status、durable resume、
+migration、budget CAS、parallel schedulingを持たない。通常のflat-v1 runとCLIは従来順序を保ち、
+既知のCOMPLETED-before-final-report-write failureも未解決のままである。

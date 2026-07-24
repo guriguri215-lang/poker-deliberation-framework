@@ -38,8 +38,15 @@ free local providerと決定論calculatorは利用でき、parallel実行とauto
 [`docs/budget-execution-contract.md`](docs/budget-execution-contract.md)を参照してください。
 
 **FACT**: canonical SSOTではRM-024/P2-024AとP2-010Aを`completed`としている。
-RM-010とRM-011は各completion milestone待ちの`in_progress`であり、P2-010BとP2-011Bは別承認が
-ないため`not_started`である。
+RM-010はP2-010Bの内部revision-only統合を実装中、RM-011はcompletion milestone待ちの
+`in_progress`である。P2-011BとP2-012Bは未承認の`not_started`を維持する。
+
+P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
+`structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで
+`FINAL_SYNTHESIS`から`COMPLETED`へのin-memory transitionを適用する内部opt-in seamである。
+通常の`run`、`resume`、`show`、`load_report`、flat-v1 artifact orderには接続しない。
+`product_integrated_durable_run`は引き続き`planned`であり、terminal reader、durable resume、
+migration、cleanup、external provider/solver、GTO・均衡・正確なrangeの主張を追加しない。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが

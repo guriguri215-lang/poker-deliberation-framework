@@ -101,3 +101,12 @@ P2-012A は raw `ContextEnvelope` や provider payload を保存しない。許�
 schema/classification、payload/source/policy/envelope hash、expiry、producer/consumer runtime
 との scalar correlation だけを保存する。binding は lineage evidence であり、attempt-memory-only
 policy、expiry semantics、handoff authority を durable context persistence へ変更しない。
+
+## P2-010B in-memory trace replay
+
+P2-010BはContextBuildとAnalysisのexact request/outcome preimageを同一process内だけで保持し、
+assignment、allowlist、run/attempt/parent/source、policy/payload/envelope hash、expiry、
+producer/consumer runtimeを再検証する。revisionへ渡すのはtyped scalar
+`ContextBindingV1`とphase hash commitmentsだけである。`ContextEnvelope.canonical_payload`、
+`ContextPolicy`、`AgentContext`、dispatch、provider payload、phase traceは永続化しない。
+provider use-expiryとstorage retentionの意味は引き続き分離する。

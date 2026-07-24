@@ -730,6 +730,15 @@ appended with the milestone binding change. Neither binding commit can change
 P2-010B state, history, or completion evidence. No other semantic reapproval
 pair is admitted.
 
+## P2-010B internal integration boundary
+
+P2-010Bの実装境界は、完全なin-memory phase traceを再検証して専用revision rootへ
+`structural_nonterminal` revisionをpublishし、その後だけsame-process authorizationで
+`FINAL_SYNTHESIS`から`COMPLETED`へのlive machine transitionを適用する内部seamである。
+通常の`run`、`resume`、`load_report`、CLI、flat-v1 layout/orderには接続しない。
+P2-011BとP2-012Bはapproval null・`not_started`を維持し、durable budget、completion marker、
+verified product status、resume、migration、cleanupは実装しない。
+
 ## P2-012A completion boundary
 
 P2-012A の完了条件は、専用 root、strict nonterminal schema/canonical bytes、typed provenance、

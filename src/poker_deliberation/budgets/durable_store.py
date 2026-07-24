@@ -419,7 +419,9 @@ class DurableBudgetStore:
     ) -> None:
         self.clock = clock
         self.wall_clock = wall_clock
-        self._last_monotonic_ns: int | None = None
+        self._last_monotonic_ns: dict[str, int] = {}
+        self._pending_monotonic_ns: dict[str, int] = {}
+        self._clock_reconciliation_required: set[str] = set()
         self.revisions = RunRevisionStore(
             revision_root,
             legacy_runs_root,
@@ -430,7 +432,7 @@ class DurableBudgetStore:
             producer_version=DURABLE_BUDGET_PRODUCER_VERSION,
         )
 
-    def _observe_monotonic(self, operation_id: str) -> tuple[int, int]:
+    def _observe_monotonic(self, run_id: str, operation_id: str) -> tuple[int, int]:
         try:
             value = self.clock()
         except Exception as exc:
@@ -443,21 +445,46 @@ class DurableBudgetStore:
                 DurableFailureCode.INVALID_INPUT,
                 operation_id=operation_id,
             )
-        if self._last_monotonic_ns is not None and value < self._last_monotonic_ns:
+        previous = self._last_monotonic_ns.get(run_id)
+        rollback_reference = (
+            max(
+                item
+                for item in (
+                    previous,
+                    self._pending_monotonic_ns.get(run_id),
+                )
+                if item is not None
+            )
+            if previous is not None or run_id in self._pending_monotonic_ns
+            else None
+        )
+        if rollback_reference is not None and value < rollback_reference:
             raise _failure(
                 DurableFailureCode.CLOCK_ROLLBACK,
                 operation_id=operation_id,
                 resource="active_runtime_ns",
-                observed=self._last_monotonic_ns - value,
+                observed=rollback_reference - value,
             )
-        elapsed = 0 if self._last_monotonic_ns is None else value - self._last_monotonic_ns
-        self._last_monotonic_ns = value
+        elapsed = 0 if previous is None else value - previous
+        self._pending_monotonic_ns[run_id] = value
         return value, elapsed
 
-    def rebase_monotonic_clock(self) -> None:
+    def rebase_monotonic_clock(self, run_id: str | None = None) -> None:
         """Exclude restart or human-approval wait from active-runtime accounting."""
 
-        self._last_monotonic_ns = None
+        if run_id is None:
+            self._last_monotonic_ns.clear()
+            self._pending_monotonic_ns.clear()
+            self._clock_reconciliation_required.clear()
+            return
+        self._last_monotonic_ns.pop(run_id, None)
+        self._pending_monotonic_ns.pop(run_id, None)
+        self._clock_reconciliation_required.discard(run_id)
+
+    def _commit_monotonic_observation(self, run_id: str, value: int) -> None:
+        self._last_monotonic_ns[run_id] = value
+        self._pending_monotonic_ns.pop(run_id, None)
+        self._clock_reconciliation_required.discard(run_id)
 
     def _charge_active_runtime(
         self,
@@ -489,6 +516,7 @@ class DurableBudgetStore:
         self,
         error: RunStorageError,
         operation_id: str,
+        run_id: str,
     ) -> DurableBudgetError:
         code = error.failure.code
         if code is RunStorageFailureCode.RUN_LOCKED:
@@ -504,6 +532,7 @@ class DurableBudgetStore:
             RunStorageFailureCode.EFFECT_UNKNOWN,
             RunStorageFailureCode.DURABILITY_UNCONFIRMED,
         }:
+            self._clock_reconciliation_required.add(run_id)
             return _failure(
                 DurableFailureCode.DURABILITY_UNCERTAIN,
                 operation_id=operation_id,
@@ -524,7 +553,7 @@ class DurableBudgetStore:
                 artifact_schema_version=DURABLE_BUDGET_ARTIFACT_SCHEMA,
             )
         except RunStorageError as exc:
-            raise self._map_storage_error(exc, "read-state") from exc
+            raise self._map_storage_error(exc, "read-state", run_id) from exc
         try:
             states = tuple(
                 DurableBudgetStateV1.model_validate_json(entry.exact_bytes)
@@ -554,7 +583,7 @@ class DurableBudgetStore:
     def resume(self, run_id: str) -> DurableBudgetStateV1:
         """Resume only when no started effect has an unknown durable outcome."""
 
-        self.rebase_monotonic_clock()
+        self.rebase_monotonic_clock(run_id)
         state = self.load(run_id)
         started = next(
             (permit for permit in state.active_permits if permit.status is PermitStatus.STARTED),
@@ -567,7 +596,11 @@ class DurableBudgetStore:
                 reconciliation_required=True,
                 effect_unknown=True,
             )
-        self._observe_monotonic("resume")
+        self._observe_monotonic(run_id, "resume")
+        self._commit_monotonic_observation(
+            run_id,
+            self._pending_monotonic_ns[run_id],
+        )
         return state
 
     def _existing_operation(
@@ -589,7 +622,7 @@ class DurableBudgetStore:
                 DurableFailureCode.IDEMPOTENCY_CONFLICT,
                 operation_id=operation_id,
             )
-        return DurableMutationResultV1(
+        replay = DurableMutationResultV1(
             status=MutationStatus.EXACT_REPLAY,
             operation_id=operation_id,
             operation_request_sha256=request_sha256,
@@ -597,6 +630,15 @@ class DurableBudgetStore:
             storage_outcome="current_committed",
             state=state,
         )
+        if (
+            state.run_id not in self._last_monotonic_ns
+            or state.run_id in self._clock_reconciliation_required
+        ) and state.run_id in self._pending_monotonic_ns:
+            self._commit_monotonic_observation(
+                state.run_id,
+                self._pending_monotonic_ns[state.run_id],
+            )
+        return replay
 
     def _append_operation(
         self,
@@ -654,6 +696,7 @@ class DurableBudgetStore:
         operation_id: str,
         request_sha256: str,
         subject_id: str | None,
+        monotonic_observation_ns: int,
     ) -> DurableMutationResultV1:
         if previous is None:
             expected_revision = None
@@ -663,7 +706,7 @@ class DurableBudgetStore:
             try:
                 current = self.revisions.read_current(successor.run_id)
             except RunStorageError as exc:
-                raise self._map_storage_error(exc, operation_id) from exc
+                raise self._map_storage_error(exc, operation_id, successor.run_id) from exc
             if current.current_revision != previous.generation:
                 current_state = self.load(successor.run_id)
                 operation_kind = next(
@@ -676,6 +719,10 @@ class DurableBudgetStore:
                     request_sha256=request_sha256,
                 )
                 if replay is not None:
+                    self._commit_monotonic_observation(
+                        successor.run_id,
+                        monotonic_observation_ns,
+                    )
                     return replay
                 raise _failure(
                     DurableFailureCode.CAS_CONFLICT,
@@ -699,7 +746,7 @@ class DurableBudgetStore:
         try:
             outcome = self.revisions.publish(request)
         except RunStorageError as exc:
-            raise self._map_storage_error(exc, operation_id) from exc
+            raise self._map_storage_error(exc, operation_id, successor.run_id) from exc
         if outcome.outcome_kind != "published":
             current_state = self.load(successor.run_id)
             replay = self._existing_operation(
@@ -716,8 +763,12 @@ class DurableBudgetStore:
                     operation_id=operation_id,
                     reconciliation_required=True,
                 )
+            self._commit_monotonic_observation(
+                successor.run_id,
+                monotonic_observation_ns,
+            )
             return _replace(replay, storage_outcome=outcome.outcome_kind)
-        return DurableMutationResultV1(
+        result = DurableMutationResultV1(
             status=MutationStatus.APPLIED,
             operation_id=operation_id,
             operation_request_sha256=request_sha256,
@@ -725,6 +776,11 @@ class DurableBudgetStore:
             storage_outcome=outcome.outcome_kind,
             state=successor,
         )
+        self._commit_monotonic_observation(
+            successor.run_id,
+            monotonic_observation_ns,
+        )
+        return result
 
     def create(
         self,
@@ -733,7 +789,7 @@ class DurableBudgetStore:
         *,
         operation_id: str,
     ) -> DurableMutationResultV1:
-        self._observe_monotonic(operation_id)
+        observed, _elapsed = self._observe_monotonic(run_id, operation_id)
         request_sha256 = canonical_durable_sha256(
             {
                 "kind": OperationKind.INITIALIZE.value,
@@ -798,6 +854,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=run_id,
+            monotonic_observation_ns=observed,
         )
 
     def _resource_limits(self, policy: BudgetPolicyV2) -> dict[str, int]:
@@ -950,7 +1007,7 @@ class DurableBudgetStore:
         reservation: ResourceReservationV1,
         lineage: ExecutionLineageV1,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         request_payload = {
             "kind": OperationKind.RESERVE.value,
@@ -1019,6 +1076,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=permit_id,
+            monotonic_observation_ns=_observed,
         )
 
     def start(
@@ -1028,7 +1086,7 @@ class DurableBudgetStore:
         operation_id: str,
         permit_id: str,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1093,6 +1151,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=permit_id,
+            monotonic_observation_ns=_observed,
         )
 
     def _released(
@@ -1129,7 +1188,7 @@ class DurableBudgetStore:
         external_cost_actual_authenticated: bool = False,
         observed_peak_concurrency: int | None = None,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         if not isinstance(external_cost_actual_authenticated, bool):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
@@ -1337,6 +1396,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=settlement_id,
+            monotonic_observation_ns=_observed,
         )
 
     def release_no_effect(
@@ -1348,7 +1408,7 @@ class DurableBudgetStore:
         permit_id: str,
         evidence_sha256: str,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1423,6 +1483,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=settlement_id,
+            monotonic_observation_ns=_observed,
         )
 
     def request_cancellation(
@@ -1432,7 +1493,7 @@ class DurableBudgetStore:
         operation_id: str,
         permit_id: str,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1495,6 +1556,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=permit_id,
+            monotonic_observation_ns=_observed,
         )
 
     def record_cancellation(
@@ -1507,7 +1569,7 @@ class DurableBudgetStore:
         evidence_sha256: str | None,
         worker_live: bool,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         request_sha256 = canonical_durable_sha256(
             {
@@ -1624,6 +1686,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=permit_id,
+            monotonic_observation_ns=_observed,
         )
 
     def tighten_policy(
@@ -1634,7 +1697,7 @@ class DurableBudgetStore:
         new_policy: DurableBudgetPolicyV1,
         reason_sha256: str,
     ) -> DurableMutationResultV1:
-        _observed, elapsed = self._observe_monotonic(operation_id)
+        _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
         if not isinstance(reason_sha256, str) or not _SHA256.fullmatch(reason_sha256):
             raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
@@ -1733,6 +1796,7 @@ class DurableBudgetStore:
             operation_id=operation_id,
             request_sha256=request_sha256,
             subject_id=run_id,
+            monotonic_observation_ns=_observed,
         )
 
 

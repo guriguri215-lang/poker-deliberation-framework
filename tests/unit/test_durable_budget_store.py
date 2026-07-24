@@ -194,9 +194,9 @@ def test_reserve_start_settle_and_exact_replay_survive_restart(
 
     assert settled.state.usage.run_bytes == 80
     assert settled.state.usage.peak_concurrency == 1
-    assert settled.state.usage.active_runtime_ns == 30
-    assert settled.state.settlements[0].actual.active_runtime_ns == 20
-    assert settled.state.settlements[0].settled_active_runtime_ns == 30
+    assert settled.state.usage.active_runtime_ns == 40
+    assert settled.state.settlements[0].actual.active_runtime_ns == 30
+    assert settled.state.settlements[0].settled_active_runtime_ns == 40
     assert not settled.state.active_permits
     assert settle_replay.status is MutationStatus.EXACT_REPLAY
     assert store.load("Run-budget-store") == settled.state
@@ -224,6 +224,79 @@ def test_operation_key_reuse_with_different_bytes_is_a_conflict(
         )
     assert conflict.value.failure.code is DurableFailureCode.IDEMPOTENCY_CONFLICT
     assert len(store.load("Run-budget-store").active_permits) == 1
+
+
+def test_mutation_zero_refusals_do_not_reset_active_runtime_baseline(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+
+    for operation_id in ("invalid-start-1", "invalid-start-2"):
+        with pytest.raises(DurableBudgetError):
+            store.start(
+                "Run-budget-store",
+                operation_id=operation_id,
+                permit_id="missing-permit",
+            )
+
+    admitted = store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-after-refusals",
+        permit_id="permit-after-refusals",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+
+    assert admitted.state.usage.active_runtime_ns == 30
+    assert admitted.state.active_permits[0].reserved_active_runtime_ns == 30
+
+
+def test_clock_rollback_is_detected_against_an_uncommitted_observation(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    observations = iter((150, 140))
+    store.clock = lambda: next(observations)
+
+    with pytest.raises(DurableBudgetError):
+        store.start(
+            "Run-budget-store",
+            operation_id="invalid-before-rollback",
+            permit_id="missing-permit",
+        )
+    with pytest.raises(DurableBudgetError) as rollback:
+        store.start(
+            "Run-budget-store",
+            operation_id="rollback-after-refusal",
+            permit_id="missing-permit",
+        )
+
+    assert rollback.value.failure.code is DurableFailureCode.CLOCK_ROLLBACK
+    assert rollback.value.failure.observed == 10
+    assert store.load("Run-budget-store").generation == 1
+
+
+def test_active_runtime_baselines_are_isolated_by_run(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.create(
+        "Run-budget-store-other",
+        _policy(),
+        operation_id="initialize-other",
+    )
+
+    admitted = store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-after-other-run",
+        permit_id="permit-after-other-run",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+
+    assert admitted.state.usage.active_runtime_ns == 20
+    assert admitted.state.active_permits[0].reserved_active_runtime_ns == 20
+    assert store.load("Run-budget-store-other").usage.active_runtime_ns == 0
 
 
 def test_no_effect_release_is_explicit_and_started_resume_fails_closed(

@@ -15,6 +15,7 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from poker_deliberation.budgets.contracts import BudgetPolicyV2, ExecutionClass
+from poker_deliberation.budgets.retry import FailureCategory
 
 DURABLE_BUDGET_SCHEMA_VERSION: Final[Literal["1.0.0"]] = "1.0.0"
 DURABLE_BUDGET_ARTIFACT_SCHEMA: Final[Literal["poker-durable-budget-state-artifact-v1"]] = (
@@ -401,7 +402,7 @@ class AttemptRecordV1(_DurableModel):
     permit_id: str
     lineage: ExecutionLineageV1
     status: AttemptStatus
-    failure_category: str | None = Field(default=None, min_length=1, max_length=64)
+    failure_category: FailureCategory | None = None
     effect_evidence_sha256: str | None = None
 
     _permit_id = field_validator("permit_id")(_validate_identifier)

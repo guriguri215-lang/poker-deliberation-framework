@@ -330,6 +330,22 @@ def test_policy_change_can_only_tighten_above_used_and_reserved(
         reason_sha256="f" * 64,
     )
     assert tightened.state.policy.activation.max_concurrent_agents == 1
+    replay = store.tighten_policy(
+        "Run-budget-store",
+        operation_id="tighten-1",
+        new_policy=_policy(max_concurrency=1, max_run_bytes=15_000),
+        reason_sha256="f" * 64,
+    )
+    assert replay.status is MutationStatus.EXACT_REPLAY
+
+    with pytest.raises(DurableBudgetError) as invalid_reason:
+        store.tighten_policy(
+            "Run-budget-store",
+            operation_id="tighten-invalid-reason",
+            new_policy=_policy(max_concurrency=1, max_run_bytes=14_000),
+            reason_sha256="not-a-sha256",
+        )
+    assert invalid_reason.value.failure.code is DurableFailureCode.INVALID_INPUT
 
     with pytest.raises(DurableBudgetError) as loosened:
         store.tighten_policy(
@@ -378,6 +394,92 @@ def test_cancellation_before_start_blocks_start_and_ack_is_not_settlement(
     assert acknowledged.state.settlements == ()
     assert acknowledged.state.active_permits[0].permit_id == "permit-cancel"
     assert acknowledged.state.cancellations[0].state is CancellationState.ACKNOWLEDGED
+
+
+def test_live_cancel_request_cannot_release_a_started_permit(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-live-cancel",
+        permit_id="permit-live-cancel",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    store.start(
+        "Run-budget-store",
+        operation_id="start-live-cancel",
+        permit_id="permit-live-cancel",
+    )
+    requested = store.request_cancellation(
+        "Run-budget-store",
+        operation_id="request-live-cancel",
+        permit_id="permit-live-cancel",
+    )
+
+    with pytest.raises(DurableBudgetError) as blocked:
+        store.settle(
+            "Run-budget-store",
+            operation_id="settle-live-cancel",
+            settlement_id="settlement-live-cancel",
+            permit_id="permit-live-cancel",
+            actual=ResourceAmountsV1(concurrency_slots=1),
+            status=SettlementStatus.EFFECT_UNKNOWN,
+            effect_evidence_sha256="b" * 64,
+        )
+
+    assert blocked.value.failure.code is DurableFailureCode.CANCEL_UNCONFIRMED
+    state = store.load("Run-budget-store")
+    assert state.generation == requested.state.generation
+    assert state.active_permits[0].permit_id == "permit-live-cancel"
+    assert state.settlements == ()
+
+
+def test_settlement_rejects_non_boolean_authentication_flag(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-auth-type",
+        permit_id="permit-auth-type",
+        reservation=_reservation(),
+        lineage=_lineage(),
+    )
+    started = store.start(
+        "Run-budget-store",
+        operation_id="start-auth-type",
+        permit_id="permit-auth-type",
+    )
+
+    with pytest.raises(DurableBudgetError) as blocked:
+        store.settle(
+            "Run-budget-store",
+            operation_id="settle-auth-type",
+            settlement_id="settlement-auth-type",
+            permit_id="permit-auth-type",
+            actual=ResourceAmountsV1(concurrency_slots=1),
+            status=SettlementStatus.FAILED,
+            external_cost_actual_authenticated=1,  # type: ignore[arg-type]
+        )
+
+    assert blocked.value.failure.code is DurableFailureCode.INVALID_INPUT
+    assert store.load("Run-budget-store").generation == started.state.generation
+
+    with pytest.raises(DurableBudgetError) as invalid_category:
+        store.settle(
+            "Run-budget-store",
+            operation_id="settle-failure-category-type",
+            settlement_id="settlement-failure-category-type",
+            permit_id="permit-auth-type",
+            actual=ResourceAmountsV1(concurrency_slots=1),
+            status=SettlementStatus.FAILED,
+            failure_category="invented-category",  # type: ignore[arg-type]
+        )
+
+    assert invalid_category.value.failure.code is DurableFailureCode.INVALID_INPUT
+    assert store.load("Run-budget-store").generation == started.state.generation
 
 
 def test_committed_settlement_remains_authoritative_over_late_cancel(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from itertools import pairwise
@@ -42,6 +43,7 @@ from poker_deliberation.budgets.durable_models import (
     SettlementStatus,
     canonical_durable_sha256,
 )
+from poker_deliberation.budgets.retry import FailureCategory
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     ClassificationEvidence,
@@ -68,6 +70,7 @@ from poker_deliberation.storage.revision_store import (
 WallClock = Callable[[], datetime]
 MonotonicClock = Callable[[], int]
 T = TypeVar("T", bound=BaseModel)
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _wall_clock() -> datetime:
@@ -1121,13 +1124,17 @@ class DurableBudgetStore:
         result_sha256: str | None = None,
         effect_evidence_sha256: str | None = None,
         cancellation_evidence_sha256: str | None = None,
-        failure_category: str | None = None,
+        failure_category: FailureCategory | None = None,
         deterministic_tool_evidence: DeterministicToolEvidenceV1 | None = None,
         external_cost_actual_authenticated: bool = False,
         observed_peak_concurrency: int | None = None,
     ) -> DurableMutationResultV1:
         _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
+        if not isinstance(external_cost_actual_authenticated, bool):
+            raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
+        if failure_category is not None and not isinstance(failure_category, FailureCategory):
+            raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
         request_payload = {
             "kind": OperationKind.SETTLE.value,
             "settlement_id": settlement_id,
@@ -1137,7 +1144,7 @@ class DurableBudgetStore:
             "result_sha256": result_sha256,
             "effect_evidence_sha256": effect_evidence_sha256,
             "cancellation_evidence_sha256": cancellation_evidence_sha256,
-            "failure_category": failure_category,
+            "failure_category": (None if failure_category is None else failure_category.value),
             "deterministic_tool_evidence": (
                 None
                 if deterministic_tool_evidence is None
@@ -1181,6 +1188,14 @@ class DurableBudgetStore:
             None,
         )
         if cancellation is not None:
+            if cancellation.worker_live or cancellation.state in {
+                CancellationState.REQUESTED,
+                CancellationState.UNCONFIRMED,
+            }:
+                raise _failure(
+                    DurableFailureCode.CANCEL_UNCONFIRMED,
+                    operation_id=operation_id,
+                )
             if cancellation.state in {
                 CancellationState.ACKNOWLEDGED,
                 CancellationState.CANCELLED,
@@ -1194,12 +1209,7 @@ class DurableBudgetStore:
                     operation_id=operation_id,
                 )
             if (
-                cancellation.state
-                in {
-                    CancellationState.REQUESTED,
-                    CancellationState.UNCONFIRMED,
-                    CancellationState.EFFECT_UNKNOWN,
-                }
+                cancellation.state is CancellationState.EFFECT_UNKNOWN
                 and status is not SettlementStatus.EFFECT_UNKNOWN
             ):
                 raise _failure(
@@ -1624,10 +1634,11 @@ class DurableBudgetStore:
     ) -> DurableMutationResultV1:
         _observed, elapsed = self._observe_monotonic(operation_id)
         state = self.load(run_id)
+        if not isinstance(reason_sha256, str) or not _SHA256.fullmatch(reason_sha256):
+            raise _failure(DurableFailureCode.INVALID_INPUT, operation_id=operation_id)
         request_sha256 = canonical_durable_sha256(
             {
                 "kind": OperationKind.TIGHTEN_POLICY.value,
-                "old_policy_sha256": state.policy.canonical_sha256,
                 "new_policy": new_policy.model_dump(mode="json"),
                 "reason_sha256": reason_sha256,
             }

@@ -548,9 +548,7 @@ class DurableBoundedExecutor:
             result_sha256=result.result_sha256,
             effect_evidence_sha256=result.effect_evidence_sha256,
             cancellation_evidence_sha256=result.cancellation_evidence_sha256,
-            failure_category=(
-                None if result.failure_category is None else result.failure_category.value
-            ),
+            failure_category=result.failure_category,
             deterministic_tool_evidence=result.deterministic_tool_evidence,
             external_cost_actual_authenticated=(result.external_cost_actual_authenticated),
             observed_peak_concurrency=observed_peak,
@@ -613,9 +611,7 @@ class DurableBoundedExecutor:
                     result_sha256=settlement.result_sha256,
                     effect_evidence_sha256=settlement.effect_evidence_sha256,
                     failure_category=(
-                        None
-                        if attempt.failure_category is None
-                        else FailureCategory(attempt.failure_category)
+                        None if attempt.failure_category is None else attempt.failure_category
                     ),
                 )
             )

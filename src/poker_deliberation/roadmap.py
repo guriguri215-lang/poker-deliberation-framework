@@ -33,6 +33,12 @@ APPROVAL_PROJECTION_CORRECTIONS = {
         "63f0bae2b1e49a2c5ea7558d166a463ff4f1e9169b977e5968fdf0fb6f5e0f9e",
     )
 }
+APPROVAL_SCOPE_REVISIONS = {
+    (
+        "goal-rm010-p2-010b-2026-07-24",
+        "goal-rm010-p2-010b-scope-revision-1-2026-07-24",
+    )
+}
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
 MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
@@ -350,6 +356,40 @@ def _evidence_is_contract_bound(reference: str, declared: list[str]) -> bool:
         if path == declaration or path.startswith(f"{declaration}/"):
             return True
     return False
+
+
+def _is_explicit_scope_revision(
+    old_reference: str,
+    old_record: dict[str, Any],
+    new_reference: str,
+    new_record: dict[str, Any],
+) -> bool:
+    """Recognize the one explicitly approved semantic P2-010B scope revision."""
+
+    if (
+        (old_reference, new_reference) not in APPROVAL_SCOPE_REVISIONS
+        or new_record.get("source_label")
+        != "explicit human reapproval of revised P2-010B exact scope"
+        or "scope" not in old_record
+        or "scope" not in new_record
+    ):
+        return False
+    old_scope = _require_dict(old_record["scope"], f"{old_reference}.scope")
+    new_scope = _require_dict(new_record["scope"], f"{new_reference}.scope")
+    if old_scope == new_scope:
+        return False
+    for field in (
+        "schema_version",
+        "rm_id",
+        "milestone_contract",
+        "item_contract",
+    ):
+        if new_scope.get(field) != old_scope.get(field):
+            return False
+    return (
+        old_scope.get("schema_version") == APPROVAL_SCOPE_SCHEMA_VERSION
+        and new_scope.get("schema_version") == APPROVAL_SCOPE_SCHEMA_VERSION
+    )
 
 
 def load_roadmap() -> dict[str, Any]:
@@ -904,17 +944,31 @@ def validate_roadmap_update(
     new_bindings = _milestone_approval_map(current, current_items, new_milestones, new_records)
     for milestone_id, old_reference in old_bindings.items():
         new_reference = new_bindings[milestone_id]
+        scope_revision = (
+            isinstance(old_reference, str)
+            and isinstance(new_reference, str)
+            and new_reference in appended_records
+            and _is_explicit_scope_revision(
+                old_reference,
+                _require_dict(old_records[old_reference], old_reference),
+                new_reference,
+                _require_dict(new_records[new_reference], new_reference),
+            )
+        )
         if (
             old_reference is not None
             and new_reference != old_reference
             and (
                 not isinstance(new_reference, str)
                 or new_reference not in appended_records
-                or not _is_projection_correction(
-                    old_reference,
-                    _require_dict(old_records[old_reference], old_reference),
-                    new_reference,
-                    _require_dict(new_records[new_reference], new_reference),
+                or (
+                    not _is_projection_correction(
+                        old_reference,
+                        _require_dict(old_records[old_reference], old_reference),
+                        new_reference,
+                        _require_dict(new_records[new_reference], new_reference),
+                    )
+                    and not scope_revision
                 )
             )
         ):
@@ -925,6 +979,11 @@ def validate_roadmap_update(
             and new_reference not in appended_records
         ):
             raise ValueError(f"milestone approval was not appended with binding: {milestone_id}")
+        if scope_revision and (
+            _require_dict(previous["milestone_progress"], "milestone_progress")[milestone_id]
+            != _require_dict(current["milestone_progress"], "milestone_progress")[milestone_id]
+        ):
+            raise ValueError(f"scope revision changed milestone progress: {milestone_id}")
 
     for rm_id in sorted(EXPECTED_RM_IDS):
         changed_contract_fields = {
@@ -1356,6 +1415,15 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
                 "新しいcommit/test/artifact evidenceを要求します。"
                 "scope変更はschema amendmentを要します。`superseded`はgovernance amendmentなしには"
                 "terminalです。"
+            ),
+            "",
+            (
+                "The only semantic scoped reapproval admitted by this governance version is "
+                "`goal-rm010-p2-010b-2026-07-24` -> "
+                "`goal-rm010-p2-010b-scope-revision-1-2026-07-24`. "
+                "The prior record remains immutable, the replacement must be newly appended "
+                "with its exact explicit-human-reapproval label and valid full-scope digest, "
+                "and the binding commit may not change P2-010B progress or evidence."
             ),
             "",
             "## Phase 2 implementation milestones",

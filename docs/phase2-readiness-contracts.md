@@ -716,6 +716,17 @@ tracked repository path、cited commit tree、changed path、append-only history
 targets/tests labelへ実在pathをprefix-bindして代用しない。entry milestoneとcompletion milestoneが同一の
 RM、およびsplitを持たないcompleted RMの既存binding ruleは変更しない。
 
+## P2-010B bounded scoped reapproval
+
+The append-only approval history admits exactly one semantic scoped reapproval:
+`goal-rm010-p2-010b-2026-07-24` to
+`goal-rm010-p2-010b-scope-revision-1-2026-07-24`. The old record remains
+unchanged. The new record must use the exact explicit-human-reapproval source
+label, carry a digest-valid full scope, preserve the scope schema, RM,
+milestone contract, and item contract, and be appended with the milestone
+binding change. That binding commit cannot change P2-010B state, history, or
+completion evidence. No other semantic reapproval pair is admitted.
+
 ## P2-012A completion boundary
 
 P2-012A の完了条件は、専用 root、strict nonterminal schema/canonical bytes、typed provenance、

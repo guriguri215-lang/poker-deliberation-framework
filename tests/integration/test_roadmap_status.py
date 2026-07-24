@@ -444,7 +444,8 @@ def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
     assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
     assert document["milestone_approvals"]["P2-010A"] == p2_010a_reference
     assert document["milestone_approvals"]["P2-010B"] == p2_010b_reference
-    assert "P2-010B" in roadmap_summary(document)["milestone_ready_ids"]
+    assert document["milestone_progress"]["P2-010B"]["state"] == "in_progress"
+    assert "P2-010B" not in roadmap_summary(document)["milestone_ready_ids"]
 
     digest_mismatch = deepcopy(document)
     item = next(item for item in digest_mismatch["items"] if item["id"] == "RM-010")
@@ -459,9 +460,6 @@ def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
 
     activated = deepcopy(document)
     activated["milestone_approvals"]["P2-010B"] = None
-    progress = activated["milestone_progress"]["P2-010B"]
-    progress["state"] = "in_progress"
-    progress["history"].append("in_progress")
     with pytest.raises(ValueError, match="active milestone lacks scoped approval"):
         validate_roadmap(activated)
 
@@ -484,6 +482,11 @@ def test_milestone_approval_binding_is_append_only() -> None:
 def test_scoped_approval_projection_correction_is_strict_and_append_only() -> None:
     current = deepcopy(load_roadmap())
     current["milestone_progress"]["P2-012A"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+    current["milestone_progress"]["P2-010B"] = {
         "state": "not_started",
         "history": ["not_started"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
@@ -770,6 +773,11 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         "history": ["not_started"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
     }
+    pending_item["milestone_progress"]["P2-010B"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
     with pytest.raises(ValueError, match="in-progress RM lacks active milestone"):
         validate_roadmap(pending_item)
 
@@ -904,9 +912,10 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 5,
-        "not_started": 7,
+        "in_progress": 1,
+        "not_started": 6,
     }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == ["P2-010B"]
+    assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []
     assert doctor()["project_files_scope"] == "current_working_directory"
     assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)

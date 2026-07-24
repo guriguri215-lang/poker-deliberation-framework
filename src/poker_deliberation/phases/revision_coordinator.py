@@ -140,14 +140,19 @@ _UNEXPLOITABLE_CLAIM = re.compile(
     r"(?:impossible|immune|invulnerable|proof)\s+"
     r"(?:to|against)\s+(?:every\s+)?exploit(?:ation)?|"
     r"exploit(?:ation)?[\s_-]+proof|"
+    r"free\s+from\s+exploit(?:ation)?|"
+    r"not\s+(?:susceptible|vulnerable)\s+to\s+exploit(?:ation)?|"
     r"no\b[^.!?]*\bexploit\b[^.!?]*\b(?:exists?|possible)|"
+    r"no\s+(?:room|opportunity|scope)\s+for\s+exploit(?:ation)?|"
     r"resists?\s+(?:all|any|every)\s+exploits?)"
     r"(?![A-Za-z0-9])|"
     r"\u643e\u53d6(?:\u3055\u308c\u306a\u3044|\u3067\u304d\u306a\u3044|"
     r"(?:\u4e0d\u80fd|\u4e0d\u53ef\u80fd)|"
     r"\u3059\u308b\u3053\u3068\u306f(?:\u4e0d\u53ef\u80fd|\u3067\u304d\u306a\u3044)|"
     r"\u306b\u5bfe\u3057\u3066(?:\u7121\u6575|\u514d\u75ab)|"
-    r"\u304c\u5b58\u5728\u3057\u306a\u3044)",
+    r"\u304c\u5b58\u5728\u3057\u306a\u3044|"
+    r"\u306e\u4f59\u5730\u304c\u306a\u3044|"
+    r"\u3055\u308c\u308b\u53ef\u80fd\u6027\u304c\u306a\u3044)",
     re.IGNORECASE,
 )
 _EXACT_CLAIM_TOKEN = re.compile(
@@ -204,9 +209,9 @@ _SOLUTION_CLAIM_TOKEN = re.compile(
 _PARALLEL_CLAIM_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?:parallel(?:ism)?|simultaneous(?:ly)?|concurren(?:cy|t|tly)|"
-    r"non[\s_-]+serial)"
+    r"non[\s_-]+serial|at\s+(?:the\s+)?same\s+time|at\s+once)"
     r"(?![A-Za-z0-9])|"
-    r"(?:\u4e26\u5217|\u540c\u6642\u5b9f\u884c|\u975e\u76f4\u5217)",
+    r"(?:\u4e26\u5217|\u540c\u6642\u5b9f\u884c|\u540c\u6642|\u975e\u76f4\u5217)",
     re.IGNORECASE,
 )
 _PARALLEL_FRAMEWORK_SUBJECT_TOKEN = re.compile(
@@ -226,24 +231,32 @@ _PEAK_CLAIM_TOKEN = re.compile(
 )
 _RETRY_CLAIM_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])"
-    r"(?:retr(?:y|ies|ied)|re[\s_-]*execut(?:e|ed|es|ing|ion))"
+    r"(?:retr(?:y|ies|ied)|re[\s_-]*execut(?:e|ed|es|ing|ion)|"
+    r"attempt(?:ed|s|ing)?\s+again|repeat(?:ed|s|ing)?|reran)"
     r"(?![A-Za-z0-9])|"
     r"(?:\u518d\u8a66\u884c|\u30ea\u30c8\u30e9\u30a4|\u518d\u5b9f\u884c)",
     re.IGNORECASE,
 )
 _AUTOMATIC_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])automatic(?:ally)?(?![A-Za-z0-9])|\u81ea\u52d5",
+    r"(?<![A-Za-z0-9])"
+    r"(?:automatic(?:ally)?|unattended|without\s+human\s+"
+    r"(?:intervention|approval))"
+    r"(?![A-Za-z0-9])|\u81ea\u52d5|\u4eba\u624b\u306a\u3057",
     re.IGNORECASE,
 )
 _CANCELLATION_CLAIM_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])cancel(?:lation|led|ed|s|ing)?(?![A-Za-z0-9])|"
-    r"(?:\u30ad\u30e3\u30f3\u30bb\u30eb|\u53d6\u6d88)",
+    r"(?<![A-Za-z0-9])(?:stop|abort|termination)\s+signal(?![A-Za-z0-9])|"
+    r"(?:\u30ad\u30e3\u30f3\u30bb\u30eb|\u53d6\u6d88|\u505c\u6b62\u4fe1\u53f7)",
     re.IGNORECASE,
 )
 _CANCELLATION_PROPAGATION_TOKEN = re.compile(
     r"(?<![A-Za-z0-9])"
     r"(?:fan[\s_-]*out|propagat(?:e|ed|es|ing|ion)|broadcast(?:s|ed|ing)?)"
     r"(?![A-Za-z0-9])|"
+    r"(?<![A-Za-z0-9])"
+    r"(?:reach(?:ed|es|ing)?|sent\s+to)\s+(?:all|every)\s+"
+    r"(?:agents?|workers?)(?![A-Za-z0-9])|"
     r"(?:\u30d5\u30a1\u30f3\u30a2\u30a6\u30c8|\u4f1d\u64ad|\u914d\u4fe1|"
     r"\u5168\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8)",
     re.IGNORECASE,

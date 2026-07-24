@@ -33,6 +33,7 @@ from poker_deliberation.phases.contracts import (
     PhaseOutcome,
     PhaseRequest,
     PhaseStatus,
+    make_phase_request,
     revalidate_outcome,
     revalidate_request,
 )
@@ -44,6 +45,7 @@ from poker_deliberation.phases.executors import (
     validate_tool_research_output,
 )
 from poker_deliberation.phases.models import (
+    AdjudicationInput,
     AnalysisInput,
     AnalysisOutput,
     ContextBuildInput,
@@ -53,7 +55,11 @@ from poker_deliberation.phases.models import (
     ToolResearchInput,
     ToolResearchOutput,
 )
-from poker_deliberation.phases.services import ContextBuildService, SynthesisService
+from poker_deliberation.phases.services import (
+    AdjudicationService,
+    ContextBuildService,
+    SynthesisService,
+)
 from poker_deliberation.schemas import (
     Claim,
     EpistemicLabel,
@@ -97,6 +103,7 @@ COORDINATOR_PRODUCER_ID = "p2-010b-phase-revision"
 COORDINATOR_PRODUCER_VERSION = "0.2.0"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_CLAIM_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _SECRET_KEY = re.compile(
     r"api[-_]?key|authorization|bearer|cookie|password|passwd|secret|token|"
     r"private[-_]?key|client[-_]?(?:secret|credential)|credential",
@@ -116,150 +123,13 @@ _SECRET_VALUE = re.compile(
     r"\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{12,})",
     re.IGNORECASE,
 )
-_GTO_CLAIM_PATTERN = (
-    r"(?<![A-Za-z0-9])(?:gto|"
-    r"game(?:[\s_-]+)theor(?:y|etical(?:ly)?)(?:[\s_-]+)optimal)"
-    r"(?![A-Za-z0-9])"
-)
-_RESTRICTED_SOLVER_TERM_PATTERN = (
-    rf"{_GTO_CLAIM_PATTERN}|"
-    r"(?<![A-Za-z0-9])"
-    r"(?:equilibriums?|equilibria|nash|exploitabilit(?:y|ies)|"
-    r"(?:un)?exploitable)"
-    r"(?![A-Za-z0-9])|"
-    r"\u5747\u8861|\u30ca\u30c3\u30b7\u30e5|\u643e\u53d6\u53ef\u80fd\u6027"
-)
-_RESTRICTED_SOLVER_TERM = re.compile(
-    _RESTRICTED_SOLVER_TERM_PATTERN,
-    re.IGNORECASE,
-)
-_UNEXPLOITABLE_CLAIM = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:(?:cannot|can't|can\s+not)\s+be\s+exploited|"
-    r"no\b[^.!?]*\bcan\s+exploit|"
-    r"(?:impossible|immune|invulnerable|proof)\s+"
-    r"(?:to|against)\s+(?:every\s+)?exploit(?:ation)?|"
-    r"exploit(?:ation)?[\s_-]+proof|"
-    r"free\s+from\s+exploit(?:ation)?|"
-    r"not\s+(?:susceptible|vulnerable)\s+to\s+exploit(?:ation)?|"
-    r"no\b[^.!?]*\bexploit\b[^.!?]*\b(?:exists?|possible)|"
-    r"no\s+(?:room|opportunity|scope)\s+for\s+exploit(?:ation)?|"
-    r"resists?\s+(?:all|any|every)\s+exploits?)"
-    r"(?![A-Za-z0-9])|"
-    r"\u643e\u53d6(?:\u3055\u308c\u306a\u3044|\u3067\u304d\u306a\u3044|"
-    r"(?:\u4e0d\u80fd|\u4e0d\u53ef\u80fd)|"
-    r"\u3059\u308b\u3053\u3068\u306f(?:\u4e0d\u53ef\u80fd|\u3067\u304d\u306a\u3044)|"
-    r"\u306b\u5bfe\u3057\u3066(?:\u7121\u6575|\u514d\u75ab)|"
-    r"\u304c\u5b58\u5728\u3057\u306a\u3044|"
-    r"\u306e\u4f59\u5730\u304c\u306a\u3044|"
-    r"\u3055\u308c\u308b\u53ef\u80fd\u6027\u304c\u306a\u3044)",
-    re.IGNORECASE,
-)
-_EXACT_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?:exact(?:ly|ness)?|precis(?:e|ely|ion))"
-    r"(?![A-Za-z0-9])|"
-    r"\u6b63\u78ba|\u53b3\u5bc6",
-    re.IGNORECASE,
-)
-_RANGE_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])ranges?(?![A-Za-z0-9])|\u30ec\u30f3\u30b8",
-    re.IGNORECASE,
-)
-_GTO_CLAIM_TOKEN = re.compile(_GTO_CLAIM_PATTERN, re.IGNORECASE)
-_GAME_THEORY_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])game(?:[\s_-]+)theor(?:y|etical(?:ly)?)(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-_OPTIMAL_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?:optimal(?:ity|ly)?|optimum)(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-_RESTRICTED_SOLVER_LABELS = frozenset(
+_AUTHORITATIVE_CLAIM_LABELS = frozenset(
     {
         EpistemicLabel.FACT,
         EpistemicLabel.CALCULATED,
         EpistemicLabel.INFERENCE,
         EpistemicLabel.ESTIMATE,
     }
-)
-_SOLVER_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])solver(?![A-Za-z0-9])|\u30bd\u30eb\u30d0\u30fc",
-    re.IGNORECASE,
-)
-_PIO_SOLVER_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])pio[\s_-]*solver(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-_NLHE_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])nlhe(?![A-Za-z0-9])",
-    re.IGNORECASE,
-)
-_COMPLETE_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])(?:full(?:y)?|complet(?:e|ed|ely))(?![A-Za-z0-9])|"
-    r"(?:\u5168\u4f53|\u5b8c\u5168)",
-    re.IGNORECASE,
-)
-_SOLUTION_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:solution|solv(?:e|ed|es|ing)|comput(?:e|ed|es|ing))"
-    r"(?![A-Za-z0-9])|"
-    r"(?:\u89e3\u3044\u305f|\u89e3\u304f|\u89e3\u6c7a|\u8a08\u7b97)",
-    re.IGNORECASE,
-)
-_PARALLEL_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:parallel(?:ism)?|simultaneous(?:ly)?|concurren(?:cy|t|tly)|"
-    r"non[\s_-]+serial|at\s+(?:the\s+)?same\s+time|at\s+once)"
-    r"(?![A-Za-z0-9])|"
-    r"(?:\u4e26\u5217|\u540c\u6642\u5b9f\u884c|\u540c\u6642|\u975e\u76f4\u5217)",
-    re.IGNORECASE,
-)
-_PARALLEL_FRAMEWORK_SUBJECT_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:agents?|workers?|analys(?:is|es)|deliberation|workflows?|phases?|"
-    r"execut(?:e|ed|es|ing|ion)|schedulers?|orchestrat(?:e|ed|es|ing|ion)|"
-    r"tasks?|assignments?|runs?)"
-    r"(?![A-Za-z0-9])|"
-    r"(?:\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8|\u4f5c\u696d\u8005|"
-    r"\u89e3\u6790|\u5206\u6790|\u719f\u8b70|\u30ef\u30fc\u30af\u30d5\u30ed\u30fc|"
-    r"\u30d5\u30a7\u30fc\u30ba|\u5b9f\u884c|\u30bf\u30b9\u30af|\u5272\u5f53|\u30e9\u30f3)",
-    re.IGNORECASE,
-)
-_PEAK_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])peak(?![A-Za-z0-9])|\u30d4\u30fc\u30af|\u6700\u5927",
-    re.IGNORECASE,
-)
-_RETRY_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:retr(?:y|ies|ied)|re[\s_-]*execut(?:e|ed|es|ing|ion)|"
-    r"attempt(?:ed|s|ing)?\s+again|repeat(?:ed|s|ing)?|reran)"
-    r"(?![A-Za-z0-9])|"
-    r"(?:\u518d\u8a66\u884c|\u30ea\u30c8\u30e9\u30a4|\u518d\u5b9f\u884c)",
-    re.IGNORECASE,
-)
-_AUTOMATIC_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:automatic(?:ally)?|unattended|without\s+human\s+"
-    r"(?:intervention|approval))"
-    r"(?![A-Za-z0-9])|\u81ea\u52d5|\u4eba\u624b\u306a\u3057",
-    re.IGNORECASE,
-)
-_CANCELLATION_CLAIM_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])cancel(?:lation|led|ed|s|ing)?(?![A-Za-z0-9])|"
-    r"(?<![A-Za-z0-9])(?:stop|abort|termination)\s+signal(?![A-Za-z0-9])|"
-    r"(?:\u30ad\u30e3\u30f3\u30bb\u30eb|\u53d6\u6d88|\u505c\u6b62\u4fe1\u53f7)",
-    re.IGNORECASE,
-)
-_CANCELLATION_PROPAGATION_TOKEN = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"(?:fan[\s_-]*out|propagat(?:e|ed|es|ing|ion)|broadcast(?:s|ed|ing)?)"
-    r"(?![A-Za-z0-9])|"
-    r"(?<![A-Za-z0-9])"
-    r"(?:reach(?:ed|es|ing)?|sent\s+to)\s+(?:all|every)\s+"
-    r"(?:agents?|workers?)(?![A-Za-z0-9])|"
-    r"(?:\u30d5\u30a1\u30f3\u30a2\u30a6\u30c8|\u4f1d\u64ad|\u914d\u4fe1|"
-    r"\u5168\u30a8\u30fc\u30b8\u30a7\u30f3\u30c8)",
-    re.IGNORECASE,
 )
 _EXPLICIT_CAPABILITY_LIMITATION_PATTERNS = (
     re.compile(
@@ -437,61 +307,6 @@ def _is_explicit_solver_limitation(text: str) -> bool:
     )
 
 
-def _contains_exact_range_claim(text: str) -> bool:
-    normalized = _normalize_claim_text(text)
-    return bool(_EXACT_CLAIM_TOKEN.search(normalized) and _RANGE_CLAIM_TOKEN.search(normalized))
-
-
-def _contains_gto_claim(text: str) -> bool:
-    normalized = _normalize_claim_text(text)
-    return bool(_GTO_CLAIM_TOKEN.search(normalized)) or bool(
-        _GAME_THEORY_CLAIM_TOKEN.search(normalized) and _OPTIMAL_CLAIM_TOKEN.search(normalized)
-    )
-
-
-def _contains_restricted_solver_term(text: str) -> bool:
-    normalized = _normalize_claim_text(text)
-    return (
-        bool(_RESTRICTED_SOLVER_TERM.search(normalized))
-        or bool(_UNEXPLOITABLE_CLAIM.search(normalized))
-        or _contains_gto_claim(normalized)
-        or _contains_exact_range_claim(normalized)
-    )
-
-
-def _contains_unimplemented_capability_claim(text: str) -> bool:
-    normalized = _normalize_claim_text(text)
-    solver_claim = bool(
-        _SOLVER_CLAIM_TOKEN.search(normalized) or _PIO_SOLVER_CLAIM_TOKEN.search(normalized)
-    )
-    parallel_claim = bool(
-        _PARALLEL_CLAIM_TOKEN.search(normalized)
-        and (
-            _PARALLEL_FRAMEWORK_SUBJECT_TOKEN.search(normalized)
-            or _PEAK_CLAIM_TOKEN.search(normalized)
-        )
-    )
-    automatic_retry_claim = bool(
-        _RETRY_CLAIM_TOKEN.search(normalized) and _AUTOMATIC_CLAIM_TOKEN.search(normalized)
-    )
-    cancellation_propagation_claim = bool(
-        _CANCELLATION_CLAIM_TOKEN.search(normalized)
-        and _CANCELLATION_PROPAGATION_TOKEN.search(normalized)
-    )
-    full_nlhe_solution_claim = bool(
-        _NLHE_CLAIM_TOKEN.search(normalized)
-        and _COMPLETE_CLAIM_TOKEN.search(normalized)
-        and _SOLUTION_CLAIM_TOKEN.search(normalized)
-    )
-    return (
-        solver_claim
-        or full_nlhe_solution_claim
-        or parallel_claim
-        or automatic_retry_claim
-        or cancellation_propagation_claim
-    )
-
-
 def _is_explicit_capability_limitation(text: str) -> bool:
     normalized = _normalize_claim_text(text)
     if _ADVERSATIVE_SOLVER_CLAIM.search(normalized):
@@ -508,9 +323,7 @@ def _has_qualified_matrix_evidence(
 ) -> bool:
     normalized_text = _normalize_claim_text(claim.text)
     if (
-        _contains_gto_claim(normalized_text)
-        or _contains_exact_range_claim(normalized_text)
-        or not any(
+        not any(
             pattern.fullmatch(normalized_text) is not None
             for pattern in _QUALIFIED_MATRIX_CLAIM_PATTERNS
         )
@@ -534,20 +347,50 @@ def _has_qualified_matrix_evidence(
     )
 
 
-def _violates_claim_capability_policy(
+def _is_closed_authoritative_exception(
     claim: Claim,
     tool_results: tuple[ToolResult, ...],
 ) -> bool:
-    if claim.label not in _RESTRICTED_SOLVER_LABELS:
+    if claim.label not in _AUTHORITATIVE_CLAIM_LABELS:
         return False
-    if _contains_unimplemented_capability_claim(claim.text) and not (
-        _is_explicit_capability_limitation(claim.text) or _is_explicit_solver_limitation(claim.text)
+    return (
+        _is_explicit_capability_limitation(claim.text)
+        or _is_explicit_solver_limitation(claim.text)
+        or _has_qualified_matrix_evidence(claim, tool_results)
+    )
+
+
+def _claim_assessments_match_structured_sources(
+    synthesis_request: PhaseRequest[SynthesisInput],
+) -> bool:
+    synthesis_input = synthesis_request.input
+    claim_ids = tuple(claim.claim_id for claim in synthesis_input.claim_assessments)
+    if len(claim_ids) != len(set(claim_ids)) or any(
+        _CLAIM_ID.fullmatch(claim_id) is None for claim_id in claim_ids
     ):
-        return True
-    if not _contains_restricted_solver_term(claim.text):
         return False
-    return not _is_explicit_solver_limitation(claim.text) and not _has_qualified_matrix_evidence(
-        claim, tool_results
+    if any(claim.label is not EpistemicLabel.USER_CLAIM for claim in synthesis_input.case.claims):
+        return False
+    replay_request = make_phase_request(
+        run_id=synthesis_request.run_id,
+        phase_id=PhaseId.ADJUDICATION,
+        attempt_id="p2-010b-adjudication-replay",
+        policy_snapshot_hash=synthesis_request.policy_snapshot_hash,
+        input_value=AdjudicationInput(
+            case=synthesis_input.case,
+            tool_results=synthesis_input.tool_results,
+        ),
+    )
+    replay_outcome = AdjudicationService().run(replay_request)
+    if replay_outcome.status is not PhaseStatus.SUCCEEDED or replay_outcome.output is None:
+        return False
+    expected = replay_outcome.output.claim_assessments
+    actual = synthesis_input.claim_assessments
+    if actual[: len(expected)] != expected:
+        return False
+    return all(
+        _is_closed_authoritative_exception(claim, synthesis_input.tool_results)
+        for claim in actual[len(expected) :]
     )
 
 
@@ -1282,10 +1125,7 @@ class PhaseRevisionCoordinator:
             != synthesis_input.execution_records
         ):
             raise ValueError
-        if any(
-            _violates_claim_capability_policy(claim, synthesis_input.tool_results)
-            for claim in synthesis_input.claim_assessments
-        ):
+        if not _claim_assessments_match_structured_sources(synthesis_request):
             raise ValueError
 
         expected_intents = (

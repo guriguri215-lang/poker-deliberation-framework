@@ -35,6 +35,7 @@ from poker_deliberation.phases.contracts import (
 )
 from poker_deliberation.phases.executors import AnalysisExecutor
 from poker_deliberation.phases.models import (
+    AdjudicationInput,
     AnalysisInput,
     AnalysisOutput,
     ContextBuildInput,
@@ -56,8 +57,13 @@ from poker_deliberation.phases.revision_coordinator import (
     PhaseTracePair,
     PhaseTransitionApplyResultV1,
     PhaseTransitionAuthorizationV1,
+    _claim_assessments_match_structured_sources,
 )
-from poker_deliberation.phases.services import ContextBuildService, SynthesisService
+from poker_deliberation.phases.services import (
+    AdjudicationService,
+    ContextBuildService,
+    SynthesisService,
+)
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import (
     CaseInput,
@@ -722,6 +728,121 @@ def test_published_revision_authorizes_exact_orchestrator_transition(
     assert machine.events[-1].reason == "durable synthesis revision committed"
 
 
+def test_structured_user_claim_prefix_is_exact_and_ordered(
+    short_tmp: Path,
+) -> None:
+    _orchestrator, _machine, _coordinator, bundle = build_valid_scenario(short_tmp)
+    original_request = bundle.trace.synthesis.request
+    claims = (
+        Claim(
+            claim_id="user-claim-one",
+            text="Two geometric lines are parallel.",
+            label=EpistemicLabel.USER_CLAIM,
+        ),
+        Claim(
+            claim_id="user-claim-two",
+            text="This line exploits the opponent's folding leak.",
+            label=EpistemicLabel.USER_CLAIM,
+        ),
+    )
+    case = original_request.input.case.model_copy(update={"claims": list(claims)})
+
+    def structured_request(actual: tuple[Claim, ...]):
+        synthesis_input = original_request.input.model_copy(
+            update={
+                "case": case,
+                "claim_assessments": actual,
+            }
+        )
+        return make_phase_request(
+            run_id=original_request.run_id,
+            phase_id=PhaseId.SYNTHESIS,
+            attempt_id=original_request.attempt_id,
+            policy_snapshot_hash=original_request.policy_snapshot_hash,
+            context_ids=original_request.context_ids,
+            input_value=synthesis_input,
+        )
+
+    assert _claim_assessments_match_structured_sources(structured_request(claims))
+    assert not _claim_assessments_match_structured_sources(
+        structured_request(tuple(reversed(claims)))
+    )
+    assert not _claim_assessments_match_structured_sources(
+        structured_request((*claims, claims[-1]))
+    )
+    assert not _claim_assessments_match_structured_sources(
+        structured_request(
+            (
+                claims[0],
+                claims[1].model_copy(update={"text": "altered authoritative text"}),
+            )
+        )
+    )
+
+
+def test_deterministic_adjudication_claim_replay_is_publishable_input(
+    short_tmp: Path,
+) -> None:
+    _orchestrator, _machine, _coordinator, bundle = build_valid_scenario(
+        short_tmp,
+        tool_ordinals=(("pot-odds-result", 0),),
+        tool_name="pot_odds",
+        tool_input={"pot_before_bet": 100, "opponent_bet": 50, "call_cost": 50},
+    )
+    synthesis_request = bundle.trace.synthesis.request
+    user_claim = Claim(
+        claim_id="pot-odds-claim",
+        text="required equity is 0.5",
+        label=EpistemicLabel.USER_CLAIM,
+    )
+    case = synthesis_request.input.case.model_copy(
+        update={
+            "claims": [user_claim],
+            "metadata": {
+                "claim_checks": [
+                    {
+                        "claim_id": user_claim.claim_id,
+                        "tool_name": "pot_odds",
+                        "output_path": "required_equity",
+                        "claimed_value": 0.5,
+                    }
+                ]
+            },
+        }
+    )
+    adjudication_request = make_phase_request(
+        run_id=synthesis_request.run_id,
+        phase_id=PhaseId.ADJUDICATION,
+        attempt_id="test-adjudication-replay",
+        policy_snapshot_hash=synthesis_request.policy_snapshot_hash,
+        input_value=AdjudicationInput(
+            case=case,
+            tool_results=synthesis_request.input.tool_results,
+        ),
+    )
+    adjudication_outcome = AdjudicationService().run(adjudication_request)
+    assert adjudication_outcome.output is not None
+    claims = adjudication_outcome.output.claim_assessments
+    assert claims[-1].label is EpistemicLabel.CALCULATED
+
+    structured_input = synthesis_request.input.model_copy(
+        update={
+            "case": case,
+            "claim_assessments": claims,
+        }
+    )
+    structured_request = make_phase_request(
+        run_id=synthesis_request.run_id,
+        phase_id=PhaseId.SYNTHESIS,
+        attempt_id=synthesis_request.attempt_id,
+        policy_snapshot_hash=synthesis_request.policy_snapshot_hash,
+        context_ids=synthesis_request.context_ids,
+        input_value=structured_input,
+    )
+
+    assert _claim_assessments_match_structured_sources(structured_request)
+
+
 def test_prepare_rejects_non_synthesis_machine_without_mutation(
     short_tmp: Path,
 ) -> None:
@@ -937,6 +1058,12 @@ def test_explicit_no_solver_gto_limitation_remains_publishable(
         "Four agents worked at the same time.",
         "Failed phases were attempted again without human intervention.",
         "A stop signal reached every worker.",
+        "No adversary can gain by countering this strategy.",
+        "No opponent can improve its payoff against this policy.",
+        "どの相手もこの戦略への対抗で利益を得られない。",
+        "Several agents worked side by side.",
+        "The system made a second attempt after failure.",
+        "A shutdown notice was delivered throughout the worker pool.",
         "これはプリフロップレンジである。正確である。",
         "レンジを計算した。結果は厳密である。",
     ),
@@ -1061,7 +1188,7 @@ def test_explicit_unimplemented_capability_limitation_remains_publishable(
         "The concurrent event was unrelated.",
     ),
 )
-def test_nonframework_parallel_vocabulary_remains_publishable(
+def test_unstructured_authoritative_nonframework_claim_is_mutation_zero_invalid_trace(
     short_tmp: Path,
     text: str,
 ) -> None:
@@ -1077,9 +1204,12 @@ def test_nonframework_parallel_vocabulary_remains_publishable(
         ),
     )
 
-    authorization = coordinator.publish(bundle)
+    denied = coordinator.publish(bundle)
 
-    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
 
 
 @pytest.mark.parametrize(
@@ -1100,7 +1230,7 @@ def test_nonframework_parallel_vocabulary_remains_publishable(
         ),
     ),
 )
-def test_active_exploitative_adjustment_claim_remains_publishable(
+def test_unstructured_authoritative_exploit_claim_is_mutation_zero_invalid_trace(
     short_tmp: Path,
     text: str,
     label: EpistemicLabel,
@@ -1117,9 +1247,12 @@ def test_active_exploitative_adjustment_claim_remains_publishable(
         ),
     )
 
-    authorization = coordinator.publish(bundle)
+    denied = coordinator.publish(bundle)
 
-    assert isinstance(authorization, PhaseTransitionAuthorizationV1)
+    assert denied == PhaseRevisionFailureV1(code=PhaseRevisionFailureCode.INVALID_TRACE)
+    assert not (
+        coordinator.store.runs_root / bundle.request.run_id / ".revision-store" / "current.json"
+    ).exists()
 
 
 def test_verified_matrix_equilibrium_claim_requires_exact_tool_result_binding(

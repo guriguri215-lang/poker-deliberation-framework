@@ -5,7 +5,8 @@
 `local_data_policy.py` は strict versioned values、canonical hash、分類、retention、expiry、
 protection、quarantine/disposition candidate、bounded audit metadata を提供する pure domain
 module である。injected UTC clock 以外の effect を持たず、filesystem、RunStore、orchestrator、
-provider、approval ledger、CLI へ接続しない。cleanup executor は P2-027B の別承認対象である。
+provider、approval ledger、CLI へ接続しない。後続 P2-027B はこの pure policy を変更せず、
+別 module と専用 cleanup root に effect 境界を追加する。
 
 ## Components
 
@@ -192,3 +193,23 @@ P2-013A では phase intake が V1 proposal と V2 proposal を version dispatch
 `DecisionAuthorityProvider` は actor の信頼境界、`TerminalRunStore` は per-run authority と CAS の所有者である。pure validation は lookup より前に ledger/log chain 全体を検証する。`UnavailableExternalExecutionBindingProvider` は承認済み request/outcome/authority lineage の一致だけを拘束し、外部 effect は起動しない。
 
 V2 artifact は product manifest と approval lineage commitment に含まれる。既存の V1 `FinalReport.approvals` は authoritative V2 state の projection であり、public schema を拡張しない。
+
+## P2-027B authorized cleanup architecture
+
+`local_data_cleanup.py` は一つの明示 run を対象とする plan/execute/reconcile coordinator、
+`local_data_cleanup_models.py` は strict immutable plan/transaction/manifest/receipt/tombstone、
+`storage/local_data_cleanup_store.py` は専用 cleanup root の CAS と filesystem effect を所有する。
+依存方向は cleanup coordinator → cleanup store → revision/terminal store であり、
+通常 `Orchestrator`、CLI、flat-v1 writer、provider/solver 経路へは注入しない。
+
+第1段階は verified terminal product run を same-volume rename で quarantine し、第2段階は固定30日後、
+別 plan と別 destructive approval を要求して transaction-specific staging から bottom-up unlink する。
+product namespace が detach 済みの間は `RunRevisionStore.acquire_detached_run_authority` が既存
+P2-012A kernel lock を非bootstrappingで取得する。cleanup current は
+`quarantined -> delete_prepared -> deleted` だけを許可し、各 revision は前 revision まで
+current-to-genesis 検証される。
+
+dry-run は effect-free で、実行は exact plan、P2-013A approval evidence、live actor/provider
+authority、source/current/tree identity、same-volume、capacity を lock 内で再検証する。
+不確実な effect は成功へ丸めず、read-only reconciliation に停止する。詳細は
+[`local-data-cleanup.md`](local-data-cleanup.md)を正本とする。

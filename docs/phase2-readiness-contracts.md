@@ -784,3 +784,22 @@ solver、parallel execution、automatic retry、cleanup/release操作は別承�
 **FACT**: P2-013B の request reissue、pre-execution expiry/revocation recheck、完全な resume lifecycle は未実装である。P2-027B、P2-028A、外部 provider/solver、retry/parallel scheduling も有効化しない。
 
 詳細は `docs/approval-authority-contract.md` を正本とする。
+
+## P2-027B 実装境界
+
+**FACT**: P2-027B は P2-027A policy、P2-012B verified terminal run、P2-013A immutable approval
+evidence を入力に、明示1 runの quarantine と固定30日後の別承認 staged delete を行う additive
+Python APIである。通常 Orchestrator、CLI、provider/solver、parallel/retry、P2-013B request
+reissue、P2-028A process isolation は変更しない。
+
+**FACT**: dry-run plan、exact approval binding、same-volume rename、detached-run authority、
+cleanup revision CAS、receipt/tombstone、write-zero replay、read-only reconciliationを実装する。
+secure erase、automatic repair/retry、broad discovery、product namespaceからのdirect deleteは
+実装しない。
+
+**FACT**: candidate implementationが存在しても、targeted/full gate、4観点の独立レビュー、
+append-only roadmap completion evidenceが同じfinal HEADで成功するまでは
+`local_data_cleanup_executor` capabilityをpromoteしない。P2-013BとP2-028Aは
+`not_started`のままとする。
+
+詳細は `docs/local-data-cleanup.md` を正本とする。

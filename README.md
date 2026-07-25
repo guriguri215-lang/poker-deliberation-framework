@@ -12,10 +12,12 @@ RM実装状態の正はpackage resourceとして設定したtracked JSON
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 
 P2-027A は versioned local-data classification/retention/expiry policy と pure disposition
-evaluation を提供します。これは filesystem cleanup ではありません。RunStore・orchestrator・CLI の
-挙動は変更せず、暗号化、scan、quarantine move、delete、secure erase、receipt/tombstone は
-実装していません。詳細は
-[`docs/local-data-policy.md`](docs/local-data-policy.md)を参照してください。
+evaluation を提供します。P2-027B の additive Python API は、明示1 run・verified ownership・
+exact destructive approval・CAS を条件に、same-volume quarantine と30日後の別承認による
+staged delete、receipt/tombstone、read-only reconciliation を提供します。cleanup CLI、
+secure erase、automatic retry は実装しません。詳細は
+[`docs/local-data-policy.md`](docs/local-data-policy.md)と
+[`docs/local-data-cleanup.md`](docs/local-data-cleanup.md)を参照してください。
 source/editable checkoutでの読込はcontract test対象ですが、wheel/sdist同梱はRM-018Aまで`UNKNOWN`です。
 人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。

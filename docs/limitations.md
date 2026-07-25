@@ -1,9 +1,11 @@
 # Current limitations
 
-- P2-027A defines and evaluates local-data policy values only. There is no filesystem discovery,
-  ownership scan, quarantine move, deletion, cleanup CLI, encryption/key management, secure erase,
-  durable lifecycle audit, receipt, tombstone, CAS, or partial-failure reconciliation. All
-  dispositions are candidates; `local_data_cleanup_executor` remains unavailable.
+- P2-027A itself defines and evaluates local-data policy values only. P2-027B adds an explicitly
+  authorized, one-run-at-a-time Python API for bounded ownership verification, same-volume
+  quarantine, delayed staged deletion, immutable receipts/tombstones, CAS, and read-only
+  reconciliation. It adds no cleanup CLI, encryption/key management, secure erase, automatic
+  retry, repair, or broad discovery. `local_data_cleanup_executor` remains unavailable until its
+  completion gates and independent reviews finish.
 - `OpenAIAgentsProvider` outbound analyze is not implemented. It reports `disabled` and `available=false`
   whether the optional SDK/API key is absent or present; the probes never imply outbound capability.
 - Codex-native agents/Skills and the Python role/provider catalog are separate execution surfaces.
@@ -92,8 +94,9 @@
 - current の atomic visibility は cooperating local writer/reader に限る。power-loss、
   hardware cache、UNC/SMB/NFS/distributed filesystem、cross-volume rename、Windows directory
   durability、malicious writer authenticity は保証しない。
-- recovery claim は metadata-only であり、orphan の cleanup、quarantine、repair、migration、
-  selection、publish を行わない。retention/cleanup executor と secure erase は未実装である。
+- P2-012A recovery claim 自体は metadata-only であり、orphan の cleanup、quarantine、repair、
+  migration、selection、publish を行わない。P2-027B cleanup executor は別 protocol/root であり、
+  P2-012A orphan recovery を自動化しない。secure erase は未実装である。
 - Windows adapter は legacy 260 UTF-16 path bound を保守的に適用する。extended-length path と
   arbitrary deep clone は未検証である。POSIX adapter code は存在するが、この Windows
   セッションでの POSIX 実行結果は **UNKNOWN** である。
@@ -128,6 +131,19 @@
 
 - P2-013A の approve は exact authority record であり、外部 action を実行しない。結果は常に `external_executor_unavailable` / `failed_with_limitations` である。
 - V1 request は historical-only であり、approve、action plan 推定、authority 推定、renewal、repair、silent migration を行わない。完全な reissue は P2-013B に残る。
-- request expiry と authority revocation は decision admission と publication lock 内で検証するが、外部 effect 自体がない。将来 executor の pre-execution recheck と remote reconciliation は未実装である。
+- request expiry と authority revocation は decision admission と publication lock 内で検証する。P2-027B local cleanup executor は effect 直前にも再検証するが、remote effect と remote reconciliation は未実装である。
 - failure audit は bounded append-only control ledger であり、自動 truncate／delete／repair を行わない。capacity exhaustion は別途承認された lifecycle action まで fail closed となる。
-- approval V2 artifact 名は既存 P2-027A artifact-kind table を変更しないため、terminal lifecycle metadata の対象集合ではなく、manifest inventory／hash／approval lineage により検証する。cleanup policy への統合は P2-027B の別範囲である。
+- approval V2 artifact 名は既存 P2-027A artifact-kind table を変更しないため、terminal lifecycle metadata の対象集合ではなく、manifest inventory／hash／approval lineage により検証する。P2-027B はこの approval evidence を変更せず、exact cleanup plan に拘束して利用する。
+
+## P2-027B の制限
+
+- 明示1 runだけを処理し、glob、ignore規則、名前推測、mtime、全root巡回によるcleanup候補発見は行わない。
+- quarantine と delete は別 plan・別 destructive approval で、固定30日待機を短縮しない。
+- delete は transaction-specific staging と `delete_prepared` を経由する。partial unlink、
+  journal後、rename後、pointer replace不確実時は自動retry／resume／repairせず、人間判断を要する。
+- same-volume local filesystem と cooperating process/kernel lock が前提である。cross-volume、
+  distributed atomicity、network filesystem、exactly-once、process-tree cancellationを保証しない。
+- `os.replace`、file fsync、利用可能な場合のdirectory syncを用いるが、hardware cache、突然の電源断、
+  Windows directory sync unavailable環境における物理媒体への残存を保証しない。
+- receipt/tombstone/hash chainはcorruptionと相関違反を検出するが、同権限writerのauthenticity、
+  cryptographic erasure、raw block overwrite、復元不能性を証明しない。

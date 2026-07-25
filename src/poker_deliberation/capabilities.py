@@ -86,8 +86,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "local_data_cleanup_executor",
         "unavailable",
-        "No local-data scan, quarantine, deletion, secure-erase, receipt, or reconciliation "
-        "executor is implemented.",
+        "A P2-027B candidate Python API implements bounded quarantine, staged deletion, receipts, "
+        "tombstones, and read-only reconciliation; capability promotion remains gated.",
     ),
     Capability(
         "immutable_revision_storage_foundation",

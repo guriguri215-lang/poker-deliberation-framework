@@ -3,7 +3,9 @@
 ## 状態と範囲
 
 - **FACT**: P2-013A は RM-013 の入口マイルストーンであり、承認主体、検証済み権限、正規 action digest、request/decision idempotency、全件一括検証、RM-012 CAS 公開、失敗監査を実装する。
-- **FACT**: P2-013B（再発行・完全な lifecycle）、P2-027B（cleanup executor）、P2-028A（process isolation）は別承認であり、本契約には含まれない。
+- **FACT**: P2-013B（再発行・完全な lifecycle）と P2-028A（process isolation）は別承認である。
+  P2-027B cleanup executor は P2-013A の immutable approval outcome を承認証拠として利用するが、
+  P2-013A 自身の decision semantics は変更しない。
 - **FACT**: P2-013A は外部 executor、provider、solver を起動しない。承認は実行・正しさ・収束・GTO・均衡・exploitability・正確な range の証拠ではない。
 
 ## 信頼境界
@@ -85,3 +87,12 @@ V1 `ApprovalRequest` は厳密に読み取り可能だが historical-only であ
 ## セキュリティ上の非主張
 
 hash chain は corruption と correlation を検出するが、同一権限の malicious writer に対する authenticity を証明しない。remote identity、network verification、HMAC/signature、secure erase、distributed filesystem の durability は本契約の保証外である。
+
+## P2-027B execution binding
+
+P2-027B は `CanonicalActionPlanV2` の category `destructive_change` に、cleanup module inventory、
+cleanup plan digest、cleanup root identity、policy/trace ID、resource limits、execution/idempotency
+identity、expiry を拘束する。executor は approval run current の全 ledger/log chain、
+approved request/result revision、record/outcome hash、actor/authority snapshot を照合し、effect直前に
+providerへ再解決する。revoked、expired、scope mismatch、actor/provider mismatch は mutation zero。
+`external_executor_unavailable` は承認時に effect がなかった証拠で、cleanup result には転用しない。

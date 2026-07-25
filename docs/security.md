@@ -16,7 +16,8 @@
   logical names are retained only when they match the fixed artifact allowlist. Known credential
   shapes are also rejected at the input boundary as defense in depth.
 - Policy and audit SHA-256 values detect corruption/correlation mismatch but do not authenticate a
-  writer. Cleanup approval, CAS, receipts, tombstones, reconciliation, and secure erase are deferred.
+  writer. P2-027B adds exact cleanup approval, CAS, receipts, tombstones, and read-only
+  reconciliation; secure erase remains unimplemented.
 - Workspace-write is the default maximum; analysis agents are read-only.
 - Run IDs and artifact paths are validated and resolved under the configured run root.
 - `.env` is ignored and only `.env.example` exists. With `record_sensitive_data=false`, structured
@@ -164,3 +165,22 @@ P2-013A は claimed actor を信用せず、注入された `DecisionAuthorityPr
 action plan と outbound content は raw payload ではなく bounded identifier／classification／SHA-256 binding として保存する。failure audit は actor、decision、idempotency、batch の hash と failure code だけを保存し、raw reason、credential、token、provider input、traceback を保存しない。failure 制限は actor/run ごとの真の rolling 60 秒窓として再構成し、窓内 32 件と単一 marker を strict pointer state へ拘束する。
 
 SHA-256 と hash chain は accidental corruption と substitution を検出するためのものであり、same-privilege malicious writer の authenticity は保証しない。default CLI は remote identity を検証せず、external effect、network verification、signature/HMAC、secure erase を実装しない。
+
+## P2-027B cleanup threat boundary
+
+cleanup root は repository/workspace、home root、`.git`、`user_materials`、`tmp/goals`、
+product/legacy rootとの同一・祖先・子孫関係を拒否する。対象は verified terminal current と
+P2-027A lifecycle audit が destructive candidate とした明示1 runだけである。portable path、
+NFC/case alias、reserved name、root escape、symlink/reparse、hardlink、Windows ADS、unknown entry、
+cross-volume、tree/current substitution は effect 前に fail closed となる。
+
+approval は cleanup plan digest、module inventory、cleanup root identity、policy/trace ID、
+resource limits、execution/idempotency/expiry を P2-013A `CanonicalActionPlanV2` に拘束する。
+executor は immutable approval chain と actor/provider authority を product または detached-run
+lock 内の effect 直前に再検証する。失効、revocation、scope/digest/actor/provider mismatch は
+filesystem effect zero である。
+
+control artifact は bounded identifiers と purpose-separated SHA-256 binding を保存し、raw payload、
+credential、approval reason、provider input、traceback を保存しない。ただし同権限の malicious
+writer、完全な syscall 間 TOCTOU 排除、ACL/signature/HMAC、power-loss durability、
+distributed filesystem、secure erase は保証しない。

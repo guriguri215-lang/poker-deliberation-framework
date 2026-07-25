@@ -1,0 +1,100 @@
+# Authorized local-data cleanup executor
+
+## 実装範囲
+
+- **FACT**: P2-027B は、明示された1つの verified product run、またはその run から
+  P2-027B 自身が作成した1つの quarantine payload だけを扱うローカル Python API である。
+- **FACT**: 対象探索に glob、ignore、名前推測、mtime を使わない。product root と cleanup root の
+  ownership marker、root identity、terminal current、manifest、inventory、lifecycle audit、
+  pending approval、failure-audit 保持期限、legal hold を strict read する。
+- **FACT**: CLI、外部 provider、network、solver、process sandbox、parallel execution、
+  automatic retry は追加しない。
+- **FACT**: テストで mutation を行う対象は、各テストが作成した disposable temp root だけである。
+
+主要 API は `poker_deliberation.local_data_cleanup.LocalDataCleanupExecutor` にある。
+
+- `initialize_cleanup_root(...)`
+- `dry_run_quarantine(...)`
+- `execute_quarantine(...)`
+- `dry_run_delete(...)`
+- `execute_delete(...)`
+- `inspect_reconciliation(...)`
+
+構築と inspect は root を暗黙作成しない。cleanup root の初期化だけが control-only mutation を
+許可される。repository/workspace 配下、home root、`.git`、`user_materials`、`tmp/goals`、
+product/legacy root と重なる場所は cleanup root にできない。
+
+## 2段階の状態遷移
+
+product run を直接削除する API はない。
+
+1. `dry_run_quarantine` は explicit run ID を read-only 評価し、exactly one action の
+   `CleanupPlanV1` と domain-separated plan SHA-256 を返す。
+2. P2-013A の別 run で、その plan に対応する `CanonicalActionPlanV2` を
+   `approve:destructive_change` scope で承認する。
+3. `execute_quarantine` は product run の current/tree と live authority を lock 内で再検証し、
+   same-volume の単一 `os.replace` で cleanup root の `quarantine/<run_id>` へ移す。
+4. quarantine entry から固定30日が経過した後、`dry_run_delete` で新しい plan を作り、
+   新しい P2-013A destructive approval を得る。
+5. `execute_delete` は quarantine payload を transaction-specific `deleting/` staging へ
+   renameし、`delete_prepared` current を公開してから、linkを追わず bottom-up unlinkする。
+   完了後だけ `deleted` current を公開する。
+
+許可される cleanup current の遷移は
+`quarantined -> delete_prepared -> deleted` だけである。各 revision は transaction、plan、
+approval binding、receipt、tombstone、前 manifest hash、期待 pointer hash を immutable に持つ。
+reader は revision 1 まで lineage を再計算する。
+
+## 承認 binding
+
+`cleanup_approval_action_plan(plan)` は次を P2-013A action digest へ拘束する。
+
+- category `destructive_change`
+- executor kind `local_process`
+- cleanup module inventory SHA-256、version、availability
+- internal field `cleanup_plan_sha256`
+- cleanup root ID、P2-027A retention policy、P2-027B trace policy
+- cost/runtime/memory/output/process 上限
+- result type、execution ID、idempotency key、UTC expiry
+
+実行時は approval run の current immutable ledger/decision/audit chain を完全検証し、approved
+request、request revision、action digest、decision record/outcome hash、verified actor、
+authority provider ID/version、`approve:destructive_change`、revocation、authority expiry を照合する。
+さらに product/detached-run authority を保持した effect 直前に同じ検証を繰り返す。
+
+P2-013A の `failed_with_limitations / external_executor_unavailable` は「approval transaction が
+effect を起動していない」ことを示す承認証拠であり、cleanup 成功証拠ではない。
+
+## idempotency と reconciliation
+
+manifest と receipt は execution ID、idempotency key、plan hash、approval binding hash、
+actor hash、authority snapshot hash、source tree hash を持つ。完全一致する成功 replay は保存済み
+pointer/receipt/tombstone を再読して byte-equivalent result を返し、write zero である。同じ
+execution ID または key に異なる plan/approval を与えると `idempotency_conflict` になる。
+
+effect 前の失敗は mutation zero とする。journal、rename、unlink、pointer replace の後に結果を
+確定できない場合は `reconciliation_required` または `effect_unknown` で停止する。
+`inspect_reconciliation(plan)` は source/destination/staging/current/receipt/tombstone を
+read-only 分類するだけで、repair、resume、retry、lock stealing は行わない。
+partial delete の `delete_prepared` は新しい人間判断なしに自動再開しない。
+
+## filesystem と容量境界
+
+- portable ID/path、NFC、case-fold alias、reserved device stem、root escape を拒否する。
+- symlink、reparse point、hardlink、Windows alternate data stream、unknown entry kind を拒否する。
+- effect 直前に current、tree identity、same-volume、source absent/destination exact を再検証する。
+- plan は1 action、tree 10,000 entries、target 100,000,000 bytes、control artifact
+  1,000,000 bytes、control/run 10,000,000 bytes、lifetime 86,400秒を上限とする。
+- capacity admission と cancellation は effect 前に fail closed とする。
+
+## 非保証
+
+- **FACT**: secure erase、暗号鍵破棄、raw block overwrite は実装しない。
+- **FACT**: unkeyed SHA-256 は corruption/correlation mismatch の検出用であり、
+  same-privilege malicious writer authenticity を証明しない。
+- **UNKNOWN**: Windows directory sync が unavailable の環境、hardware cache、突然の電源断後に
+  どの rename/fsync が物理媒体へ残るかは platform evidence なしに保証しない。
+- **FACT**: distributed atomicity、cross-volume atomicity、exactly-once、automatic retry、
+  external cancellation、process-tree cleanup は主張しない。
+- **FACT**: cleanup approval は計算、solver 実行、GTO、均衡、exact range、
+  exploitability の証拠ではない。

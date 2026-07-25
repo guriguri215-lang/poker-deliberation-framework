@@ -6,9 +6,9 @@
 - **FACT**: policy schema は `1.0.0`、canonicalization は
   `poker-local-data-policy-json-v1`、hash は unkeyed SHA-256 である。
 - **FACT**: `local_data_lifecycle_policy` は implemented である。
-- **FACT**: `local_data_cleanup_executor` は unavailable である。
-- **FACT**: filesystem の探索・読込・書込・scan・move・rename・quarantine・delete、
-  cleanup CLI、secure erase、暗号化、receipt、tombstone、reconciliation は実装しない。
+- **FACT**: P2-027B は P2-027A の policy を変更せず、別承認された additive Python API として
+  bounded scan、quarantine、staged delete、receipt、tombstone、read-only reconciliation を実装する。
+- **FACT**: cleanup CLI、secure erase、暗号化、automatic retry は実装しない。
 
 ## 分類と所有権
 
@@ -73,7 +73,8 @@ unkeyed SHA-256 は corruption/correlation mismatch の検出用であり、writ
 
 承認 scope digest は
 `c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d` である。
-P2-027B は P2-012B と P2-013A の後に別承認を要する。
+P2-027B は P2-012B と P2-013A の後に別承認され、実行ごとにも exact destructive approval を要する。
+詳細は [`local-data-cleanup.md`](local-data-cleanup.md) を参照する。
 
 ## P2-012A storage admission
 

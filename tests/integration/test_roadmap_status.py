@@ -89,7 +89,16 @@ def _scope_digest(scope: object) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _rewind_p2_027b(document: dict[str, object]) -> None:
+    document["milestone_progress"]["P2-027B"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+
+
 def _rewind_p2_013a(document: dict[str, object]) -> None:
+    _rewind_p2_027b(document)
     rm_013 = next(item for item in document["items"] if item["id"] == "RM-013")
     rm_013["status"] = "planned"
     document["status_history"]["RM-013"] = ["proposed", "planned"]
@@ -361,9 +370,7 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
         "c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d"
     )
     assert document["milestone_approvals"]["P2-027A"] == reference
-    assert document["milestone_approvals"]["P2-027B"] == (
-        "goal-rm027-p2-027b-2026-07-25"
-    )
+    assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
     assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
     assert document["milestone_progress"]["P2-027B"]["state"] == "in_progress"
     assert rm_027["status"] == "in_progress"
@@ -414,9 +421,7 @@ def test_p2_027b_has_exact_digest_bound_scope_and_is_in_progress() -> None:
     }
     assert rm_027["status"] == "in_progress"
     assert rm_027["completion_evidence"] == {"commits": [], "paths": [], "tests": []}
-    assert rm_027["human_approval"]["approval_reference"] == (
-        "goal-rm027-p2-027a-2026-07-23"
-    )
+    assert rm_027["human_approval"]["approval_reference"] == ("goal-rm027-p2-027a-2026-07-23")
     assert rm_027["human_approval"]["scope_digest"] == (
         "c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d"
     )
@@ -846,9 +851,7 @@ def test_p2_013a_has_exact_digest_bound_scope_and_downstream_stays_closed() -> N
             "history": ["not_started"],
             "completion_evidence": {"commits": [], "paths": [], "tests": []},
         }
-    assert document["milestone_approvals"]["P2-027B"] == (
-        "goal-rm027-p2-027b-2026-07-25"
-    )
+    assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
     assert document["milestone_progress"]["P2-027B"]["state"] == "in_progress"
 
 
@@ -1504,7 +1507,8 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 9,
-        "not_started": 3,
+        "in_progress": 1,
+        "not_started": 2,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []

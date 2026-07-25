@@ -61,7 +61,7 @@ def test_context_use_expiry_is_separate_from_storage_retention() -> None:
     assert result.audit.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE
 
 
-def test_capability_and_doctor_expose_policy_without_cleanup_executor() -> None:
+def test_cleanup_candidate_is_not_promoted_before_completion_gates() -> None:
     states = {item.capability_id: item.state for item in CAPABILITIES}
     doctor_states = {item["capability_id"]: item["state"] for item in doctor()["capabilities"]}
 
@@ -71,24 +71,21 @@ def test_capability_and_doctor_expose_policy_without_cleanup_executor() -> None:
     assert doctor_states["local_data_cleanup_executor"] == "unavailable"
 
 
-def test_p2_027a_is_active_without_authorizing_p2_027b() -> None:
+def test_p2_027b_has_separate_exact_authorization() -> None:
     document = load_roadmap()
 
-    assert document["milestone_progress"]["P2-027A"]["state"] in {
-        "in_progress",
-        "completed",
-    }
+    assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
     assert document["milestone_approvals"]["P2-027A"] == ("goal-rm027-p2-027a-2026-07-23")
-    assert document["milestone_progress"]["P2-027B"]["state"] == "not_started"
-    assert document["milestone_approvals"]["P2-027B"] is None
+    assert document["milestone_progress"]["P2-027B"]["state"] == "in_progress"
+    assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
 
 
-def test_no_cleanup_command_or_runstore_integration_is_documented() -> None:
+def test_cleanup_remains_additive_without_cli_or_runstore_integration() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     policy_doc = (ROOT / "docs" / "local-data-policy.md").read_text(encoding="utf-8")
 
-    assert "local_data_cleanup_executor" in policy_doc
-    assert "unavailable" in policy_doc
+    assert "P2-027B" in policy_doc
+    assert "additive Python API" in policy_doc
     assert "cleanup CLI" in policy_doc
     assert "poker-deliberate cleanup" not in readme
 
@@ -102,4 +99,6 @@ def test_no_cleanup_command_or_runstore_integration_is_documented() -> None:
         "src/poker_deliberation/orchestrator.py",
         "src/poker_deliberation/storage/run_store.py",
     ):
-        assert "local_data_policy" not in (ROOT / relative).read_text(encoding="utf-8")
+        source = (ROOT / relative).read_text(encoding="utf-8")
+        assert "local_data_policy" not in source
+        assert "local_data_cleanup" not in source

@@ -7,6 +7,7 @@ import os
 import stat
 import unicodedata
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -76,6 +77,19 @@ from poker_deliberation.storage.terminal_store import TerminalRunStore
 FaultInjector = Callable[[str], None]
 _ROOT_ENTRIES = frozenset({"ownership.json", ".cleanup-control", "runs", "quarantine", "deleting"})
 _RUN_CONTROL_ENTRIES = frozenset({"transactions", "revisions", "current.json"})
+_StreamSignature = tuple[tuple[str, int], ...]
+_DirectoryChain = tuple[tuple[Path, int, int, _StreamSignature | None], ...]
+
+
+@dataclass(frozen=True)
+class _RollbackJournal:
+    transaction_root: Path
+    transaction_identity: tuple[int, int]
+    transaction_size: int
+    transaction_bytes: bytes
+    transaction_streams: _StreamSignature
+    transaction_root_chain: _DirectoryChain
+    empty_directory_chains: tuple[_DirectoryChain, ...]
 
 
 class CleanupStorageError(ValueError):
@@ -202,27 +216,66 @@ def _directory_sync_many(*paths: Path) -> Literal["confirmed", "unavailable"]:
 
 
 def _rollback_pre_effect_journal(
-    transaction_root: Path,
-    *,
-    empty_directories: tuple[Path, ...] = (),
+    expected: _RollbackJournal | None,
 ) -> bool:
     """Remove only the exact journal/scaffold created by this attempt."""
 
+    if expected is None:
+        return False
     try:
-        transaction = transaction_root / "transaction.json"
-        if _strict_lexists(transaction):
-            verify_regular_single_link(transaction)
-            transaction.unlink()
-        if _strict_lexists(transaction_root):
-            verify_directory(transaction_root)
-            transaction_root.rmdir()
-        for directory in empty_directories:
-            if _strict_lexists(directory):
-                verify_directory(directory)
-                directory.rmdir()
+        _verify_directory_chain(expected.transaction_root_chain)
+        for chain in expected.empty_directory_chains:
+            _verify_directory_chain(chain)
+        transaction = expected.transaction_root / "transaction.json"
+        info = verify_regular_single_link(transaction)
+        if (
+            (info.st_dev, info.st_ino) != expected.transaction_identity
+            or info.st_size != expected.transaction_size
+            or _windows_stream_signature(transaction) != expected.transaction_streams
+            or transaction.read_bytes() != expected.transaction_bytes
+        ):
+            return False
+        _verify_directory_chain(expected.transaction_root_chain)
+        for chain in expected.empty_directory_chains:
+            _verify_directory_chain(chain)
+        transaction.unlink()
+        _verify_directory_chain(expected.transaction_root_chain)
+        expected.transaction_root.rmdir()
+        for chain in expected.empty_directory_chains:
+            _verify_directory_chain(chain)
+            chain[-1][0].rmdir()
         return True
     except (CanonicalStorageError, OSError):
         return False
+
+
+def _capture_pre_effect_journal(
+    transaction_root: Path,
+    transaction_bytes: bytes,
+    *,
+    owned_anchor: Path,
+    empty_directories: tuple[Path, ...] = (),
+) -> _RollbackJournal:
+    transaction = transaction_root / "transaction.json"
+    info = verify_regular_single_link(transaction)
+    streams = _windows_stream_signature(transaction)
+    if any(name != "::$DATA" for name, _size in streams):
+        raise CanonicalStorageError("cleanup journal has an alternate data stream")
+    return _RollbackJournal(
+        transaction_root=transaction_root,
+        transaction_identity=(info.st_dev, info.st_ino),
+        transaction_size=len(transaction_bytes),
+        transaction_bytes=transaction_bytes,
+        transaction_streams=streams,
+        transaction_root_chain=_capture_directory_chain(
+            transaction_root,
+            owned_anchor=owned_anchor,
+        ),
+        empty_directory_chains=tuple(
+            _capture_directory_chain(directory, owned_anchor=owned_anchor)
+            for directory in empty_directories
+        ),
+    )
 
 
 def _require_not_cancelled(
@@ -248,14 +301,17 @@ def _write_exclusive(
     max_bytes: int,
     fault_injector: FaultInjector | None = None,
     fault_hook: str | None = None,
+    fault_preparer: Callable[[], None] | None = None,
 ) -> None:
     if not data or len(data) > max_bytes:
         raise CanonicalStorageError("cleanup control artifact exceeds its byte limit")
     with path.open("xb") as stream:
         stream.write(data)
-        if fault_hook is not None:
-            _fault(fault_injector, f"{fault_hook}.after_write")
         stream.flush()
+        if fault_hook is not None:
+            if fault_preparer is not None:
+                fault_preparer()
+            _fault(fault_injector, f"{fault_hook}.after_write")
         os.fsync(stream.fileno())
     verify_regular_single_link(path)
     if path.read_bytes() != data:
@@ -385,6 +441,7 @@ def initialize_cleanup_root(
     if _overlap(root, product_root) or _overlap(root, legacy_root):
         raise _fail(CleanupFailureCode.PATH_CONFINEMENT_FAILED)
     created = False
+    mutation_started = False
     authority: ExistingRunAuthorityV1 | None = None
     try:
         authority = terminal_store.foundation.acquire_existing_run_authority(existing_run_id)
@@ -417,6 +474,7 @@ def initialize_cleanup_root(
             raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
         _fault(fault_injector, "initialize.before_root")
         if not _strict_lexists(root):
+            mutation_started = True
             root.mkdir()
             created = True
         verify_directory(root)
@@ -424,6 +482,7 @@ def initialize_cleanup_root(
             raise _fail(CleanupFailureCode.CROSS_VOLUME)
         for name in (".cleanup-control", "runs", "quarantine", "deleting"):
             _fault(fault_injector, f"initialize.before_mkdir.{name}")
+            mutation_started = True
             (root / name).mkdir()
             verify_directory(root / name)
         marker = CleanupRootMarkerV1(
@@ -470,7 +529,19 @@ def initialize_cleanup_root(
     except CleanupStorageError:
         raise
     except Exception as exc:
-        if created or _strict_lexists(root):
+        if mutation_started or created:
+            return CleanupRootInitializationOutcomeV1(
+                outcome_kind="reconciliation_required",
+                root_id=root_id,
+                marker_sha256=None,
+                filesystem_effect="control_only",
+                durability=_idle_durability(reconciliation="required"),
+            )
+        try:
+            root_present = _strict_lexists(root)
+        except OSError:
+            root_present = False
+        if root_present:
             return CleanupRootInitializationOutcomeV1(
                 outcome_kind="reconciliation_required",
                 root_id=root_id,
@@ -619,7 +690,7 @@ def _capture_directory_chain(
     path: Path,
     *,
     owned_anchor: Path,
-) -> tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...]:
+) -> _DirectoryChain:
     absolute = Path(os.path.abspath(path))
     owned_at = Path(os.path.abspath(owned_anchor))
     if absolute != owned_at and owned_at not in absolute.parents:
@@ -657,7 +728,7 @@ def _capture_directory_chain(
 
 
 def _verify_directory_chain(
-    expected: tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...],
+    expected: _DirectoryChain,
 ) -> None:
     for path, expected_dev, expected_ino, expected_streams in expected:
         info = path.lstat()
@@ -681,7 +752,8 @@ def _unlink_inventory_tree(
     root: Path,
     inventory: TreeInventoryV1,
     *,
-    expected_parent_chain: tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...],
+    expected_parent_chain: _DirectoryChain,
+    additional_parent_chains: tuple[_DirectoryChain, ...],
     expected_root_identity: tuple[int, int],
     fault_injector: FaultInjector | None,
     progress: list[int],
@@ -732,6 +804,8 @@ def _unlink_inventory_tree(
 
     def verify_root_and_ancestors(relative_path: str) -> None:
         _verify_directory_chain(expected_parent_chain)
+        for chain in additional_parent_chains:
+            _verify_directory_chain(chain)
         verify_directory_identity(
             root,
             relative_path=None,
@@ -826,6 +900,8 @@ def _unlink_inventory_tree(
         transaction_id=transaction_id,
     )
     _verify_directory_chain(expected_parent_chain)
+    for chain in additional_parent_chains:
+        _verify_directory_chain(chain)
     verify_directory_identity(
         root,
         relative_path=None,
@@ -841,6 +917,8 @@ def _unlink_inventory_tree(
         transaction_id=transaction_id,
     )
     _verify_directory_chain(expected_parent_chain)
+    for chain in additional_parent_chains:
+        _verify_directory_chain(chain)
     return deleted + 1
 
 
@@ -850,9 +928,7 @@ def _observe_staging_failure(
     run_id_sha256: str,
     expected_tree_sha256: str,
     limits: CleanupLimitsV1,
-    expected_parent_chain: (
-        tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...] | None
-    ) = None,
+    expected_parent_chain: _DirectoryChain | None = None,
 ) -> tuple[Literal["delete_staging_moved", "partial_delete"], bool]:
     """Boundedly classify staging after a failed delete; bool means unreadable."""
 
@@ -1923,6 +1999,15 @@ class LocalDataCleanupStore:
         control_created = False
         source_moved = False
         pointer_replace_attempted = False
+        rollback_journal: _RollbackJournal | None = None
+        source_parent_chain: _DirectoryChain | None = None
+        destination_parent_chain: _DirectoryChain | None = None
+
+        def verify_effect_parent_chains() -> None:
+            if source_parent_chain is None or destination_parent_chain is None:
+                raise CanonicalStorageError("quarantine effect parent chain is unavailable")
+            _verify_directory_chain(source_parent_chain)
+            _verify_directory_chain(destination_parent_chain)
 
         def current_failure_uncertain() -> bool:
             try:
@@ -2049,13 +2134,11 @@ class LocalDataCleanupStore:
                 **transaction_base,
                 transaction_sha256=cleanup_transaction_sha256(transaction_base),
             )
+            transaction_bytes = canonical_cleanup_bytes(transaction)
             projected = _control_tree_bytes(
                 control,
                 maximum_bytes=marker.limits.maximum_control_bytes_per_run,
-            ) + (
-                5 * marker.limits.maximum_control_artifact_bytes
-                + 2 * len(canonical_cleanup_bytes(transaction))
-            )
+            ) + (5 * marker.limits.maximum_control_artifact_bytes + 2 * len(transaction_bytes))
             if projected > marker.limits.maximum_control_bytes_per_run:
                 raise _fail(
                     CleanupFailureCode.AUDIT_CAPACITY_EXCEEDED,
@@ -2075,12 +2158,27 @@ class LocalDataCleanupStore:
             (control / "transactions").mkdir()
             (control / "revisions").mkdir()
             transaction_root.mkdir()
+
+            def capture_rollback_journal() -> None:
+                nonlocal rollback_journal
+                rollback_journal = _capture_pre_effect_journal(
+                    transaction_root,
+                    transaction_bytes,
+                    owned_anchor=self.cleanup_root,
+                    empty_directories=(
+                        control / "revisions",
+                        control / "transactions",
+                        control,
+                    ),
+                )
+
             _write_exclusive(
                 transaction_root / "transaction.json",
-                canonical_cleanup_bytes(transaction),
+                transaction_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
                 fault_injector=self.fault_injector,
                 fault_hook="quarantine.journal",
+                fault_preparer=capture_rollback_journal,
             )
             journal_published = True
             _directory_sync(transaction_root)
@@ -2147,9 +2245,18 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
+            source_parent_chain = _capture_directory_chain(
+                source.parent,
+                owned_anchor=source.parent,
+            )
+            destination_parent_chain = _capture_directory_chain(
+                destination.parent,
+                owned_anchor=self.cleanup_root,
+            )
             os.replace(source, destination)
             source_moved = True
             _fault(self.fault_injector, "quarantine.after_effect")
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source remained after rename")
             destination_inventory = scan_cleanup_tree(
@@ -2159,8 +2266,10 @@ class LocalDataCleanupStore:
             )
             if tree_inventory_sha256(destination_inventory) != source_tree_sha:
                 raise CanonicalStorageError("quarantine destination tree changed")
+            verify_effect_parent_chains()
             rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
             committed_at = clock()
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after commit clock")
             committed_inventory = scan_cleanup_tree(
@@ -2261,6 +2370,7 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "quarantine.before_pointer_replace")
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared before pointer replace")
             pre_pointer_inventory = scan_cleanup_tree(
@@ -2280,6 +2390,7 @@ class LocalDataCleanupStore:
             pointer_replace_attempted = True
             os.replace(temporary, control / "current.json")
             _fault(self.fault_injector, "quarantine.after_pointer_replace")
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after pointer replace")
             published_inventory = scan_cleanup_tree(
@@ -2298,6 +2409,7 @@ class LocalDataCleanupStore:
             )
             if verified is None or verified[0] != pointer:
                 raise CanonicalStorageError("cleanup committed state did not verify")
+            verify_effect_parent_chains()
             return CleanupExecutionResultV1(
                 outcome_kind="committed",
                 run_id_sha256=run_hash,
@@ -2335,14 +2447,7 @@ class LocalDataCleanupStore:
                     ),
                 ) from exc
             if control_created:
-                rolled_back = _rollback_pre_effect_journal(
-                    transaction_root,
-                    empty_directories=(
-                        control / "revisions",
-                        control / "transactions",
-                        control,
-                    ),
-                )
+                rolled_back = _rollback_pre_effect_journal(rollback_journal)
                 if rolled_back:
                     journal_published = False
                     control_created = False
@@ -2390,14 +2495,7 @@ class LocalDataCleanupStore:
                     ),
                 ) from exc
             if journal_published:
-                rolled_back = _rollback_pre_effect_journal(
-                    transaction_root,
-                    empty_directories=(
-                        (control / "revisions", control / "transactions", control)
-                        if control_created
-                        else ()
-                    ),
-                )
+                rolled_back = _rollback_pre_effect_journal(rollback_journal)
                 if rolled_back:
                     journal_published = False
                     control_created = False
@@ -2411,14 +2509,7 @@ class LocalDataCleanupStore:
                     domain_effect="current_unchanged",
                 ) from exc
             if control_created:
-                rolled_back = _rollback_pre_effect_journal(
-                    transaction_root,
-                    empty_directories=(
-                        control / "revisions",
-                        control / "transactions",
-                        control,
-                    ),
-                )
+                rolled_back = _rollback_pre_effect_journal(rollback_journal)
                 if rolled_back:
                     control_created = False
                     raise
@@ -2448,14 +2539,7 @@ class LocalDataCleanupStore:
                     "current_may_have_advanced" if current_uncertain else "current_unchanged"
                 )
             elif journal_published:
-                rolled_back = _rollback_pre_effect_journal(
-                    transaction_root,
-                    empty_directories=(
-                        (control / "revisions", control / "transactions", control)
-                        if control_created
-                        else ()
-                    ),
-                )
+                rolled_back = _rollback_pre_effect_journal(rollback_journal)
                 if rolled_back:
                     journal_published = False
                     control_created = False
@@ -2467,14 +2551,7 @@ class LocalDataCleanupStore:
                     effect = "journal_only"
                     domain_effect = "current_unchanged"
             elif control_created:
-                rolled_back = _rollback_pre_effect_journal(
-                    transaction_root,
-                    empty_directories=(
-                        control / "revisions",
-                        control / "transactions",
-                        control,
-                    ),
-                )
+                rolled_back = _rollback_pre_effect_journal(rollback_journal)
                 if rolled_back:
                     control_created = False
                     code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
@@ -2562,9 +2639,15 @@ class LocalDataCleanupStore:
         prepare_pointer_attempted = False
         final_pointer_attempted = False
         destination: Path | None = None
-        staging_parent_chain: (
-            tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...] | None
-        ) = None
+        rollback_journal: _RollbackJournal | None = None
+        source_parent_chain: _DirectoryChain | None = None
+        staging_parent_chain: _DirectoryChain | None = None
+
+        def verify_effect_parent_chains() -> None:
+            if source_parent_chain is None or staging_parent_chain is None:
+                raise CanonicalStorageError("delete effect parent chain is unavailable")
+            _verify_directory_chain(source_parent_chain)
+            _verify_directory_chain(staging_parent_chain)
 
         def observed_staging_failure() -> tuple[
             Literal["delete_staging_moved", "partial_delete"],
@@ -2743,13 +2826,11 @@ class LocalDataCleanupStore:
                 **transaction_base,
                 transaction_sha256=cleanup_transaction_sha256(transaction_base),
             )
+            transaction_two_bytes = canonical_cleanup_bytes(transaction_two)
             projected = _control_tree_bytes(
                 control,
                 maximum_bytes=marker.limits.maximum_control_bytes_per_run,
-            ) + (
-                8 * marker.limits.maximum_control_artifact_bytes
-                + 3 * len(canonical_cleanup_bytes(transaction_two))
-            )
+            ) + (8 * marker.limits.maximum_control_artifact_bytes + 3 * len(transaction_two_bytes))
             if projected > marker.limits.maximum_control_bytes_per_run:
                 raise _fail(
                     CleanupFailureCode.AUDIT_CAPACITY_EXCEEDED,
@@ -2766,12 +2847,22 @@ class LocalDataCleanupStore:
             )
             transaction_root.mkdir()
             transaction_root_created = True
+
+            def capture_rollback_journal() -> None:
+                nonlocal rollback_journal
+                rollback_journal = _capture_pre_effect_journal(
+                    transaction_root,
+                    transaction_two_bytes,
+                    owned_anchor=self.cleanup_root,
+                )
+
             _write_exclusive(
                 transaction_root / "transaction.json",
-                canonical_cleanup_bytes(transaction_two),
+                transaction_two_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
                 fault_injector=self.fault_injector,
                 fault_hook="delete.journal",
+                fault_preparer=capture_rollback_journal,
             )
             journal_published = True
             _directory_sync(transaction_root)
@@ -2840,9 +2931,18 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
+            source_parent_chain = _capture_directory_chain(
+                source.parent,
+                owned_anchor=self.cleanup_root,
+            )
+            staging_parent_chain = _capture_directory_chain(
+                destination.parent,
+                owned_anchor=self.cleanup_root,
+            )
             os.replace(source, destination)
             staging_moved = True
             _fault(self.fault_injector, "delete.after_staging_rename")
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source remained after staging rename")
             staged_inventory = scan_cleanup_tree(
@@ -2852,8 +2952,10 @@ class LocalDataCleanupStore:
             )
             if tree_inventory_sha256(staged_inventory) != source_tree_sha:
                 raise CanonicalStorageError("delete staging tree changed")
+            verify_effect_parent_chains()
             rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
             prepared_at = clock()
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after prepare clock")
             prepared_inventory = scan_cleanup_tree(
@@ -2973,6 +3075,7 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "delete.before_prepare_pointer_replace")
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError(
                     "quarantine source reappeared before prepare pointer replace"
@@ -3000,6 +3103,7 @@ class LocalDataCleanupStore:
             prepare_pointer_attempted = True
             os.replace(temporary_two, control / "current.json")
             _fault(self.fault_injector, "delete.after_prepare_pointer_replace")
+            verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError(
                     "quarantine source reappeared after prepare pointer replace"
@@ -3034,12 +3138,10 @@ class LocalDataCleanupStore:
                 staging_root_info.st_dev,
                 staging_root_info.st_ino,
             )
-            staging_parent_chain = _capture_directory_chain(
-                destination.parent,
-                owned_anchor=self.cleanup_root,
-            )
+            verify_effect_parent_chains()
 
             _fault(self.fault_injector, "delete.before_unlink_start")
+            verify_effect_parent_chains()
             _require_not_cancelled(
                 cancelled,
                 run_id_sha256=run_hash,
@@ -3050,6 +3152,7 @@ class LocalDataCleanupStore:
                 destination,
                 staged_inventory,
                 expected_parent_chain=staging_parent_chain,
+                additional_parent_chains=(source_parent_chain,),
                 expected_root_identity=staging_root_identity,
                 fault_injector=self.fault_injector,
                 progress=delete_progress,
@@ -3059,9 +3162,10 @@ class LocalDataCleanupStore:
             )
             if _strict_lexists(destination):
                 raise CanonicalStorageError("delete staging remained after unlink")
-            _verify_directory_chain(staging_parent_chain)
+            verify_effect_parent_chains()
             delete_directory_sync = _directory_sync(destination.parent)
             final_at = clock()
+            verify_effect_parent_chains()
             if _strict_lexists(source) or _strict_lexists(destination):
                 raise CanonicalStorageError("delete payload namespace reappeared after final clock")
             current_after_final_clock = self._read_current(
@@ -3170,12 +3274,14 @@ class LocalDataCleanupStore:
             pointer_three_bytes = canonical_cleanup_bytes(pointer_three)
             temporary_three = control / f"current.{transaction_id}.deleted.tmp"
             _fault(self.fault_injector, "delete.before_final_pointer_temp_write")
+            verify_effect_parent_chains()
             _write_exclusive(
                 temporary_three,
                 pointer_three_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "delete.before_final_pointer_replace")
+            verify_effect_parent_chains()
             if _strict_lexists(source) or _strict_lexists(destination):
                 raise CanonicalStorageError(
                     "delete payload namespace reappeared before final pointer replace"
@@ -3195,6 +3301,7 @@ class LocalDataCleanupStore:
             final_pointer_attempted = True
             os.replace(temporary_three, control / "current.json")
             _fault(self.fault_injector, "delete.after_final_pointer_replace")
+            verify_effect_parent_chains()
             if _strict_lexists(source) or _strict_lexists(destination):
                 raise CanonicalStorageError(
                     "delete payload namespace reappeared after final pointer replace"
@@ -3208,6 +3315,7 @@ class LocalDataCleanupStore:
             )
             if verified_three is None or verified_three[0] != pointer_three:
                 raise CanonicalStorageError("deleted state did not verify")
+            verify_effect_parent_chains()
             return CleanupExecutionResultV1(
                 outcome_kind="committed",
                 run_id_sha256=run_hash,
@@ -3252,7 +3360,7 @@ class LocalDataCleanupStore:
                     ),
                 ) from exc
             if journal_published or transaction_root_created:
-                if _rollback_pre_effect_journal(transaction_root):
+                if _rollback_pre_effect_journal(rollback_journal):
                     journal_published = False
                     transaction_root_created = False
                 else:
@@ -3307,7 +3415,7 @@ class LocalDataCleanupStore:
                     ),
                 ) from exc
             if journal_published or transaction_root_created:
-                if _rollback_pre_effect_journal(transaction_root):
+                if _rollback_pre_effect_journal(rollback_journal):
                     journal_published = False
                     transaction_root_created = False
                     raise
@@ -3344,7 +3452,7 @@ class LocalDataCleanupStore:
                     else "current_unchanged"
                 )
             elif journal_published or transaction_root_created:
-                if _rollback_pre_effect_journal(transaction_root):
+                if _rollback_pre_effect_journal(rollback_journal):
                     journal_published = False
                     transaction_root_created = False
                     code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR

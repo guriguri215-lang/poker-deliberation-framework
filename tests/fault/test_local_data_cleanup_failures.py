@@ -16,6 +16,7 @@ from poker_deliberation.local_data_cleanup_models import (
     CleanupPlanV1,
     CleanupRootMarkerV1,
 )
+from poker_deliberation.storage.local_data_cleanup_store import initialize_cleanup_root
 from tests.integration.test_local_data_cleanup_executor import (
     DELETE_AT,
     EVALUATED,
@@ -98,6 +99,45 @@ def _prepare_delete_fixture(
         decision_at=DELETE_AT,
     )
     return executor, delete.plan, delete_request, delete_provider
+
+
+def test_initialize_partial_mutation_lstat_failure_is_reconciliation_required(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    run_id = "cleanup-init-lstat-failure"
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id=run_id)
+    cleanup_root = tmp_path / "cleanup"
+    cleanup_root.mkdir()
+    original_lstat = Path.lstat
+    deny_root = False
+
+    def fail_root_lstat(path: Path):
+        if deny_root and path == cleanup_root:
+            raise PermissionError("injected cleanup root lstat failure")
+        return original_lstat(path)
+
+    def fail_after_scaffold(hook: str) -> None:
+        nonlocal deny_root
+        if hook == "initialize.before_marker":
+            deny_root = True
+            raise InjectedFault(hook)
+
+    monkeypatch.setattr(Path, "lstat", fail_root_lstat)
+    result = initialize_cleanup_root(
+        cleanup_root,
+        orchestrator.product_store,
+        existing_run_id=run_id,
+        root_id="cleanup-root-" + "a" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+        fault_injector=fail_after_scaffold,
+    )
+    deny_root = False
+
+    assert result.outcome_kind == "reconciliation_required"
+    assert result.filesystem_effect == "control_only"
+    assert result.durability.reconciliation == "required"
 
 
 def test_quarantine_before_journal_fault_has_no_control_or_payload_effect(tmp_path) -> None:
@@ -195,6 +235,66 @@ def test_quarantine_cancellation_after_journal_rolls_back_exact_scaffold(tmp_pat
     assert (
         orchestrator.product_store.foundation.runs_root / "cleanup-cancel-after-journal"
     ).is_dir()
+
+
+def test_quarantine_rollback_rejects_replaced_transaction_root(tmp_path) -> None:
+    run_id = "cleanup-rollback-replacement"
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id=run_id)
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id=run_id,
+        root_id="cleanup-root-" + "b" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        run_id,
+        execution_id=f"{run_id}-execution",
+        idempotency_key=f"{run_id}-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+    )
+    replacement: dict[str, Path] = {}
+    sentinel = b"do-not-delete"
+
+    def replace_transaction_root(hook: str) -> None:
+        if hook != "quarantine.before_effect":
+            return
+        transactions = executor.store.cleanup_root / "runs" / run_id_sha256(run_id) / "transactions"
+        transaction_root = next(transactions.iterdir())
+        relocated = transaction_root.with_name(f"{transaction_root.name}.relocated")
+        transaction_root.rename(relocated)
+        transaction_root.mkdir()
+        fake = transaction_root / "transaction.json"
+        fake.write_bytes(sentinel)
+        replacement["fake"] = fake
+        replacement["relocated"] = relocated
+        raise InjectedFault(hook)
+
+    executor.store.fault_injector = replace_transaction_root
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.filesystem_effect == "journal_only"
+    assert replacement["fake"].read_bytes() == sentinel
+    assert (replacement["relocated"] / "transaction.json").is_file()
+    assert (orchestrator.product_store.foundation.runs_root / run_id).is_dir()
 
 
 def test_quarantine_authority_revoked_after_journal_rolls_back_before_effect(
@@ -416,6 +516,63 @@ def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -
     assert report.observed_current == "unreadable"
     assert retry.failure is not None
     assert retry.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+
+
+def test_quarantine_outer_parent_replacement_after_effect_cannot_publish_success(
+    tmp_path,
+) -> None:
+    run_id = "cleanup-quarantine-outer-parent"
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id=run_id)
+    outer = tmp_path / "cleanup-outer"
+    outer.mkdir()
+    executor = LocalDataCleanupExecutor(
+        outer / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id=run_id,
+        root_id="cleanup-root-" + "c" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        run_id,
+        execution_id=f"{run_id}-execution",
+        idempotency_key=f"{run_id}-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+    )
+    relocated_outer = tmp_path / "cleanup-outer.relocated"
+
+    def replace_outer_parent(hook: str) -> None:
+        if hook != "quarantine.after_effect":
+            return
+        outer.rename(relocated_outer)
+        outer.mkdir()
+
+    executor.store.fault_injector = replace_outer_parent
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    relocated_destination = (
+        relocated_outer / "cleanup" / dry_run.plan.actions[0].destination_relative_path
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert relocated_destination.is_dir()
 
 
 def test_post_pointer_response_loss_reconciles_as_committed_and_replays(tmp_path) -> None:
@@ -791,6 +948,52 @@ def test_delete_final_clock_mutation_cannot_publish_deleted_current(tmp_path) ->
     assert report.observed_current == "prior"
     assert report.observed_staging == "partial"
     assert destination.is_dir()
+
+
+def test_delete_final_clock_parent_replacement_cannot_publish_success(tmp_path) -> None:
+    run_id = "cleanup-delete-final-parent"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="d",
+    )
+    staging = executor.store.cleanup_root / plan.actions[0].destination_relative_path
+    parent = staging.parent
+    relocated_parent = executor.store.cleanup_root / "deleting.relocated"
+    ready = False
+    mutated = False
+
+    def arm_after_staging_rmdir(hook: str) -> None:
+        nonlocal ready
+        if hook == "delete.after_staging_rmdir":
+            ready = True
+
+    def replace_parent_at_final_clock():
+        nonlocal mutated
+        if ready and not mutated:
+            parent.rename(relocated_parent)
+            parent.mkdir()
+            relocated_parent.rmdir()
+            mutated = True
+        return DELETE_AT
+
+    executor.store.fault_injector = arm_after_staging_rmdir
+    executor.clock = replace_parent_at_final_clock
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    current = executor.store.read_current(run_id_sha256(run_id))
+
+    assert mutated
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "partial_delete"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert current is not None
+    assert current[0].state == "delete_prepared"
 
 
 @pytest.mark.parametrize(

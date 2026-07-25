@@ -124,6 +124,14 @@ def _fault(injector: FaultInjector | None, hook: str) -> None:
         injector(hook)
 
 
+def _strict_lexists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
 def _resolved_absolute(path: Path, field_name: str) -> Path:
     if not path.is_absolute():
         raise CanonicalStorageError(f"{field_name} must be absolute")
@@ -132,7 +140,7 @@ def _resolved_absolute(path: Path, field_name: str) -> Path:
     current = Path(parts_to_check[0])
     for part in parts_to_check[1:]:
         current /= part
-        if not os.path.lexists(current):
+        if not _strict_lexists(current):
             continue
         info = current.lstat()
         attributes = getattr(info, "st_file_attributes", 0)
@@ -140,7 +148,7 @@ def _resolved_absolute(path: Path, field_name: str) -> Path:
         if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
             raise CanonicalStorageError(f"{field_name} contains a link or reparse point")
     for ancestor in (absolute, *absolute.parents):
-        if os.path.lexists(ancestor / ".git"):
+        if _strict_lexists(ancestor / ".git"):
             raise CanonicalStorageError(f"{field_name} is an excluded root inside a repository")
     resolved = absolute.resolve(strict=False)
     parts = tuple(part.casefold() for part in resolved.parts)
@@ -202,14 +210,14 @@ def _rollback_pre_effect_journal(
 
     try:
         transaction = transaction_root / "transaction.json"
-        if os.path.lexists(transaction):
+        if _strict_lexists(transaction):
             verify_regular_single_link(transaction)
             transaction.unlink()
-        if os.path.lexists(transaction_root):
+        if _strict_lexists(transaction_root):
             verify_directory(transaction_root)
             transaction_root.rmdir()
         for directory in empty_directories:
-            if os.path.lexists(directory):
+            if _strict_lexists(directory):
                 verify_directory(directory)
                 directory.rmdir()
         return True
@@ -607,10 +615,56 @@ def scan_cleanup_tree(
     )
 
 
+def _capture_directory_chain(
+    path: Path,
+    *,
+    anchor: Path,
+) -> tuple[tuple[Path, int, int], ...]:
+    absolute = Path(os.path.abspath(path))
+    anchored_at = Path(os.path.abspath(anchor))
+    if absolute != anchored_at and anchored_at not in absolute.parents:
+        raise CanonicalStorageError("delete staging parent escaped cleanup root")
+    current = anchored_at
+    observed: list[tuple[Path, int, int]] = []
+    for part in (None, *absolute.relative_to(anchored_at).parts):
+        if part is not None:
+            current /= part
+        info = current.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or attributes & reparse_flag
+            or _has_nondefault_windows_stream(current)
+        ):
+            raise CanonicalStorageError("delete staging ancestor identity changed")
+        observed.append((current, info.st_dev, info.st_ino))
+    return tuple(observed)
+
+
+def _verify_directory_chain(
+    expected: tuple[tuple[Path, int, int], ...],
+) -> None:
+    for path, expected_dev, expected_ino in expected:
+        info = path.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or attributes & reparse_flag
+            or (info.st_dev, info.st_ino) != (expected_dev, expected_ino)
+            or _has_nondefault_windows_stream(path)
+        ):
+            raise CanonicalStorageError("delete staging ancestor identity changed")
+
+
 def _unlink_inventory_tree(
     root: Path,
     inventory: TreeInventoryV1,
     *,
+    expected_parent_chain: tuple[tuple[Path, int, int], ...],
     expected_root_identity: tuple[int, int],
     fault_injector: FaultInjector | None,
     progress: list[int],
@@ -660,6 +714,7 @@ def _unlink_inventory_tree(
             raise CanonicalStorageError("delete staging directory identity changed")
 
     def verify_root_and_ancestors(relative_path: str) -> None:
+        _verify_directory_chain(expected_parent_chain)
         verify_directory_identity(
             root,
             relative_path=None,
@@ -753,6 +808,7 @@ def _unlink_inventory_tree(
         plan_sha256=plan_sha256,
         transaction_id=transaction_id,
     )
+    _verify_directory_chain(expected_parent_chain)
     verify_directory_identity(
         root,
         relative_path=None,
@@ -776,12 +832,15 @@ def _observe_staging_failure(
     run_id_sha256: str,
     expected_tree_sha256: str,
     limits: CleanupLimitsV1,
+    expected_parent_chain: tuple[tuple[Path, int, int], ...] | None = None,
 ) -> tuple[Literal["delete_staging_moved", "partial_delete"], bool]:
     """Boundedly classify staging after a failed delete; bool means unreadable."""
 
-    if not os.path.lexists(staging):
-        return "partial_delete", False
     try:
+        if expected_parent_chain is not None:
+            _verify_directory_chain(expected_parent_chain)
+        if not _strict_lexists(staging):
+            return "partial_delete", False
         observed = scan_cleanup_tree(
             staging,
             run_id_sha256=run_id_sha256,
@@ -1417,7 +1476,7 @@ class LocalDataCleanupStore:
         """Find one exact persisted operation after validating the full current lineage."""
 
         run_hash = plan.source.run_id_sha256
-        if not os.path.lexists(self._run_control(run_hash)):
+        if not _strict_lexists(self._run_control(run_hash)):
             return None
         marker, marker_sha = self.marker()
         if (
@@ -1631,9 +1690,9 @@ class LocalDataCleanupStore:
         def observed_tree(
             path: Path,
         ) -> Literal["absent", "exact", "mismatch", "unreadable"]:
-            if not os.path.lexists(path):
-                return "absent"
             try:
+                if not _strict_lexists(path):
+                    return "absent"
                 inventory = scan_cleanup_tree(
                     path,
                     run_id_sha256=run_hash,
@@ -1671,7 +1730,7 @@ class LocalDataCleanupStore:
         tombstone_observed: Literal["absent", "exact", "mismatch", "unreadable"] = "absent"
         try:
             control_path = self._run_control(run_hash)
-            if not os.path.lexists(control_path):
+            if not _strict_lexists(control_path):
                 current_observed = "absent"
             else:
                 current = self.read_current(run_hash)
@@ -1835,6 +1894,17 @@ class LocalDataCleanupStore:
         control_created = False
         source_moved = False
         pointer_replace_attempted = False
+
+        def current_failure_uncertain() -> bool:
+            try:
+                report = self.inspect_reconciliation(
+                    plan,
+                    transaction_id=transaction_id,
+                )
+            except Exception:
+                return True
+            return report.observed_current != "absent"
+
         try:
             authority = self.terminal_store.foundation.acquire_existing_run_authority(run_id)
             self._require_product_binding(marker, authority)
@@ -2032,13 +2102,13 @@ class LocalDataCleanupStore:
             if final_destination != destination:
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
             if (
-                os.path.lexists(destination)
+                _strict_lexists(destination)
                 or source.stat().st_dev != destination.parent.stat().st_dev
             ):
                 raise _fail(
                     (
                         CleanupFailureCode.IDEMPOTENCY_CONFLICT
-                        if os.path.lexists(destination)
+                        if _strict_lexists(destination)
                         else CleanupFailureCode.CROSS_VOLUME
                     ),
                     run_id_sha256=run_hash,
@@ -2048,7 +2118,7 @@ class LocalDataCleanupStore:
             os.replace(source, destination)
             source_moved = True
             _fault(self.fault_injector, "quarantine.after_effect")
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source remained after rename")
             destination_inventory = scan_cleanup_tree(
                 destination,
@@ -2059,7 +2129,7 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError("quarantine destination tree changed")
             rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
             committed_at = clock()
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after commit clock")
             committed_inventory = scan_cleanup_tree(
                 destination,
@@ -2159,7 +2229,7 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "quarantine.before_pointer_replace")
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared before pointer replace")
             pre_pointer_inventory = scan_cleanup_tree(
                 destination,
@@ -2178,7 +2248,7 @@ class LocalDataCleanupStore:
             pointer_replace_attempted = True
             os.replace(temporary, control / "current.json")
             _fault(self.fault_injector, "quarantine.after_pointer_replace")
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after pointer replace")
             published_inventory = scan_cleanup_tree(
                 destination,
@@ -2217,13 +2287,20 @@ class LocalDataCleanupStore:
                 else CleanupFailureCode.STALE_SOURCE
             )
             if source_moved:
+                current_uncertain = current_failure_uncertain()
                 raise _fail(
-                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    (
+                        CleanupFailureCode.EFFECT_UNKNOWN
+                        if current_uncertain
+                        else CleanupFailureCode.RECONCILIATION_REQUIRED
+                    ),
                     run_id_sha256=run_hash,
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                     filesystem_effect="source_moved",
-                    domain_effect="current_unchanged",
+                    domain_effect=(
+                        "current_may_have_advanced" if current_uncertain else "current_unchanged"
+                    ),
                 ) from exc
             if control_created:
                 rolled_back = _rollback_pre_effect_journal(
@@ -2265,13 +2342,20 @@ class LocalDataCleanupStore:
                     domain_effect="current_may_have_advanced",
                 ) from exc
             if source_moved:
+                current_uncertain = current_failure_uncertain()
                 raise _fail(
-                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    (
+                        CleanupFailureCode.EFFECT_UNKNOWN
+                        if current_uncertain
+                        else CleanupFailureCode.RECONCILIATION_REQUIRED
+                    ),
                     run_id_sha256=run_hash,
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                     filesystem_effect="source_moved",
-                    domain_effect="current_unchanged",
+                    domain_effect=(
+                        "current_may_have_advanced" if current_uncertain else "current_unchanged"
+                    ),
                 ) from exc
             if journal_published:
                 rolled_back = _rollback_pre_effect_journal(
@@ -2321,9 +2405,16 @@ class LocalDataCleanupStore:
                 effect = "source_moved"
                 domain_effect = "current_may_have_advanced"
             elif source_moved:
-                code = CleanupFailureCode.RECONCILIATION_REQUIRED
+                current_uncertain = current_failure_uncertain()
+                code = (
+                    CleanupFailureCode.EFFECT_UNKNOWN
+                    if current_uncertain
+                    else CleanupFailureCode.RECONCILIATION_REQUIRED
+                )
                 effect = "source_moved"
-                domain_effect = "current_unchanged"
+                domain_effect = (
+                    "current_may_have_advanced" if current_uncertain else "current_unchanged"
+                )
             elif journal_published:
                 rolled_back = _rollback_pre_effect_journal(
                     transaction_root,
@@ -2439,6 +2530,7 @@ class LocalDataCleanupStore:
         prepare_pointer_attempted = False
         final_pointer_attempted = False
         destination: Path | None = None
+        staging_parent_chain: tuple[tuple[Path, int, int], ...] | None = None
 
         def observed_staging_failure() -> tuple[
             Literal["delete_staging_moved", "partial_delete"],
@@ -2451,7 +2543,18 @@ class LocalDataCleanupStore:
                 run_id_sha256=run_hash,
                 expected_tree_sha256=plan.tree_inventory_sha256,
                 limits=marker.limits,
+                expected_parent_chain=staging_parent_chain,
             )
+
+        def current_failure_uncertain() -> bool:
+            try:
+                report = self.inspect_reconciliation(
+                    plan,
+                    transaction_id=transaction_id,
+                )
+            except Exception:
+                return True
+            return report.observed_current != "prior"
 
         try:
             storage_checked_at = clock()
@@ -2683,13 +2786,13 @@ class LocalDataCleanupStore:
             if final_destination != destination:
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
             if (
-                os.path.lexists(destination)
+                _strict_lexists(destination)
                 or source.stat().st_dev != destination.parent.stat().st_dev
             ):
                 raise _fail(
                     (
                         CleanupFailureCode.IDEMPOTENCY_CONFLICT
-                        if os.path.lexists(destination)
+                        if _strict_lexists(destination)
                         else CleanupFailureCode.CROSS_VOLUME
                     ),
                     run_id_sha256=run_hash,
@@ -2699,7 +2802,7 @@ class LocalDataCleanupStore:
             os.replace(source, destination)
             staging_moved = True
             _fault(self.fault_injector, "delete.after_staging_rename")
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source remained after staging rename")
             staged_inventory = scan_cleanup_tree(
                 destination,
@@ -2710,7 +2813,7 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError("delete staging tree changed")
             rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
             prepared_at = clock()
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after prepare clock")
             prepared_inventory = scan_cleanup_tree(
                 destination,
@@ -2829,7 +2932,7 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "delete.before_prepare_pointer_replace")
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError(
                     "quarantine source reappeared before prepare pointer replace"
                 )
@@ -2856,7 +2959,7 @@ class LocalDataCleanupStore:
             prepare_pointer_attempted = True
             os.replace(temporary_two, control / "current.json")
             _fault(self.fault_injector, "delete.after_prepare_pointer_replace")
-            if os.path.lexists(source):
+            if _strict_lexists(source):
                 raise CanonicalStorageError(
                     "quarantine source reappeared after prepare pointer replace"
                 )
@@ -2890,6 +2993,10 @@ class LocalDataCleanupStore:
                 staging_root_info.st_dev,
                 staging_root_info.st_ino,
             )
+            staging_parent_chain = _capture_directory_chain(
+                destination.parent,
+                anchor=self.cleanup_root,
+            )
 
             _fault(self.fault_injector, "delete.before_unlink_start")
             _require_not_cancelled(
@@ -2901,6 +3008,7 @@ class LocalDataCleanupStore:
             deleted_entries = _unlink_inventory_tree(
                 destination,
                 staged_inventory,
+                expected_parent_chain=staging_parent_chain,
                 expected_root_identity=staging_root_identity,
                 fault_injector=self.fault_injector,
                 progress=delete_progress,
@@ -2908,11 +3016,11 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             )
-            if os.path.lexists(destination):
+            if _strict_lexists(destination):
                 raise CanonicalStorageError("delete staging remained after unlink")
             delete_directory_sync = _directory_sync(destination.parent)
             final_at = clock()
-            if os.path.lexists(source) or os.path.lexists(destination):
+            if _strict_lexists(source) or _strict_lexists(destination):
                 raise CanonicalStorageError("delete payload namespace reappeared after final clock")
             current_after_final_clock = self._read_current(
                 run_hash,
@@ -3026,7 +3134,7 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "delete.before_final_pointer_replace")
-            if os.path.lexists(source) or os.path.lexists(destination):
+            if _strict_lexists(source) or _strict_lexists(destination):
                 raise CanonicalStorageError(
                     "delete payload namespace reappeared before final pointer replace"
                 )
@@ -3045,7 +3153,7 @@ class LocalDataCleanupStore:
             final_pointer_attempted = True
             os.replace(temporary_three, control / "current.json")
             _fault(self.fault_injector, "delete.after_final_pointer_replace")
-            if os.path.lexists(source) or os.path.lexists(destination):
+            if _strict_lexists(source) or _strict_lexists(destination):
                 raise CanonicalStorageError(
                     "delete payload namespace reappeared after final pointer replace"
                 )
@@ -3081,10 +3189,12 @@ class LocalDataCleanupStore:
             deleted_entries = max(deleted_entries, delete_progress[0])
             if staging_moved:
                 filesystem_effect, staging_unreadable = observed_staging_failure()
+                current_uncertain = current_failure_uncertain()
+                effect_uncertain = staging_unreadable or current_uncertain
                 raise _fail(
                     (
                         CleanupFailureCode.EFFECT_UNKNOWN
-                        if staging_unreadable
+                        if effect_uncertain
                         else CleanupFailureCode.RECONCILIATION_REQUIRED
                     ),
                     run_id_sha256=run_hash,
@@ -3093,7 +3203,7 @@ class LocalDataCleanupStore:
                     filesystem_effect=filesystem_effect,
                     domain_effect=(
                         "current_may_have_advanced"
-                        if staging_unreadable
+                        if effect_uncertain
                         else "current_advanced"
                         if prepared_published
                         else "current_unchanged"
@@ -3134,10 +3244,12 @@ class LocalDataCleanupStore:
                 ) from exc
             if staging_moved:
                 filesystem_effect, staging_unreadable = observed_staging_failure()
+                current_uncertain = current_failure_uncertain()
+                effect_uncertain = staging_unreadable or current_uncertain
                 raise _fail(
                     (
                         CleanupFailureCode.EFFECT_UNKNOWN
-                        if staging_unreadable
+                        if effect_uncertain
                         else CleanupFailureCode.RECONCILIATION_REQUIRED
                     ),
                     run_id_sha256=run_hash,
@@ -3146,7 +3258,7 @@ class LocalDataCleanupStore:
                     filesystem_effect=filesystem_effect,
                     domain_effect=(
                         "current_may_have_advanced"
-                        if staging_unreadable
+                        if effect_uncertain
                         else "current_advanced"
                         if prepared_published
                         else "current_unchanged"
@@ -3171,18 +3283,20 @@ class LocalDataCleanupStore:
             staging_effect, staging_unreadable = (
                 observed_staging_failure() if staging_moved else ("partial_delete", False)
             )
+            current_uncertain = current_failure_uncertain() if staging_moved else False
+            effect_uncertain = staging_unreadable or current_uncertain
             if final_pointer_attempted or (prepare_pointer_attempted and not prepared_published):
                 code = CleanupFailureCode.EFFECT_UNKNOWN
                 domain_effect = "current_may_have_advanced"
             elif staging_moved:
                 code = (
                     CleanupFailureCode.EFFECT_UNKNOWN
-                    if staging_unreadable
+                    if effect_uncertain
                     else CleanupFailureCode.RECONCILIATION_REQUIRED
                 )
                 domain_effect = (
                     "current_may_have_advanced"
-                    if staging_unreadable
+                    if effect_uncertain
                     else "current_advanced"
                     if prepared_published
                     else "current_unchanged"

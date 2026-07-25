@@ -1067,7 +1067,11 @@ class LocalDataCleanupExecutor:
             ) as exc:
                 if not isinstance(exc, CleanupStorageError) or (
                     isinstance(exc.failure, CleanupFailureV1)
-                    and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
+                    and exc.failure.code
+                    in {
+                        CleanupFailureCode.STALE_CLEANUP_REVISION,
+                        CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                    }
                 ):
                     try:
                         report = self.store.inspect_reconciliation(
@@ -1333,7 +1337,11 @@ class LocalDataCleanupExecutor:
             ) as exc:
                 if not isinstance(exc, CleanupStorageError) or (
                     isinstance(exc.failure, CleanupFailureV1)
-                    and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
+                    and exc.failure.code
+                    in {
+                        CleanupFailureCode.STALE_CLEANUP_REVISION,
+                        CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                    }
                 ):
                     try:
                         report = self.store.inspect_reconciliation(

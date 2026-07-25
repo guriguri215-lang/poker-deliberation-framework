@@ -233,7 +233,9 @@ def test_cleanup_root_product_binding_cannot_be_reused_with_another_root(
         authority_provider=provider,
     )
     assert cross_root_replay.failure is not None
-    assert cross_root_replay.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+    assert cross_root_replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert cross_root_replay.failure.filesystem_effect == "source_moved"
+    assert cross_root_replay.failure.domain_effect == "current_may_have_advanced"
 
     recreated_source = first.product_store.foundation.runs_root / "security-run"
     recreated_source.mkdir()

@@ -293,12 +293,74 @@ def test_quarantine_commit_clock_mutation_cannot_publish_success(tmp_path) -> No
 
     assert mutated
     assert result.failure is not None
-    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
     assert destination.is_dir()
     assert not (
         executor.store.cleanup_root / "runs" / run_id_sha256(run_id) / "current.json"
     ).exists()
+
+
+def test_quarantine_commit_clock_current_mutation_is_effect_unknown(tmp_path) -> None:
+    run_id = "cleanup-quarantine-clock-current"
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id=run_id)
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id=run_id,
+        root_id="cleanup-root-" + "8" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        run_id,
+        execution_id=f"{run_id}-execution",
+        idempotency_key=f"{run_id}-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+    )
+    destination = executor.store.cleanup_root / dry_run.plan.actions[0].destination_relative_path
+    current_path = executor.store.cleanup_root / "runs" / run_id_sha256(run_id) / "current.json"
+    mutated = False
+
+    def mutating_clock():
+        nonlocal mutated
+        if destination.is_dir() and not mutated:
+            current_path.write_bytes(b"{}")
+            mutated = True
+        return EVALUATED
+
+    executor.clock = mutating_clock
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert mutated
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert replay.failure is not None
+    assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
 
 
 def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -> None:
@@ -344,8 +406,9 @@ def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -
     )
 
     assert result.failure is not None
-    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
     assert report.classification == "effect_unknown"
     assert report.observed_source == "absent"
     assert report.observed_destination == "exact"
@@ -439,7 +502,12 @@ def test_quarantine_post_pointer_marker_replacement_is_effect_unknown(tmp_path) 
         marker = parse_cleanup_model(marker_path.read_bytes(), CleanupRootMarkerV1)
         marker_path.write_bytes(
             canonical_cleanup_bytes(
-                marker.model_copy(update={"root_id": "cleanup-root-" + "8" * 32})
+                marker.model_copy(
+                    update={
+                        "root_id": "cleanup-root-" + "8" * 32,
+                        "product_ownership_marker_sha256": "f" * 64,
+                    }
+                )
             )
         )
 
@@ -564,11 +632,53 @@ def test_delete_prepare_clock_mutation_cannot_publish_prepared_current(
 
     assert mutated
     assert result.failure is not None
-    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert result.failure.filesystem_effect == "partial_delete"
+    assert result.failure.domain_effect == "current_may_have_advanced"
     assert report.classification == "effect_unknown"
     assert report.observed_staging == "partial"
     assert report.observed_current == "unreadable"
+
+
+def test_delete_prepare_clock_current_mutation_is_effect_unknown(tmp_path) -> None:
+    run_id = "cleanup-delete-prepare-current"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="a",
+    )
+    destination = executor.store.cleanup_root / plan.actions[0].destination_relative_path
+    current_path = executor.store.cleanup_root / "runs" / run_id_sha256(run_id) / "current.json"
+    mutated = False
+
+    def mutating_clock():
+        nonlocal mutated
+        if destination.is_dir() and not mutated:
+            current_path.write_bytes(b"{}")
+            mutated = True
+        return DELETE_AT
+
+    executor.clock = mutating_clock
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    replay = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert mutated
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "delete_staging_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert replay.failure is not None
+    assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
 
 
 def test_delete_final_clock_mutation_cannot_publish_deleted_current(tmp_path) -> None:
@@ -645,8 +755,9 @@ def test_delete_replay_with_pending_control_state_is_effect_unknown(
     )
 
     assert first.failure is not None
-    assert first.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert first.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert first.failure.filesystem_effect == "delete_staging_moved"
+    assert first.failure.domain_effect == "current_may_have_advanced"
     assert report.observed_staging == "exact"
     assert report.observed_current == "unreadable"
     assert report.classification == "effect_unknown"
@@ -905,6 +1016,104 @@ def test_delete_root_directory_replacement_precedes_all_unlinks(tmp_path) -> Non
     observed_files = {
         path.relative_to(relocated).as_posix(): path.read_bytes()
         for path in relocated.rglob("*")
+        if path.is_file()
+    }
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "partial_delete"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert observed_files == expected_files
+
+
+def test_delete_parent_link_replacement_precedes_all_unlinks(tmp_path) -> None:
+    probe_target = tmp_path / "parent-symlink-probe-target"
+    probe_link = tmp_path / "parent-symlink-probe-link"
+    probe_target.mkdir()
+    try:
+        probe_link.symlink_to(probe_target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is not available")
+    probe_link.unlink()
+    probe_target.rmdir()
+
+    run_id = "cleanup-fault-delete-parent-link"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="b",
+    )
+    staging = executor.store.cleanup_root / plan.actions[0].destination_relative_path
+    source = executor.store.cleanup_root / plan.actions[0].source_relative_path
+    expected_files = {
+        path.relative_to(source).as_posix(): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    parent = staging.parent
+    relocated_parent = executor.store.cleanup_root / "deleting.relocated"
+
+    def replace_parent_with_link(hook: str) -> None:
+        if hook != "delete.before_unlink_start":
+            return
+        parent.rename(relocated_parent)
+        parent.symlink_to(relocated_parent, target_is_directory=True)
+
+    executor.store.fault_injector = replace_parent_with_link
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    relocated_staging = relocated_parent / staging.name
+    observed_files = {
+        path.relative_to(relocated_staging).as_posix(): path.read_bytes()
+        for path in relocated_staging.rglob("*")
+        if path.is_file()
+    }
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "partial_delete"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert observed_files == expected_files
+
+
+def test_delete_parent_directory_replacement_precedes_all_unlinks(tmp_path) -> None:
+    run_id = "cleanup-fault-delete-parent-replacement"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="c",
+    )
+    staging = executor.store.cleanup_root / plan.actions[0].destination_relative_path
+    source = executor.store.cleanup_root / plan.actions[0].source_relative_path
+    expected_files = {
+        path.relative_to(source).as_posix(): path.read_bytes()
+        for path in source.rglob("*")
+        if path.is_file()
+    }
+    parent = staging.parent
+    relocated_parent = executor.store.cleanup_root / "deleting.relocated"
+
+    def replace_parent_directory(hook: str) -> None:
+        if hook != "delete.before_unlink_start":
+            return
+        parent.rename(relocated_parent)
+        parent.mkdir()
+
+    executor.store.fault_injector = replace_parent_directory
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    relocated_staging = relocated_parent / staging.name
+    observed_files = {
+        path.relative_to(relocated_staging).as_posix(): path.read_bytes()
+        for path in relocated_staging.rglob("*")
         if path.is_file()
     }
 

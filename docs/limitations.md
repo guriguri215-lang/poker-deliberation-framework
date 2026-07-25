@@ -144,6 +144,9 @@
 - quarantine と delete は別 plan・別 destructive approval で、固定30日待機を短縮しない。
 - delete は transaction-specific staging と `delete_prepared` を経由する。partial unlink、
   journal後、rename後、pointer replace不確実時は自動retry／resume／repairせず、人間判断を要する。
+- current reader は到達可能な revision と対応する standalone journal だけを authority とし、
+  pointer 未公開の orphan revision を replay success に採用しない。`delete_prepared` replay は
+  staging の exact/partial/absent/unreadable を再観測して effect を保守的に報告する。
 - same-volume local filesystem と cooperating process/kernel lock が前提である。cross-volume、
   distributed atomicity、network filesystem、exactly-once、process-tree cancellationを保証しない。
 - `os.replace`、file fsync、利用可能な場合のdirectory syncを用いるが、hardware cache、突然の電源断、

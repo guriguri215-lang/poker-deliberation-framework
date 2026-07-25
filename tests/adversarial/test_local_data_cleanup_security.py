@@ -26,6 +26,7 @@ from poker_deliberation.storage.local_data_cleanup_store import (
 )
 from poker_deliberation.storage.revision_canonical import CanonicalStorageError
 from poker_deliberation.storage.terminal_models import ProductRunError
+from tests.fault.test_local_data_cleanup_failures import _prepare_delete_fixture
 from tests.integration.test_local_data_cleanup_executor import (
     CleanupAuthority,
     _approve_cleanup,
@@ -193,6 +194,11 @@ def test_cleanup_root_product_binding_cannot_be_reused_with_another_root(
         authority_provider=provider,
     )
     assert committed.outcome_kind == "committed"
+    assert second_executor.inspect_cleanup_root().status == "corrupt"
+
+    with pytest.raises(CleanupStorageError) as inspect_error:
+        second_executor.inspect_reconciliation(plan.plan)
+    assert inspect_error.value.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
 
     with pytest.raises(CleanupStorageError) as replay_error:
         second_executor.store.read_operation(
@@ -210,6 +216,73 @@ def test_cleanup_root_product_binding_cannot_be_reused_with_another_root(
     )
     assert cross_root_replay.failure is not None
     assert cross_root_replay.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+
+    recreated_source = first.product_store.foundation.runs_root / "security-run"
+    recreated_source.mkdir()
+    (recreated_source / "unexpected.json").write_text("{}", encoding="utf-8")
+    recreated_report = first_executor.inspect_reconciliation(plan.plan)
+
+    assert recreated_report.observed_source == "mismatch"
+    assert recreated_report.classification != "committed"
+
+
+def test_missing_standalone_journal_invalidates_reachable_cleanup_history(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "c" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-missing-journal-execution",
+        idempotency_key="security-missing-journal-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-missing-journal-approval",
+        decision_at=SECURITY_AT,
+    )
+    committed = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-missing-journal-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert committed.outcome_kind == "committed"
+
+    run_hash = run_id_sha256("security-run")
+    transactions = cleanup_root / "runs" / run_hash / "transactions"
+    journal_root = transactions / committed.transaction_id
+    (journal_root / "transaction.json").unlink()
+    journal_root.rmdir()
+    transactions.rmdir()
+
+    with pytest.raises(CleanupStorageError) as read_error:
+        executor.store.read_current(run_hash)
+    assert read_error.value.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
+
+    executor.clock = lambda: SECURITY_AT + timedelta(days=31)
+    delete = executor.dry_run_delete(
+        "security-run",
+        execution_id="security-missing-journal-delete",
+        idempotency_key="security-missing-journal-delete-key",
+        expires_at=SECURITY_AT + timedelta(days=31, hours=1),
+    )
+    assert delete.failure is not None
+    assert delete.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
 
 
 def test_dangling_former_product_namespace_is_not_treated_as_detached(
@@ -663,3 +736,123 @@ def test_authority_revoked_on_in_lock_recheck_still_has_mutation_zero(
     assert result.failure.code is CleanupFailureCode.AUTHORITY_REVOKED
     assert not (cleanup_root / "runs" / run_id_sha256("security-run")).exists()
     assert (tmp_path / "product" / "runs" / "security-run").is_dir()
+
+
+def test_final_authority_callback_mutation_is_rescanned_before_quarantine_move(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "d" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-final-callback-execution",
+        idempotency_key="security-final-callback-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, approved_provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-final-callback-approval",
+        decision_at=SECURITY_AT,
+    )
+    run_path = orchestrator.product_store.foundation.runs_root / "security-run"
+
+    class MutateOnThirdResolution:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_actor(
+            self,
+            actor_id: str,
+            *,
+            decision_at: datetime,
+        ) -> ApprovalAuthoritySnapshotV2:
+            self.calls += 1
+            if self.calls == 3:
+                (run_path / "callback-mutation.json").write_text("{}", encoding="utf-8")
+            return approved_provider.resolve_actor(actor_id, decision_at=decision_at)
+
+    provider = MutateOnThirdResolution()
+    before_cleanup = tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*"))
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-final-callback-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert provider.calls == 3
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.STALE_SOURCE
+    assert tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*")) == (
+        before_cleanup
+    )
+    assert run_path.is_dir()
+    assert (run_path / "callback-mutation.json").is_file()
+    assert not (cleanup_root / "quarantine" / "security-run").exists()
+
+
+def test_final_authority_callback_mutation_is_rescanned_before_delete_move(
+    tmp_path: Path,
+) -> None:
+    run_id = "security-delete-final-callback"
+    executor, plan, request_id, approved_provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="e",
+    )
+    source = executor.store.cleanup_root / "quarantine" / run_id
+
+    class MutateOnThirdResolution:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_actor(
+            self,
+            actor_id: str,
+            *,
+            decision_at: datetime,
+        ) -> ApprovalAuthoritySnapshotV2:
+            self.calls += 1
+            if self.calls == 3:
+                (source / "callback-mutation.json").write_text("{}", encoding="utf-8")
+            return approved_provider.resolve_actor(actor_id, decision_at=decision_at)
+
+    provider = MutateOnThirdResolution()
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    current = executor.store.read_current(run_id_sha256(run_id))
+
+    assert provider.calls == 3
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.STALE_SOURCE
+    assert result.failure.filesystem_effect == "none"
+    assert current is not None
+    assert current[0].state == "quarantined"
+    assert source.is_dir()
+    assert (source / "callback-mutation.json").is_file()
+    assert not any((executor.store.cleanup_root / "deleting").iterdir())
+    assert not (
+        executor.store.cleanup_root
+        / "runs"
+        / run_id_sha256(run_id)
+        / "transactions"
+        / result.transaction_id
+    ).exists()

@@ -1827,6 +1827,16 @@ class RunRevisionStore:
             },
         )
 
+    def inspect_root_authority_binding(self) -> RunAuthorityBindingV1:
+        """Return the live product-root identity without touching run lock state."""
+
+        _marker, marker_sha = self._ownership("root-binding")
+        return RunAuthorityBindingV1(
+            run_id="root-binding",
+            ownership_marker_sha256=marker_sha,
+            revision_root_identity_sha256=self._revision_root_authority_identity_sha256(),
+        )
+
     def _require_detached_namespace(self, run_id: str) -> None:
         verify_directory(self.runs_root)
         alias = ascii_casefold(run_id)

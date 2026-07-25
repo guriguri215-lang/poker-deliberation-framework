@@ -179,6 +179,10 @@ resource limits、execution/idempotency/expiry を P2-013A `CanonicalActionPlanV
 executor は immutable approval chain と actor/provider authority を product または detached-run
 lock 内の effect 直前に再検証する。失効、revocation、scope/digest/actor/provider mismatch は
 filesystem effect zero である。
+外部 authority/hold/cancellation/clock callback の後に product/cleanup current、source tree、
+destination absence、same-volume を再読してから rename する。cleanup root の read/inspect は
+保存 marker だけでなく live product-root ownership/root identity と再照合し、別 root への
+marker 再利用を initialized/committed と判定しない。
 
 control artifact は bounded identifiers と purpose-separated SHA-256 binding を保存し、raw payload、
 credential、approval reason、provider input、traceback を保存しない。ただし同権限の malicious

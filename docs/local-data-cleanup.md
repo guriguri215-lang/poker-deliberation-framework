@@ -27,6 +27,8 @@ product/legacy root と重なる場所は cleanup root にできない。
 cleanup root の marker は、各 dry-run/execute/read で actual product authority の root identity と
 ownership marker に再照合する。別 repository の配下、path component に symlink/junction/reparse
 を含む root、unknown root entry がある root も fail closed とする。
+executor 経由の root inspection と reconciliation inspection も同じ live product-root binding を
+必須とし、marker が別 product root に属する場合は initialized/committed と報告しない。
 
 ## 2段階の状態遷移
 
@@ -47,7 +49,10 @@ product run を直接削除する API はない。
 許可される cleanup current の遷移は
 `quarantined -> delete_prepared -> deleted` だけである。各 revision は transaction、plan、
 approval binding、receipt、tombstone、前 manifest hash、期待 pointer hash を immutable に持つ。
-reader は revision 1 まで lineage を再計算する。
+reader は current pointer から revision 1 まで到達可能な lineage だけを再計算する。到達不能な
+revision は成功 replay に採用しない。standalone transaction journal は到達可能な revision 1/2 と
+canonical bytes が完全一致しなければならず、delete authority 内で作成中の1 journalだけを
+transaction-local な strict read に明示して検証する。
 
 ## 承認 binding
 
@@ -88,6 +93,10 @@ effect 前の失敗は mutation zero とする。journal、rename、unlink、poi
 `inspect_reconciliation(plan)` は source/destination/staging/current/receipt/tombstone を
 read-only 分類するだけで、repair、resume、retry、lock stealing は行わない。
 partial delete の `delete_prepared` は新しい人間判断なしに自動再開しない。
+`delete_prepared` の exact replay も bounded reconciliation を行い、staging が exact の場合だけ
+`delete_staging_moved`、partial/absent の場合は `partial_delete`、unreadable の場合は
+`effect_unknown` と報告する。quarantine の committed 判定には destination exact に加えて
+product source absent を要求する。
 cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink 前に確認する。journal 後
 かつ effect 前の cancellation は exact journal/scaffold だけを巻き戻し、effect 開始後は
 `reconciliation_required` として停止する。
@@ -96,7 +105,10 @@ cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink
 
 - portable ID/path、NFC、case-fold alias、reserved device stem、root escape を拒否する。
 - symlink、reparse point、hardlink、Windows alternate data stream、unknown entry kind を拒否する。
-- effect 直前に current、tree identity、same-volume、source absent/destination exact を再検証する。
+- authority/hold/cancellation/clock callback を完了した後、effect 直前に authority、current、
+  tree identity、destination absence、same-volume をローカル再検証する。
+- journal directory 作成後から publish 完了前までの write/fsync fault は、部分 file を含む exact
+  transaction root を巻き戻す。巻き戻しを確認できない場合は成功にせず reconciliation を要求する。
 - plan は1 action、tree 10,000 entries、target 100,000,000 bytes、control artifact
   1,000,000 bytes、control/run 10,000,000 bytes、lifetime 86,400秒を上限とする。
 - capacity admission と cancellation は effect 前に fail closed とする。

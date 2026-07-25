@@ -248,5 +248,8 @@ cleanup root は product revision root と共有せず、run hash ごとの
 `runs/<run-hash>/transactions/`、`runs/<run-hash>/revisions/`、`current.json` に独立した immutable
 historyを持つ。各 revision は transaction、manifest、receipt、tombstone を保持する。current
 readerは pointer、transaction、payload location、plan/approval hash、state matrix、previous
-manifest hashを revision 1まで再計算する。product terminal stateは書き換えず、direct product
-delete APIも公開しない。
+manifest hashを revision 1まで再計算する。idempotency lookup は current から到達可能な revision
+だけを対象とし、pointer未公開の orphan revisionを成功として採用しない。standalone journal集合は
+到達可能な revision 1/2 と exact canonical bytesで一致させ、authority内で未公開の次 transaction
+を読む場合だけ internal pending transactionとして明示検証する。product terminal stateは
+書き換えず、direct product delete APIも公開しない。

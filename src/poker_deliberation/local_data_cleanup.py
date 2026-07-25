@@ -211,16 +211,33 @@ def _execution_failure(
 def _persisted_execution_result(
     plan: CleanupPlanV1,
     persisted: tuple[Any, Any, Any, Any],
+    *,
+    reconciliation: CleanupReconciliationReportV1 | None = None,
 ) -> CleanupExecutionResultV1:
     pointer, manifest, receipt, tombstone = persisted
     if pointer.state is CleanupState.DELETE_PREPARED:
+        if reconciliation is None:
+            raise ValueError("delete-prepared replay requires reconciliation evidence")
+        effect_unknown = (
+            reconciliation.classification == "effect_unknown"
+            or reconciliation.observed_staging == "unreadable"
+            or reconciliation.observed_current == "unreadable"
+        )
         return _execution_failure(
             plan,
-            CleanupFailureCode.RECONCILIATION_REQUIRED,
+            (
+                CleanupFailureCode.EFFECT_UNKNOWN
+                if effect_unknown
+                else CleanupFailureCode.RECONCILIATION_REQUIRED
+            ),
             transaction_id=manifest.transaction_id,
             cleanup_revision=pointer.revision,
-            filesystem_effect="delete_staging_moved",
-            domain_effect="current_advanced",
+            filesystem_effect=(
+                "delete_staging_moved"
+                if reconciliation.observed_staging == "exact"
+                else "partial_delete"
+            ),
+            domain_effect=("current_may_have_advanced" if effect_unknown else "current_advanced"),
         )
     expected_state = (
         CleanupState.QUARANTINED
@@ -731,7 +748,17 @@ class LocalDataCleanupExecutor:
         )
 
     def inspect_cleanup_root(self) -> CleanupRootInspectionV1:
-        return inspect_cleanup_root(self.store.cleanup_root)
+        inspection = inspect_cleanup_root(self.store.cleanup_root)
+        if inspection.status != "initialized":
+            return inspection
+        try:
+            self.store.marker()
+        except CleanupStorageError:
+            return CleanupRootInspectionV1(
+                status="corrupt",
+                recognized_relative_paths=inspection.recognized_relative_paths,
+            )
+        return inspection
 
     def inspect_reconciliation(
         self,
@@ -979,7 +1006,19 @@ class LocalDataCleanupExecutor:
                 approval_request_id=approval_request_id,
             )
             if persisted is not None:
-                return _persisted_execution_result(plan, persisted)
+                reconciliation = (
+                    self.store.inspect_reconciliation(
+                        plan,
+                        transaction_id=persisted[1].transaction_id,
+                    )
+                    if persisted[0].state is CleanupState.DELETE_PREPARED
+                    else None
+                )
+                return _persisted_execution_result(
+                    plan,
+                    persisted,
+                    reconciliation=reconciliation,
+                )
             if _cancelled(cancelled):
                 raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
             evaluated_at = self.clock()
@@ -1193,7 +1232,19 @@ class LocalDataCleanupExecutor:
                 approval_request_id=approval_request_id,
             )
             if persisted is not None:
-                return _persisted_execution_result(plan, persisted)
+                reconciliation = (
+                    self.store.inspect_reconciliation(
+                        plan,
+                        transaction_id=persisted[1].transaction_id,
+                    )
+                    if persisted[0].state is CleanupState.DELETE_PREPARED
+                    else None
+                )
+                return _persisted_execution_result(
+                    plan,
+                    persisted,
+                    reconciliation=reconciliation,
+                )
             if _cancelled(cancelled):
                 raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
             evaluated_at = self.clock()

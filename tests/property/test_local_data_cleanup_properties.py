@@ -5,12 +5,14 @@ from datetime import UTC, datetime, timedelta
 from hypothesis import given
 from hypothesis import strategies as st
 
+from poker_deliberation.local_data_cleanup import evaluate_cleanup_candidate
 from poker_deliberation.local_data_cleanup_canonical import (
     canonical_cleanup_bytes,
     cleanup_plan_sha256,
     parse_canonical_cleanup_json,
 )
 from poker_deliberation.local_data_cleanup_models import CleanupLimitsV1
+from tests.unit.test_local_data_cleanup_contracts import _evidence
 
 
 @given(
@@ -62,4 +64,12 @@ def test_datetime_canonicalization_is_stable_at_microsecond_precision() -> None:
     assert canonical_cleanup_bytes(value) == (
         b'{"expires_at":"2026-07-25T01:02:04.456789Z","generated_at":"2026-07-25T01:02:03.456789Z"}'
     )
-    assert cleanup_plan_sha256  # keep the separated plan hash import contract visible
+
+
+@given(identity=st.integers(min_value=0, max_value=1_000_000))
+def test_plan_identity_mutation_always_changes_digest(identity: int) -> None:
+    result = evaluate_cleanup_candidate(_evidence())
+    assert result.plan is not None
+    changed = result.plan.model_copy(update={"execution_id": f"cleanup-property-{identity}"})
+
+    assert cleanup_plan_sha256(changed) != cleanup_plan_sha256(result.plan)

@@ -255,10 +255,15 @@ def _write_exclusive(
 
 
 def _read_control(path: Path, model: type[Any], *, max_bytes: int) -> tuple[Any, bytes]:
-    info = verify_regular_single_link(path)
-    if info.st_size > max_bytes:
-        raise CanonicalStorageError("cleanup control artifact exceeds its byte limit")
-    data = path.read_bytes()
+    try:
+        info = verify_regular_single_link(path)
+        if info.st_size > max_bytes:
+            raise CanonicalStorageError("cleanup control artifact exceeds its byte limit")
+        data = path.read_bytes()
+    except CanonicalStorageError:
+        raise
+    except OSError as exc:
+        raise CanonicalStorageError("cleanup control artifact read failed") from exc
     return parse_cleanup_model(data, model, max_bytes=max_bytes), data
 
 
@@ -614,6 +619,8 @@ def _unlink_inventory_tree(
 ) -> int:
     """Unlink one previously verified tree without traversal or link following."""
 
+    root_info = root.lstat()
+    root_identity = (root_info.st_dev, root_info.st_ino)
     deleted = 0
     ordered = sorted(
         inventory.entries,
@@ -638,11 +645,49 @@ def _unlink_inventory_tree(
         if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
             raise CanonicalStorageError("delete staging contains a link or reparse point")
         if entry.entry_kind == "file":
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            identity = canonical_cleanup_sha256(
+                TREE_IDENTITY_DOMAIN,
+                {
+                    "entry_kind": "file",
+                    "relative_path": entry.relative_path,
+                    "st_dev": info.st_dev,
+                    "st_ino": info.st_ino,
+                    "size_bytes": info.st_size,
+                },
+            )
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_nlink != 1
+                or info.st_size != entry.size_bytes
+                or identity != entry.identity_sha256
+                or _has_nondefault_windows_stream(target)
+            ):
                 raise CanonicalStorageError("delete staging file identity changed")
+            data = target.read_bytes()
+            after = target.stat()
+            if (
+                len(data) != entry.size_bytes
+                or hashlib.sha256(data).hexdigest() != entry.content_sha256
+                or (after.st_dev, after.st_ino, after.st_size)
+                != (info.st_dev, info.st_ino, info.st_size)
+            ):
+                raise CanonicalStorageError("delete staging file content changed")
             target.unlink()
         else:
-            if not stat.S_ISDIR(info.st_mode):
+            identity = canonical_cleanup_sha256(
+                TREE_IDENTITY_DOMAIN,
+                {
+                    "entry_kind": "directory",
+                    "relative_path": entry.relative_path,
+                    "st_dev": info.st_dev,
+                    "st_ino": info.st_ino,
+                },
+            )
+            if (
+                not stat.S_ISDIR(info.st_mode)
+                or identity != entry.identity_sha256
+                or _has_nondefault_windows_stream(target)
+            ):
                 raise CanonicalStorageError("delete staging directory identity changed")
             target.rmdir()
         deleted += 1
@@ -655,6 +700,16 @@ def _unlink_inventory_tree(
         plan_sha256=plan_sha256,
         transaction_id=transaction_id,
     )
+    final_root_info = root.lstat()
+    final_root_attributes = getattr(final_root_info, "st_file_attributes", 0)
+    if (
+        not stat.S_ISDIR(final_root_info.st_mode)
+        or stat.S_ISLNK(final_root_info.st_mode)
+        or final_root_attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        or (final_root_info.st_dev, final_root_info.st_ino) != root_identity
+        or _has_nondefault_windows_stream(root)
+    ):
+        raise CanonicalStorageError("delete staging root identity changed")
     root.rmdir()
     progress[0] = deleted + 1
     _fault(fault_injector, "delete.after_staging_rmdir")
@@ -988,6 +1043,7 @@ class LocalDataCleanupStore:
         *,
         pending_transaction: CleanupTransactionV1 | None = None,
         pending_pointer: tuple[str, bytes] | None = None,
+        expected_marker: tuple[CleanupRootMarkerV1, str] | None = None,
     ) -> (
         tuple[
             CleanupCurrentPointerV1,
@@ -997,7 +1053,14 @@ class LocalDataCleanupStore:
         ]
         | None
     ):
-        marker, _marker_sha = self.marker()
+        marker, marker_sha = self.marker()
+        if expected_marker is not None and (
+            marker != expected_marker[0] or marker_sha != expected_marker[1]
+        ):
+            raise _fail(
+                CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                run_id_sha256=run_hash,
+            )
         control = self._run_control(run_hash)
         if not control.exists():
             return None
@@ -1684,7 +1747,13 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            if self.read_current(run_hash) is not None:
+            if (
+                self._read_current(
+                    run_hash,
+                    expected_marker=(marker, marker_sha),
+                )
+                is not None
+            ):
                 raise _fail(
                     CleanupFailureCode.STALE_CLEANUP_REVISION,
                     run_id_sha256=run_hash,
@@ -2022,7 +2091,10 @@ class LocalDataCleanupStore:
             if (control / "current.json").read_bytes() != pointer_bytes:
                 raise CanonicalStorageError("cleanup current pointer reread mismatch")
             _directory_sync(control)
-            verified = self.read_current(run_hash)
+            verified = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if verified is None or verified[0] != pointer:
                 raise CanonicalStorageError("cleanup committed state did not verify")
             return CleanupExecutionResultV1(
@@ -2269,7 +2341,10 @@ class LocalDataCleanupStore:
         final_pointer_attempted = False
         try:
             storage_checked_at = clock()
-            current = self.read_current(run_hash)
+            current = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if current is None:
                 raise _fail(
                     CleanupFailureCode.STALE_CLEANUP_REVISION,
@@ -2349,7 +2424,10 @@ class LocalDataCleanupStore:
             authority = self.terminal_store.foundation.acquire_detached_run_authority(run_id)
             self._require_product_binding(marker, authority)
             authority.revalidate()
-            locked_current = self.read_current(run_hash)
+            locked_current = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if (
                 locked_current is None
                 or cleanup_pointer_sha256(locked_current[0]) != prior_pointer_sha
@@ -2459,6 +2537,7 @@ class LocalDataCleanupStore:
             final_current = self._read_current(
                 run_hash,
                 pending_transaction=transaction_two,
+                expected_marker=(marker, marker_sha),
             )
             if (
                 final_current is None
@@ -2529,6 +2608,7 @@ class LocalDataCleanupStore:
             prepared_current = self._read_current(
                 run_hash,
                 pending_transaction=transaction_two,
+                expected_marker=(marker, marker_sha),
             )
             if (
                 prepared_current is None
@@ -2620,6 +2700,7 @@ class LocalDataCleanupStore:
             pending_current = self._read_current(
                 run_hash,
                 pending_transaction=transaction_two,
+                expected_marker=(marker, marker_sha),
             )
             if (
                 pending_current is None
@@ -2649,6 +2730,7 @@ class LocalDataCleanupStore:
                 run_hash,
                 pending_transaction=transaction_two,
                 pending_pointer=(temporary_two.name, pointer_two_bytes),
+                expected_marker=(marker, marker_sha),
             )
             if (
                 pending_before_prepare is None
@@ -2675,7 +2757,10 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError("delete-prepared current reread mismatch")
             _directory_sync(control)
             prepared_published = True
-            verified_two = self.read_current(run_hash)
+            verified_two = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if verified_two is None or verified_two[0] != pointer_two:
                 raise CanonicalStorageError("delete-prepared state did not verify")
 
@@ -2701,7 +2786,10 @@ class LocalDataCleanupStore:
             final_at = clock()
             if os.path.lexists(source) or os.path.lexists(destination):
                 raise CanonicalStorageError("delete payload namespace reappeared after final clock")
-            current_after_final_clock = self.read_current(run_hash)
+            current_after_final_clock = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if current_after_final_clock is None or current_after_final_clock[0] != pointer_two:
                 raise CanonicalStorageError("cleanup delete CAS changed after final clock")
             transaction_three_base = transaction_base | {
@@ -2795,7 +2883,10 @@ class LocalDataCleanupStore:
                     max_bytes=marker.limits.maximum_control_artifact_bytes,
                 )
             _directory_sync(revision_three)
-            verified_before_final = self.read_current(run_hash)
+            verified_before_final = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if verified_before_final is None or verified_before_final[0] != pointer_two:
                 raise CanonicalStorageError("cleanup delete CAS changed before final")
             pointer_three_bytes = canonical_cleanup_bytes(pointer_three)
@@ -2814,6 +2905,7 @@ class LocalDataCleanupStore:
             current_before_final_replace = self._read_current(
                 run_hash,
                 pending_pointer=(temporary_three.name, pointer_three_bytes),
+                expected_marker=(marker, marker_sha),
             )
             if (
                 current_before_final_replace is None
@@ -2832,7 +2924,10 @@ class LocalDataCleanupStore:
             if (control / "current.json").read_bytes() != pointer_three_bytes:
                 raise CanonicalStorageError("deleted current reread mismatch")
             _directory_sync(control)
-            verified_three = self.read_current(run_hash)
+            verified_three = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
             if verified_three is None or verified_three[0] != pointer_three:
                 raise CanonicalStorageError("deleted state did not verify")
             return CleanupExecutionResultV1(

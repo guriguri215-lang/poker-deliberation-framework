@@ -6,7 +6,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from poker_deliberation.local_data_cleanup import evaluate_cleanup_candidate
+from poker_deliberation.approval_canonical import action_digest_sha256
+from poker_deliberation.local_data_cleanup import (
+    cleanup_approval_action_plan,
+    evaluate_cleanup_candidate,
+)
 from poker_deliberation.local_data_cleanup_canonical import (
     CleanupCanonicalError,
     canonical_cleanup_bytes,
@@ -214,3 +218,22 @@ def test_any_plan_field_change_changes_digest() -> None:
     assert result.plan is not None
     changed = result.plan.model_copy(update={"execution_id": "cleanup-execution-2"})
     assert cleanup_plan_sha256(changed) != result.plan_sha256
+
+
+def test_p2_013a_action_plan_binds_exact_cleanup_digest_and_resource_bounds() -> None:
+    result = evaluate_cleanup_candidate(_evidence())
+    assert result.plan is not None
+    approval_plan = cleanup_approval_action_plan(result.plan)
+
+    assert approval_plan.action_category == "destructive_change"
+    assert approval_plan.executor_kind == "local_process"
+    assert approval_plan.executor_sha256 == result.plan.executor_sha256
+    assert approval_plan.destination_identifier == result.plan.cleanup_root_id
+    assert approval_plan.retention_policy_id == "p2-027a-local-data-policy-v1"
+    assert approval_plan.trace_policy_id == "p2-027b-local-data-cleanup-trace-v1"
+    assert approval_plan.execution_id == result.plan.execution_id
+    assert approval_plan.remote_idempotency_key == result.plan.idempotency_key
+    assert approval_plan.expires_at == result.plan.expires_at
+    assert approval_plan.outbound_fields[0].field_name == "cleanup_plan_sha256"
+    assert approval_plan.outbound_fields[0].content_sha256 == result.plan_sha256
+    assert action_digest_sha256(approval_plan) != result.plan_sha256

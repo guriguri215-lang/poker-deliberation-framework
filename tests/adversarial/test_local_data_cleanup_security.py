@@ -7,11 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from poker_deliberation.approval_canonical import approval_actor_sha256
+from poker_deliberation.approval_models import ApprovalAuthoritySnapshotV2
 from poker_deliberation.config import AppConfig
 from poker_deliberation.local_data_cleanup import LocalDataCleanupExecutor
 from poker_deliberation.local_data_cleanup_canonical import run_id_sha256
 from poker_deliberation.local_data_cleanup_models import (
     CleanupFailureCode,
+    CleanupLimitsV1,
     LegalHoldSnapshotV1,
 )
 from poker_deliberation.orchestrator import Orchestrator
@@ -21,8 +24,14 @@ from poker_deliberation.storage.local_data_cleanup_store import (
     initialize_cleanup_root,
     scan_cleanup_tree,
 )
+from poker_deliberation.storage.revision_canonical import CanonicalStorageError
+from tests.integration.test_local_data_cleanup_executor import (
+    CleanupAuthority,
+    _approve_cleanup,
+)
 
 NOW = datetime(2026, 7, 25, 12, tzinfo=UTC)
+SECURITY_AT = NOW + timedelta(days=400)
 
 
 class NoHold:
@@ -79,6 +88,16 @@ def test_cleanup_root_cannot_overlap_product_root(tmp_path: Path) -> None:
     assert caught.value.failure.code is CleanupFailureCode.PATH_CONFINEMENT_FAILED
 
 
+def test_cleanup_root_cannot_be_inside_repository_workspace(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+
+    with pytest.raises(CanonicalStorageError, match="excluded root"):
+        LocalDataCleanupExecutor(
+            Path.cwd() / "unapproved-cleanup-root",
+            orchestrator.product_store,
+        )
+
+
 def test_symlink_tree_is_rejected_without_touching_target(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -116,6 +135,62 @@ def test_hardlink_tree_is_rejected_without_unlinking_either_name(tmp_path: Path)
     assert first.exists() and second.exists()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="NTFS alternate streams are Windows-specific")
+def test_alternate_data_stream_is_rejected_without_deleting_base_file(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    base = target / "payload.json"
+    base.write_text("{}", encoding="utf-8")
+    stream = Path(f"{base}:hidden")
+    try:
+        stream.write_text("hidden", encoding="utf-8")
+    except OSError:
+        pytest.skip("alternate data streams are unavailable")
+
+    with pytest.raises(CleanupStorageError) as caught:
+        scan_cleanup_tree(target, run_id_sha256=run_id_sha256("security-run"))
+
+    assert caught.value.failure.code is CleanupFailureCode.PATH_CONFINEMENT_FAILED
+    assert base.read_text(encoding="utf-8") == "{}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="NTFS alternate streams are Windows-specific")
+def test_directory_alternate_stream_is_rejected(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "payload.json").write_text("{}", encoding="utf-8")
+    try:
+        Path(f"{target}:hidden").write_text("hidden", encoding="utf-8")
+    except OSError:
+        pytest.skip("directory alternate streams are unavailable")
+
+    with pytest.raises(CleanupStorageError) as caught:
+        scan_cleanup_tree(target, run_id_sha256=run_id_sha256("security-run"))
+
+    assert caught.value.failure.code is CleanupFailureCode.PATH_CONFINEMENT_FAILED
+
+
+def test_quarantine_namespace_case_alias_is_rejected(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(cleanup_root, orchestrator.product_store)
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "8" * 32,
+        initialized_at=NOW,
+    )
+    alias = cleanup_root / "quarantine" / "Security-Run"
+    alias.mkdir()
+
+    with pytest.raises(CleanupStorageError) as caught:
+        executor.store.quarantine_path("security-run")
+
+    assert caught.value.failure.code is CleanupFailureCode.ALIAS_CONFLICT
+    assert alias.is_dir()
+
+
 @pytest.mark.parametrize("run_id", ("../escape", "CON", "run:name", "run\\name"))
 def test_unsafe_run_id_has_no_cleanup_effect(tmp_path: Path, run_id: str) -> None:
     orchestrator = _orchestrator(tmp_path)
@@ -124,7 +199,7 @@ def test_unsafe_run_id_has_no_cleanup_effect(tmp_path: Path, run_id: str) -> Non
         cleanup_root,
         orchestrator.product_store,
         legal_hold_provider=NoHold(),
-        clock=lambda: NOW + timedelta(days=400),
+        clock=lambda: SECURITY_AT,
     )
     executor.initialize_cleanup_root(
         existing_run_id="security-run",
@@ -143,3 +218,252 @@ def test_unsafe_run_id_has_no_cleanup_effect(tmp_path: Path, run_id: str) -> Non
     assert result.failure is not None
     assert result.failure.code is CleanupFailureCode.INVALID_PLAN
     assert tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*")) == before
+
+
+def test_forged_plan_change_does_not_match_verified_approval(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: NOW + timedelta(days=400),
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "3" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-approved-execution",
+        idempotency_key="security-approved-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-approval-plan",
+        decision_at=SECURITY_AT,
+    )
+    forged = dry_run.plan.model_copy(
+        update={
+            "execution_id": "security-forged-execution",
+            "idempotency_key": "security-forged-key",
+        }
+    )
+    before = tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*"))
+
+    result = executor.execute_quarantine(
+        forged,
+        approval_run_id="security-approval-plan",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.APPROVAL_MISMATCH
+    assert (tmp_path / "product" / "runs" / "security-run").is_dir()
+    assert tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*")) == before
+
+
+def test_live_revocation_after_approval_prevents_effect(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "4" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-revoked-execution",
+        idempotency_key="security-revoked-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-approval-revoked",
+        decision_at=SECURITY_AT,
+    )
+    assert isinstance(provider, CleanupAuthority)
+    provider.actor = provider.actor.model_copy(update={"revocation_status": "revoked"})
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-approval-revoked",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.AUTHORITY_REVOKED
+    assert (tmp_path / "product" / "runs" / "security-run").is_dir()
+    assert not (cleanup_root / "quarantine" / "security-run").exists()
+
+
+def test_pre_effect_cancellation_is_mutation_zero(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "5" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-cancel-execution",
+        idempotency_key="security-cancel-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-approval-cancel",
+        decision_at=SECURITY_AT,
+    )
+    before = tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*"))
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-approval-cancel",
+        approval_request_id=request_id,
+        authority_provider=provider,
+        cancelled=lambda: True,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.CANCELLED
+    assert tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*")) == before
+    assert (tmp_path / "product" / "runs" / "security-run").is_dir()
+
+
+def test_control_capacity_exhaustion_fails_before_journal_or_move(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    initialize_cleanup_root(
+        cleanup_root,
+        orchestrator.product_store,
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "6" * 32,
+        initialized_at=NOW,
+        limits=CleanupLimitsV1(maximum_control_bytes_per_run=4_000_000),
+    )
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-capacity-execution",
+        idempotency_key="security-capacity-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-approval-capacity",
+        decision_at=SECURITY_AT,
+    )
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-approval-capacity",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.AUDIT_CAPACITY_EXCEEDED
+    assert not (cleanup_root / "runs" / run_id_sha256("security-run")).exists()
+    assert (tmp_path / "product" / "runs" / "security-run").is_dir()
+    assert not (cleanup_root / "quarantine" / "security-run").exists()
+
+
+def test_authority_revoked_on_in_lock_recheck_still_has_mutation_zero(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "7" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-in-lock-revoke-execution",
+        idempotency_key="security-in-lock-revoke-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, approved_provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-approval-in-lock-revoke",
+        decision_at=SECURITY_AT,
+    )
+
+    class RevokeSecondResolution:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_actor(
+            self,
+            actor_id: str,
+            *,
+            decision_at: datetime,
+        ) -> ApprovalAuthoritySnapshotV2:
+            self.calls += 1
+            assert actor_id == approved_provider.actor.actor_id
+            actor = (
+                approved_provider.actor
+                if self.calls == 1
+                else approved_provider.actor.model_copy(update={"revocation_status": "revoked"})
+            )
+            return ApprovalAuthoritySnapshotV2(
+                provider_id="test-cleanup-authority",
+                provider_version="1.0.0",
+                resolved_at=decision_at,
+                actor=actor,
+                actor_sha256=approval_actor_sha256(actor),
+            )
+
+    provider = RevokeSecondResolution()
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-approval-in-lock-revoke",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert provider.calls == 2
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.AUTHORITY_REVOKED
+    assert not (cleanup_root / "runs" / run_id_sha256("security-run")).exists()
+    assert (tmp_path / "product" / "runs" / "security-run").is_dir()

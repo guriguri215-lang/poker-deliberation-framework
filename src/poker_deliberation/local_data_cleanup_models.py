@@ -597,7 +597,11 @@ class CleanupTransactionV1(_CleanupModel):
     expected_revision: int = Field(ge=0)
     expected_pointer_sha256: Sha256 | None = None
     action_kind: CleanupActionKind
+    execution_id: PortableId
+    idempotency_key: PortableId
+    plan: CleanupPlanV1
     plan_sha256: Sha256
+    approval_binding: CleanupApprovalBindingV1
     approval_binding_sha256: Sha256
     source_tree_sha256: Sha256
     created_at: datetime
@@ -611,6 +615,20 @@ class CleanupTransactionV1(_CleanupModel):
             raise ValueError("cleanup transaction revision must increment by one")
         if (self.expected_revision == 0) != (self.expected_pointer_sha256 is None):
             raise ValueError("cleanup transaction pointer expectation mismatch")
+        from poker_deliberation.local_data_cleanup_canonical import (
+            cleanup_approval_binding_sha256,
+            cleanup_plan_sha256,
+        )
+
+        if (
+            self.plan_sha256 != cleanup_plan_sha256(self.plan)
+            or self.approval_binding_sha256
+            != cleanup_approval_binding_sha256(self.approval_binding)
+            or self.action_kind != self.plan.actions[0].action_kind
+            or self.execution_id != self.plan.execution_id
+            or self.idempotency_key != self.plan.idempotency_key
+        ):
+            raise ValueError("cleanup transaction plan or approval binding mismatch")
         return self
 
 
@@ -624,7 +642,12 @@ class CleanupManifestV1(_CleanupModel):
     previous_manifest_sha256: Sha256 | None = None
     expected_pointer_sha256: Sha256 | None = None
     state: CleanupState
+    action_kind: CleanupActionKind
+    execution_id: PortableId
+    idempotency_key: PortableId
+    plan: CleanupPlanV1
     plan_sha256: Sha256
+    approval_binding: CleanupApprovalBindingV1
     approval_binding_sha256: Sha256
     source_tree_sha256: Sha256
     receipt_sha256: Sha256
@@ -651,6 +674,32 @@ class CleanupManifestV1(_CleanupModel):
             or self.expected_pointer_sha256 is None
         ):
             raise ValueError("successor cleanup manifest requires exact lineage")
+        from poker_deliberation.local_data_cleanup_canonical import (
+            cleanup_approval_binding_sha256,
+            cleanup_plan_sha256,
+        )
+
+        if (
+            self.plan_sha256 != cleanup_plan_sha256(self.plan)
+            or self.approval_binding_sha256
+            != cleanup_approval_binding_sha256(self.approval_binding)
+            or self.action_kind != self.plan.actions[0].action_kind
+            or self.execution_id != self.plan.execution_id
+            or self.idempotency_key != self.plan.idempotency_key
+        ):
+            raise ValueError("cleanup manifest plan or approval binding mismatch")
+        if (
+            self.action_kind is CleanupActionKind.QUARANTINE_PRODUCT_RUN
+            and (self.revision != 1 or self.state is not CleanupState.QUARANTINED)
+        ) or (
+            self.action_kind is CleanupActionKind.DELETE_QUARANTINE_PAYLOAD
+            and (
+                (self.revision == 2 and self.state is not CleanupState.DELETE_PREPARED)
+                or (self.revision == 3 and self.state is not CleanupState.DELETED)
+                or self.revision not in {2, 3}
+            )
+        ):
+            raise ValueError("cleanup manifest action/state transition mismatch")
         return self
 
 
@@ -683,8 +732,12 @@ class CleanupReceiptV1(_CleanupModel):
     action_kind: CleanupActionKind
     run_id_sha256: Sha256
     transaction_id: TransactionId
+    execution_id: PortableId
+    idempotency_key: PortableId
     plan_sha256: Sha256
     approval_binding_sha256: Sha256
+    actor_sha256: Sha256
+    authority_snapshot_sha256: Sha256
     source_tree_sha256: Sha256
     result_state: CleanupState
     effect_started_at: datetime
@@ -695,6 +748,20 @@ class CleanupReceiptV1(_CleanupModel):
     @classmethod
     def receipt_utc(cls, value: datetime) -> datetime:
         return _utc(value, "cleanup receipt timestamp")
+
+    @model_validator(mode="after")
+    def receipt_action_state(self) -> CleanupReceiptV1:
+        if self.committed_at < self.effect_started_at:
+            raise ValueError("cleanup receipt commit precedes effect")
+        if (
+            self.action_kind is CleanupActionKind.QUARANTINE_PRODUCT_RUN
+            and self.result_state is not CleanupState.QUARANTINED
+        ) or (
+            self.action_kind is CleanupActionKind.DELETE_QUARANTINE_PAYLOAD
+            and self.result_state not in {CleanupState.DELETE_PREPARED, CleanupState.DELETED}
+        ):
+            raise ValueError("cleanup receipt action/state mismatch")
+        return self
 
 
 class CleanupTombstoneV1(_CleanupModel):
@@ -751,6 +818,21 @@ class CleanupExecutionResultV1(_CleanupModel):
                 raise ValueError("committed cleanup result lacks durable evidence")
             if self.failure is not None:
                 raise ValueError("committed cleanup result cannot contain a failure")
+            from poker_deliberation.local_data_cleanup_canonical import (
+                cleanup_receipt_sha256,
+                cleanup_tombstone_sha256,
+            )
+
+            if (
+                self.receipt is None
+                or self.tombstone is None
+                or self.receipt_sha256 != cleanup_receipt_sha256(self.receipt)
+                or self.tombstone_sha256 != cleanup_tombstone_sha256(self.tombstone)
+                or self.receipt.execution_id != self.execution_id
+                or self.receipt.idempotency_key != self.idempotency_key
+                or self.receipt.plan_sha256 != self.plan_sha256
+            ):
+                raise ValueError("committed cleanup result evidence mismatch")
         elif self.failure is None:
             raise ValueError("failed cleanup result requires a failure")
         return self

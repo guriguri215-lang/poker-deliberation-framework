@@ -12,13 +12,29 @@ from typing import Any, Protocol, cast
 
 from pydantic import TypeAdapter, ValidationError
 
+from poker_deliberation.approval_canonical import (
+    action_digest_sha256,
+    approval_authority_snapshot_sha256,
+    approval_decision_outcome_sha256,
+    approval_decision_record_sha256,
+)
+from poker_deliberation.approval_models import (
+    ApprovalFailureCode,
+    CanonicalActionPlanV2,
+    OutboundFieldBindingV2,
+)
 from poker_deliberation.approvals import (
     ApprovalLedgerCorruptError,
+    DecisionAuthorityProvider,
     read_approval_state_v2,
 )
 from poker_deliberation.local_data_cleanup_canonical import (
     canonical_cleanup_sha256,
+    cleanup_approval_binding_sha256,
     cleanup_plan_sha256,
+    cleanup_pointer_sha256,
+    cleanup_receipt_sha256,
+    cleanup_tombstone_sha256,
     run_id_sha256,
     tree_inventory_sha256,
 )
@@ -26,16 +42,21 @@ from poker_deliberation.local_data_cleanup_models import (
     ApprovalRetentionEvidenceV1,
     CleanupActionKind,
     CleanupActionV1,
+    CleanupApprovalBindingV1,
     CleanupCandidateEvidenceV1,
     CleanupDryRunResultV1,
+    CleanupExecutionResultV1,
     CleanupFailureCode,
     CleanupFailureV1,
     CleanupPlanV1,
+    CleanupReconciliationReportV1,
     CleanupRootInitializationOutcomeV1,
     CleanupRootInspectionV1,
+    CleanupState,
     LegalHoldSnapshotV1,
     LifecycleEligibilityV1,
     ProductRunSourceV1,
+    QuarantineSourceV1,
     cleanup_failure,
 )
 from poker_deliberation.local_data_policy import (
@@ -88,6 +109,220 @@ class UnavailableLegalHoldProvider:
     ) -> LegalHoldSnapshotV1:
         del run_id_sha256, evaluated_at
         raise RuntimeError("legal hold provider unavailable")
+
+
+class _ApprovalExecutionError(ValueError):
+    def __init__(self, code: CleanupFailureCode) -> None:
+        super().__init__(code.value)
+        self.code = code
+
+
+def cleanup_approval_action_plan(plan: CleanupPlanV1) -> CanonicalActionPlanV2:
+    """Return the exact P2-013A action plan that may authorize ``plan``."""
+
+    plan_sha = cleanup_plan_sha256(plan)
+    action = plan.actions[0].action_kind
+    operation = (
+        "Quarantine one verified terminal product run."
+        if action is CleanupActionKind.QUARANTINE_PRODUCT_RUN
+        else "Delete one verified quarantine payload through staging."
+    )
+    return CanonicalActionPlanV2(
+        operation=operation,
+        action_category="destructive_change",
+        executor_kind="local_process",
+        executor_identifier=plan.executor_id,
+        executor_version=plan.executor_version,
+        executor_sha256=plan.executor_sha256,
+        executor_availability="available",
+        outbound_fields=(
+            OutboundFieldBindingV2(
+                field_name="cleanup_plan_sha256",
+                classification="internal",
+                content_sha256=plan_sha,
+            ),
+        ),
+        destination_kind="filesystem",
+        destination_identifier=plan.cleanup_root_id,
+        retention_policy_id=plan.lifecycle.local_data_policy_id,
+        trace_policy_id="p2-027b-local-data-cleanup-trace-v1",
+        maximum_cost_microunits=0,
+        maximum_runtime_ms=86_400_000,
+        maximum_memory_bytes=plan.limits.maximum_target_bytes
+        + plan.limits.maximum_control_bytes_per_run,
+        maximum_output_bytes=plan.limits.maximum_control_bytes_per_run,
+        maximum_processes=1,
+        working_directory=None,
+        environment_name_allowlist=(),
+        expected_result_type="cleanup-execution-result-v1",
+        execution_id=plan.execution_id,
+        remote_idempotency_key=plan.idempotency_key,
+        expires_at=plan.expires_at,
+    )
+
+
+def _transaction_id(plan: CleanupPlanV1) -> str:
+    digest = canonical_cleanup_sha256(
+        "poker-local-data-cleanup-transaction-id-v1",
+        {
+            "run_id_sha256": plan.source.run_id_sha256,
+            "execution_id": plan.execution_id,
+            "idempotency_key": plan.idempotency_key,
+            "plan_sha256": cleanup_plan_sha256(plan),
+        },
+    )
+    return f"cleanup-txn-{digest[:32]}"
+
+
+def _execution_failure(
+    plan: CleanupPlanV1,
+    code: CleanupFailureCode,
+    *,
+    transaction_id: str | None = None,
+) -> CleanupExecutionResultV1:
+    plan_sha = cleanup_plan_sha256(plan)
+    transaction_id = transaction_id or _transaction_id(plan)
+    return CleanupExecutionResultV1(
+        outcome_kind="failed",
+        run_id_sha256=plan.source.run_id_sha256,
+        execution_id=plan.execution_id,
+        idempotency_key=plan.idempotency_key,
+        transaction_id=transaction_id,
+        plan_sha256=plan_sha,
+        cleanup_revision=plan.expected_cleanup_revision,
+        failure=cleanup_failure(
+            code,
+            run_id_sha256=plan.source.run_id_sha256,
+            plan_sha256=plan_sha,
+            transaction_id=transaction_id,
+        ),
+    )
+
+
+def _cancelled(callback: Callable[[], bool] | None) -> bool:
+    return callback is not None and callback()
+
+
+def _verify_cleanup_approval(
+    terminal_store: TerminalRunStore,
+    plan: CleanupPlanV1,
+    *,
+    approval_run_id: str,
+    request_id: str,
+    authority_provider: DecisionAuthorityProvider,
+    evaluated_at: datetime,
+) -> CleanupApprovalBindingV1:
+    """Verify immutable approval evidence and live authority for one execution."""
+
+    if (
+        evaluated_at.tzinfo is None
+        or evaluated_at.utcoffset() is None
+        or evaluated_at.utcoffset() != timedelta(0)
+        or evaluated_at >= plan.expires_at
+    ):
+        raise _ApprovalExecutionError(CleanupFailureCode.PLAN_EXPIRED)
+    try:
+        approval_read = terminal_store.read_current(approval_run_id)
+        state = read_approval_state_v2(
+            approval_read.payload_bytes("approval_ledger_v2.json"),
+            approval_read.payload_bytes("approval_decisions_v2.jsonl"),
+            approval_read.payload_bytes("approval_audit_v2.jsonl"),
+        )
+    except (ApprovalLedgerCorruptError, ProductRunError, KeyError, ValidationError, ValueError):
+        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISSING) from None
+    if state.ledger.run_id != approval_run_id:
+        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISMATCH)
+    request_matches = tuple(
+        request for request in state.ledger.requests if request.request_id == request_id
+    )
+    if len(request_matches) != 1:
+        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISSING)
+    request = request_matches[0]
+    expected_action = cleanup_approval_action_plan(plan)
+    expected_digest = action_digest_sha256(expected_action)
+    if (
+        request.state != "approved"
+        or request.action_plan != expected_action
+        or request.action_digest_sha256 != expected_digest
+        or request.required_authority_scope != "approve:destructive_change"
+        or evaluated_at >= request.expires_at
+    ):
+        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISMATCH)
+    record_matches = []
+    for record in state.decision_records:
+        result = next(
+            (
+                item
+                for item in record.outcome.request_results
+                if item.request_id == request.request_id
+            ),
+            None,
+        )
+        if result is not None:
+            record_matches.append((record, result))
+    if len(record_matches) != 1:
+        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISMATCH)
+    record, result = record_matches[0]
+    limitation = record.outcome.limitation
+    if (
+        result.decision != "approved"
+        or result.request_revision != request.request_revision
+        or result.action_digest_sha256 != expected_digest
+        or record.outcome.outcome_kind != "committed"
+        or record.outcome.run_status != "failed_with_limitations"
+        or limitation is None
+        or limitation.code is not ApprovalFailureCode.EXTERNAL_EXECUTOR_UNAVAILABLE
+        or record.record_sha256 != approval_decision_record_sha256(record)
+        or record.outcome_sha256 != approval_decision_outcome_sha256(record.outcome)
+    ):
+        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISMATCH)
+    saved_snapshot = record.authority_snapshot
+    try:
+        live_snapshot = authority_provider.resolve_actor(
+            saved_snapshot.actor.actor_id,
+            decision_at=evaluated_at,
+        )
+    except Exception:
+        raise _ApprovalExecutionError(CleanupFailureCode.UNAUTHORIZED_EXECUTION) from None
+    if (
+        live_snapshot.resolved_at != evaluated_at
+        or live_snapshot.provider_id != saved_snapshot.provider_id
+        or live_snapshot.provider_version != saved_snapshot.provider_version
+        or live_snapshot.actor != saved_snapshot.actor
+    ):
+        code = (
+            CleanupFailureCode.AUTHORITY_REVOKED
+            if live_snapshot.actor.revocation_status == "revoked"
+            else CleanupFailureCode.ACTOR_SPOOF
+        )
+        raise _ApprovalExecutionError(code)
+    actor = live_snapshot.actor
+    if actor.revocation_status == "revoked":
+        raise _ApprovalExecutionError(CleanupFailureCode.AUTHORITY_REVOKED)
+    if (
+        actor.verification_status != "verified"
+        or actor.revocation_status != "not_revoked"
+        or actor.authority_expires_at is None
+        or evaluated_at >= actor.authority_expires_at
+        or "approve:destructive_change" not in actor.authority_scopes
+    ):
+        raise _ApprovalExecutionError(CleanupFailureCode.UNAUTHORIZED_EXECUTION)
+    return CleanupApprovalBindingV1(
+        approval_run_id_sha256=run_id_sha256(approval_run_id),
+        approval_run_revision=approval_read.revision,
+        approval_pointer_sha256=approval_read.current_pointer_sha256,
+        approval_ledger_sha256=state.ledger_sha256,
+        request_id=request.request_id,
+        request_revision=request.request_revision,
+        action_digest_sha256=request.action_digest_sha256,
+        decision_id=record.decision_id,
+        decision_record_sha256=record.record_sha256,
+        decision_outcome_sha256=record.outcome_sha256,
+        actor_sha256=record.actor_sha256,
+        authority_snapshot_sha256=approval_authority_snapshot_sha256(saved_snapshot),
+        authority_provider_id=saved_snapshot.provider_id,
+        authority_provider_version=saved_snapshot.provider_version,
+    )
 
 
 def _executor_inventory_sha256() -> str:
@@ -251,6 +486,19 @@ def _approval_retention_expired(evidence: ApprovalRetentionEvidenceV1) -> bool:
     return expiry is None or evidence.evaluated_at >= expiry
 
 
+def _delete_staging_relative_path(source: QuarantineSourceV1, execution_id: str) -> str:
+    identity = canonical_cleanup_sha256(
+        "poker-local-data-cleanup-delete-staging-v1",
+        {
+            "run_id_sha256": source.run_id_sha256,
+            "execution_id": execution_id,
+            "cleanup_revision": source.cleanup_revision,
+            "cleanup_pointer_sha256": source.cleanup_pointer_sha256,
+        },
+    )
+    return f"deleting/{source.run_id_sha256[:32]}-{identity[:16]}"
+
+
 def evaluate_cleanup_candidate(
     evidence: CleanupCandidateEvidenceV1,
 ) -> CleanupDryRunResultV1:
@@ -306,7 +554,10 @@ def evaluate_cleanup_candidate(
         action = CleanupActionV1(
             action_kind=CleanupActionKind.DELETE_QUARANTINE_PAYLOAD,
             source_relative_path=f"quarantine/{source.run_id}",
-            destination_relative_path=f"deleting/{source.run_id}",
+            destination_relative_path=_delete_staging_relative_path(
+                source,
+                evidence.execution_id,
+            ),
         )
 
     plan = CleanupPlanV1(
@@ -362,6 +613,17 @@ class LocalDataCleanupExecutor:
     def inspect_cleanup_root(self) -> CleanupRootInspectionV1:
         return inspect_cleanup_root(self.store.cleanup_root)
 
+    def inspect_reconciliation(
+        self,
+        plan: CleanupPlanV1,
+    ) -> CleanupReconciliationReportV1:
+        """Return a read-only manual-reconciliation classification."""
+
+        return self.store.inspect_reconciliation(
+            plan,
+            transaction_id=_transaction_id(plan),
+        )
+
     def initialize_cleanup_root(
         self,
         *,
@@ -376,6 +638,539 @@ class LocalDataCleanupExecutor:
             root_id=root_id,
             initialized_at=initialized_at or self.clock(),
         )
+
+    def _revalidate_quarantine_eligibility(
+        self,
+        plan: CleanupPlanV1,
+        *,
+        evaluated_at: datetime,
+    ) -> None:
+        if (
+            not isinstance(plan.source, ProductRunSourceV1)
+            or plan.actions[0].action_kind is not CleanupActionKind.QUARANTINE_PRODUCT_RUN
+            or plan.executor_sha256 != _executor_inventory_sha256()
+            or plan.generated_at > evaluated_at
+            or evaluated_at >= plan.expires_at
+        ):
+            raise _ApprovalExecutionError(
+                CleanupFailureCode.PLAN_EXPIRED
+                if evaluated_at >= plan.expires_at
+                else CleanupFailureCode.INVALID_PLAN
+            )
+        try:
+            current = self.terminal_store.read_current(plan.source.run_id)
+            payloads = _payload_map(current)
+            if (
+                current.pointer.publication_kind != "product_terminal"
+                or current.resume_eligible
+                or current.completion_marker is None
+                or not current.lifecycle_verified
+            ):
+                raise _ApprovalExecutionError(CleanupFailureCode.ACTIVE_OR_PENDING)
+            lifecycle = _lifecycle_evidence(
+                payloads["lifecycle_audit.json"],
+                lifecycle_sha256=cast(str, current.manifest.lifecycle_audit_sha256),
+                evaluated_at=evaluated_at,
+            )
+            approvals = _approval_retention(
+                self.terminal_store,
+                plan.source.run_id,
+                payloads,
+                evaluated_at=evaluated_at,
+            )
+            try:
+                hold = self.legal_hold_provider.resolve(
+                    plan.source.run_id_sha256,
+                    evaluated_at=evaluated_at,
+                )
+            except Exception:
+                raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD) from None
+        except _ApprovalExecutionError:
+            raise
+        except (ApprovalLedgerCorruptError, ProductRunError, KeyError, ValidationError, ValueError):
+            raise _ApprovalExecutionError(CleanupFailureCode.CANDIDATE_INELIGIBLE) from None
+        except Exception:
+            raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD) from None
+        if (
+            lifecycle.local_data_policy_id != plan.lifecycle.local_data_policy_id
+            or lifecycle.local_data_policy_sha256 != plan.lifecycle.local_data_policy_sha256
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.POLICY_MISMATCH)
+        if (
+            not lifecycle.all_delete_candidates
+            or evaluated_at < lifecycle.latest_retention_expires_at
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.CANDIDATE_INELIGIBLE)
+        if approvals.v1_pending_count or approvals.v2_pending_count:
+            raise _ApprovalExecutionError(CleanupFailureCode.ACTIVE_OR_PENDING)
+        if not _approval_retention_expired(approvals):
+            raise _ApprovalExecutionError(CleanupFailureCode.CANDIDATE_INELIGIBLE)
+        if (
+            hold.run_id_sha256 != plan.source.run_id_sha256
+            or hold.resolved_at != evaluated_at
+            or hold.legal_hold
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD)
+        if (
+            shutil.disk_usage(self.store.cleanup_root).free
+            < plan.limits.maximum_control_bytes_per_run
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.CAPACITY_EXCEEDED)
+
+    def dry_run_delete(
+        self,
+        run_id: str,
+        *,
+        execution_id: str,
+        idempotency_key: str,
+        expires_at: datetime,
+    ) -> CleanupDryRunResultV1:
+        """Read one explicit quarantine current and return one delete plan."""
+
+        try:
+            validate_run_id(run_id)
+            run_hash = run_id_sha256(run_id)
+        except Exception:
+            return _dry_failure("0" * 64, CleanupFailureCode.INVALID_PLAN)
+        try:
+            evaluated_at = self.clock()
+            marker, marker_sha = self.store.marker()
+            current = self.store.read_current(run_hash)
+            if current is None:
+                return _dry_failure(run_hash, CleanupFailureCode.CANDIDATE_INELIGIBLE)
+            pointer, manifest, _receipt, tombstone = current
+            if (
+                pointer.state is not CleanupState.QUARANTINED
+                or manifest.action_kind is not CleanupActionKind.QUARANTINE_PRODUCT_RUN
+                or not isinstance(manifest.plan.source, ProductRunSourceV1)
+                or manifest.plan.source.run_id != run_id
+            ):
+                return _dry_failure(run_hash, CleanupFailureCode.STALE_CLEANUP_REVISION)
+            quarantine = self.store.quarantine_path(run_id)
+            inventory = scan_cleanup_tree(
+                quarantine,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            tree_sha = tree_inventory_sha256(inventory)
+            if (
+                tree_sha != tombstone.quarantine_tree_sha256
+                or tree_sha != manifest.source_tree_sha256
+            ):
+                return _dry_failure(run_hash, CleanupFailureCode.STALE_SOURCE)
+            stable = self.store.read_current(run_hash)
+            if stable is None or cleanup_pointer_sha256(stable[0]) != cleanup_pointer_sha256(
+                pointer
+            ):
+                return _dry_failure(run_hash, CleanupFailureCode.STALE_CLEANUP_REVISION)
+            try:
+                hold = self.legal_hold_provider.resolve(
+                    run_hash,
+                    evaluated_at=evaluated_at,
+                )
+            except Exception:
+                return _dry_failure(run_hash, CleanupFailureCode.LEGAL_HOLD)
+            if (
+                hold.run_id_sha256 != run_hash
+                or hold.resolved_at != evaluated_at
+                or hold.legal_hold
+            ):
+                return _dry_failure(run_hash, CleanupFailureCode.LEGAL_HOLD)
+            source = QuarantineSourceV1(
+                run_id=run_id,
+                run_id_sha256=run_hash,
+                cleanup_root_identity_sha256=marker.cleanup_root_identity_sha256,
+                cleanup_revision=pointer.revision,
+                cleanup_pointer_sha256=cleanup_pointer_sha256(pointer),
+                tombstone_sha256=cleanup_tombstone_sha256(tombstone),
+                quarantine_tree_sha256=tree_sha,
+                quarantine_entered_at=tombstone.quarantine_entered_at,
+                delete_eligible_at=tombstone.quarantine_entered_at + timedelta(days=30),
+            )
+            lifecycle = LifecycleEligibilityV1.model_validate(
+                manifest.plan.lifecycle.model_dump()
+                | {
+                    "evaluated_at": evaluated_at,
+                }
+            )
+            approval_retention = ApprovalRetentionEvidenceV1.model_validate(
+                manifest.plan.approval_retention.model_dump()
+                | {
+                    "evaluated_at": evaluated_at,
+                }
+            )
+            evidence = CleanupCandidateEvidenceV1(
+                cleanup_root_id=marker.root_id,
+                cleanup_root_marker_sha256=marker_sha,
+                executor_sha256=_executor_inventory_sha256(),
+                source=source,
+                tree_inventory=inventory,
+                lifecycle=lifecycle,
+                approval_retention=approval_retention,
+                legal_hold=hold,
+                expected_cleanup_revision=pointer.revision,
+                expected_cleanup_pointer_sha256=cleanup_pointer_sha256(pointer),
+                product_active=False,
+                ownership_verified=True,
+                path_confinement_verified=True,
+                integrity_verified=True,
+                lineage_verified=True,
+                cleanup_capacity_reserved=(
+                    shutil.disk_usage(self.store.cleanup_root).free
+                    >= marker.limits.maximum_control_bytes_per_run
+                ),
+                generated_at=evaluated_at,
+                expires_at=expires_at,
+                execution_id=execution_id,
+                idempotency_key=idempotency_key,
+                limits=marker.limits,
+            )
+            return evaluate_cleanup_candidate(evidence)
+        except CleanupStorageError as exc:
+            if isinstance(exc.failure, CleanupFailureV1):
+                return CleanupDryRunResultV1(
+                    outcome_kind="ineligible",
+                    run_id_sha256=run_hash,
+                    failure=exc.failure,
+                )
+            return _dry_failure(run_hash, CleanupFailureCode.INTERNAL_INVARIANT_ERROR)
+        except (ProductRunError, ValidationError, ValueError):
+            return _dry_failure(run_hash, CleanupFailureCode.CANDIDATE_INELIGIBLE)
+        except Exception:
+            return _dry_failure(run_hash, CleanupFailureCode.INTERNAL_INVARIANT_ERROR)
+
+    def execute_quarantine(
+        self,
+        plan: CleanupPlanV1,
+        *,
+        approval_run_id: str,
+        approval_request_id: str,
+        authority_provider: DecisionAuthorityProvider,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> CleanupExecutionResultV1:
+        """Execute one exact approved quarantine plan or return a typed failure."""
+
+        transaction_id = _transaction_id(plan)
+        try:
+            if _cancelled(cancelled):
+                raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
+            evaluated_at = self.clock()
+            approval = _verify_cleanup_approval(
+                self.terminal_store,
+                plan,
+                approval_run_id=approval_run_id,
+                request_id=approval_request_id,
+                authority_provider=authority_provider,
+                evaluated_at=evaluated_at,
+            )
+            approval_sha = cleanup_approval_binding_sha256(approval)
+            current = self.store.read_current(plan.source.run_id_sha256)
+            if current is not None:
+                pointer, manifest, receipt, tombstone = current
+                same_identity = (
+                    manifest.execution_id == plan.execution_id
+                    or manifest.idempotency_key == plan.idempotency_key
+                )
+                exact = (
+                    manifest.action_kind is CleanupActionKind.QUARANTINE_PRODUCT_RUN
+                    and manifest.execution_id == plan.execution_id
+                    and manifest.idempotency_key == plan.idempotency_key
+                    and manifest.plan_sha256 == cleanup_plan_sha256(plan)
+                    and manifest.approval_binding_sha256 == approval_sha
+                    and receipt.plan_sha256 == manifest.plan_sha256
+                    and receipt.approval_binding_sha256 == approval_sha
+                )
+                if exact:
+                    return CleanupExecutionResultV1(
+                        outcome_kind="committed",
+                        run_id_sha256=plan.source.run_id_sha256,
+                        execution_id=plan.execution_id,
+                        idempotency_key=plan.idempotency_key,
+                        transaction_id=manifest.transaction_id,
+                        plan_sha256=manifest.plan_sha256,
+                        cleanup_revision=pointer.revision,
+                        cleanup_pointer_sha256=cleanup_pointer_sha256(pointer),
+                        receipt=receipt,
+                        receipt_sha256=cleanup_receipt_sha256(receipt),
+                        tombstone=tombstone,
+                        tombstone_sha256=cleanup_tombstone_sha256(tombstone),
+                    )
+                raise _ApprovalExecutionError(
+                    CleanupFailureCode.IDEMPOTENCY_CONFLICT
+                    if same_identity
+                    else CleanupFailureCode.STALE_CLEANUP_REVISION
+                )
+            self._revalidate_quarantine_eligibility(plan, evaluated_at=evaluated_at)
+
+            def authorize_in_lock() -> CleanupApprovalBindingV1:
+                try:
+                    if _cancelled(cancelled):
+                        raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
+                    locked_at = self.clock()
+                    self._revalidate_quarantine_eligibility(plan, evaluated_at=locked_at)
+                    locked = _verify_cleanup_approval(
+                        self.terminal_store,
+                        plan,
+                        approval_run_id=approval_run_id,
+                        request_id=approval_request_id,
+                        authority_provider=authority_provider,
+                        evaluated_at=locked_at,
+                    )
+                    if locked != approval:
+                        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISMATCH)
+                    return locked
+                except _ApprovalExecutionError as exc:
+                    raise CleanupStorageError(
+                        cleanup_failure(
+                            exc.code,
+                            run_id_sha256=plan.source.run_id_sha256,
+                            plan_sha256=cleanup_plan_sha256(plan),
+                            transaction_id=transaction_id,
+                        )
+                    ) from None
+
+            return self.store._publish_quarantine(
+                plan,
+                transaction_id=transaction_id,
+                effect_at=evaluated_at,
+                authorize=authorize_in_lock,
+            )
+        except _ApprovalExecutionError as exc:
+            return _execution_failure(plan, exc.code, transaction_id=transaction_id)
+        except CleanupStorageError as exc:
+            failure = exc.failure
+            if isinstance(failure, CleanupFailureV1):
+                return CleanupExecutionResultV1(
+                    outcome_kind="failed",
+                    run_id_sha256=plan.source.run_id_sha256,
+                    execution_id=plan.execution_id,
+                    idempotency_key=plan.idempotency_key,
+                    transaction_id=transaction_id,
+                    plan_sha256=cleanup_plan_sha256(plan),
+                    cleanup_revision=plan.expected_cleanup_revision,
+                    failure=failure,
+                )
+            return _execution_failure(
+                plan,
+                CleanupFailureCode.INTERNAL_INVARIANT_ERROR,
+                transaction_id=transaction_id,
+            )
+        except Exception:
+            return _execution_failure(
+                plan,
+                CleanupFailureCode.INTERNAL_INVARIANT_ERROR,
+                transaction_id=transaction_id,
+            )
+
+    def _revalidate_delete_eligibility(
+        self,
+        plan: CleanupPlanV1,
+        *,
+        evaluated_at: datetime,
+    ) -> None:
+        if (
+            not isinstance(plan.source, QuarantineSourceV1)
+            or plan.actions[0].action_kind is not CleanupActionKind.DELETE_QUARANTINE_PAYLOAD
+            or plan.executor_sha256 != _executor_inventory_sha256()
+            or plan.generated_at > evaluated_at
+            or evaluated_at >= plan.expires_at
+        ):
+            raise _ApprovalExecutionError(
+                CleanupFailureCode.PLAN_EXPIRED
+                if evaluated_at >= plan.expires_at
+                else CleanupFailureCode.INVALID_PLAN
+            )
+        if evaluated_at < plan.source.delete_eligible_at:
+            raise _ApprovalExecutionError(CleanupFailureCode.CANDIDATE_INELIGIBLE)
+        marker, marker_sha = self.store.marker()
+        if (
+            marker.root_id != plan.cleanup_root_id
+            or marker_sha != plan.cleanup_root_marker_sha256
+            or marker.cleanup_root_identity_sha256 != plan.source.cleanup_root_identity_sha256
+            or plan.lifecycle.local_data_policy_id != DEFAULT_LOCAL_DATA_POLICY.policy_id
+            or plan.lifecycle.local_data_policy_sha256 != DEFAULT_LOCAL_DATA_POLICY.canonical_sha256
+            or not plan.lifecycle.all_delete_candidates
+            or evaluated_at < plan.lifecycle.latest_retention_expires_at
+            or plan.approval_retention.v1_pending_count
+            or plan.approval_retention.v2_pending_count
+            or not _approval_retention_expired(
+                ApprovalRetentionEvidenceV1.model_validate(
+                    plan.approval_retention.model_dump()
+                    | {
+                        "evaluated_at": evaluated_at,
+                    }
+                )
+            )
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.POLICY_MISMATCH)
+        current = self.store.read_current(plan.source.run_id_sha256)
+        if current is None:
+            raise _ApprovalExecutionError(CleanupFailureCode.STALE_CLEANUP_REVISION)
+        pointer, _manifest, _receipt, tombstone = current
+        if (
+            pointer.state is not CleanupState.QUARANTINED
+            or pointer.revision != plan.source.cleanup_revision
+            or cleanup_pointer_sha256(pointer) != plan.source.cleanup_pointer_sha256
+            or cleanup_tombstone_sha256(tombstone) != plan.source.tombstone_sha256
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.STALE_CLEANUP_REVISION)
+        quarantine = self.store.quarantine_path(plan.source.run_id)
+        try:
+            inventory = scan_cleanup_tree(
+                quarantine,
+                run_id_sha256=plan.source.run_id_sha256,
+                limits=marker.limits,
+            )
+            try:
+                hold = self.legal_hold_provider.resolve(
+                    plan.source.run_id_sha256,
+                    evaluated_at=evaluated_at,
+                )
+            except Exception:
+                raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD) from None
+        except CleanupStorageError:
+            raise
+        except Exception:
+            raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD) from None
+        if (
+            tree_inventory_sha256(inventory) != plan.tree_inventory_sha256
+            or tree_inventory_sha256(inventory) != plan.source.quarantine_tree_sha256
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.STALE_SOURCE)
+        if (
+            hold.run_id_sha256 != plan.source.run_id_sha256
+            or hold.resolved_at != evaluated_at
+            or hold.legal_hold
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD)
+        if (
+            shutil.disk_usage(self.store.cleanup_root).free
+            < plan.limits.maximum_control_bytes_per_run
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.CAPACITY_EXCEEDED)
+
+    def execute_delete(
+        self,
+        plan: CleanupPlanV1,
+        *,
+        approval_run_id: str,
+        approval_request_id: str,
+        authority_provider: DecisionAuthorityProvider,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> CleanupExecutionResultV1:
+        """Execute one exact approved staged-delete plan."""
+
+        transaction_id = _transaction_id(plan)
+        try:
+            if _cancelled(cancelled):
+                raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
+            evaluated_at = self.clock()
+            approval = _verify_cleanup_approval(
+                self.terminal_store,
+                plan,
+                approval_run_id=approval_run_id,
+                request_id=approval_request_id,
+                authority_provider=authority_provider,
+                evaluated_at=evaluated_at,
+            )
+            approval_sha = cleanup_approval_binding_sha256(approval)
+            current = self.store.read_current(plan.source.run_id_sha256)
+            if current is not None and current[0].state is not CleanupState.QUARANTINED:
+                pointer, manifest, receipt, tombstone = current
+                same_identity = (
+                    manifest.execution_id == plan.execution_id
+                    or manifest.idempotency_key == plan.idempotency_key
+                )
+                exact = (
+                    pointer.state is CleanupState.DELETED
+                    and manifest.action_kind is CleanupActionKind.DELETE_QUARANTINE_PAYLOAD
+                    and manifest.execution_id == plan.execution_id
+                    and manifest.idempotency_key == plan.idempotency_key
+                    and manifest.plan_sha256 == cleanup_plan_sha256(plan)
+                    and manifest.approval_binding_sha256 == approval_sha
+                )
+                if exact:
+                    return CleanupExecutionResultV1(
+                        outcome_kind="committed",
+                        run_id_sha256=plan.source.run_id_sha256,
+                        execution_id=plan.execution_id,
+                        idempotency_key=plan.idempotency_key,
+                        transaction_id=manifest.transaction_id,
+                        plan_sha256=manifest.plan_sha256,
+                        cleanup_revision=pointer.revision,
+                        cleanup_pointer_sha256=cleanup_pointer_sha256(pointer),
+                        receipt=receipt,
+                        receipt_sha256=cleanup_receipt_sha256(receipt),
+                        tombstone=tombstone,
+                        tombstone_sha256=cleanup_tombstone_sha256(tombstone),
+                    )
+                if pointer.state is CleanupState.DELETE_PREPARED and same_identity:
+                    raise _ApprovalExecutionError(CleanupFailureCode.RECONCILIATION_REQUIRED)
+                raise _ApprovalExecutionError(
+                    CleanupFailureCode.IDEMPOTENCY_CONFLICT
+                    if same_identity
+                    else CleanupFailureCode.STALE_CLEANUP_REVISION
+                )
+            self._revalidate_delete_eligibility(plan, evaluated_at=evaluated_at)
+
+            def authorize_in_lock() -> CleanupApprovalBindingV1:
+                try:
+                    if _cancelled(cancelled):
+                        raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
+                    locked_at = self.clock()
+                    self._revalidate_delete_eligibility(plan, evaluated_at=locked_at)
+                    locked = _verify_cleanup_approval(
+                        self.terminal_store,
+                        plan,
+                        approval_run_id=approval_run_id,
+                        request_id=approval_request_id,
+                        authority_provider=authority_provider,
+                        evaluated_at=locked_at,
+                    )
+                    if locked != approval:
+                        raise _ApprovalExecutionError(CleanupFailureCode.APPROVAL_MISMATCH)
+                    return locked
+                except _ApprovalExecutionError as exc:
+                    raise CleanupStorageError(
+                        cleanup_failure(
+                            exc.code,
+                            run_id_sha256=plan.source.run_id_sha256,
+                            plan_sha256=cleanup_plan_sha256(plan),
+                            transaction_id=transaction_id,
+                        )
+                    ) from None
+
+            return self.store._publish_delete(
+                plan,
+                transaction_id=transaction_id,
+                effect_at=evaluated_at,
+                authorize=authorize_in_lock,
+            )
+        except _ApprovalExecutionError as exc:
+            return _execution_failure(plan, exc.code, transaction_id=transaction_id)
+        except CleanupStorageError as exc:
+            if isinstance(exc.failure, CleanupFailureV1):
+                return CleanupExecutionResultV1(
+                    outcome_kind="failed",
+                    run_id_sha256=plan.source.run_id_sha256,
+                    execution_id=plan.execution_id,
+                    idempotency_key=plan.idempotency_key,
+                    transaction_id=transaction_id,
+                    plan_sha256=cleanup_plan_sha256(plan),
+                    cleanup_revision=plan.expected_cleanup_revision,
+                    failure=exc.failure,
+                )
+            return _execution_failure(
+                plan,
+                CleanupFailureCode.INTERNAL_INVARIANT_ERROR,
+                transaction_id=transaction_id,
+            )
+        except Exception:
+            return _execution_failure(
+                plan,
+                CleanupFailureCode.INTERNAL_INVARIANT_ERROR,
+                transaction_id=transaction_id,
+            )
 
     def dry_run_quarantine(
         self,
@@ -440,10 +1235,13 @@ class LocalDataCleanupExecutor:
                 payloads,
                 evaluated_at=evaluated_at,
             )
-            hold = self.legal_hold_provider.resolve(
-                run_hash,
-                evaluated_at=evaluated_at,
-            )
+            try:
+                hold = self.legal_hold_provider.resolve(
+                    run_hash,
+                    evaluated_at=evaluated_at,
+                )
+            except Exception:
+                return _dry_failure(run_hash, CleanupFailureCode.LEGAL_HOLD)
             if hold.run_id_sha256 != run_hash or hold.resolved_at != evaluated_at:
                 return _dry_failure(run_hash, CleanupFailureCode.LEGAL_HOLD)
             free_bytes = shutil.disk_usage(self.store.cleanup_root).free
@@ -513,5 +1311,6 @@ __all__ = [
     "LegalHoldProvider",
     "LocalDataCleanupExecutor",
     "UnavailableLegalHoldProvider",
+    "cleanup_approval_action_plan",
     "evaluate_cleanup_candidate",
 ]

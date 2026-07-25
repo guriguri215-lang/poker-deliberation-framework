@@ -224,8 +224,7 @@ def test_approval_required_cli_uses_distinct_exit_code(tmp_path: Path, monkeypat
     shown = Orchestrator(AppConfig.from_env()).load_report(report["run_id"])
     assert shown.run_status == "approval_required"
     assert (
-        shown.agent_execution_records
-        == FinalReport.model_validate(report).agent_execution_records
+        shown.agent_execution_records == FinalReport.model_validate(report).agent_execution_records
     )
 
 

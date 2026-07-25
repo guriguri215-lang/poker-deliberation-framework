@@ -299,9 +299,7 @@ def main(argv: list[str] | None = None) -> int:
                         read.payload_bytes("approval_decisions_v2.jsonl"),
                         read.payload_bytes("approval_audit_v2.jsonl"),
                     )
-                    requests = {
-                        request.request_id: request for request in state.ledger.requests
-                    }
+                    requests = {request.request_id: request for request in state.ledger.requests}
                     decision_at = (
                         datetime.fromisoformat(args.decision_at)
                         if args.decision_at is not None
@@ -325,9 +323,7 @@ def main(argv: list[str] | None = None) -> int:
                                     1 if request is None else request.request_revision
                                 ),
                                 action_digest_sha256=(
-                                    "0" * 64
-                                    if request is None
-                                    else request.action_digest_sha256
+                                    "0" * 64 if request is None else request.action_digest_sha256
                                 ),
                                 decision=cast(DecisionValue, decision),
                             )
@@ -352,12 +348,10 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                         actor=actor,
                         decision_id=(
-                            args.decision_id
-                            or orchestrator.terminal_id_factory("decision")
+                            args.decision_id or orchestrator.terminal_id_factory("decision")
                         ),
                         idempotency_key=(
-                            args.idempotency_key
-                            or orchestrator.terminal_id_factory("decision-key")
+                            args.idempotency_key or orchestrator.terminal_id_factory("decision-key")
                         ),
                         items=tuple(items),
                         reason=str(redact_sensitive(args.reason, enabled=True)),

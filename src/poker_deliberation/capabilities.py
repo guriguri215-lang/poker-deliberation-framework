@@ -98,9 +98,10 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "product_integrated_durable_run",
-        "planned",
-        "P2-012B completion marker, verified product reader, migration, resume, and lifecycle "
-        "integration remain separately approval-gated.",
+        "implemented",
+        "P2-012B marker-last terminal publication, verified product reader/status mapping, "
+        "approval-checkpoint resume, read-only flat-v1 adapter, copy-only migration, durable "
+        "budget settlement, and lifecycle metadata integration are implemented.",
     ),
     Capability(
         "phase_1_hardening",

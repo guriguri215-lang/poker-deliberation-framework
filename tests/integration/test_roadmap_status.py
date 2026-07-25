@@ -28,6 +28,17 @@ from poker_deliberation.roadmap import (
 from scripts.generate_roadmap_status import main as generate_roadmap_status
 
 ROOT = Path(__file__).resolve().parents[2]
+P2_012B_EVIDENCE_COMMITS = [
+    "f8f2ed5501015d9d6602434fec4f52e4d85df36a",
+    "16a12e455003eef5c8c7663f3ba925cf0c5e0c36",
+    "2b3f38e7b7d424b8265c4ff380b4538116d7c96a",
+    "7fae6c8382d46b9a111ebc3bb6379f7a83b87114",
+    "3dfea2ea725cdddcc43c21a5edccea89ab2e6fca",
+    "f05742440886c506a6f1769cb850ef51e2b29117",
+    "7c60d213ac37bc2ca41d4bb69828cc558be08961",
+    "32b21a586659049dc7f3db725203f7a979272331",
+    "ac1a28c3bc87d8c3ab120be7c2b8b78e19832935",
+]
 
 
 def _by_id() -> dict[str, dict[str, object]]:
@@ -76,9 +87,13 @@ def _scope_digest(scope: object) -> str:
 
 def _rewind_split_rm_010(document: dict[str, object]) -> None:
     rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
+    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
     rm_010["status"] = "in_progress"
     rm_010["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
     document["status_history"]["RM-010"] = ["proposed", "planned", "in_progress"]
+    rm_012["status"] = "in_progress"
+    rm_012["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
+    document["status_history"]["RM-012"] = ["proposed", "planned", "in_progress"]
     document["milestone_progress"]["P2-010B"] = {
         "state": "in_progress",
         "history": ["not_started", "in_progress"],
@@ -99,6 +114,18 @@ def _rewind_p2_011b(document: dict[str, object]) -> None:
     document["milestone_progress"]["P2-011B"] = {
         "state": "not_started",
         "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+
+
+def _rewind_p2_012b_completion(document: dict[str, object]) -> None:
+    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
+    rm_012["status"] = "in_progress"
+    rm_012["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
+    document["status_history"]["RM-012"] = ["proposed", "planned", "in_progress"]
+    document["milestone_progress"]["P2-012B"] = {
+        "state": "in_progress",
+        "history": ["not_started", "in_progress"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
     }
 
@@ -169,13 +196,13 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert set(items) == EXPECTED_RM_IDS
 
     completed = {rm_id for rm_id, item in items.items() if item["status"] == "completed"}
-    assert completed == {f"RM-{number:03d}" for number in range(1, 12)} | {
+    assert completed == {f"RM-{number:03d}" for number in range(1, 13)} | {
         "RM-023",
         "RM-024",
     }
     assert items["RM-010"]["status"] == "completed"
     assert items["RM-011"]["status"] == "completed"
-    assert items["RM-012"]["status"] == "in_progress"
+    assert items["RM-012"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(13, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
@@ -370,8 +397,8 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
         "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
     )
     assert document["milestone_progress"]["P2-012A"]["state"] == "completed"
-    assert document["milestone_progress"]["P2-012B"]["state"] == "in_progress"
-    assert rm_012["status"] == "in_progress"
+    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
+    assert rm_012["status"] == "completed"
 
 
 def test_p2_012b_scope_revision_binds_the_exact_approved_proposal() -> None:
@@ -399,15 +426,12 @@ def test_p2_012b_scope_revision_binds_the_exact_approved_proposal() -> None:
     assert document["milestone_approvals"]["P2-012B"] == (
         "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
     )
-    assert document["milestone_progress"]["P2-012B"] == {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
+    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
 
 
 def test_p2_012b_semantic_scope_revision_is_exact_and_append_only() -> None:
     current = deepcopy(load_roadmap())
+    _rewind_p2_012b_completion(current)
     old_reference = "goal-rm012-p2-012b-2026-07-25"
     reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
     current["approval_records"].pop("goal-rm012-p2-012b-scope-revision-2-2026-07-25")
@@ -484,15 +508,35 @@ def test_p2_012b_final_test_compatibility_scope_is_exact() -> None:
     ):
         assert path in correction
     assert document["milestone_approvals"]["P2-012B"] == reference
-    assert document["milestone_progress"]["P2-012B"] == {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
+    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
+
+
+def test_p2_012b_completion_evidence_is_exact_and_parent_bound() -> None:
+    document = load_roadmap()
+    reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
+    scope = document["approval_records"][reference]["scope"]
+    progress = document["milestone_progress"]["P2-012B"]
+    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
+    evidence = progress["completion_evidence"]
+
+    assert progress["state"] == "completed"
+    assert progress["history"] == ["not_started", "in_progress", "completed"]
+    assert evidence["commits"] == P2_012B_EVIDENCE_COMMITS
+    assert evidence["paths"] == scope["milestone_implementation_scope"]["targets"]
+    assert evidence["tests"] == scope["milestone_implementation_scope"]["tests"]
+    assert rm_012["status"] == "completed"
+    assert document["status_history"]["RM-012"] == [
+        "proposed",
+        "planned",
+        "in_progress",
+        "completed",
+    ]
+    assert rm_012["completion_evidence"] == evidence
 
 
 def test_p2_012b_final_test_compatibility_scope_is_append_only() -> None:
     current = deepcopy(load_roadmap())
+    _rewind_p2_012b_completion(current)
     old_reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
     reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
     previous = deepcopy(current)
@@ -579,10 +623,10 @@ def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
 
 def test_in_progress_item_requires_completed_item_dependencies() -> None:
     counterexample = deepcopy(load_roadmap())
-    rm_014 = next(item for item in counterexample["items"] if item["id"] == "RM-014")
-    rm_014["status"] = "in_progress"
-    rm_014["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    counterexample["status_history"]["RM-014"].append("in_progress")
+    rm_015 = next(item for item in counterexample["items"] if item["id"] == "RM-015")
+    rm_015["status"] = "in_progress"
+    rm_015["human_approval"] = {"required": False, "state": "not_required", "topics": []}
+    counterexample["status_history"]["RM-015"].append("in_progress")
     with pytest.raises(ValueError, match="active item has incomplete dependency"):
         validate_roadmap(counterexample)
 
@@ -1267,8 +1311,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 7,
-        "in_progress": 1,
+        "completed": 8,
         "not_started": 4,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

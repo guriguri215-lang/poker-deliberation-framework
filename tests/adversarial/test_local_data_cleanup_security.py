@@ -1358,18 +1358,16 @@ def test_cleanup_initialization_release_mutation_requires_reconciliation(
         legal_hold_provider=NoHold(),
         clock=lambda: SECURITY_AT,
     )
-    relocated = tmp_path / "initialization-relocated-runs"
     mutated = False
 
-    def replace_after_release(hook: str) -> None:
+    def add_child_after_release(hook: str) -> None:
         nonlocal mutated
         runs = cleanup_root / "runs"
         if hook == "authority.after_close" and runs.is_dir():
             mutated = True
-            runs.rename(relocated)
-            runs.mkdir()
+            (runs / "unexpected.json").write_bytes(b"{}")
 
-    orchestrator.product_store.foundation.fault_injector = replace_after_release
+    orchestrator.product_store.foundation.fault_injector = add_child_after_release
     result = executor.initialize_cleanup_root(
         existing_run_id="security-run",
         root_id="cleanup-root-" + "1" * 32,
@@ -1380,6 +1378,86 @@ def test_cleanup_initialization_release_mutation_requires_reconciliation(
     assert mutated
     assert result.outcome_kind == "reconciliation_required"
     assert result.filesystem_effect == "control_only"
+
+
+def test_product_ownership_mutation_after_release_is_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "4" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-product-release-execution",
+        idempotency_key="security-product-release-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-product-release-approval",
+        decision_at=SECURITY_AT,
+    )
+    ownership = orchestrator.product_store.foundation.revision_root / "ownership.json"
+
+    def corrupt_product_ownership(hook: str) -> None:
+        if hook == "authority.after_close":
+            ownership.write_bytes(b"{}")
+
+    orchestrator.product_store.foundation.fault_injector = corrupt_product_ownership
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-product-release-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_initialization_failure_release_mutation_is_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+
+    def fail_before_marker(hook: str) -> None:
+        if hook == "initialize.before_marker":
+            raise RuntimeError("injected initialization failure")
+
+    def mutate_after_release(hook: str) -> None:
+        runs = cleanup_root / "runs"
+        if hook == "authority.after_close" and runs.is_dir():
+            (runs / "release-mutation.json").write_bytes(b"{}")
+
+    orchestrator.product_store.foundation.fault_injector = mutate_after_release
+    with pytest.raises(CleanupStorageError) as error:
+        initialize_cleanup_root(
+            cleanup_root,
+            orchestrator.product_store,
+            existing_run_id="security-run",
+            root_id="cleanup-root-" + "5" * 32,
+            initialized_at=NOW,
+            fault_injector=fail_before_marker,
+        )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert error.value.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
 
 
 def test_post_effect_failure_release_mutation_becomes_effect_unknown(

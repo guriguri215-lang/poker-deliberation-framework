@@ -107,6 +107,39 @@ class _OptionalControlSnapshot:
 
 
 @dataclass(frozen=True)
+class _ExactFileSnapshot:
+    path: Path
+    identity: tuple[int, int]
+    size: int
+    content_sha256: str
+    streams: _StreamSignature
+
+
+@dataclass(frozen=True)
+class _ProductAuthoritySnapshot:
+    directory_chains: _DirectoryChains
+    ownership: _ExactFileSnapshot
+    root_authority: _ExactFileSnapshot
+
+
+@dataclass(frozen=True)
+class _DirectoryEntriesSnapshot:
+    path: Path
+    chain: _DirectoryChain
+    maximum_entries: int
+    maximum_bytes: int
+    entries: tuple[_ControlEntrySnapshot, ...]
+
+
+@dataclass(frozen=True)
+class _InitializationStateSnapshot:
+    root: Path
+    parent_chain: _DirectoryChain
+    root_present: bool
+    directories: tuple[_DirectoryEntriesSnapshot, ...]
+
+
+@dataclass(frozen=True)
 class _RollbackJournal:
     transaction_root: Path
     transaction_identity: tuple[int, int]
@@ -481,7 +514,9 @@ def initialize_cleanup_root(
         raise _fail(CleanupFailureCode.PATH_CONFINEMENT_FAILED)
     created = False
     mutation_started = False
+    reconciliation_reported = False
     authority: ExistingRunAuthorityV1 | None = None
+    product_authority_snapshot: _ProductAuthoritySnapshot | None = None
 
     def release_and_verify_success(
         result: CleanupRootInitializationOutcomeV1,
@@ -493,18 +528,12 @@ def initialize_cleanup_root(
         nonlocal authority
         if authority is None:
             raise CanonicalStorageError("cleanup initialization authority disappeared")
-        directory_chains = tuple(
-            _capture_directory_chain(
-                path,
-                owned_anchor=root,
-            )
-            for path in (
-                root,
-                root / ".cleanup-control",
-                root / "runs",
-                root / "quarantine",
-                root / "deleting",
-            )
+        if product_authority_snapshot is None:
+            raise CanonicalStorageError("product authority snapshot is unavailable")
+        initialization_state = _capture_initialization_state(
+            root,
+            maximum_entries=limits.maximum_tree_entries,
+            maximum_bytes=limits.maximum_control_bytes_per_run,
         )
         held_authority = authority
         authority = None
@@ -512,7 +541,11 @@ def initialize_cleanup_root(
             held_authority.release()
         except LockReleaseError as exc:
             raise _fail(CleanupFailureCode.EFFECT_UNKNOWN) from exc
-        _verify_directory_chains(directory_chains)
+        _verify_product_authority_snapshot(
+            product_authority_snapshot,
+            terminal_store=terminal_store,
+        )
+        _verify_initialization_state(initialization_state)
         released_inspection = inspect_cleanup_root(
             root,
             expected_product_root_identity_sha256=product_identity_sha256,
@@ -525,11 +558,16 @@ def initialize_cleanup_root(
             or released_inspection.marker_sha256 != marker_sha256
         ):
             raise CanonicalStorageError("cleanup root changed after authority release")
-        _verify_directory_chains(directory_chains)
+        _verify_product_authority_snapshot(
+            product_authority_snapshot,
+            terminal_store=terminal_store,
+        )
+        _verify_initialization_state(initialization_state)
         return result
 
     try:
         authority = terminal_store.foundation.acquire_existing_run_authority(existing_run_id)
+        product_authority_snapshot = _capture_product_authority_snapshot(terminal_store)
         authority.revalidate()
         product_identity = authority.revision_root_identity_sha256
         inspection = inspect_cleanup_root(
@@ -627,6 +665,7 @@ def initialize_cleanup_root(
         raise
     except Exception as exc:
         if mutation_started or created:
+            reconciliation_reported = True
             return CleanupRootInitializationOutcomeV1(
                 outcome_kind="reconciliation_required",
                 root_id=root_id,
@@ -639,6 +678,7 @@ def initialize_cleanup_root(
         except OSError:
             root_present = False
         if root_present:
+            reconciliation_reported = True
             return CleanupRootInitializationOutcomeV1(
                 outcome_kind="reconciliation_required",
                 root_id=root_id,
@@ -649,9 +689,39 @@ def initialize_cleanup_root(
         raise _fail(CleanupFailureCode.INTERNAL_INVARIANT_ERROR) from exc
     finally:
         if authority is not None:
+            release_state_uncertain = False
+            initialization_state: _InitializationStateSnapshot | None = None
             try:
-                authority.release()
+                initialization_state = _capture_initialization_state(
+                    root,
+                    maximum_entries=limits.maximum_tree_entries,
+                    maximum_bytes=limits.maximum_control_bytes_per_run,
+                )
+            except Exception:
+                release_state_uncertain = True
+            held_authority = authority
+            authority = None
+            try:
+                held_authority.release()
             except LockReleaseError as exc:
+                raise _fail(CleanupFailureCode.EFFECT_UNKNOWN) from exc
+            try:
+                if product_authority_snapshot is None:
+                    raise CanonicalStorageError(
+                        "cleanup initialization release state is unavailable"
+                    )
+                _verify_product_authority_snapshot(
+                    product_authority_snapshot,
+                    terminal_store=terminal_store,
+                )
+                if release_state_uncertain or initialization_state is None:
+                    if not reconciliation_reported:
+                        raise CanonicalStorageError(
+                            "cleanup initialization release state is unavailable"
+                        )
+                else:
+                    _verify_initialization_state(initialization_state)
+            except Exception as exc:
                 raise _fail(CleanupFailureCode.EFFECT_UNKNOWN) from exc
 
 
@@ -921,7 +991,12 @@ def _capture_control_tree_snapshot(
     snapshot = _ControlTreeSnapshot(
         control=control,
         maximum_bytes=maximum_bytes,
-        directory_chains=tuple(chains),
+        directory_chains=tuple(
+            sorted(
+                chains,
+                key=lambda chain: str(chain[-1][0]).encode("utf-8"),
+            )
+        ),
         entries=tuple(sorted(entries, key=lambda item: item[0].encode("utf-8"))),
     )
     _verify_directory_chains(snapshot.directory_chains)
@@ -933,6 +1008,216 @@ def _verify_directory_chains(expected: _DirectoryChains) -> None:
         raise CanonicalStorageError("cleanup control directory state is unavailable")
     for chain in expected:
         _verify_directory_chain(chain)
+
+
+def _capture_exact_file_snapshot(path: Path, *, maximum_bytes: int) -> _ExactFileSnapshot:
+    data = _read_control_bytes(path, max_bytes=maximum_bytes)
+    info = verify_regular_single_link(path)
+    streams = _windows_stream_signature(path)
+    return _ExactFileSnapshot(
+        path=path,
+        identity=(info.st_dev, info.st_ino),
+        size=info.st_size,
+        content_sha256=hashlib.sha256(data).hexdigest(),
+        streams=streams,
+    )
+
+
+def _verify_exact_file_snapshot(
+    expected: _ExactFileSnapshot,
+    *,
+    maximum_bytes: int,
+) -> None:
+    observed = _capture_exact_file_snapshot(
+        expected.path,
+        maximum_bytes=maximum_bytes,
+    )
+    if observed != expected:
+        raise CanonicalStorageError("authority file changed")
+
+
+def _capture_product_authority_snapshot(
+    terminal_store: TerminalRunStore,
+) -> _ProductAuthoritySnapshot:
+    root = Path(os.path.abspath(terminal_store.revision_root))
+    legacy_root = Path(os.path.abspath(terminal_store.legacy_runs_root))
+    directory_chains = (
+        _capture_directory_chain(legacy_root, owned_anchor=legacy_root),
+        *tuple(
+            _capture_directory_chain(path, owned_anchor=root)
+            for path in (
+                root,
+                root / ".revision-control",
+                root / ".revision-control" / "locks",
+                root / "runs",
+            )
+        ),
+    )
+    return _ProductAuthoritySnapshot(
+        directory_chains=directory_chains,
+        ownership=_capture_exact_file_snapshot(
+            root / "ownership.json",
+            maximum_bytes=terminal_store.max_artifact_bytes,
+        ),
+        root_authority=_capture_exact_file_snapshot(
+            root / ".revision-init.authority.lock",
+            maximum_bytes=1,
+        ),
+    )
+
+
+def _verify_product_authority_snapshot(
+    expected: _ProductAuthoritySnapshot,
+    *,
+    terminal_store: TerminalRunStore,
+) -> None:
+    _verify_directory_chains(expected.directory_chains)
+    _verify_exact_file_snapshot(
+        expected.ownership,
+        maximum_bytes=terminal_store.max_artifact_bytes,
+    )
+    _verify_exact_file_snapshot(
+        expected.root_authority,
+        maximum_bytes=1,
+    )
+    _verify_directory_chains(expected.directory_chains)
+
+
+def _capture_directory_entries_snapshot(
+    path: Path,
+    *,
+    owned_anchor: Path,
+    maximum_entries: int,
+    maximum_bytes: int,
+) -> _DirectoryEntriesSnapshot:
+    chain = _capture_directory_chain(path, owned_anchor=owned_anchor)
+    entries: list[_ControlEntrySnapshot] = []
+    total_bytes = 0
+    for child in path.iterdir():
+        if len(entries) >= maximum_entries:
+            raise CanonicalStorageError("directory entry capacity exceeded")
+        info = child.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
+            raise CanonicalStorageError("directory entry contains a link")
+        streams = _windows_stream_signature(child)
+        if any(name != "::$DATA" for name, _size in streams):
+            raise CanonicalStorageError("directory entry has an alternate data stream")
+        if stat.S_ISDIR(info.st_mode):
+            kind: Literal["directory", "file"] = "directory"
+            size = 0
+            content_sha256 = None
+        elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            if info.st_size > maximum_bytes - total_bytes:
+                raise CanonicalStorageError("directory snapshot exceeds its byte limit")
+            data = child.read_bytes()
+            after = verify_regular_single_link(child)
+            if (
+                len(data) != info.st_size
+                or (after.st_dev, after.st_ino, after.st_size)
+                != (info.st_dev, info.st_ino, info.st_size)
+                or _windows_stream_signature(child) != streams
+            ):
+                raise CanonicalStorageError("directory entry changed during snapshot")
+            kind = "file"
+            size = info.st_size
+            total_bytes += size
+            content_sha256 = hashlib.sha256(data).hexdigest()
+        else:
+            raise CanonicalStorageError("directory entry is not regular")
+        entries.append(
+            (
+                child.name,
+                kind,
+                info.st_dev,
+                info.st_ino,
+                size,
+                content_sha256,
+                streams,
+            )
+        )
+    snapshot = _DirectoryEntriesSnapshot(
+        path=path,
+        chain=chain,
+        maximum_entries=maximum_entries,
+        maximum_bytes=maximum_bytes,
+        entries=tuple(sorted(entries, key=lambda item: item[0].encode("utf-8"))),
+    )
+    _verify_directory_chain(chain)
+    return snapshot
+
+
+def _verify_directory_entries_snapshot(
+    expected: _DirectoryEntriesSnapshot,
+    *,
+    owned_anchor: Path,
+) -> None:
+    _verify_directory_chain(expected.chain)
+    observed = _capture_directory_entries_snapshot(
+        expected.path,
+        owned_anchor=owned_anchor,
+        maximum_entries=expected.maximum_entries,
+        maximum_bytes=expected.maximum_bytes,
+    )
+    _verify_directory_chain(expected.chain)
+    if observed != expected:
+        raise CanonicalStorageError("directory entries changed")
+
+
+def _capture_initialization_state(
+    root: Path,
+    *,
+    maximum_entries: int,
+    maximum_bytes: int,
+) -> _InitializationStateSnapshot:
+    parent_chain = _capture_directory_chain(
+        root.parent,
+        owned_anchor=root.parent,
+    )
+    if not _strict_lexists(root):
+        return _InitializationStateSnapshot(
+            root=root,
+            parent_chain=parent_chain,
+            root_present=False,
+            directories=(),
+        )
+    directories = tuple(
+        _capture_directory_entries_snapshot(
+            path,
+            owned_anchor=root,
+            maximum_entries=maximum_entries,
+            maximum_bytes=maximum_bytes,
+        )
+        for path in (
+            root,
+            *(
+                root / name
+                for name in (".cleanup-control", "runs", "quarantine", "deleting")
+                if _strict_lexists(root / name)
+            ),
+        )
+    )
+    return _InitializationStateSnapshot(
+        root=root,
+        parent_chain=parent_chain,
+        root_present=True,
+        directories=directories,
+    )
+
+
+def _verify_initialization_state(
+    expected: _InitializationStateSnapshot,
+) -> None:
+    _verify_directory_chain(expected.parent_chain)
+    if _strict_lexists(expected.root) != expected.root_present:
+        raise CanonicalStorageError("cleanup initialization root presence changed")
+    for directory in expected.directories:
+        _verify_directory_entries_snapshot(
+            directory,
+            owned_anchor=expected.root,
+        )
+    _verify_directory_chain(expected.parent_chain)
 
 
 def _verify_control_tree_snapshot(
@@ -1628,6 +1913,11 @@ class LocalDataCleanupStore:
         if not _strict_lexists(control):
             return None
         _capture_directory_chain(control, owned_anchor=self.cleanup_root)
+        _capture_control_tree_snapshot(
+            control,
+            owned_anchor=self.cleanup_root,
+            maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+        )
         entries = {item.name: item for item in control.iterdir()}
         expected_control_entries = set(_RUN_CONTROL_ENTRIES)
         if pending_pointer is not None:
@@ -1955,8 +2245,13 @@ class LocalDataCleanupStore:
             owned_anchor=self.cleanup_root,
             maximum_bytes=marker.limits.maximum_control_bytes_per_run,
         )
+        product_snapshot = _capture_product_authority_snapshot(self.terminal_store)
 
         def verify_persisted_lineage() -> None:
+            _verify_product_authority_snapshot(
+                product_snapshot,
+                terminal_store=self.terminal_store,
+            )
             _verify_control_tree_snapshot(
                 lineage_snapshot,
                 owned_anchor=self.cleanup_root,
@@ -2367,10 +2662,13 @@ class LocalDataCleanupStore:
         source_moved = False
         pointer_replace_attempted = False
         rollback_journal: _RollbackJournal | None = None
+        source: Path | None = None
+        destination: Path | None = None
         source_parent_chain: _DirectoryChain | None = None
         destination_parent_chain: _DirectoryChain | None = None
         control_directory_chains: _DirectoryChains = ()
         control_tree_snapshot: _ControlTreeSnapshot | None = None
+        product_authority_snapshot: _ProductAuthoritySnapshot | None = None
 
         def capture_control_directory_chains(*directories: Path) -> None:
             nonlocal control_directory_chains
@@ -2383,8 +2681,16 @@ class LocalDataCleanupStore:
             )
 
         def verify_control_directory_chains() -> None:
-            if not control_directory_chains or control_tree_snapshot is None:
+            if (
+                not control_directory_chains
+                or control_tree_snapshot is None
+                or product_authority_snapshot is None
+            ):
                 raise CanonicalStorageError("cleanup control directory state is unavailable")
+            _verify_product_authority_snapshot(
+                product_authority_snapshot,
+                terminal_store=self.terminal_store,
+            )
             for chain in control_directory_chains:
                 _verify_directory_chain(chain)
             _verify_control_tree_snapshot(
@@ -2419,6 +2725,7 @@ class LocalDataCleanupStore:
 
         try:
             authority = self.terminal_store.foundation.acquire_existing_run_authority(run_id)
+            product_authority_snapshot = _capture_product_authority_snapshot(self.terminal_store)
             self._require_product_binding(marker, authority)
             current = self.terminal_store.read_current(run_id)
             if not self._same_product_current(plan, current):
@@ -3052,16 +3359,18 @@ class LocalDataCleanupStore:
                         owned_anchor=self.cleanup_root,
                         maximum_bytes=marker.limits.maximum_control_bytes_per_run,
                     )
-                    source_token = _tree_observation_token(
-                        source,
-                        run_id_sha256=run_hash,
-                        limits=marker.limits,
-                    )
-                    destination_token = _tree_observation_token(
-                        destination,
-                        run_id_sha256=run_hash,
-                        limits=marker.limits,
-                    )
+                    if source is not None:
+                        source_token = _tree_observation_token(
+                            source,
+                            run_id_sha256=run_hash,
+                            limits=marker.limits,
+                        )
+                    if destination is not None:
+                        destination_token = _tree_observation_token(
+                            destination,
+                            run_id_sha256=run_hash,
+                            limits=marker.limits,
+                        )
                 except Exception:
                     release_state_uncertain = True
                 held_authority = authority
@@ -3089,8 +3398,7 @@ class LocalDataCleanupStore:
                     if (
                         release_state_uncertain
                         or control_snapshot is None
-                        or source_token is None
-                        or destination_token is None
+                        or product_authority_snapshot is None
                     ):
                         raise CanonicalStorageError(
                             "quarantine release state could not be captured"
@@ -3099,14 +3407,26 @@ class LocalDataCleanupStore:
                         control_snapshot,
                         owned_anchor=self.cleanup_root,
                     )
-                    if source_token != _tree_observation_token(
-                        source,
-                        run_id_sha256=run_hash,
-                        limits=marker.limits,
-                    ) or destination_token != _tree_observation_token(
-                        destination,
-                        run_id_sha256=run_hash,
-                        limits=marker.limits,
+                    _verify_product_authority_snapshot(
+                        product_authority_snapshot,
+                        terminal_store=self.terminal_store,
+                    )
+                    if (
+                        source is not None
+                        and source_token
+                        != _tree_observation_token(
+                            source,
+                            run_id_sha256=run_hash,
+                            limits=marker.limits,
+                        )
+                    ) or (
+                        destination is not None
+                        and destination_token
+                        != _tree_observation_token(
+                            destination,
+                            run_id_sha256=run_hash,
+                            limits=marker.limits,
+                        )
                     ):
                         raise CanonicalStorageError(
                             "quarantine state changed during authority release"
@@ -3178,6 +3498,7 @@ class LocalDataCleanupStore:
         staging_parent_chain: _DirectoryChain | None = None
         control_directory_chains: _DirectoryChains = ()
         control_tree_snapshot: _ControlTreeSnapshot | None = None
+        product_authority_snapshot: _ProductAuthoritySnapshot | None = None
 
         def capture_control_directory_chains(*directories: Path) -> None:
             nonlocal control_directory_chains
@@ -3190,8 +3511,16 @@ class LocalDataCleanupStore:
             )
 
         def verify_control_directory_chains() -> None:
-            if not control_directory_chains or control_tree_snapshot is None:
+            if (
+                not control_directory_chains
+                or control_tree_snapshot is None
+                or product_authority_snapshot is None
+            ):
                 raise CanonicalStorageError("cleanup control directory state is unavailable")
+            _verify_product_authority_snapshot(
+                product_authority_snapshot,
+                terminal_store=self.terminal_store,
+            )
             for chain in control_directory_chains:
                 _verify_directory_chain(chain)
             _verify_control_tree_snapshot(
@@ -3324,6 +3653,7 @@ class LocalDataCleanupStore:
                     transaction_id=transaction_id,
                 )
             authority = self.terminal_store.foundation.acquire_detached_run_authority(run_id)
+            product_authority_snapshot = _capture_product_authority_snapshot(self.terminal_store)
             self._require_product_binding(marker, authority)
             authority.revalidate()
             locked_current = self._read_current(
@@ -4190,11 +4520,16 @@ class LocalDataCleanupStore:
                         or source_token is None
                         or destination_token is None
                         or release_destination is None
+                        or product_authority_snapshot is None
                     ):
                         raise CanonicalStorageError("delete release state could not be captured")
                     _verify_optional_control_snapshot(
                         control_snapshot,
                         owned_anchor=self.cleanup_root,
+                    )
+                    _verify_product_authority_snapshot(
+                        product_authority_snapshot,
+                        terminal_store=self.terminal_store,
                     )
                     if source_token != _tree_observation_token(
                         source,

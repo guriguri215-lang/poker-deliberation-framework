@@ -1291,6 +1291,208 @@ def test_persisted_operation_authority_boundary_preserves_lineage_identity(
     assert replay.failure.domain_effect == "current_may_have_advanced"
 
 
+def test_quarantine_unknown_revision_entry_is_effect_unknown_on_replay(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "f" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-unknown-revision-execution",
+        idempotency_key="security-unknown-revision-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-unknown-revision-approval",
+        decision_at=SECURITY_AT,
+    )
+    revisions = cleanup_root / "runs" / run_id_sha256("security-run") / "revisions"
+
+    def add_unknown_entry(hook: str) -> None:
+        if hook == "quarantine.after_pointer_replace":
+            (revisions / "unexpected.json").write_bytes(b"{}")
+
+    executor.store.fault_injector = add_unknown_entry
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-unknown-revision-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    executor.store.fault_injector = None
+    replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-unknown-revision-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert replay.failure is not None
+    assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+
+
+def test_cleanup_initialization_release_mutation_requires_reconciliation(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    relocated = tmp_path / "initialization-relocated-runs"
+    mutated = False
+
+    def replace_after_release(hook: str) -> None:
+        nonlocal mutated
+        runs = cleanup_root / "runs"
+        if hook == "authority.after_close" and runs.is_dir():
+            mutated = True
+            runs.rename(relocated)
+            runs.mkdir()
+
+    orchestrator.product_store.foundation.fault_injector = replace_after_release
+    result = executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "1" * 32,
+        initialized_at=NOW,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert mutated
+    assert result.outcome_kind == "reconciliation_required"
+    assert result.filesystem_effect == "control_only"
+
+
+def test_post_effect_failure_release_mutation_becomes_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "2" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-failure-release-execution",
+        idempotency_key="security-failure-release-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-failure-release-approval",
+        decision_at=SECURITY_AT,
+    )
+    revisions = cleanup_root / "runs" / run_id_sha256("security-run") / "revisions"
+
+    def fail_after_effect(hook: str) -> None:
+        if hook == "quarantine.after_effect":
+            raise RuntimeError("injected post-effect failure")
+
+    def mutate_after_release(hook: str) -> None:
+        if hook == "authority.after_close":
+            (revisions / "release-mutation.json").write_bytes(b"{}")
+
+    executor.store.fault_injector = fail_after_effect
+    orchestrator.product_store.foundation.fault_injector = mutate_after_release
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-failure-release-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_post_release_local_verification_invokes_no_product_callback(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "3" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-local-final-verification-execution",
+        idempotency_key="security-local-final-verification-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-local-final-verification-approval",
+        decision_at=SECURITY_AT,
+    )
+    destination = cleanup_root / "quarantine" / "security-run"
+    armed = False
+    mutated = False
+
+    def mutate_on_late_product_read(hook: str) -> None:
+        nonlocal armed, mutated
+        if hook == "authority.after_close":
+            armed = True
+        elif armed and hook == "ownership.after_reread":
+            mutated = True
+            (destination / "late-callback.json").write_bytes(b"{}")
+
+    orchestrator.product_store.foundation.fault_injector = mutate_on_late_product_read
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-local-final-verification-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert armed
+    assert not mutated
+    assert result.outcome_kind == "committed"
+    assert not (destination / "late-callback.json").exists()
+
+
 def test_final_authority_callback_mutation_is_rescanned_before_delete_move(
     tmp_path: Path,
 ) -> None:

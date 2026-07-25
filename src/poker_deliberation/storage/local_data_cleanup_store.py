@@ -80,6 +80,30 @@ _RUN_CONTROL_ENTRIES = frozenset({"transactions", "revisions", "current.json"})
 _StreamSignature = tuple[tuple[str, int], ...]
 _DirectoryChain = tuple[tuple[Path, int, int, _StreamSignature | None], ...]
 _DirectoryChains = tuple[_DirectoryChain, ...]
+_ControlEntrySnapshot = tuple[
+    str,
+    Literal["directory", "file"],
+    int,
+    int,
+    int,
+    str | None,
+    _StreamSignature,
+]
+
+
+@dataclass(frozen=True)
+class _ControlTreeSnapshot:
+    control: Path
+    maximum_bytes: int
+    directory_chains: _DirectoryChains
+    entries: tuple[_ControlEntrySnapshot, ...]
+
+
+@dataclass(frozen=True)
+class _OptionalControlSnapshot:
+    control: Path
+    parent_chain: _DirectoryChain
+    tree: _ControlTreeSnapshot | None
 
 
 @dataclass(frozen=True)
@@ -458,6 +482,52 @@ def initialize_cleanup_root(
     created = False
     mutation_started = False
     authority: ExistingRunAuthorityV1 | None = None
+
+    def release_and_verify_success(
+        result: CleanupRootInitializationOutcomeV1,
+        *,
+        product_identity_sha256: str,
+        product_ownership_marker_sha256: str,
+        marker_sha256: str,
+    ) -> CleanupRootInitializationOutcomeV1:
+        nonlocal authority
+        if authority is None:
+            raise CanonicalStorageError("cleanup initialization authority disappeared")
+        directory_chains = tuple(
+            _capture_directory_chain(
+                path,
+                owned_anchor=root,
+            )
+            for path in (
+                root,
+                root / ".cleanup-control",
+                root / "runs",
+                root / "quarantine",
+                root / "deleting",
+            )
+        )
+        held_authority = authority
+        authority = None
+        try:
+            held_authority.release()
+        except LockReleaseError as exc:
+            raise _fail(CleanupFailureCode.EFFECT_UNKNOWN) from exc
+        _verify_directory_chains(directory_chains)
+        released_inspection = inspect_cleanup_root(
+            root,
+            expected_product_root_identity_sha256=product_identity_sha256,
+            expected_product_ownership_marker_sha256=product_ownership_marker_sha256,
+            max_artifact_bytes=limits.maximum_control_artifact_bytes,
+        )
+        if (
+            released_inspection.status != "initialized"
+            or released_inspection.root_id != root_id
+            or released_inspection.marker_sha256 != marker_sha256
+        ):
+            raise CanonicalStorageError("cleanup root changed after authority release")
+        _verify_directory_chains(directory_chains)
+        return result
+
     try:
         authority = terminal_store.foundation.acquire_existing_run_authority(existing_run_id)
         authority.revalidate()
@@ -471,12 +541,19 @@ def initialize_cleanup_root(
         if inspection.status == "initialized":
             if inspection.root_id != root_id:
                 raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
-            return CleanupRootInitializationOutcomeV1(
-                outcome_kind="already_initialized",
-                root_id=root_id,
+            if inspection.marker_sha256 is None:
+                raise CanonicalStorageError("initialized cleanup root lacks marker identity")
+            return release_and_verify_success(
+                CleanupRootInitializationOutcomeV1(
+                    outcome_kind="already_initialized",
+                    root_id=root_id,
+                    marker_sha256=inspection.marker_sha256,
+                    filesystem_effect="none",
+                    durability=_idle_durability(),
+                ),
+                product_identity_sha256=product_identity,
+                product_ownership_marker_sha256=authority.ownership_marker_sha256,
                 marker_sha256=inspection.marker_sha256,
-                filesystem_effect="none",
-                durability=_idle_durability(),
             )
         if inspection.status not in {"uninitialized"}:
             raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
@@ -526,20 +603,25 @@ def initialize_cleanup_root(
         ):
             raise CanonicalStorageError("initialized cleanup root did not reread")
         directory_state = _directory_sync(root)
-        return CleanupRootInitializationOutcomeV1(
-            outcome_kind="initialized",
-            root_id=root_id,
-            marker_sha256=marker_sha,
-            filesystem_effect="control_only",
-            durability=CleanupDurabilityEvidenceV1(
-                platform_adapter=cast(Any, platform_adapter()),
-                journal_file_sync="not_attempted",
-                effect_rename="not_attempted",
-                control_file_sync="confirmed",
-                directory_sync=directory_state,
-                pointer_replace="not_attempted",
-                reconciliation="confirmed",
+        return release_and_verify_success(
+            CleanupRootInitializationOutcomeV1(
+                outcome_kind="initialized",
+                root_id=root_id,
+                marker_sha256=marker_sha,
+                filesystem_effect="control_only",
+                durability=CleanupDurabilityEvidenceV1(
+                    platform_adapter=cast(Any, platform_adapter()),
+                    journal_file_sync="not_attempted",
+                    effect_rename="not_attempted",
+                    control_file_sync="confirmed",
+                    directory_sync=directory_state,
+                    pointer_replace="not_attempted",
+                    reconciliation="confirmed",
+                ),
             ),
+            product_identity_sha256=product_identity,
+            product_ownership_marker_sha256=authority.ownership_marker_sha256,
+            marker_sha256=marker_sha,
         )
     except CleanupStorageError:
         raise
@@ -763,13 +845,16 @@ def _verify_directory_chain(
             raise CanonicalStorageError("delete staging ancestor identity changed")
 
 
-def _capture_control_directory_tree(
+def _capture_control_tree_snapshot(
     control: Path,
     *,
     owned_anchor: Path,
-) -> _DirectoryChains:
+    maximum_bytes: int,
+) -> _ControlTreeSnapshot:
     chains: list[_DirectoryChain] = []
+    entries: list[_ControlEntrySnapshot] = []
     stack = [control]
+    total_bytes = 0
     while stack:
         directory = stack.pop()
         chains.append(
@@ -780,17 +865,67 @@ def _capture_control_directory_tree(
         )
         if len(chains) > 256:
             raise CanonicalStorageError("cleanup control directory capacity exceeded")
-        for child in directory.iterdir():
+        children = tuple(directory.iterdir())
+        for child in children:
+            if len(entries) >= 256:
+                raise CanonicalStorageError("cleanup control entry capacity exceeded")
             info = child.lstat()
             attributes = getattr(info, "st_file_attributes", 0)
             reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
             if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
                 raise CanonicalStorageError("cleanup control directory contains a link")
+            streams = _windows_stream_signature(child)
+            if any(name != "::$DATA" for name, _size in streams):
+                raise CanonicalStorageError("cleanup control entry has an alternate data stream")
+            relative = child.relative_to(control).as_posix()
             if stat.S_ISDIR(info.st_mode):
+                entries.append(
+                    (
+                        relative,
+                        "directory",
+                        info.st_dev,
+                        info.st_ino,
+                        0,
+                        None,
+                        streams,
+                    )
+                )
                 stack.append(child)
-            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                if info.st_size > maximum_bytes - total_bytes:
+                    raise CanonicalStorageError("cleanup control tree exceeds its byte limit")
+                data = child.read_bytes()
+                after = verify_regular_single_link(child)
+                after_streams = _windows_stream_signature(child)
+                if (
+                    len(data) != info.st_size
+                    or (after.st_dev, after.st_ino, after.st_size)
+                    != (info.st_dev, info.st_ino, info.st_size)
+                    or after_streams != streams
+                ):
+                    raise CanonicalStorageError("cleanup control entry changed during snapshot")
+                total_bytes += len(data)
+                entries.append(
+                    (
+                        relative,
+                        "file",
+                        info.st_dev,
+                        info.st_ino,
+                        info.st_size,
+                        hashlib.sha256(data).hexdigest(),
+                        streams,
+                    )
+                )
+            else:
                 raise CanonicalStorageError("cleanup control entry is not a regular artifact")
-    return tuple(chains)
+    snapshot = _ControlTreeSnapshot(
+        control=control,
+        maximum_bytes=maximum_bytes,
+        directory_chains=tuple(chains),
+        entries=tuple(sorted(entries, key=lambda item: item[0].encode("utf-8"))),
+    )
+    _verify_directory_chains(snapshot.directory_chains)
+    return snapshot
 
 
 def _verify_directory_chains(expected: _DirectoryChains) -> None:
@@ -798,6 +933,69 @@ def _verify_directory_chains(expected: _DirectoryChains) -> None:
         raise CanonicalStorageError("cleanup control directory state is unavailable")
     for chain in expected:
         _verify_directory_chain(chain)
+
+
+def _verify_control_tree_snapshot(
+    expected: _ControlTreeSnapshot,
+    *,
+    owned_anchor: Path,
+) -> None:
+    _verify_directory_chains(expected.directory_chains)
+    observed = _capture_control_tree_snapshot(
+        expected.control,
+        owned_anchor=owned_anchor,
+        maximum_bytes=expected.maximum_bytes,
+    )
+    _verify_directory_chains(expected.directory_chains)
+    if (
+        observed.directory_chains != expected.directory_chains
+        or observed.entries != expected.entries
+    ):
+        raise CanonicalStorageError("cleanup control tree changed")
+
+
+def _capture_optional_control_snapshot(
+    control: Path,
+    *,
+    owned_anchor: Path,
+    maximum_bytes: int,
+) -> _OptionalControlSnapshot:
+    parent_chain = _capture_directory_chain(
+        control.parent,
+        owned_anchor=owned_anchor,
+    )
+    tree = (
+        _capture_control_tree_snapshot(
+            control,
+            owned_anchor=owned_anchor,
+            maximum_bytes=maximum_bytes,
+        )
+        if _strict_lexists(control)
+        else None
+    )
+    _verify_directory_chain(parent_chain)
+    return _OptionalControlSnapshot(
+        control=control,
+        parent_chain=parent_chain,
+        tree=tree,
+    )
+
+
+def _verify_optional_control_snapshot(
+    expected: _OptionalControlSnapshot,
+    *,
+    owned_anchor: Path,
+) -> None:
+    _verify_directory_chain(expected.parent_chain)
+    exists = _strict_lexists(expected.control)
+    if exists != (expected.tree is not None):
+        raise CanonicalStorageError("cleanup control presence changed")
+    if expected.tree is not None:
+        _verify_control_tree_snapshot(
+            expected.tree,
+            owned_anchor=owned_anchor,
+        )
+    _verify_directory_chain(expected.parent_chain)
 
 
 def _unlink_inventory_tree(
@@ -1001,6 +1199,22 @@ def _observe_staging_failure(
     return "partial_delete", False
 
 
+def _tree_observation_token(
+    path: Path,
+    *,
+    run_id_sha256: str,
+    limits: CleanupLimitsV1,
+) -> tuple[Literal["absent", "present"], str | None]:
+    if not _strict_lexists(path):
+        return "absent", None
+    inventory = scan_cleanup_tree(
+        path,
+        run_id_sha256=run_id_sha256,
+        limits=limits,
+    )
+    return "present", tree_inventory_sha256(inventory)
+
+
 def _control_tree_bytes(
     control: Path,
     *,
@@ -1065,6 +1279,54 @@ def _namespace_child(
     if require_exact and not exact:
         raise _fail(CleanupFailureCode.STALE_SOURCE)
     return parent / expected_name
+
+
+def _revision_number_from_directory_name(name: str) -> int | None:
+    for revision in (1, 2, 3):
+        prefix = f"r{revision}-cleanup-txn-"
+        if name.startswith(prefix):
+            digest = name[len(prefix) :]
+            if len(digest) == 32 and all(character in "0123456789abcdef" for character in digest):
+                return revision
+    return None
+
+
+def _validated_revision_directories(
+    revisions: Path,
+    *,
+    cleanup_root: Path,
+    maximum_artifact_bytes: int,
+) -> dict[str, Path]:
+    _capture_directory_chain(revisions, owned_anchor=cleanup_root)
+    result: dict[str, Path] = {}
+    aliases: set[str] = set()
+    expected_artifacts = {
+        "transaction.json",
+        "manifest.json",
+        "receipt.json",
+        "tombstone.json",
+    }
+    for child in revisions.iterdir():
+        normalized = unicodedata.normalize("NFC", child.name)
+        alias = normalized.casefold()
+        if (
+            normalized != child.name
+            or alias in aliases
+            or _revision_number_from_directory_name(child.name) is None
+        ):
+            raise CanonicalStorageError("cleanup revision directory name is invalid")
+        aliases.add(alias)
+        _capture_directory_chain(child, owned_anchor=cleanup_root)
+        artifacts = {entry.name: entry for entry in child.iterdir()}
+        if set(artifacts) != expected_artifacts:
+            raise CanonicalStorageError("cleanup revision directory entries are invalid")
+        for artifact in artifacts.values():
+            _read_control_bytes(
+                artifact,
+                max_bytes=maximum_artifact_bytes,
+            )
+        result[child.name] = child
+    return result
 
 
 def _windows_stream_signature(path: Path) -> tuple[tuple[str, int], ...]:
@@ -1133,7 +1395,7 @@ class LocalDataCleanupStore:
         self.terminal_store = terminal_store
         self.fault_injector = fault_injector
 
-    def marker(self) -> tuple[CleanupRootMarkerV1, str]:
+    def _local_marker(self) -> tuple[CleanupRootMarkerV1, str]:
         marker, _data = _read_control(
             self.cleanup_root / "ownership.json",
             CleanupRootMarkerV1,
@@ -1153,6 +1415,10 @@ class LocalDataCleanupStore:
             or inspection.marker_sha256 != marker_sha
         ):
             raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
+        return marker, marker_sha
+
+    def marker(self) -> tuple[CleanupRootMarkerV1, str]:
+        marker, marker_sha = self._local_marker()
         try:
             binding = self.terminal_store.foundation.inspect_root_authority_binding()
         except RunStorageError as exc:
@@ -1349,14 +1615,15 @@ class LocalDataCleanupStore:
         ]
         | None
     ):
-        marker, marker_sha = self.marker()
-        if expected_marker is not None and (
-            marker != expected_marker[0] or marker_sha != expected_marker[1]
-        ):
-            raise _fail(
-                CleanupFailureCode.OWNERSHIP_UNVERIFIED,
-                run_id_sha256=run_hash,
-            )
+        if expected_marker is None:
+            marker, marker_sha = self.marker()
+        else:
+            marker, marker_sha = self._local_marker()
+            if marker != expected_marker[0] or marker_sha != expected_marker[1]:
+                raise _fail(
+                    CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                    run_id_sha256=run_hash,
+                )
         control = self._run_control(run_hash)
         if not _strict_lexists(control):
             return None
@@ -1375,7 +1642,17 @@ class LocalDataCleanupStore:
         pointer = cast(CleanupCurrentPointerV1, pointer)
         if pointer.run_id_sha256 != run_hash:
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
+        revision_directories = _validated_revision_directories(
+            entries["revisions"],
+            cleanup_root=self.cleanup_root,
+            maximum_artifact_bytes=marker.limits.maximum_control_artifact_bytes,
+        )
         revision = self.cleanup_root / pointer.revision_relative_path
+        if (
+            revision.parent != entries["revisions"]
+            or revision_directories.get(revision.name) != revision
+        ):
+            raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         _capture_directory_chain(revision, owned_anchor=self.cleanup_root)
         revision_entries = {item.name: item for item in revision.iterdir()}
         if set(revision_entries) != {
@@ -1455,11 +1732,9 @@ class LocalDataCleanupStore:
         }
         reachable_transactions = {pointer.revision: transaction}
         for prior_revision in range(pointer.revision - 1, 0, -1):
-            revisions_root = control / "revisions"
-            _capture_directory_chain(revisions_root, owned_anchor=self.cleanup_root)
             prefix = f"r{prior_revision}-"
             matches = tuple(
-                child for child in revisions_root.iterdir() if child.name.startswith(prefix)
+                child for name, child in revision_directories.items() if name.startswith(prefix)
             )
             if len(matches) != 1:
                 raise _fail(
@@ -1675,18 +1950,25 @@ class LocalDataCleanupStore:
         if current is None:
             return None
         control = self._run_control(run_hash)
-        lineage_directory_chains = _capture_control_directory_tree(
+        lineage_snapshot = _capture_control_tree_snapshot(
             control,
             owned_anchor=self.cleanup_root,
+            maximum_bytes=marker.limits.maximum_control_bytes_per_run,
         )
 
         def verify_persisted_lineage() -> None:
-            _verify_directory_chains(lineage_directory_chains)
+            _verify_control_tree_snapshot(
+                lineage_snapshot,
+                owned_anchor=self.cleanup_root,
+            )
             observed = self._read_current(
                 run_hash,
                 expected_marker=(marker, marker_sha),
             )
-            _verify_directory_chains(lineage_directory_chains)
+            _verify_control_tree_snapshot(
+                lineage_snapshot,
+                owned_anchor=self.cleanup_root,
+            )
             if observed != current:
                 raise _fail(
                     CleanupFailureCode.STALE_CLEANUP_REVISION,
@@ -2088,6 +2370,7 @@ class LocalDataCleanupStore:
         source_parent_chain: _DirectoryChain | None = None
         destination_parent_chain: _DirectoryChain | None = None
         control_directory_chains: _DirectoryChains = ()
+        control_tree_snapshot: _ControlTreeSnapshot | None = None
 
         def capture_control_directory_chains(*directories: Path) -> None:
             nonlocal control_directory_chains
@@ -2100,10 +2383,22 @@ class LocalDataCleanupStore:
             )
 
         def verify_control_directory_chains() -> None:
-            if not control_directory_chains:
+            if not control_directory_chains or control_tree_snapshot is None:
                 raise CanonicalStorageError("cleanup control directory state is unavailable")
             for chain in control_directory_chains:
                 _verify_directory_chain(chain)
+            _verify_control_tree_snapshot(
+                control_tree_snapshot,
+                owned_anchor=self.cleanup_root,
+            )
+
+        def capture_control_tree_snapshot() -> None:
+            nonlocal control_tree_snapshot
+            control_tree_snapshot = _capture_control_tree_snapshot(
+                self.cleanup_root / "runs" / run_hash,
+                owned_anchor=self.cleanup_root,
+                maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+            )
 
         def verify_effect_parent_chains() -> None:
             if source_parent_chain is None or destination_parent_chain is None:
@@ -2302,6 +2597,7 @@ class LocalDataCleanupStore:
                 transaction_root,
                 control / "revisions",
             )
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "quarantine.before_effect")
             verify_control_directory_chains()
             _require_not_cancelled(
@@ -2493,11 +2789,11 @@ class LocalDataCleanupStore:
                 pointer_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
-            verify_control_directory_chains()
             capture_control_directory_chains(
                 transaction_root,
                 revision,
             )
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "quarantine.before_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source):
@@ -2518,6 +2814,7 @@ class LocalDataCleanupStore:
             )
             pointer_replace_attempted = True
             os.replace(temporary, control / "current.json")
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "quarantine.after_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source):
@@ -2574,6 +2871,12 @@ class LocalDataCleanupStore:
                     filesystem_effect="source_moved",
                     domain_effect="current_may_have_advanced",
                 ) from exc
+            released_current = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
+            if released_current is None or released_current[0] != pointer:
+                raise CanonicalStorageError("cleanup state changed after authority release")
             verify_effect_parent_chains()
             if _strict_lexists(source):
                 raise CanonicalStorageError("quarantine source reappeared after authority release")
@@ -2586,12 +2889,6 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError(
                     "quarantine destination changed after authority release"
                 )
-            released_current = self._read_current(
-                run_hash,
-                expected_marker=(marker, marker_sha),
-            )
-            if released_current is None or released_current[0] != pointer:
-                raise CanonicalStorageError("cleanup state changed after authority release")
             verify_effect_parent_chains()
             return result
         except (ProductRunError, RunStorageError) as exc:
@@ -2745,9 +3042,76 @@ class LocalDataCleanupStore:
             ) from exc
         finally:
             if authority is not None:
+                release_state_uncertain = False
+                control_snapshot: _OptionalControlSnapshot | None = None
+                source_token: tuple[Literal["absent", "present"], str | None] | None = None
+                destination_token: tuple[Literal["absent", "present"], str | None] | None = None
                 try:
-                    authority.release()
+                    control_snapshot = _capture_optional_control_snapshot(
+                        self.cleanup_root / "runs" / run_hash,
+                        owned_anchor=self.cleanup_root,
+                        maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+                    )
+                    source_token = _tree_observation_token(
+                        source,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
+                    destination_token = _tree_observation_token(
+                        destination,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
+                except Exception:
+                    release_state_uncertain = True
+                held_authority = authority
+                authority = None
+                try:
+                    held_authority.release()
                 except LockReleaseError as exc:
+                    raise _fail(
+                        CleanupFailureCode.EFFECT_UNKNOWN,
+                        run_id_sha256=run_hash,
+                        plan_sha256=plan_sha,
+                        transaction_id=transaction_id,
+                        filesystem_effect=(
+                            "source_moved"
+                            if source_moved
+                            else "journal_only"
+                            if journal_published
+                            else "control_published"
+                            if control_created
+                            else "none"
+                        ),
+                        domain_effect="current_may_have_advanced",
+                    ) from exc
+                try:
+                    if (
+                        release_state_uncertain
+                        or control_snapshot is None
+                        or source_token is None
+                        or destination_token is None
+                    ):
+                        raise CanonicalStorageError(
+                            "quarantine release state could not be captured"
+                        )
+                    _verify_optional_control_snapshot(
+                        control_snapshot,
+                        owned_anchor=self.cleanup_root,
+                    )
+                    if source_token != _tree_observation_token(
+                        source,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    ) or destination_token != _tree_observation_token(
+                        destination,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    ):
+                        raise CanonicalStorageError(
+                            "quarantine state changed during authority release"
+                        )
+                except Exception as exc:
                     raise _fail(
                         CleanupFailureCode.EFFECT_UNKNOWN,
                         run_id_sha256=run_hash,
@@ -2813,6 +3177,7 @@ class LocalDataCleanupStore:
         source_parent_chain: _DirectoryChain | None = None
         staging_parent_chain: _DirectoryChain | None = None
         control_directory_chains: _DirectoryChains = ()
+        control_tree_snapshot: _ControlTreeSnapshot | None = None
 
         def capture_control_directory_chains(*directories: Path) -> None:
             nonlocal control_directory_chains
@@ -2825,10 +3190,22 @@ class LocalDataCleanupStore:
             )
 
         def verify_control_directory_chains() -> None:
-            if not control_directory_chains:
+            if not control_directory_chains or control_tree_snapshot is None:
                 raise CanonicalStorageError("cleanup control directory state is unavailable")
             for chain in control_directory_chains:
                 _verify_directory_chain(chain)
+            _verify_control_tree_snapshot(
+                control_tree_snapshot,
+                owned_anchor=self.cleanup_root,
+            )
+
+        def capture_control_tree_snapshot() -> None:
+            nonlocal control_tree_snapshot
+            control_tree_snapshot = _capture_control_tree_snapshot(
+                self.cleanup_root / "runs" / run_hash,
+                owned_anchor=self.cleanup_root,
+                maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+            )
 
         def verify_effect_parent_chains() -> None:
             if source_parent_chain is None or staging_parent_chain is None:
@@ -3029,9 +3406,10 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            pre_journal_control_chains = _capture_control_directory_tree(
+            pre_journal_control_snapshot = _capture_control_tree_snapshot(
                 control,
                 owned_anchor=self.cleanup_root,
+                maximum_bytes=marker.limits.maximum_control_bytes_per_run,
             )
             _fault(self.fault_injector, "delete.before_journal")
             _require_not_cancelled(
@@ -3040,7 +3418,10 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             )
-            _verify_directory_chains(pre_journal_control_chains)
+            _verify_control_tree_snapshot(
+                pre_journal_control_snapshot,
+                owned_anchor=self.cleanup_root,
+            )
             if _strict_lexists(transaction_root):
                 raise _fail(
                     CleanupFailureCode.IDEMPOTENCY_CONFLICT,
@@ -3074,6 +3455,7 @@ class LocalDataCleanupStore:
                 transaction_root,
                 prior_revision,
             )
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "delete.before_staging_rename")
             verify_control_directory_chains()
             _require_not_cancelled(
@@ -3285,13 +3667,13 @@ class LocalDataCleanupStore:
                 pointer_two_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
-            verify_control_directory_chains()
             capture_control_directory_chains(
                 prior_transaction_root,
                 transaction_root,
                 prior_revision,
                 revision_two,
             )
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "delete.before_prepare_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source):
@@ -3320,6 +3702,7 @@ class LocalDataCleanupStore:
                 )
             prepare_pointer_attempted = True
             os.replace(temporary_two, control / "current.json")
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "delete.after_prepare_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source):
@@ -3401,6 +3784,7 @@ class LocalDataCleanupStore:
             )
             if current_after_final_clock is None or current_after_final_clock[0] != pointer_two:
                 raise CanonicalStorageError("cleanup delete CAS changed after final clock")
+            verify_control_directory_chains()
             transaction_three_base = transaction_base | {
                 "proposed_revision": 3,
                 "expected_revision": 2,
@@ -3498,7 +3882,6 @@ class LocalDataCleanupStore:
             )
             if verified_before_final is None or verified_before_final[0] != pointer_two:
                 raise CanonicalStorageError("cleanup delete CAS changed before final")
-            verify_control_directory_chains()
             capture_control_directory_chains(
                 prior_transaction_root,
                 transaction_root,
@@ -3506,6 +3889,7 @@ class LocalDataCleanupStore:
                 revision_two,
                 revision_three,
             )
+            capture_control_tree_snapshot()
             pointer_three_bytes = canonical_cleanup_bytes(pointer_three)
             temporary_three = control / f"current.{transaction_id}.deleted.tmp"
             _fault(self.fault_injector, "delete.before_final_pointer_temp_write")
@@ -3515,6 +3899,7 @@ class LocalDataCleanupStore:
                 pointer_three_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "delete.before_final_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source) or _strict_lexists(destination):
@@ -3535,6 +3920,7 @@ class LocalDataCleanupStore:
                 )
             final_pointer_attempted = True
             os.replace(temporary_three, control / "current.json")
+            capture_control_tree_snapshot()
             _fault(self.fault_injector, "delete.after_final_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source) or _strict_lexists(destination):
@@ -3586,17 +3972,17 @@ class LocalDataCleanupStore:
                     filesystem_effect="partial_delete",
                     domain_effect="current_may_have_advanced",
                 ) from exc
-            verify_effect_parent_chains()
-            if _strict_lexists(source) or _strict_lexists(destination):
-                raise CanonicalStorageError(
-                    "delete payload namespace changed after authority release"
-                )
             released_current = self._read_current(
                 run_hash,
                 expected_marker=(marker, marker_sha),
             )
             if released_current is None or released_current[0] != pointer_three:
                 raise CanonicalStorageError("deleted state changed after authority release")
+            verify_effect_parent_chains()
+            if _strict_lexists(source) or _strict_lexists(destination):
+                raise CanonicalStorageError(
+                    "delete payload namespace changed after authority release"
+                )
             verify_effect_parent_chains()
             return result
         except (ProductRunError, RunStorageError) as exc:
@@ -3750,9 +4136,77 @@ class LocalDataCleanupStore:
         finally:
             deleted_entries = max(deleted_entries, delete_progress[0])
             if authority is not None:
+                release_destination = destination
+                release_state_uncertain = False
+                control_snapshot: _OptionalControlSnapshot | None = None
+                source_token: tuple[Literal["absent", "present"], str | None] | None = None
+                destination_token: tuple[Literal["absent", "present"], str | None] | None = None
                 try:
-                    authority.release()
+                    if release_destination is None:
+                        raise CanonicalStorageError("delete destination is unavailable")
+                    control_snapshot = _capture_optional_control_snapshot(
+                        self.cleanup_root / "runs" / run_hash,
+                        owned_anchor=self.cleanup_root,
+                        maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+                    )
+                    source_token = _tree_observation_token(
+                        source,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
+                    destination_token = _tree_observation_token(
+                        release_destination,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
+                except Exception:
+                    release_state_uncertain = True
+                held_authority = authority
+                authority = None
+                try:
+                    held_authority.release()
                 except LockReleaseError as exc:
+                    release_staging_effect = (
+                        observed_staging_failure()[0] if staging_moved else "partial_delete"
+                    )
+                    raise _fail(
+                        CleanupFailureCode.EFFECT_UNKNOWN,
+                        run_id_sha256=run_hash,
+                        plan_sha256=plan_sha,
+                        transaction_id=transaction_id,
+                        filesystem_effect=(
+                            release_staging_effect
+                            if staging_moved
+                            else "journal_only"
+                            if journal_published or transaction_root_created
+                            else "none"
+                        ),
+                        domain_effect="current_may_have_advanced",
+                    ) from exc
+                try:
+                    if (
+                        release_state_uncertain
+                        or control_snapshot is None
+                        or source_token is None
+                        or destination_token is None
+                        or release_destination is None
+                    ):
+                        raise CanonicalStorageError("delete release state could not be captured")
+                    _verify_optional_control_snapshot(
+                        control_snapshot,
+                        owned_anchor=self.cleanup_root,
+                    )
+                    if source_token != _tree_observation_token(
+                        source,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    ) or destination_token != _tree_observation_token(
+                        release_destination,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    ):
+                        raise CanonicalStorageError("delete state changed during authority release")
+                except Exception as exc:
                     release_staging_effect = (
                         observed_staging_failure()[0] if staging_moved else "partial_delete"
                     )

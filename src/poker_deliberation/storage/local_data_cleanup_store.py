@@ -300,7 +300,7 @@ def inspect_cleanup_root(
     """Inspect a cleanup root without creating or repairing anything."""
 
     root = _resolved_absolute(cleanup_root, "cleanup_root")
-    if not root.exists():
+    if not _strict_lexists(root):
         return CleanupRootInspectionV1(status="uninitialized")
     try:
         verify_directory(root)
@@ -408,15 +408,15 @@ def initialize_cleanup_root(
             )
         if inspection.status not in {"uninitialized"}:
             raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
-        if not root.parent.exists():
+        if not _strict_lexists(root.parent):
             raise _fail(CleanupFailureCode.PATH_CONFINEMENT_FAILED)
         verify_directory(root.parent)
         if root.parent.stat().st_dev != authority.run_path.stat().st_dev:
             raise _fail(CleanupFailureCode.CROSS_VOLUME)
-        if root.exists() and any(root.iterdir()):
+        if _strict_lexists(root) and any(root.iterdir()):
             raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
         _fault(fault_injector, "initialize.before_root")
-        if not root.exists():
+        if not _strict_lexists(root):
             root.mkdir()
             created = True
         verify_directory(root)
@@ -470,7 +470,7 @@ def initialize_cleanup_root(
     except CleanupStorageError:
         raise
     except Exception as exc:
-        if created or root.exists():
+        if created or _strict_lexists(root):
             return CleanupRootInitializationOutcomeV1(
                 outcome_kind="reconciliation_required",
                 root_id=root_id,
@@ -618,44 +618,61 @@ def scan_cleanup_tree(
 def _capture_directory_chain(
     path: Path,
     *,
-    anchor: Path,
-) -> tuple[tuple[Path, int, int], ...]:
+    owned_anchor: Path,
+) -> tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...]:
     absolute = Path(os.path.abspath(path))
-    anchored_at = Path(os.path.abspath(anchor))
-    if absolute != anchored_at and anchored_at not in absolute.parents:
+    owned_at = Path(os.path.abspath(owned_anchor))
+    if absolute != owned_at and owned_at not in absolute.parents:
         raise CanonicalStorageError("delete staging parent escaped cleanup root")
-    current = anchored_at
-    observed: list[tuple[Path, int, int]] = []
-    for part in (None, *absolute.relative_to(anchored_at).parts):
-        if part is not None:
+    current = Path(absolute.anchor)
+    observed: list[tuple[Path, int, int, tuple[tuple[str, int], ...] | None]] = []
+    for index, part in enumerate(absolute.parts):
+        if index:
             current /= part
         info = current.lstat()
         attributes = getattr(info, "st_file_attributes", 0)
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        owned_component = current == owned_at or owned_at in current.parents
+        try:
+            stream_signature = _windows_stream_signature(current)
+        except OSError:
+            if owned_component:
+                raise
+            stream_signature = None
         if (
             not stat.S_ISDIR(info.st_mode)
             or stat.S_ISLNK(info.st_mode)
             or attributes & reparse_flag
-            or _has_nondefault_windows_stream(current)
+            or (
+                owned_component
+                and (
+                    stream_signature is None
+                    or any(name != "::$DATA" for name, _size in stream_signature)
+                )
+            )
         ):
             raise CanonicalStorageError("delete staging ancestor identity changed")
-        observed.append((current, info.st_dev, info.st_ino))
+        observed.append((current, info.st_dev, info.st_ino, stream_signature))
     return tuple(observed)
 
 
 def _verify_directory_chain(
-    expected: tuple[tuple[Path, int, int], ...],
+    expected: tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...],
 ) -> None:
-    for path, expected_dev, expected_ino in expected:
+    for path, expected_dev, expected_ino, expected_streams in expected:
         info = path.lstat()
         attributes = getattr(info, "st_file_attributes", 0)
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        try:
+            observed_streams = _windows_stream_signature(path)
+        except OSError:
+            observed_streams = None
         if (
             not stat.S_ISDIR(info.st_mode)
             or stat.S_ISLNK(info.st_mode)
             or attributes & reparse_flag
             or (info.st_dev, info.st_ino) != (expected_dev, expected_ino)
-            or _has_nondefault_windows_stream(path)
+            or observed_streams != expected_streams
         ):
             raise CanonicalStorageError("delete staging ancestor identity changed")
 
@@ -664,7 +681,7 @@ def _unlink_inventory_tree(
     root: Path,
     inventory: TreeInventoryV1,
     *,
-    expected_parent_chain: tuple[tuple[Path, int, int], ...],
+    expected_parent_chain: tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...],
     expected_root_identity: tuple[int, int],
     fault_injector: FaultInjector | None,
     progress: list[int],
@@ -823,6 +840,7 @@ def _unlink_inventory_tree(
         plan_sha256=plan_sha256,
         transaction_id=transaction_id,
     )
+    _verify_directory_chain(expected_parent_chain)
     return deleted + 1
 
 
@@ -832,7 +850,9 @@ def _observe_staging_failure(
     run_id_sha256: str,
     expected_tree_sha256: str,
     limits: CleanupLimitsV1,
-    expected_parent_chain: tuple[tuple[Path, int, int], ...] | None = None,
+    expected_parent_chain: (
+        tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...] | None
+    ) = None,
 ) -> tuple[Literal["delete_staging_moved", "partial_delete"], bool]:
     """Boundedly classify staging after a failed delete; bool means unreadable."""
 
@@ -854,7 +874,7 @@ def _observe_staging_failure(
 
 
 def _control_tree_bytes(control: Path, *, maximum_bytes: int) -> int:
-    if not control.exists():
+    if not _strict_lexists(control):
         return 0
     verify_directory(control)
     total = 0
@@ -907,9 +927,9 @@ def _namespace_child(
     return parent / expected_name
 
 
-def _has_nondefault_windows_stream(path: Path) -> bool:
+def _windows_stream_signature(path: Path) -> tuple[tuple[str, int], ...]:
     if os.name != "nt":
-        return False
+        return ()
     import ctypes
     from ctypes import wintypes
 
@@ -938,16 +958,25 @@ def _has_nondefault_windows_stream(path: Path) -> bool:
     handle = find_first(str(path), 0, ctypes.byref(data), 0)
     invalid = ctypes.c_void_p(-1).value
     if handle == invalid:
-        return ctypes.get_last_error() != 38
+        error = ctypes.get_last_error()
+        if error == 38:
+            return ()
+        raise OSError(error, "could not enumerate Windows streams", str(path))
+    streams: list[tuple[str, int]] = []
     try:
         while True:
-            if data.stream_name != "::$DATA":
-                return True
+            streams.append((data.stream_name, data.stream_size))
             if not find_next(handle, ctypes.byref(data)):
                 error = ctypes.get_last_error()
-                return error != 38  # ERROR_HANDLE_EOF is the only clean terminator.
+                if error != 38:
+                    raise OSError(error, "could not enumerate Windows streams", str(path))
+                return tuple(sorted(streams))
     finally:
         find_close(handle)
+
+
+def _has_nondefault_windows_stream(path: Path) -> bool:
+    return any(name != "::$DATA" for name, _size in _windows_stream_signature(path))
 
 
 class LocalDataCleanupStore:
@@ -1193,7 +1222,7 @@ class LocalDataCleanupStore:
                 run_id_sha256=run_hash,
             )
         control = self._run_control(run_hash)
-        if not control.exists():
+        if not _strict_lexists(control):
             return None
         verify_directory(control)
         entries = {item.name: item for item in control.iterdir()}
@@ -1951,11 +1980,14 @@ class LocalDataCleanupStore:
                 or destination != self.cleanup_root / plan.actions[0].destination_relative_path
             ):
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
-            if destination.exists() or source.stat().st_dev != destination.parent.stat().st_dev:
+            if (
+                _strict_lexists(destination)
+                or source.stat().st_dev != destination.parent.stat().st_dev
+            ):
                 raise _fail(
                     (
                         CleanupFailureCode.IDEMPOTENCY_CONFLICT
-                        if destination.exists()
+                        if _strict_lexists(destination)
                         else CleanupFailureCode.CROSS_VOLUME
                     ),
                     run_id_sha256=run_hash,
@@ -1989,7 +2021,7 @@ class LocalDataCleanupStore:
             control = self._run_control(run_hash)
             transaction_root = control / "transactions" / transaction_id
             revision = control / "revisions" / f"r1-{transaction_id}"
-            if control.exists():
+            if _strict_lexists(control):
                 raise _fail(
                     CleanupFailureCode.IDEMPOTENCY_CONFLICT,
                     run_id_sha256=run_hash,
@@ -2530,7 +2562,9 @@ class LocalDataCleanupStore:
         prepare_pointer_attempted = False
         final_pointer_attempted = False
         destination: Path | None = None
-        staging_parent_chain: tuple[tuple[Path, int, int], ...] | None = None
+        staging_parent_chain: (
+            tuple[tuple[Path, int, int, tuple[tuple[str, int], ...] | None], ...] | None
+        ) = None
 
         def observed_staging_failure() -> tuple[
             Literal["delete_staging_moved", "partial_delete"],
@@ -2611,11 +2645,14 @@ class LocalDataCleanupStore:
                 or destination != planned_destination
             ):
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
-            if destination.exists() or source.stat().st_dev != destination.parent.stat().st_dev:
+            if (
+                _strict_lexists(destination)
+                or source.stat().st_dev != destination.parent.stat().st_dev
+            ):
                 raise _fail(
                     (
                         CleanupFailureCode.IDEMPOTENCY_CONFLICT
-                        if destination.exists()
+                        if _strict_lexists(destination)
                         else CleanupFailureCode.CROSS_VOLUME
                     ),
                     run_id_sha256=run_hash,
@@ -2674,7 +2711,11 @@ class LocalDataCleanupStore:
             transaction_root = control / "transactions" / transaction_id
             revision_two = control / "revisions" / f"r2-{transaction_id}"
             revision_three = control / "revisions" / f"r3-{transaction_id}"
-            if transaction_root.exists() or revision_two.exists() or revision_three.exists():
+            if (
+                _strict_lexists(transaction_root)
+                or _strict_lexists(revision_two)
+                or _strict_lexists(revision_three)
+            ):
                 raise _fail(
                     CleanupFailureCode.IDEMPOTENCY_CONFLICT,
                     run_id_sha256=run_hash,
@@ -2995,7 +3036,7 @@ class LocalDataCleanupStore:
             )
             staging_parent_chain = _capture_directory_chain(
                 destination.parent,
-                anchor=self.cleanup_root,
+                owned_anchor=self.cleanup_root,
             )
 
             _fault(self.fault_injector, "delete.before_unlink_start")
@@ -3018,6 +3059,7 @@ class LocalDataCleanupStore:
             )
             if _strict_lexists(destination):
                 raise CanonicalStorageError("delete staging remained after unlink")
+            _verify_directory_chain(staging_parent_chain)
             delete_directory_sync = _directory_sync(destination.parent)
             final_at = clock()
             if _strict_lexists(source) or _strict_lexists(destination):

@@ -76,6 +76,9 @@ from poker_deliberation.storage.terminal_store import TerminalRunStore
 
 FaultInjector = Callable[[str], None]
 _ROOT_ENTRIES = frozenset({"ownership.json", ".cleanup-control", "runs", "quarantine", "deleting"})
+_PRODUCT_ROOT_ENTRIES = frozenset(
+    {"ownership.json", ".revision-init.authority.lock", ".revision-control", "runs"}
+)
 _RUN_CONTROL_ENTRIES = frozenset({"transactions", "revisions", "current.json"})
 _StreamSignature = tuple[tuple[str, int], ...]
 _DirectoryChain = tuple[tuple[Path, int, int, _StreamSignature | None], ...]
@@ -118,6 +121,7 @@ class _ExactFileSnapshot:
 @dataclass(frozen=True)
 class _ProductAuthoritySnapshot:
     directory_chains: _DirectoryChains
+    root_entries: _DirectoryEntriesSnapshot
     ownership: _ExactFileSnapshot
     root_authority: _ExactFileSnapshot
 
@@ -137,6 +141,16 @@ class _InitializationStateSnapshot:
     parent_chain: _DirectoryChain
     root_present: bool
     directories: tuple[_DirectoryEntriesSnapshot, ...]
+    control_trees: tuple[_ControlTreeSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class _NamespaceTreeSnapshot:
+    path: Path
+    parent_chain: _DirectoryChain
+    maximum_entries: int
+    state: Literal["absent", "present"]
+    tree_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -744,9 +758,14 @@ def scan_cleanup_tree(
 
     def walk(directory: Path) -> None:
         nonlocal total_bytes
-        children = list(directory.iterdir())
+        children: list[Path] = []
         aliases: set[str] = set()
-        for child in children:
+        for child in directory.iterdir():
+            if len(entries) + len(children) >= limits.maximum_tree_entries:
+                raise _fail(
+                    CleanupFailureCode.CAPACITY_EXCEEDED,
+                    run_id_sha256=run_id_sha256,
+                )
             normalized = unicodedata.normalize("NFC", child.name)
             alias = normalized.casefold()
             if normalized != child.name or alias in aliases:
@@ -755,6 +774,7 @@ def scan_cleanup_tree(
                     run_id_sha256=run_id_sha256,
                 )
             aliases.add(alias)
+            children.append(child)
         for child in sorted(children, key=lambda item: item.name.encode("utf-8")):
             relative = child.relative_to(root).as_posix()
             info = child.lstat()
@@ -833,11 +853,6 @@ def scan_cleanup_tree(
             else:
                 raise _fail(
                     CleanupFailureCode.PATH_CONFINEMENT_FAILED,
-                    run_id_sha256=run_id_sha256,
-                )
-            if len(entries) > limits.maximum_tree_entries:
-                raise _fail(
-                    CleanupFailureCode.CAPACITY_EXCEEDED,
                     run_id_sha256=run_id_sha256,
                 )
 
@@ -935,8 +950,7 @@ def _capture_control_tree_snapshot(
         )
         if len(chains) > 256:
             raise CanonicalStorageError("cleanup control directory capacity exceeded")
-        children = tuple(directory.iterdir())
-        for child in children:
+        for child in directory.iterdir():
             if len(entries) >= 256:
                 raise CanonicalStorageError("cleanup control entry capacity exceeded")
             info = child.lstat()
@@ -1041,6 +1055,14 @@ def _capture_product_authority_snapshot(
 ) -> _ProductAuthoritySnapshot:
     root = Path(os.path.abspath(terminal_store.revision_root))
     legacy_root = Path(os.path.abspath(terminal_store.legacy_runs_root))
+    root_entries = _capture_directory_entries_snapshot(
+        root,
+        owned_anchor=root,
+        maximum_entries=len(_PRODUCT_ROOT_ENTRIES),
+        maximum_bytes=terminal_store.max_artifact_bytes + 1,
+    )
+    if {entry[0] for entry in root_entries.entries} != _PRODUCT_ROOT_ENTRIES:
+        raise CanonicalStorageError("product root entries changed")
     directory_chains = (
         _capture_directory_chain(legacy_root, owned_anchor=legacy_root),
         *tuple(
@@ -1055,6 +1077,7 @@ def _capture_product_authority_snapshot(
     )
     return _ProductAuthoritySnapshot(
         directory_chains=directory_chains,
+        root_entries=root_entries,
         ownership=_capture_exact_file_snapshot(
             root / "ownership.json",
             maximum_bytes=terminal_store.max_artifact_bytes,
@@ -1072,6 +1095,12 @@ def _verify_product_authority_snapshot(
     terminal_store: TerminalRunStore,
 ) -> None:
     _verify_directory_chains(expected.directory_chains)
+    _verify_directory_entries_snapshot(
+        expected.root_entries,
+        owned_anchor=Path(os.path.abspath(terminal_store.revision_root)),
+    )
+    if {entry[0] for entry in expected.root_entries.entries} != _PRODUCT_ROOT_ENTRIES:
+        raise CanonicalStorageError("product root entries changed")
     _verify_exact_file_snapshot(
         expected.ownership,
         maximum_bytes=terminal_store.max_artifact_bytes,
@@ -1093,9 +1122,15 @@ def _capture_directory_entries_snapshot(
     chain = _capture_directory_chain(path, owned_anchor=owned_anchor)
     entries: list[_ControlEntrySnapshot] = []
     total_bytes = 0
+    aliases: set[str] = set()
     for child in path.iterdir():
         if len(entries) >= maximum_entries:
             raise CanonicalStorageError("directory entry capacity exceeded")
+        normalized = unicodedata.normalize("NFC", child.name)
+        alias = normalized.casefold()
+        if normalized != child.name or alias in aliases:
+            raise CanonicalStorageError("directory entry alias conflict")
+        aliases.add(alias)
         info = child.lstat()
         attributes = getattr(info, "st_file_attributes", 0)
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -1148,6 +1183,33 @@ def _capture_directory_entries_snapshot(
     return snapshot
 
 
+def _capture_cleanup_authority_snapshot(
+    root: Path,
+    *,
+    maximum_bytes: int,
+) -> _DirectoryEntriesSnapshot:
+    snapshot = _capture_directory_entries_snapshot(
+        root,
+        owned_anchor=root,
+        maximum_entries=len(_ROOT_ENTRIES),
+        maximum_bytes=maximum_bytes,
+    )
+    if {entry[0] for entry in snapshot.entries} != _ROOT_ENTRIES:
+        raise CanonicalStorageError("cleanup root entries changed")
+    return snapshot
+
+
+def _verify_cleanup_authority_snapshot(
+    expected: _DirectoryEntriesSnapshot,
+) -> None:
+    _verify_directory_entries_snapshot(
+        expected,
+        owned_anchor=expected.path,
+    )
+    if {entry[0] for entry in expected.entries} != _ROOT_ENTRIES:
+        raise CanonicalStorageError("cleanup root entries changed")
+
+
 def _verify_directory_entries_snapshot(
     expected: _DirectoryEntriesSnapshot,
     *,
@@ -1181,6 +1243,7 @@ def _capture_initialization_state(
             parent_chain=parent_chain,
             root_present=False,
             directories=(),
+            control_trees=(),
         )
     directories = tuple(
         _capture_directory_entries_snapshot(
@@ -1203,6 +1266,15 @@ def _capture_initialization_state(
         parent_chain=parent_chain,
         root_present=True,
         directories=directories,
+        control_trees=tuple(
+            _capture_control_tree_snapshot(
+                path,
+                owned_anchor=root,
+                maximum_bytes=maximum_bytes,
+            )
+            for path in (root / ".cleanup-control", root / "runs")
+            if _strict_lexists(path)
+        ),
     )
 
 
@@ -1215,6 +1287,11 @@ def _verify_initialization_state(
     for directory in expected.directories:
         _verify_directory_entries_snapshot(
             directory,
+            owned_anchor=expected.root,
+        )
+    for control_tree in expected.control_trees:
+        _verify_control_tree_snapshot(
+            control_tree,
             owned_anchor=expected.root,
         )
     _verify_directory_chain(expected.parent_chain)
@@ -1498,6 +1575,68 @@ def _tree_observation_token(
         limits=limits,
     )
     return "present", tree_inventory_sha256(inventory)
+
+
+def _capture_namespace_tree_snapshot(
+    path: Path,
+    *,
+    owned_anchor: Path,
+    run_id_sha256: str,
+    limits: CleanupLimitsV1,
+) -> _NamespaceTreeSnapshot:
+    parent_chain = _capture_directory_chain(
+        path.parent,
+        owned_anchor=owned_anchor,
+    )
+    expected_alias = unicodedata.normalize("NFC", path.name).casefold()
+    aliases: set[str] = set()
+    exact = False
+    for entry_count, child in enumerate(path.parent.iterdir(), start=1):
+        if entry_count > limits.maximum_tree_entries:
+            raise CanonicalStorageError("namespace entry capacity exceeded")
+        normalized = unicodedata.normalize("NFC", child.name)
+        alias = normalized.casefold()
+        if normalized != child.name or alias in aliases:
+            raise CanonicalStorageError("namespace entry alias conflict")
+        aliases.add(alias)
+        if alias == expected_alias:
+            if child.name != path.name:
+                raise CanonicalStorageError("namespace target has a case alias")
+            exact = True
+    state, tree_sha256 = _tree_observation_token(
+        path,
+        run_id_sha256=run_id_sha256,
+        limits=limits,
+    )
+    if exact != (state == "present"):
+        raise CanonicalStorageError("namespace target presence changed during snapshot")
+    _verify_directory_chain(parent_chain)
+    return _NamespaceTreeSnapshot(
+        path=path,
+        parent_chain=parent_chain,
+        maximum_entries=limits.maximum_tree_entries,
+        state=state,
+        tree_sha256=tree_sha256,
+    )
+
+
+def _verify_namespace_tree_snapshot(
+    expected: _NamespaceTreeSnapshot,
+    *,
+    owned_anchor: Path,
+    run_id_sha256: str,
+    limits: CleanupLimitsV1,
+) -> None:
+    _verify_directory_chain(expected.parent_chain)
+    observed = _capture_namespace_tree_snapshot(
+        expected.path,
+        owned_anchor=owned_anchor,
+        run_id_sha256=run_id_sha256,
+        limits=limits,
+    )
+    _verify_directory_chain(expected.parent_chain)
+    if observed != expected:
+        raise CanonicalStorageError("namespace target changed")
 
 
 def _control_tree_bytes(
@@ -2633,6 +2772,10 @@ class LocalDataCleanupStore:
         run_hash = plan.source.run_id_sha256
         plan_sha = cleanup_plan_sha256(plan)
         marker, marker_sha = self.marker()
+        cleanup_authority_snapshot = _capture_cleanup_authority_snapshot(
+            self.cleanup_root,
+            maximum_bytes=marker.limits.maximum_control_artifact_bytes,
+        )
         if (
             marker.product_root_identity_sha256 != plan.source.product_root_identity_sha256
             or marker.product_ownership_marker_sha256 != plan.source.product_ownership_marker_sha256
@@ -2656,6 +2799,13 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             )
+        planned_destination = self.cleanup_root / plan.actions[0].destination_relative_path
+        if (
+            plan.actions[0].action_kind is not CleanupActionKind.QUARANTINE_PRODUCT_RUN
+            or planned_destination.parent != self.cleanup_root / "quarantine"
+            or planned_destination.name != run_id
+        ):
+            raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
         authority: ExistingRunAuthorityV1 | None = None
         journal_published = False
         control_created = False
@@ -2663,7 +2813,7 @@ class LocalDataCleanupStore:
         pointer_replace_attempted = False
         rollback_journal: _RollbackJournal | None = None
         source: Path | None = None
-        destination: Path | None = None
+        destination: Path | None = planned_destination
         source_parent_chain: _DirectoryChain | None = None
         destination_parent_chain: _DirectoryChain | None = None
         control_directory_chains: _DirectoryChains = ()
@@ -2691,6 +2841,7 @@ class LocalDataCleanupStore:
                 product_authority_snapshot,
                 terminal_store=self.terminal_store,
             )
+            _verify_cleanup_authority_snapshot(cleanup_authority_snapshot)
             for chain in control_directory_chains:
                 _verify_directory_chain(chain)
             _verify_control_tree_snapshot(
@@ -2725,6 +2876,7 @@ class LocalDataCleanupStore:
 
         try:
             authority = self.terminal_store.foundation.acquire_existing_run_authority(run_id)
+            source = authority.run_path
             product_authority_snapshot = _capture_product_authority_snapshot(self.terminal_store)
             self._require_product_binding(marker, authority)
             current = self.terminal_store.read_current(run_id)
@@ -2748,7 +2900,6 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            source = authority.run_path
             inventory = scan_cleanup_tree(source, run_id_sha256=run_hash, limits=marker.limits)
             source_tree_sha = tree_inventory_sha256(inventory)
             if source_tree_sha != plan.tree_inventory_sha256:
@@ -2758,7 +2909,7 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            destination = _namespace_child(
+            observed_destination = _namespace_child(
                 self.cleanup_root / "quarantine",
                 run_id,
                 require_exact=False,
@@ -2767,7 +2918,7 @@ class LocalDataCleanupStore:
                 source
                 != self.terminal_store.foundation.revision_root
                 / plan.actions[0].source_relative_path
-                or destination != self.cleanup_root / plan.actions[0].destination_relative_path
+                or observed_destination != destination
             ):
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
             if (
@@ -3165,6 +3316,20 @@ class LocalDataCleanupStore:
             )
             if authority is None:
                 raise CanonicalStorageError("quarantine authority disappeared before release")
+            if source is None or destination is None:
+                raise CanonicalStorageError("quarantine namespace state is unavailable")
+            released_source_snapshot = _capture_namespace_tree_snapshot(
+                source,
+                owned_anchor=self.terminal_store.foundation.revision_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            released_destination_snapshot = _capture_namespace_tree_snapshot(
+                destination,
+                owned_anchor=self.cleanup_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
             held_authority = authority
             authority = None
             try:
@@ -3185,17 +3350,18 @@ class LocalDataCleanupStore:
             if released_current is None or released_current[0] != pointer:
                 raise CanonicalStorageError("cleanup state changed after authority release")
             verify_effect_parent_chains()
-            if _strict_lexists(source):
-                raise CanonicalStorageError("quarantine source reappeared after authority release")
-            released_inventory = scan_cleanup_tree(
-                destination,
+            _verify_namespace_tree_snapshot(
+                released_source_snapshot,
+                owned_anchor=self.terminal_store.foundation.revision_root,
                 run_id_sha256=run_hash,
                 limits=marker.limits,
             )
-            if tree_inventory_sha256(released_inventory) != source_tree_sha:
-                raise CanonicalStorageError(
-                    "quarantine destination changed after authority release"
-                )
+            _verify_namespace_tree_snapshot(
+                released_destination_snapshot,
+                owned_anchor=self.cleanup_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
             verify_effect_parent_chains()
             return result
         except (ProductRunError, RunStorageError) as exc:
@@ -3351,26 +3517,28 @@ class LocalDataCleanupStore:
             if authority is not None:
                 release_state_uncertain = False
                 control_snapshot: _OptionalControlSnapshot | None = None
-                source_token: tuple[Literal["absent", "present"], str | None] | None = None
-                destination_token: tuple[Literal["absent", "present"], str | None] | None = None
+                source_snapshot: _NamespaceTreeSnapshot | None = None
+                destination_snapshot: _NamespaceTreeSnapshot | None = None
                 try:
                     control_snapshot = _capture_optional_control_snapshot(
                         self.cleanup_root / "runs" / run_hash,
                         owned_anchor=self.cleanup_root,
                         maximum_bytes=marker.limits.maximum_control_bytes_per_run,
                     )
-                    if source is not None:
-                        source_token = _tree_observation_token(
-                            source,
-                            run_id_sha256=run_hash,
-                            limits=marker.limits,
-                        )
-                    if destination is not None:
-                        destination_token = _tree_observation_token(
-                            destination,
-                            run_id_sha256=run_hash,
-                            limits=marker.limits,
-                        )
+                    if source is None or destination is None:
+                        raise CanonicalStorageError("quarantine namespace state is unavailable")
+                    source_snapshot = _capture_namespace_tree_snapshot(
+                        source,
+                        owned_anchor=self.terminal_store.foundation.revision_root,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
+                    destination_snapshot = _capture_namespace_tree_snapshot(
+                        destination,
+                        owned_anchor=self.cleanup_root,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
                 except Exception:
                     release_state_uncertain = True
                 held_authority = authority
@@ -3399,6 +3567,8 @@ class LocalDataCleanupStore:
                         release_state_uncertain
                         or control_snapshot is None
                         or product_authority_snapshot is None
+                        or source_snapshot is None
+                        or destination_snapshot is None
                     ):
                         raise CanonicalStorageError(
                             "quarantine release state could not be captured"
@@ -3411,26 +3581,19 @@ class LocalDataCleanupStore:
                         product_authority_snapshot,
                         terminal_store=self.terminal_store,
                     )
-                    if (
-                        source is not None
-                        and source_token
-                        != _tree_observation_token(
-                            source,
-                            run_id_sha256=run_hash,
-                            limits=marker.limits,
-                        )
-                    ) or (
-                        destination is not None
-                        and destination_token
-                        != _tree_observation_token(
-                            destination,
-                            run_id_sha256=run_hash,
-                            limits=marker.limits,
-                        )
-                    ):
-                        raise CanonicalStorageError(
-                            "quarantine state changed during authority release"
-                        )
+                    _verify_cleanup_authority_snapshot(cleanup_authority_snapshot)
+                    _verify_namespace_tree_snapshot(
+                        source_snapshot,
+                        owned_anchor=self.terminal_store.foundation.revision_root,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
+                    _verify_namespace_tree_snapshot(
+                        destination_snapshot,
+                        owned_anchor=self.cleanup_root,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
                 except Exception as exc:
                     raise _fail(
                         CleanupFailureCode.EFFECT_UNKNOWN,
@@ -3471,6 +3634,10 @@ class LocalDataCleanupStore:
         run_hash = plan.source.run_id_sha256
         plan_sha = cleanup_plan_sha256(plan)
         marker, marker_sha = self.marker()
+        cleanup_authority_snapshot = _capture_cleanup_authority_snapshot(
+            self.cleanup_root,
+            maximum_bytes=marker.limits.maximum_control_artifact_bytes,
+        )
         if (
             marker.root_id != plan.cleanup_root_id
             or marker_sha != plan.cleanup_root_marker_sha256
@@ -3499,6 +3666,7 @@ class LocalDataCleanupStore:
         control_directory_chains: _DirectoryChains = ()
         control_tree_snapshot: _ControlTreeSnapshot | None = None
         product_authority_snapshot: _ProductAuthoritySnapshot | None = None
+        former_product_snapshot: _NamespaceTreeSnapshot | None = None
 
         def capture_control_directory_chains(*directories: Path) -> None:
             nonlocal control_directory_chains
@@ -3520,6 +3688,15 @@ class LocalDataCleanupStore:
             _verify_product_authority_snapshot(
                 product_authority_snapshot,
                 terminal_store=self.terminal_store,
+            )
+            _verify_cleanup_authority_snapshot(cleanup_authority_snapshot)
+            if former_product_snapshot is None:
+                raise CanonicalStorageError("detached product namespace state is unavailable")
+            _verify_namespace_tree_snapshot(
+                former_product_snapshot,
+                owned_anchor=self.terminal_store.foundation.revision_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
             )
             for chain in control_directory_chains:
                 _verify_directory_chain(chain)
@@ -3654,6 +3831,12 @@ class LocalDataCleanupStore:
                 )
             authority = self.terminal_store.foundation.acquire_detached_run_authority(run_id)
             product_authority_snapshot = _capture_product_authority_snapshot(self.terminal_store)
+            former_product_snapshot = _capture_namespace_tree_snapshot(
+                authority.former_run_path,
+                owned_anchor=self.terminal_store.foundation.revision_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
             self._require_product_binding(marker, authority)
             authority.revalidate()
             locked_current = self._read_current(
@@ -4289,6 +4472,20 @@ class LocalDataCleanupStore:
             )
             if authority is None:
                 raise CanonicalStorageError("delete authority disappeared before release")
+            if destination is None:
+                raise CanonicalStorageError("delete namespace state is unavailable")
+            released_source_snapshot = _capture_namespace_tree_snapshot(
+                source,
+                owned_anchor=self.cleanup_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            released_destination_snapshot = _capture_namespace_tree_snapshot(
+                destination,
+                owned_anchor=self.cleanup_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
             held_authority = authority
             authority = None
             try:
@@ -4309,10 +4506,18 @@ class LocalDataCleanupStore:
             if released_current is None or released_current[0] != pointer_three:
                 raise CanonicalStorageError("deleted state changed after authority release")
             verify_effect_parent_chains()
-            if _strict_lexists(source) or _strict_lexists(destination):
-                raise CanonicalStorageError(
-                    "delete payload namespace changed after authority release"
-                )
+            _verify_namespace_tree_snapshot(
+                released_source_snapshot,
+                owned_anchor=self.cleanup_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            _verify_namespace_tree_snapshot(
+                released_destination_snapshot,
+                owned_anchor=self.cleanup_root,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
             verify_effect_parent_chains()
             return result
         except (ProductRunError, RunStorageError) as exc:
@@ -4469,8 +4674,8 @@ class LocalDataCleanupStore:
                 release_destination = destination
                 release_state_uncertain = False
                 control_snapshot: _OptionalControlSnapshot | None = None
-                source_token: tuple[Literal["absent", "present"], str | None] | None = None
-                destination_token: tuple[Literal["absent", "present"], str | None] | None = None
+                source_snapshot: _NamespaceTreeSnapshot | None = None
+                destination_snapshot: _NamespaceTreeSnapshot | None = None
                 try:
                     if release_destination is None:
                         raise CanonicalStorageError("delete destination is unavailable")
@@ -4479,13 +4684,15 @@ class LocalDataCleanupStore:
                         owned_anchor=self.cleanup_root,
                         maximum_bytes=marker.limits.maximum_control_bytes_per_run,
                     )
-                    source_token = _tree_observation_token(
+                    source_snapshot = _capture_namespace_tree_snapshot(
                         source,
+                        owned_anchor=self.cleanup_root,
                         run_id_sha256=run_hash,
                         limits=marker.limits,
                     )
-                    destination_token = _tree_observation_token(
+                    destination_snapshot = _capture_namespace_tree_snapshot(
                         release_destination,
+                        owned_anchor=self.cleanup_root,
                         run_id_sha256=run_hash,
                         limits=marker.limits,
                     )
@@ -4517,10 +4724,11 @@ class LocalDataCleanupStore:
                     if (
                         release_state_uncertain
                         or control_snapshot is None
-                        or source_token is None
-                        or destination_token is None
+                        or source_snapshot is None
+                        or destination_snapshot is None
                         or release_destination is None
                         or product_authority_snapshot is None
+                        or former_product_snapshot is None
                     ):
                         raise CanonicalStorageError("delete release state could not be captured")
                     _verify_optional_control_snapshot(
@@ -4531,16 +4739,25 @@ class LocalDataCleanupStore:
                         product_authority_snapshot,
                         terminal_store=self.terminal_store,
                     )
-                    if source_token != _tree_observation_token(
-                        source,
+                    _verify_cleanup_authority_snapshot(cleanup_authority_snapshot)
+                    _verify_namespace_tree_snapshot(
+                        former_product_snapshot,
+                        owned_anchor=self.terminal_store.foundation.revision_root,
                         run_id_sha256=run_hash,
                         limits=marker.limits,
-                    ) or destination_token != _tree_observation_token(
-                        release_destination,
+                    )
+                    _verify_namespace_tree_snapshot(
+                        source_snapshot,
+                        owned_anchor=self.cleanup_root,
                         run_id_sha256=run_hash,
                         limits=marker.limits,
-                    ):
-                        raise CanonicalStorageError("delete state changed during authority release")
+                    )
+                    _verify_namespace_tree_snapshot(
+                        destination_snapshot,
+                        owned_anchor=self.cleanup_root,
+                        run_id_sha256=run_hash,
+                        limits=marker.limits,
+                    )
                 except Exception as exc:
                     release_staging_effect = (
                         observed_staging_failure()[0] if staging_moved else "partial_delete"

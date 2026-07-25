@@ -21,6 +21,7 @@ from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.schemas import CaseInput
 from poker_deliberation.storage.local_data_cleanup_store import (
     CleanupStorageError,
+    _capture_control_tree_snapshot,
     initialize_cleanup_root,
     scan_cleanup_tree,
 )
@@ -1622,3 +1623,268 @@ def test_final_authority_callback_mutation_is_rescanned_before_delete_move(
         / "transactions"
         / result.transaction_id
     ).exists()
+
+
+def test_product_root_entry_added_after_release_is_effect_unknown(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "6" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-product-entry-execution",
+        idempotency_key="security-product-entry-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-product-entry-approval",
+        decision_at=SECURITY_AT,
+    )
+
+    def add_product_entry(hook: str) -> None:
+        if hook == "authority.after_close":
+            (orchestrator.product_store.revision_root / "unexpected.json").write_bytes(b"{}")
+
+    orchestrator.product_store.foundation.fault_injector = add_product_entry
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-product-entry-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_cleanup_ownership_mutation_on_failure_release_is_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "7" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-cleanup-release-execution",
+        idempotency_key="security-cleanup-release-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-cleanup-release-approval",
+        decision_at=SECURITY_AT,
+    )
+
+    def fail_after_effect(hook: str) -> None:
+        if hook == "quarantine.after_effect":
+            raise RuntimeError("injected post-effect failure")
+
+    def corrupt_cleanup_ownership(hook: str) -> None:
+        if hook == "authority.after_close":
+            (cleanup_root / "ownership.json").write_bytes(b"{}")
+
+    executor.store.fault_injector = fail_after_effect
+    orchestrator.product_store.foundation.fault_injector = corrupt_cleanup_ownership
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-cleanup-release-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_delete_release_cannot_recreate_detached_product_run(tmp_path: Path) -> None:
+    run_id = "security-delete-detached-release"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="8",
+    )
+    former_run = executor.store.terminal_store.revision_root / "runs" / run_id
+
+    def recreate_product_run(hook: str) -> None:
+        if hook == "authority.after_close":
+            former_run.mkdir()
+            (former_run / "unexpected.json").write_bytes(b"{}")
+
+    executor.store.terminal_store.foundation.fault_injector = recreate_product_run
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    executor.store.terminal_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_initialization_failure_detects_nested_control_release_mutation(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    initialize_cleanup_root(
+        cleanup_root,
+        orchestrator.product_store,
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "9" * 32,
+        initialized_at=NOW,
+    )
+    nested = cleanup_root / "runs" / run_id_sha256("security-run")
+    nested.mkdir()
+    current = nested / "current.json"
+    current.write_bytes(b"before")
+
+    def mutate_nested_control(hook: str) -> None:
+        if hook == "authority.after_close":
+            current.write_bytes(b"after")
+
+    orchestrator.product_store.foundation.fault_injector = mutate_nested_control
+    with pytest.raises(CleanupStorageError) as error:
+        initialize_cleanup_root(
+            cleanup_root,
+            orchestrator.product_store,
+            existing_run_id="security-run",
+            root_id="cleanup-root-" + "a" * 32,
+            initialized_at=NOW,
+        )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert error.value.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+
+
+def test_quarantine_early_failure_release_mutation_is_effect_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "b" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-early-release-execution",
+        idempotency_key="security-early-release-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-early-release-approval",
+        decision_at=SECURITY_AT,
+    )
+    source = orchestrator.product_store.revision_root / "runs" / "security-run"
+
+    def fail_early(_plan, _current):
+        raise RuntimeError("injected early product read failure")
+
+    def mutate_source_after_release(hook: str) -> None:
+        if hook == "authority.after_close":
+            (source / "release-mutation.json").write_bytes(b"{}")
+
+    monkeypatch.setattr(executor.store, "_same_product_current", fail_early)
+    orchestrator.product_store.foundation.fault_injector = mutate_source_after_release
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-early-release-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+
+
+def test_tree_and_control_scans_stop_at_limit_plus_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    for index in range(3):
+        (target / f"entry-{index}").write_bytes(b"x")
+    control = tmp_path / "control"
+    control.mkdir()
+    for index in range(258):
+        (control / f"entry-{index:03d}").mkdir()
+
+    original_iterdir = Path.iterdir
+    consumed = {target: 0, control: 0}
+
+    def counted_iterdir(path: Path):
+        iterator = original_iterdir(path)
+        if path not in consumed:
+            return iterator
+
+        def counted():
+            for child in iterator:
+                consumed[path] += 1
+                limit = 2 if path == target else 257
+                if consumed[path] > limit:
+                    raise AssertionError("iterator consumed past limit + 1")
+                yield child
+
+        return counted()
+
+    monkeypatch.setattr(Path, "iterdir", counted_iterdir)
+    with pytest.raises(CleanupStorageError) as target_error:
+        scan_cleanup_tree(
+            target,
+            run_id_sha256=run_id_sha256("security-run"),
+            limits=CleanupLimitsV1(maximum_tree_entries=1),
+        )
+    with pytest.raises(CanonicalStorageError, match="entry capacity"):
+        _capture_control_tree_snapshot(
+            control,
+            owned_anchor=control,
+            maximum_bytes=1_000_000,
+        )
+
+    assert target_error.value.failure.code is CleanupFailureCode.CAPACITY_EXCEEDED
+    assert consumed[target] == 2
+    assert consumed[control] == 257

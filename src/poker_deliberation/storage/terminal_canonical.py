@@ -8,6 +8,21 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from poker_deliberation.approval_canonical import (
+    parse_canonical_jsonl as parse_approval_jsonl,
+)
+from poker_deliberation.approval_canonical import (
+    parse_canonical_model as parse_approval_model,
+)
+from poker_deliberation.approval_models import (
+    ApprovalDecisionRecordV2,
+    ApprovalDomainAuditEventV2,
+    ApprovalLedgerV2,
+)
+from poker_deliberation.approvals import (
+    project_v1_approvals,
+    read_approval_state_v2,
+)
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     ClassificationEvidence,
@@ -65,6 +80,14 @@ EMPTY_HEAD_DOMAIN = "poker-run-terminal-empty-head-v2"
 LIFECYCLE_AUDIT_DOMAIN = "poker-run-lifecycle-audit-v2"
 LEGACY_SOURCE_INVENTORY_DOMAIN = "poker-run-legacy-source-inventory-v2"
 PRODUCT_LINEAGE_DOMAIN_PREFIX = "poker-product"
+APPROVAL_AUTHORITY_LINEAGE_DOMAIN = "poker-product-approval-authority-lineage-v2"
+APPROVAL_V2_ARTIFACTS = frozenset(
+    {
+        "approval_ledger_v2.json",
+        "approval_decisions_v2.jsonl",
+        "approval_audit_v2.jsonl",
+    }
+)
 
 _SUPPORTED_VERSION = TERMINAL_SCHEMA_VERSION
 _VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}$")
@@ -195,6 +218,36 @@ def product_payload_commitments(
     approvals = TypeAdapter(list[ApprovalRequest]).validate_json(
         payloads.get("approvals.json", b"[]")
     )
+    present_approval_v2 = APPROVAL_V2_ARTIFACTS & set(payloads)
+    approval_authority_head: str | None = None
+    if present_approval_v2:
+        if present_approval_v2 != APPROVAL_V2_ARTIFACTS:
+            raise CanonicalStorageError("authoritative approval artifacts must be complete")
+        try:
+            approval_state = read_approval_state_v2(
+                payloads["approval_ledger_v2.json"],
+                payloads["approval_decisions_v2.jsonl"],
+                payloads["approval_audit_v2.jsonl"],
+            )
+            projected = project_v1_approvals(approval_state)
+        except ValueError as exc:
+            raise CanonicalStorageError("authoritative approval artifacts are invalid") from exc
+        if approval_state.ledger.run_id != run_id or projected != approvals:
+            raise CanonicalStorageError(
+                "V1 approval projection differs from authoritative V2 state"
+            )
+        approval_authority_head = canonical_domain_sha256(
+            APPROVAL_AUTHORITY_LINEAGE_DOMAIN,
+            {
+                "ledger_sha256": approval_state.ledger_sha256,
+                "decision_count": approval_state.ledger.decision_count,
+                "decision_log_head_sha256": (approval_state.ledger.decision_log_head_sha256),
+                "domain_audit_count": approval_state.ledger.domain_audit_count,
+                "domain_audit_log_head_sha256": (
+                    approval_state.ledger.domain_audit_log_head_sha256
+                ),
+            },
+        )
     execution_records = TypeAdapter(list[AgentExecutionRecord]).validate_json(
         payloads.get("agent_execution_records.json", b"[]")
     )
@@ -254,9 +307,13 @@ def product_payload_commitments(
         sha256_bytes(payloads["input.json"]),
         sha256_bytes(payloads["state.json"]),
         _lineage_head("event", events),
-        _lineage_head(
-            "approval",
-            [item.model_dump(mode="json") for item in approvals],
+        (
+            approval_authority_head
+            if approval_authority_head is not None
+            else _lineage_head(
+                "approval",
+                [item.model_dump(mode="json") for item in approvals],
+            )
         ),
         _lineage_head("context", context_bindings),
         _lineage_head("execution", execution_bindings),
@@ -382,6 +439,9 @@ def _validate_json_value(logical_name: str, data: bytes) -> None:
     if model is not None:
         _validate_json_model(data, model)
         return
+    if logical_name == "approval_ledger_v2.json":
+        parse_approval_model(data, ApprovalLedgerV2)
+        return
     model = list_models.get(logical_name)
     if model is not None:
         _validate_json_models(data, model)
@@ -408,9 +468,14 @@ def validate_payload_bytes(
     if entry.serialization == CONTROL_CANONICALIZATION:
         _validate_json_value(entry.logical_name, data)
     elif entry.serialization == JSONL_SERIALIZATION:
-        if entry.logical_name != "evidence.jsonl":
+        if entry.logical_name == "approval_decisions_v2.jsonl":
+            parse_approval_jsonl(data, ApprovalDecisionRecordV2)
+        elif entry.logical_name == "approval_audit_v2.jsonl":
+            parse_approval_jsonl(data, ApprovalDomainAuditEventV2)
+        elif entry.logical_name == "evidence.jsonl":
+            parse_canonical_jsonl(data, EvidenceRecord)
+        else:
             raise CanonicalStorageError("unsupported terminal JSONL payload")
-        parse_canonical_jsonl(data, EvidenceRecord)
     elif entry.serialization == TEXT_SERIALIZATION:
         validate_canonical_text(data)
     elif entry.serialization == "opaque-bytes-v1" and allow_opaque:

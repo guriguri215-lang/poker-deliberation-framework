@@ -19,6 +19,8 @@ from poker_deliberation.approval_models import (
     ApprovalDomainAuditEventV2,
     ApprovalLedgerV2,
     ApprovalRequestV2,
+    ApprovalSecurityAuditEventV2,
+    ApprovalSecurityAuditPointerV2,
     CanonicalActionPlanV2,
     ExternalExecutionBindingV2,
     HistoricalApprovalV1Binding,
@@ -33,6 +35,8 @@ DECISION_BATCH_DOMAIN = "poker-approval-decision-batch-v2"
 DECISION_OUTCOME_DOMAIN = "poker-approval-decision-outcome-v2"
 DECISION_RECORD_DOMAIN = "poker-approval-decision-record-v2"
 DOMAIN_AUDIT_EVENT_DOMAIN = "poker-approval-domain-audit-event-v2"
+SECURITY_AUDIT_EVENT_DOMAIN = "poker-approval-security-audit-event-v2"
+SECURITY_AUDIT_POINTER_DOMAIN = "poker-approval-security-audit-pointer-v2"
 LEDGER_DOMAIN = "poker-approval-ledger-v2"
 EXTERNAL_BINDING_DOMAIN = "poker-approval-external-binding-v2"
 HISTORICAL_V1_BINDING_DOMAIN = "poker-approval-historical-v1-binding-v2"
@@ -244,6 +248,21 @@ def approval_domain_audit_event_sha256(
         DOMAIN_AUDIT_EVENT_DOMAIN,
         _without_derived_hash(event, "event_sha256"),
     )
+
+
+def approval_security_audit_event_sha256(
+    event: ApprovalSecurityAuditEventV2,
+) -> str:
+    return canonical_domain_sha256(
+        SECURITY_AUDIT_EVENT_DOMAIN,
+        _without_derived_hash(event, "event_sha256"),
+    )
+
+
+def approval_security_audit_pointer_sha256(
+    pointer: ApprovalSecurityAuditPointerV2,
+) -> str:
+    return canonical_domain_sha256(SECURITY_AUDIT_POINTER_DOMAIN, pointer)
 
 
 def approval_ledger_sha256(ledger: ApprovalLedgerV2) -> str:

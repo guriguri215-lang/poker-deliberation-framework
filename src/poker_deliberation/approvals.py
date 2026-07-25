@@ -4,18 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, NoReturn, Protocol
+from typing import Literal, NoReturn, Protocol, cast
 
 from pydantic import ValidationError
 
 from poker_deliberation.approval_canonical import (
     CanonicalApprovalError,
+    action_digest_sha256,
     approval_actor_sha256,
     approval_decision_batch_sha256,
     approval_decision_outcome_sha256,
     approval_decision_record_sha256,
     approval_domain_audit_event_sha256,
     approval_ledger_sha256,
+    approval_request_idempotency_key,
     canonical_json_bytes,
     domain_sha256,
     parse_canonical_jsonl,
@@ -29,10 +31,14 @@ from poker_deliberation.approval_models import (
     ApprovalDecisionOutcome,
     ApprovalDecisionRecordV2,
     ApprovalDecisionResultV2,
+    ApprovalDisplayV2,
     ApprovalDomainAuditEventV2,
     ApprovalFailureCode,
     ApprovalLedgerV2,
     ApprovalRequestV2,
+    AuthorityScope,
+    CanonicalActionPlanV2,
+    ExternalExecutionBindingV2,
     ReportRunStatus,
 )
 from poker_deliberation.schemas import ApprovalRequest, ApprovalStatus
@@ -50,6 +56,8 @@ SENSITIVE_ACTIONS = {
 }
 
 _IDEMPOTENCY_REFERENCE_DOMAIN = "poker-approval-idempotency-reference-v2"
+_DECISION_REFERENCE_DOMAIN = "poker-approval-decision-reference-v2"
+_TRANSACTION_ID_DOMAIN = "poker-approval-decision-transaction-v2"
 
 
 def requires_human_approval(action_category: str) -> bool:
@@ -98,6 +106,58 @@ class DecisionAuthorityProvider(Protocol):
         decision_at: datetime,
     ) -> ApprovalAuthoritySnapshotV2:
         """Return the independently verified canonical actor snapshot."""
+
+
+class ExternalExecutionBindingProvider(Protocol):
+    """Future executor seam; P2-013A only binds an unavailable result."""
+
+    def bind_unavailable(
+        self,
+        request: ApprovalRequestV2,
+        outcome: ApprovalDecisionOutcome,
+        authority_snapshot: ApprovalAuthoritySnapshotV2,
+    ) -> ExternalExecutionBindingV2:
+        """Bind exact approved authority without launching an effect."""
+
+
+class UnavailableExternalExecutionBindingProvider:
+    def bind_unavailable(
+        self,
+        request: ApprovalRequestV2,
+        outcome: ApprovalDecisionOutcome,
+        authority_snapshot: ApprovalAuthoritySnapshotV2,
+    ) -> ExternalExecutionBindingV2:
+        result = next(
+            (item for item in outcome.request_results if item.request_id == request.request_id),
+            None,
+        )
+        if (
+            outcome.outcome_kind != "committed"
+            or result is None
+            or result.decision != "approved"
+            or result.request_revision != request.request_revision
+            or result.action_digest_sha256 != request.action_digest_sha256
+            or outcome.actor_sha256 != authority_snapshot.actor_sha256
+        ):
+            raise ValueError("external binding requires the exact approved request")
+        from poker_deliberation.approval_canonical import (
+            approval_authority_snapshot_sha256,
+            approval_decision_outcome_sha256,
+        )
+
+        return ExternalExecutionBindingV2(
+            run_id=outcome.run_id,
+            request_id=request.request_id,
+            request_revision=request.request_revision,
+            action_digest_sha256=request.action_digest_sha256,
+            execution_id=request.action_plan.execution_id,
+            decision_id=outcome.decision_id,
+            outcome_sha256=approval_decision_outcome_sha256(outcome),
+            actor_sha256=outcome.actor_sha256,
+            authority_snapshot_sha256=approval_authority_snapshot_sha256(
+                authority_snapshot
+            ),
+        )
 
 
 class LocalCliAuthorityProvider:
@@ -194,6 +254,49 @@ def empty_approval_ledger_v2(run_id: str) -> ApprovalLedgerV2:
         requests=(),
         decision_count=0,
         domain_audit_count=0,
+    )
+
+
+def build_approval_request_v2(
+    *,
+    run_id: str,
+    created_run_revision: int,
+    ledger_revision: int,
+    stable_proposal_id: str,
+    action_plan: CanonicalActionPlanV2,
+    display: ApprovalDisplayV2,
+    source_phase_id: str,
+    source_attempt_id: str,
+    created_at: datetime,
+) -> ApprovalRequestV2:
+    """Bind an untrusted proposal to application-owned V2 request identity."""
+
+    action_sha256 = action_digest_sha256(action_plan)
+    idempotency_key = approval_request_idempotency_key(
+        run_id=run_id,
+        phase_id=source_phase_id,
+        stable_proposal_id=stable_proposal_id,
+        action_category=action_plan.action_category,
+        action_digest_sha256=action_sha256,
+    )
+    return ApprovalRequestV2(
+        request_id=f"request-{idempotency_key[:32]}",
+        request_revision=1,
+        ledger_revision=ledger_revision,
+        created_run_revision=created_run_revision,
+        stable_proposal_id=stable_proposal_id,
+        action_plan=action_plan,
+        action_digest_sha256=action_sha256,
+        display=display,
+        required_authority_scope=cast(
+            AuthorityScope,
+            f"approve:{action_plan.action_category}",
+        ),
+        created_at=created_at,
+        expires_at=action_plan.expires_at,
+        source_phase_id=source_phase_id,
+        source_attempt_id=source_attempt_id,
+        request_idempotency_key=idempotency_key,
     )
 
 
@@ -668,6 +771,7 @@ def build_approval_decision_update(
         decision_id=batch.decision_id,
         idempotency_key=batch.idempotency_key,
         actor_sha256=admission.actor_sha256,
+        batch=batch,
         batch_sha256=admission.batch_sha256,
         outcome=outcome,
         outcome_sha256=outcome_sha256,
@@ -722,6 +826,175 @@ def build_approval_decision_update(
         decision_record=record,
         domain_audit_event=event,
     )
+
+
+def reverify_approval_authority(
+    admission: ApprovalDecisionAdmissionV2,
+    authority_provider: DecisionAuthorityProvider,
+    *,
+    evaluated_at: datetime,
+) -> ApprovalAuthoritySnapshotV2:
+    """Repeat actor and scope verification while RM-012 authority is held."""
+
+    if admission.kind != "new" or admission.actor_snapshot is None:
+        raise ValueError("only a new admission requires in-lock authority verification")
+    _require_utc(evaluated_at)
+    batch = admission.batch
+    if evaluated_at < batch.decision_at:
+        _reject(
+            ApprovalFailureCode.RESUME_CONFLICT,
+            "Authority verification clock moved backwards.",
+            batch,
+            batch.expected_run_revision,
+            batch.expected_ledger_revision,
+        )
+    try:
+        snapshot = authority_provider.resolve_actor(
+            batch.actor.actor_id,
+            decision_at=evaluated_at,
+        )
+    except Exception:
+        _reject(
+            ApprovalFailureCode.UNAUTHORIZED_DECISION,
+            "Authority provider could not reverify the actor.",
+            batch,
+            batch.expected_run_revision,
+            batch.expected_ledger_revision,
+        )
+    if snapshot.actor != admission.actor_snapshot.actor:
+        code = (
+            ApprovalFailureCode.AUTHORITY_REVOKED
+            if snapshot.actor.revocation_status == "revoked"
+            else ApprovalFailureCode.ACTOR_SPOOF
+        )
+        _reject(
+            code,
+            "Authority changed before decision publication.",
+            batch,
+            batch.expected_run_revision,
+            batch.expected_ledger_revision,
+        )
+    for request, item in zip(admission.requests, batch.items, strict=True):
+        actor = snapshot.actor
+        authorized = (
+            "reject:any" in actor.authority_scopes
+            if item.decision == "rejected"
+            else actor.verification_status == "verified"
+            and actor.revocation_status == "not_revoked"
+            and actor.authority_expires_at is not None
+            and evaluated_at < actor.authority_expires_at
+            and request.required_authority_scope in actor.authority_scopes
+        )
+        if not authorized:
+            _reject(
+                (
+                    ApprovalFailureCode.AUTHORITY_REVOKED
+                    if actor.revocation_status == "revoked"
+                    else ApprovalFailureCode.UNAUTHORIZED_DECISION
+                ),
+                "Actor no longer has the exact required authority.",
+                batch,
+                batch.expected_run_revision,
+                batch.expected_ledger_revision,
+                request_id=request.request_id,
+            )
+    return snapshot
+
+
+def approval_transaction_id(
+    run_id: str,
+    decision_idempotency_key: str,
+    batch_sha256: str,
+) -> str:
+    digest = domain_sha256(
+        _TRANSACTION_ID_DOMAIN,
+        canonical_json_bytes(
+            {
+                "run_id": run_id,
+                "decision_idempotency_key": decision_idempotency_key,
+                "batch_sha256": batch_sha256,
+            }
+        ),
+    )
+    return f"txn-{digest[:32]}"
+
+
+def approval_reference_sha256(
+    kind: Literal["decision_id", "idempotency_key"],
+    value: str,
+) -> str:
+    domain = (
+        _DECISION_REFERENCE_DOMAIN
+        if kind == "decision_id"
+        else _IDEMPOTENCY_REFERENCE_DOMAIN
+    )
+    return domain_sha256(domain, value.encode("utf-8"))
+
+
+def approval_failure_v2(
+    code: ApprovalFailureCode,
+    message: str,
+    *,
+    run_id: str,
+    decision_id: str,
+    idempotency_key: str,
+    observed_run_revision: int | None,
+    observed_ledger_revision: int | None,
+) -> ApprovalDecisionFailureV2:
+    return _failure(
+        code,
+        message,
+        run_id=run_id,
+        decision_id=decision_id,
+        idempotency_key=idempotency_key,
+        observed_run_revision=observed_run_revision,
+        observed_ledger_revision=observed_ledger_revision,
+    )
+
+
+def project_v1_approvals(
+    state: VerifiedApprovalStateV2,
+) -> list[ApprovalRequest]:
+    """Derive the exact public V1 projection from authoritative V2 state."""
+
+    decisions: dict[str, ApprovalDecisionRecordV2] = {}
+    for record in state.decision_records:
+        for result in record.outcome.request_results:
+            decisions[result.request_id] = record
+    projected: list[ApprovalRequest] = []
+    for request in state.ledger.requests:
+        if request.state == "superseded":
+            raise ApprovalLedgerCorruptError("P2-013A cannot project a superseded approval request")
+        decision_record = decisions.get(request.request_id)
+        status = {
+            "pending": ApprovalStatus.PENDING,
+            "approved": ApprovalStatus.APPROVED,
+            "rejected": ApprovalStatus.REJECTED,
+        }[request.state]
+        projected.append(
+            ApprovalRequest(
+                approval_id=request.request_id,
+                action_category=request.action_plan.action_category,
+                requested_action=request.display.requested_action,
+                reason=request.display.reason,
+                expected_benefit=request.display.expected_benefit,
+                risks=list(request.display.risks),
+                data_to_be_sent=list(request.display.data_to_be_sent),
+                cost_or_resource_estimate=request.display.cost_or_resource_estimate,
+                alternatives=list(request.display.alternatives),
+                effect_of_declining=request.display.effect_of_declining,
+                exact_command_or_tool_call=request.display.exact_command_or_tool_call,
+                status=status,
+                decision_reason=(
+                    None if decision_record is None else decision_record.batch.reason
+                ),
+                created_at=request.created_at,
+                decided_at=(
+                    None if decision_record is None else decision_record.committed_at
+                ),
+            )
+        )
+    return projected
 
 
 def encode_approval_state_v2(

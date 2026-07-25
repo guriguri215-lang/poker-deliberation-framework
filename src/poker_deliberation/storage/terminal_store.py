@@ -8,12 +8,30 @@ import secrets
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
 from pydantic import ValidationError
 
+from poker_deliberation.approval_canonical import (
+    approval_security_audit_event_sha256,
+    approval_security_audit_pointer_sha256,
+)
+from poker_deliberation.approval_canonical import (
+    canonical_json_bytes as canonical_approval_json_bytes,
+)
+from poker_deliberation.approval_canonical import (
+    parse_canonical_model as parse_approval_model,
+)
+from poker_deliberation.approval_models import (
+    ApprovalDecisionFailureV2,
+    ApprovalFailureCode,
+    ApprovalSecurityAuditEventV2,
+    ApprovalSecurityAuditPointerV2,
+    ApprovalSecurityAuditRateStateV2,
+)
+from poker_deliberation.approvals import ApprovalDecisionValidationError
 from poker_deliberation.budgets.contracts import BudgetPolicyV2
 from poker_deliberation.budgets.durable_models import (
     DurableBudgetPolicyV1,
@@ -95,6 +113,12 @@ PRODUCT_ROOT_DOMAIN = "poker-product-revision-root-v2"
 PRODUCT_TRANSACTION_DOMAIN = "poker-product-transaction-v2"
 PRODUCT_BUDGET_ID_DOMAIN = "poker-product-budget-id-v2"
 _CURRENT_TEMP = re.compile(r"^current\.txn-[0-9a-f]{32}\.tmp$")
+_APPROVAL_AUDIT_EVENT = re.compile(r"^(?P<sequence>[0-9]{4})-(?P<hash>[0-9a-f]{64})\.json$")
+APPROVAL_AUDIT_MAX_EVENTS = 1024
+APPROVAL_AUDIT_MAX_EVENT_BYTES = 16_384
+APPROVAL_AUDIT_MAX_TOTAL_BYTES = 1_048_576
+APPROVAL_AUDIT_MAX_FAILED_EVENTS = 32
+APPROVAL_AUDIT_WINDOW_SECONDS = 60
 
 Clock = Callable[[], datetime]
 IdFactory = Callable[[str], str]
@@ -341,6 +365,33 @@ class TerminalPublishOutcome:
     pointer_sha256: str
     completion_marker_sha256: str | None
     durability_evidence: DurabilityEvidenceV1
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalFailureAuditRequest:
+    run_id: str
+    actor_sha256: str
+    decision_id_sha256: str
+    idempotency_key_sha256: str
+    batch_sha256: str | None
+    failure_code: ApprovalFailureCode
+    observed_run_revision: int | None
+    observed_ledger_revision: int | None
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalFailureAuditOutcome:
+    event: ApprovalSecurityAuditEventV2
+    pointer: ApprovalSecurityAuditPointerV2
+    pointer_sha256: str
+    directory_sync: Literal["confirmed", "unavailable"]
+
+
+class ApprovalFailureAuditError(ValueError):
+    def __init__(self, failure: ApprovalDecisionFailureV2) -> None:
+        self.failure = failure
+        super().__init__(failure.code.value)
 
 
 class SettlementVerifier(Protocol):
@@ -807,7 +858,13 @@ class TerminalRunStore:
         unknown = {
             name
             for name in control_entries
-            if name not in {"transactions", "revisions", "current.json"}
+            if name
+            not in {
+                "transactions",
+                "revisions",
+                "current.json",
+                "approval-failure-audit",
+            }
             and _CURRENT_TEMP.fullmatch(name) is None
         }
         if unknown:
@@ -826,6 +883,23 @@ class TerminalRunStore:
         current = control / "current.json"
         if current.exists():
             verify_regular_single_link(current)
+        approval_audit = control / "approval-failure-audit"
+        if approval_audit.exists():
+            verify_directory(approval_audit)
+            audit_entries = {item.name: item for item in approval_audit.iterdir()}
+            if set(audit_entries) - {"events", "current.json", "current.tmp"}:
+                raise CanonicalStorageError("unknown approval failure audit entry")
+            audit_events_root = audit_entries.get("events")
+            if audit_events_root is not None:
+                verify_directory(audit_events_root)
+                for item in audit_events_root.iterdir():
+                    if _APPROVAL_AUDIT_EVENT.fullmatch(item.name) is None:
+                        raise CanonicalStorageError("unknown approval failure audit event")
+                    verify_regular_single_link(item)
+            for name in ("current.json", "current.tmp"):
+                audit_item = audit_entries.get(name)
+                if audit_item is not None:
+                    verify_regular_single_link(audit_item)
 
     def _bootstrap_namespace(self, run_id: str) -> tuple[Path, Path, Path, Path]:
         run, control, transactions, revisions = self._paths(run_id)
@@ -1589,6 +1663,17 @@ class TerminalRunStore:
                 completion_marker_sha256=prepared.marker_sha256,
                 durability_evidence=_published_durability(directory_state),
             )
+        except ApprovalDecisionValidationError:
+            if not pointer_published:
+                with suppress(Exception):
+                    self.budget.release_no_effect(
+                        request,
+                        evidence_sha256=canonical_domain_sha256(
+                            PRODUCT_TRANSACTION_DOMAIN,
+                            {"transaction_id": request.transaction_id, "effect": "none"},
+                        ),
+                    )
+            raise
         except ProductRunError:
             if not pointer_published:
                 with suppress(Exception):
@@ -1698,6 +1783,413 @@ class TerminalRunStore:
                             previous_revision_effect=previous_effect,
                             durability_evidence=_reconciliation_durability(),
                         ) from exc
+
+    def publish_approval_decision(
+        self,
+        request: TerminalPublishRequest,
+        *,
+        authority_verifier: Callable[[], None],
+    ) -> TerminalPublishOutcome:
+        """Publish one approval successor with authority reverified in-lock."""
+
+        if (
+            request.expected_revision is None
+            or request.proposed_revision != request.expected_revision + 1
+        ):
+            raise ValueError("approval decision requires an exact successor revision")
+        return self.publish(
+            request,
+            pre_manifest_verifier=authority_verifier,
+        )
+
+    @staticmethod
+    def _empty_approval_audit_pointer(
+        run_id: str,
+    ) -> ApprovalSecurityAuditPointerV2:
+        return ApprovalSecurityAuditPointerV2(
+            run_id_sha256=run_id_sha256(run_id),
+            audit_sequence=0,
+            head_event_sha256=None,
+            total_event_bytes=0,
+            rate_states=(),
+            updated_at=None,
+        )
+
+    def _read_approval_failure_audit(
+        self,
+        run_id: str,
+    ) -> tuple[
+        ApprovalSecurityAuditPointerV2,
+        tuple[ApprovalSecurityAuditEventV2, ...],
+    ]:
+        _run, control, _transactions, _revisions = self._paths(run_id)
+        root = control / "approval-failure-audit"
+        if not root.exists():
+            return self._empty_approval_audit_pointer(run_id), ()
+        verify_directory(root)
+        entries = {item.name: item for item in root.iterdir()}
+        if set(entries) - {"events", "current.json", "current.tmp"}:
+            raise CanonicalStorageError("unknown approval failure audit entry")
+        if "current.tmp" in entries:
+            verify_regular_single_link(entries["current.tmp"])
+            raise CanonicalStorageError("approval failure audit pointer is incomplete")
+        if not entries:
+            return self._empty_approval_audit_pointer(run_id), ()
+        if set(entries) != {"events", "current.json"}:
+            raise CanonicalStorageError("approval failure audit namespace is incomplete")
+        events_root = entries["events"]
+        verify_directory(events_root)
+        pointer_bytes = _read_bounded(
+            entries["current.json"],
+            max_bytes=self.max_artifact_bytes,
+        )
+        pointer = parse_approval_model(
+            pointer_bytes,
+            ApprovalSecurityAuditPointerV2,
+        )
+        if pointer.run_id_sha256 != run_id_sha256(run_id):
+            raise CanonicalStorageError("approval failure audit run mismatch")
+        event_files = sorted(
+            events_root.iterdir(),
+            key=lambda item: item.name.encode("ascii"),
+        )
+        if len(event_files) != pointer.audit_sequence:
+            raise CanonicalStorageError("approval failure audit is truncated")
+        events: list[ApprovalSecurityAuditEventV2] = []
+        expected_previous: str | None = None
+        total_bytes = 0
+        prior_time: datetime | None = None
+        for sequence, path in enumerate(event_files, start=1):
+            match = _APPROVAL_AUDIT_EVENT.fullmatch(path.name)
+            if match is None or int(match.group("sequence")) != sequence:
+                raise CanonicalStorageError("approval failure audit event path mismatch")
+            data = _read_bounded(
+                path,
+                max_bytes=APPROVAL_AUDIT_MAX_EVENT_BYTES,
+            )
+            event = parse_approval_model(data, ApprovalSecurityAuditEventV2)
+            if (
+                event.sequence != sequence
+                or event.previous_event_sha256 != expected_previous
+                or event.run_id_sha256 != pointer.run_id_sha256
+                or event.event_sha256 != match.group("hash")
+            ):
+                raise CanonicalStorageError("approval failure audit event lineage mismatch")
+            if prior_time is not None and event.occurred_at < prior_time:
+                raise CanonicalStorageError("approval failure audit clock rollback")
+            events.append(event)
+            expected_previous = event.event_sha256
+            prior_time = event.occurred_at
+            total_bytes += len(data)
+        expected_states = self._approval_audit_rate_states(tuple(events))
+        if (
+            pointer.head_event_sha256 != expected_previous
+            or pointer.total_event_bytes != total_bytes
+            or pointer.rate_states != expected_states
+            or pointer.updated_at != prior_time
+        ):
+            raise CanonicalStorageError("approval failure audit pointer mismatch")
+        return pointer, tuple(events)
+
+    @staticmethod
+    def _approval_audit_rate_states(
+        events: tuple[ApprovalSecurityAuditEventV2, ...],
+    ) -> tuple[ApprovalSecurityAuditRateStateV2, ...]:
+        states: dict[str, ApprovalSecurityAuditRateStateV2] = {}
+        for event in events:
+            prior = states.get(event.actor_sha256)
+            if prior is None or event.rate_window_started_at > prior.window_started_at:
+                if event.rate_window_started_at != event.occurred_at:
+                    raise CanonicalStorageError(
+                        "approval audit window must start at its first event"
+                    )
+                prior = ApprovalSecurityAuditRateStateV2(
+                    actor_sha256=event.actor_sha256,
+                    window_started_at=event.rate_window_started_at,
+                    failed_event_count=0,
+                    rate_limit_marker_recorded=False,
+                )
+            elif event.rate_window_started_at != prior.window_started_at:
+                raise CanonicalStorageError("approval audit window moved backwards")
+            if event.event_kind == "failure":
+                if prior.failed_event_count >= APPROVAL_AUDIT_MAX_FAILED_EVENTS:
+                    raise CanonicalStorageError("approval audit failure count exceeds its window")
+                prior = prior.model_copy(
+                    update={
+                        "failed_event_count": prior.failed_event_count + 1,
+                    }
+                )
+            else:
+                if (
+                    prior.failed_event_count != APPROVAL_AUDIT_MAX_FAILED_EVENTS
+                    or prior.rate_limit_marker_recorded
+                ):
+                    raise CanonicalStorageError("approval audit rate-limit marker mismatch")
+                prior = prior.model_copy(update={"rate_limit_marker_recorded": True})
+            states[event.actor_sha256] = ApprovalSecurityAuditRateStateV2.model_validate(prior)
+        return tuple(states[key] for key in sorted(states, key=lambda item: item.encode("ascii")))
+
+    def read_approval_failure_audit(
+        self,
+        run_id: str,
+    ) -> tuple[
+        ApprovalSecurityAuditPointerV2,
+        tuple[ApprovalSecurityAuditEventV2, ...],
+    ]:
+        validate_run_id(run_id)
+        self._scan_aliases(run_id)
+        self._verify_namespace(run_id)
+        return self._read_approval_failure_audit(run_id)
+
+    def append_approval_failure_audit(
+        self,
+        request: ApprovalFailureAuditRequest,
+        *,
+        max_events: int = APPROVAL_AUDIT_MAX_EVENTS,
+        max_event_bytes: int = APPROVAL_AUDIT_MAX_EVENT_BYTES,
+        max_total_bytes: int = APPROVAL_AUDIT_MAX_TOTAL_BYTES,
+        max_failed_events: int = APPROVAL_AUDIT_MAX_FAILED_EVENTS,
+        window_seconds: int = APPROVAL_AUDIT_WINDOW_SECONDS,
+    ) -> ApprovalFailureAuditOutcome:
+        """Append one failure event under the same per-run RM-012 authority."""
+
+        if (
+            not 1 <= max_events <= APPROVAL_AUDIT_MAX_EVENTS
+            or not 1 <= max_event_bytes <= APPROVAL_AUDIT_MAX_EVENT_BYTES
+            or not 1 <= max_total_bytes <= APPROVAL_AUDIT_MAX_TOTAL_BYTES
+            or max_failed_events != APPROVAL_AUDIT_MAX_FAILED_EVENTS
+            or window_seconds != APPROVAL_AUDIT_WINDOW_SECONDS
+        ):
+            raise ValueError("approval failure audit limits exceed the contract")
+        validate_run_id(request.run_id)
+        occurred_at_offset = request.occurred_at.utcoffset()
+        if (
+            request.occurred_at.tzinfo is None
+            or occurred_at_offset is None
+            or occurred_at_offset.total_seconds() != 0
+        ):
+            raise ValueError("approval failure audit time must be UTC")
+        lease = None
+        pointer_published = False
+        try:
+            _marker, marker_sha = self.foundation._ownership(request.run_id)
+            self._scan_aliases(request.run_id)
+            lease = self.foundation._authority(
+                request.run_id,
+                marker_sha,
+                bootstrap=True,
+            )
+            self._scan_aliases(request.run_id)
+            self._verify_namespace(request.run_id)
+            _run, control, _transactions, _revisions = self._paths(request.run_id)
+            if not (control / "current.json").exists():
+                raise CanonicalStorageError(
+                    "approval failure audit requires an existing product run"
+                )
+            pointer, events = self._read_approval_failure_audit(request.run_id)
+            if pointer.updated_at is not None and request.occurred_at < pointer.updated_at:
+                raise CanonicalStorageError("approval failure audit clock rollback")
+            if len(events) >= max_events:
+                raise self._approval_audit_error(
+                    request,
+                    ApprovalFailureCode.AUDIT_CAPACITY_EXCEEDED,
+                    "Approval failure audit event capacity is exhausted.",
+                )
+            rate_by_actor = {state.actor_sha256: state for state in pointer.rate_states}
+            rate = rate_by_actor.get(request.actor_sha256)
+            if rate is None or request.occurred_at >= rate.window_started_at + timedelta(
+                seconds=window_seconds
+            ):
+                rate = ApprovalSecurityAuditRateStateV2(
+                    actor_sha256=request.actor_sha256,
+                    window_started_at=request.occurred_at,
+                    failed_event_count=0,
+                    rate_limit_marker_recorded=False,
+                )
+            event_kind: Literal["failure", "rate_limit"]
+            failure_code = request.failure_code
+            if rate.failed_event_count >= max_failed_events:
+                if rate.rate_limit_marker_recorded:
+                    raise self._approval_audit_error(
+                        request,
+                        ApprovalFailureCode.AUDIT_RATE_LIMITED,
+                        "Approval failure audit rate limit is active.",
+                        audit_confirmed=True,
+                    )
+                event_kind = "rate_limit"
+                failure_code = ApprovalFailureCode.AUDIT_RATE_LIMITED
+            else:
+                event_kind = "failure"
+            partial = ApprovalSecurityAuditEventV2.model_construct(
+                sequence=pointer.audit_sequence + 1,
+                previous_event_sha256=pointer.head_event_sha256,
+                event_kind=event_kind,
+                run_id_sha256=run_id_sha256(request.run_id),
+                actor_sha256=request.actor_sha256,
+                decision_id_sha256=request.decision_id_sha256,
+                idempotency_key_sha256=request.idempotency_key_sha256,
+                batch_sha256=request.batch_sha256,
+                failure_code=failure_code,
+                observed_run_revision=request.observed_run_revision,
+                observed_ledger_revision=request.observed_ledger_revision,
+                occurred_at=request.occurred_at,
+                rate_window_started_at=rate.window_started_at,
+                event_sha256="0" * 64,
+            )
+            event = ApprovalSecurityAuditEventV2(
+                **(
+                    partial.model_dump()
+                    | {"event_sha256": approval_security_audit_event_sha256(partial)}
+                )
+            )
+            event_bytes = canonical_approval_json_bytes(event)
+            if len(event_bytes) > max_event_bytes:
+                raise self._approval_audit_error(
+                    request,
+                    ApprovalFailureCode.AUDIT_CAPACITY_EXCEEDED,
+                    "Approval failure audit event exceeds its byte limit.",
+                )
+            if pointer.total_event_bytes + len(event_bytes) > max_total_bytes:
+                raise self._approval_audit_error(
+                    request,
+                    ApprovalFailureCode.AUDIT_CAPACITY_EXCEEDED,
+                    "Approval failure audit byte capacity is exhausted.",
+                )
+            next_events = (*events, event)
+            next_pointer = ApprovalSecurityAuditPointerV2(
+                run_id_sha256=run_id_sha256(request.run_id),
+                audit_sequence=event.sequence,
+                head_event_sha256=event.event_sha256,
+                total_event_bytes=pointer.total_event_bytes + len(event_bytes),
+                rate_states=self._approval_audit_rate_states(next_events),
+                updated_at=request.occurred_at,
+            )
+            pointer_bytes = canonical_approval_json_bytes(next_pointer)
+            if len(pointer_bytes) > self.max_artifact_bytes:
+                raise self._approval_audit_error(
+                    request,
+                    ApprovalFailureCode.AUDIT_CAPACITY_EXCEEDED,
+                    "Approval failure audit pointer exceeds its byte limit.",
+                )
+            audit_root = control / "approval-failure-audit"
+            events_root = audit_root / "events"
+            _fault(self.fault_injector, "approval_audit.before_mkdir")
+            _recognized_directory(audit_root)
+            _recognized_directory(events_root)
+            _fault(self.fault_injector, "approval_audit.after_mkdir")
+            event_path = events_root / (f"{event.sequence:04d}-{event.event_sha256}.json")
+            _write_exclusive_verified(
+                event_path,
+                event_bytes,
+                injector=self.fault_injector,
+                hook="approval_audit.event",
+            )
+            _directory_sync(
+                events_root,
+                self.fault_injector,
+                "approval_audit.events",
+            )
+            temporary = audit_root / "current.tmp"
+            _write_exclusive_verified(
+                temporary,
+                pointer_bytes,
+                injector=self.fault_injector,
+                hook="approval_audit.pointer",
+            )
+            _fault(self.fault_injector, "approval_audit.current.before_replace")
+            os.replace(temporary, audit_root / "current.json")
+            pointer_published = True
+            _fault(self.fault_injector, "approval_audit.current.after_replace")
+            if (
+                _read_bounded(
+                    audit_root / "current.json",
+                    max_bytes=self.max_artifact_bytes,
+                )
+                != pointer_bytes
+            ):
+                raise CanonicalStorageError("approval failure audit pointer reread mismatch")
+            directory_state = cast(
+                Literal["confirmed", "unavailable"],
+                _directory_sync(
+                    audit_root,
+                    self.fault_injector,
+                    "approval_audit.current",
+                ),
+            )
+            verified_pointer, verified_events = self._read_approval_failure_audit(request.run_id)
+            if verified_pointer != next_pointer or verified_events[-1] != event:
+                raise CanonicalStorageError("approval failure audit verification mismatch")
+            outcome = ApprovalFailureAuditOutcome(
+                event=event,
+                pointer=next_pointer,
+                pointer_sha256=approval_security_audit_pointer_sha256(next_pointer),
+                directory_sync=directory_state,
+            )
+            if event_kind == "rate_limit":
+                raise self._approval_audit_error(
+                    request,
+                    ApprovalFailureCode.AUDIT_RATE_LIMITED,
+                    "Approval failure audit rate limit is active.",
+                    audit_confirmed=True,
+                )
+            return outcome
+        except ApprovalFailureAuditError:
+            raise
+        except (CanonicalStorageError, ValidationError) as exc:
+            code = (
+                ApprovalFailureCode.APPROVAL_LEDGER_CORRUPT
+                if not pointer_published
+                else ApprovalFailureCode.AUDIT_UNCONFIRMED
+            )
+            raise self._approval_audit_error(
+                request,
+                code,
+                "Approval failure audit could not be verified.",
+            ) from exc
+        except (RunStorageError, OSError) as exc:
+            raise self._approval_audit_error(
+                request,
+                ApprovalFailureCode.AUDIT_UNCONFIRMED,
+                "Approval failure audit could not be confirmed.",
+            ) from exc
+        except Exception as exc:
+            raise self._approval_audit_error(
+                request,
+                ApprovalFailureCode.AUDIT_UNCONFIRMED,
+                "Approval failure audit failed closed.",
+            ) from exc
+        finally:
+            if lease is not None:
+                try:
+                    lease.release()
+                except LockReleaseError as exc:
+                    raise self._approval_audit_error(
+                        request,
+                        ApprovalFailureCode.AUDIT_UNCONFIRMED,
+                        "Approval failure audit authority release is unconfirmed.",
+                    ) from exc
+
+    @staticmethod
+    def _approval_audit_error(
+        request: ApprovalFailureAuditRequest,
+        code: ApprovalFailureCode,
+        message: str,
+        *,
+        audit_confirmed: bool = False,
+    ) -> ApprovalFailureAuditError:
+        return ApprovalFailureAuditError(
+            ApprovalDecisionFailureV2(
+                code=code,
+                message=message,
+                retryable=False,
+                run_id=request.run_id,
+                idempotency_key_sha256=request.idempotency_key_sha256,
+                observed_run_revision=request.observed_run_revision,
+                observed_ledger_revision=request.observed_ledger_revision,
+                audit_confirmed=audit_confirmed,
+                reconciliation_required=False,
+            )
+        )
 
     def report_path(self, read: VerifiedRunReadV2, format_name: str) -> Path:
         name = "final_report.json" if format_name == "json" else "final_report.md"

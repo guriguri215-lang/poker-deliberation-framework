@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from poker_deliberation.approval_canonical import (
     action_digest_sha256,
     approval_actor_sha256,
+    approval_decision_batch_sha256,
     approval_decision_outcome_sha256,
     approval_decision_record_sha256,
     approval_domain_audit_event_sha256,
@@ -38,6 +39,7 @@ from poker_deliberation.approvals import (
     empty_approval_ledger_v2,
     encode_approval_state_v2,
     read_approval_state_v2,
+    reverify_approval_authority,
     validate_approval_decision,
 )
 
@@ -395,13 +397,32 @@ def test_outcome_matrix_distinguishes_safe_reject_and_unavailable_approval() -> 
 
 
 def test_decision_and_audit_chain_hashes_exclude_only_the_derived_hash() -> None:
+    actor = _local_actor()
+    batch = ApprovalDecisionBatch(
+        run_id="run-1",
+        expected_run_revision=2,
+        expected_ledger_revision=1,
+        actor=actor,
+        decision_id="decision-1",
+        idempotency_key="decision-key-1",
+        items=(
+            ApprovalDecisionItemV2(
+                request_id="request-1",
+                expected_request_revision=1,
+                action_digest_sha256=HASH_C,
+                decision="rejected",
+            ),
+        ),
+        reason="Reject safely.",
+        decision_at=NOW,
+    )
     outcome = ApprovalDecisionOutcome(
         outcome_kind="committed",
         run_id="run-1",
         decision_id="decision-1",
         idempotency_key="decision-key-1",
-        actor_sha256=HASH_A,
-        batch_sha256=HASH_B,
+        actor_sha256=approval_actor_sha256(actor),
+        batch_sha256=approval_decision_batch_sha256(batch),
         previous_run_revision=2,
         current_run_revision=3,
         previous_ledger_revision=1,
@@ -424,8 +445,9 @@ def test_decision_and_audit_chain_hashes_exclude_only_the_derived_hash() -> None
         run_id="run-1",
         decision_id="decision-1",
         idempotency_key="decision-key-1",
-        actor_sha256=HASH_A,
-        batch_sha256=HASH_B,
+        actor_sha256=approval_actor_sha256(actor),
+        batch=batch,
+        batch_sha256=approval_decision_batch_sha256(batch),
         outcome=outcome,
         outcome_sha256=approval_decision_outcome_sha256(outcome),
         committed_at=NOW,
@@ -447,8 +469,8 @@ def test_decision_and_audit_chain_hashes_exclude_only_the_derived_hash() -> None
         run_revision=3,
         ledger_revision=2,
         decision_id="decision-1",
-        actor_sha256=HASH_A,
-        batch_sha256=HASH_B,
+        actor_sha256=approval_actor_sha256(actor),
+        batch_sha256=approval_decision_batch_sha256(batch),
         decision_record_sha256=record.record_sha256,
         outcome_sha256=approval_decision_outcome_sha256(outcome),
         occurred_at=NOW,
@@ -582,6 +604,29 @@ def test_verified_exact_scope_approval_commits_unavailable_limitation() -> None:
     assert update.outcome.run_status == "failed_with_limitations"
     assert update.outcome.limitation is not None
     assert update.outcome.limitation.code is ApprovalFailureCode.EXTERNAL_EXECUTOR_UNAVAILABLE
+
+
+def test_in_lock_authority_revocation_fails_before_publication() -> None:
+    _, state = _state()
+    actor = _verified_actor()
+    batch = _batch(actor=actor, decision="approved")
+    admission = validate_approval_decision(
+        state,
+        batch,
+        _StaticAuthorityProvider(actor),
+        observed_run_revision=2,
+        evaluated_at=batch.decision_at,
+    )
+    revoked = actor.model_copy(update={"revocation_status": "revoked"})
+
+    with pytest.raises(ApprovalDecisionValidationError) as captured:
+        reverify_approval_authority(
+            admission,
+            _StaticAuthorityProvider(revoked),
+            evaluated_at=batch.decision_at,
+        )
+
+    assert captured.value.failure.code is ApprovalFailureCode.AUTHORITY_REVOKED
 
 
 def test_request_idempotency_is_exact_and_conflicting_payload_is_rejected() -> None:

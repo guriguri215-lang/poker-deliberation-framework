@@ -515,6 +515,7 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
     decision_id: PortableId
     idempotency_key: PortableId
     actor_sha256: Sha256
+    batch: ApprovalDecisionBatch
     batch_sha256: Sha256
     outcome: ApprovalDecisionOutcome
     outcome_sha256: Sha256
@@ -526,14 +527,45 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
     @model_validator(mode="after")
     def record_hash_matches(self) -> ApprovalDecisionRecordV2:
         from poker_deliberation.approval_canonical import (
+            approval_actor_sha256,
+            approval_decision_batch_sha256,
             approval_decision_outcome_sha256,
             approval_decision_record_sha256,
         )
 
+        if self.batch_sha256 != approval_decision_batch_sha256(self.batch):
+            raise ValueError("approval decision batch hash mismatch")
         if self.outcome_sha256 != approval_decision_outcome_sha256(self.outcome):
             raise ValueError("approval decision outcome hash mismatch")
+        batch_results = tuple(
+            (
+                item.request_id,
+                item.expected_request_revision + 1,
+                item.action_digest_sha256,
+                item.decision,
+            )
+            for item in self.batch.items
+        )
+        outcome_results = tuple(
+            (
+                item.request_id,
+                item.request_revision,
+                item.action_digest_sha256,
+                item.decision,
+            )
+            for item in self.outcome.request_results
+        )
         if (
-            self.outcome.run_id != self.run_id
+            self.batch.run_id != self.run_id
+            or self.batch.decision_id != self.decision_id
+            or self.batch.idempotency_key != self.idempotency_key
+            or approval_actor_sha256(self.batch.actor) != self.actor_sha256
+            or self.batch.expected_run_revision != self.outcome.previous_run_revision
+            or self.batch.expected_ledger_revision != self.outcome.previous_ledger_revision
+            or self.batch.decision_at != self.committed_at
+            or self.outcome.committed_at != self.committed_at
+            or batch_results != outcome_results
+            or self.outcome.run_id != self.run_id
             or self.outcome.decision_id != self.decision_id
             or self.outcome.idempotency_key != self.idempotency_key
             or self.outcome.actor_sha256 != self.actor_sha256
@@ -575,6 +607,105 @@ class ApprovalDomainAuditEventV2(_ApprovalModel):
             raise ValueError("approval domain audit event hash mismatch")
         if (self.sequence == 1) != (self.previous_event_sha256 is None):
             raise ValueError("approval domain audit lineage mismatch")
+        return self
+
+
+class ApprovalSecurityAuditEventV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    sequence: int = Field(ge=1, le=1024)
+    previous_event_sha256: Sha256 | None = None
+    event_kind: Literal["failure", "rate_limit"]
+    run_id_sha256: Sha256
+    actor_sha256: Sha256
+    decision_id_sha256: Sha256
+    idempotency_key_sha256: Sha256
+    batch_sha256: Sha256 | None = None
+    failure_code: ApprovalFailureCode
+    observed_run_revision: int | None = Field(default=None, ge=1)
+    observed_ledger_revision: int | None = Field(default=None, ge=0)
+    occurred_at: datetime
+    rate_window_started_at: datetime
+    event_sha256: Sha256
+
+    _occurred_utc = field_validator("occurred_at")(lambda value: _utc(value, "occurred_at"))
+    _window_utc = field_validator("rate_window_started_at")(
+        lambda value: _utc(value, "rate_window_started_at")
+    )
+
+    @model_validator(mode="after")
+    def security_event_matrix(self) -> ApprovalSecurityAuditEventV2:
+        from poker_deliberation.approval_canonical import (
+            approval_security_audit_event_sha256,
+        )
+
+        if self.rate_window_started_at > self.occurred_at:
+            raise ValueError("approval security audit window starts in the future")
+        if self.event_kind == "rate_limit":
+            if self.failure_code is not ApprovalFailureCode.AUDIT_RATE_LIMITED:
+                raise ValueError("rate-limit marker code mismatch")
+        elif self.failure_code in {
+            ApprovalFailureCode.AUDIT_RATE_LIMITED,
+            ApprovalFailureCode.AUDIT_CAPACITY_EXCEEDED,
+            ApprovalFailureCode.AUDIT_UNCONFIRMED,
+        }:
+            raise ValueError("audit control failures are not ordinary failure events")
+        if self.event_sha256 != approval_security_audit_event_sha256(self):
+            raise ValueError("approval security audit event hash mismatch")
+        if (self.sequence == 1) != (self.previous_event_sha256 is None):
+            raise ValueError("approval security audit lineage mismatch")
+        return self
+
+
+class ApprovalSecurityAuditRateStateV2(_ApprovalModel):
+    actor_sha256: Sha256
+    window_started_at: datetime
+    failed_event_count: int = Field(ge=0, le=32)
+    rate_limit_marker_recorded: bool
+
+    _window_utc = field_validator("window_started_at")(
+        lambda value: _utc(value, "window_started_at")
+    )
+
+    @model_validator(mode="after")
+    def marker_requires_full_window(self) -> ApprovalSecurityAuditRateStateV2:
+        if self.rate_limit_marker_recorded and self.failed_event_count != 32:
+            raise ValueError("rate-limit marker requires a full failure window")
+        return self
+
+
+class ApprovalSecurityAuditPointerV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    run_id_sha256: Sha256
+    audit_sequence: int = Field(ge=0, le=1024)
+    head_event_sha256: Sha256 | None = None
+    total_event_bytes: int = Field(ge=0, le=1_048_576)
+    rate_states: tuple[ApprovalSecurityAuditRateStateV2, ...] = Field(max_length=1024)
+    updated_at: datetime | None = None
+
+    @field_validator("updated_at")
+    @classmethod
+    def utc_pointer_time(cls, value: datetime | None, info: object) -> datetime | None:
+        if value is None:
+            return None
+        return _utc(value, getattr(info, "field_name", "audit pointer time"))
+
+    @model_validator(mode="after")
+    def pointer_matrix(self) -> ApprovalSecurityAuditPointerV2:
+        empty = self.audit_sequence == 0
+        if empty != (
+            self.head_event_sha256 is None
+            and self.total_event_bytes == 0
+            and not self.rate_states
+            and self.updated_at is None
+        ):
+            raise ValueError("approval security audit pointer empty matrix mismatch")
+        if not empty and (self.head_event_sha256 is None or self.updated_at is None):
+            raise ValueError("approval security audit pointer active matrix mismatch")
+        actors = tuple(item.actor_sha256 for item in self.rate_states)
+        if len(actors) != len(set(actors)):
+            raise ValueError("approval security audit rate actors must be unique")
+        if actors != tuple(sorted(actors, key=lambda item: item.encode("ascii"))):
+            raise ValueError("approval security audit rate states must be ordered")
         return self
 
 

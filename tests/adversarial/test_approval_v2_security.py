@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -28,6 +29,13 @@ from poker_deliberation.approvals import (
     encode_approval_state_v2,
     read_approval_state_v2,
     validate_approval_decision,
+)
+from poker_deliberation.config import AppConfig
+from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.schemas import CaseInput
+from poker_deliberation.storage.terminal_store import (
+    ApprovalFailureAuditError,
+    ApprovalFailureAuditRequest,
 )
 
 NOW = datetime(2026, 7, 25, 0, 0, tzinfo=UTC)
@@ -252,3 +260,93 @@ def test_expiry_and_action_swap_fail_without_mutating_state() -> None:
         )
     assert expired.value.failure.code is ApprovalFailureCode.APPROVAL_EXPIRED
     assert state.ledger.requests[0].state == "pending"
+
+
+def _audit_orchestrator(tmp_path: Path) -> Orchestrator:
+    orchestrator = Orchestrator(
+        AppConfig(
+            runs_dir=tmp_path / "legacy",
+            revision_runs_dir=tmp_path / "product",
+            durable_budget_runs_dir=tmp_path / "budget",
+        ),
+        terminal_clock=lambda: NOW,
+    )
+    orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="audit fixture",
+            analysis_scope="retrospective",
+        ),
+        run_id="run-approval-audit-limits",
+    )
+    return orchestrator
+
+
+def _audit_request(sequence: int) -> ApprovalFailureAuditRequest:
+    return ApprovalFailureAuditRequest(
+        run_id="run-approval-audit-limits",
+        actor_sha256=HASH_A,
+        decision_id_sha256=f"{sequence:064x}",
+        idempotency_key_sha256=f"{sequence + 100:064x}",
+        batch_sha256=HASH_B,
+        failure_code=ApprovalFailureCode.STALE_DECISION,
+        observed_run_revision=1,
+        observed_ledger_revision=0,
+        occurred_at=NOW + timedelta(seconds=sequence),
+    )
+
+
+def test_security_audit_records_one_rate_marker_then_fails_write_zero(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _audit_orchestrator(tmp_path)
+    for sequence in range(32):
+        orchestrator.product_store.append_approval_failure_audit(
+            _audit_request(sequence)
+        )
+
+    with pytest.raises(ApprovalFailureAuditError) as marker:
+        orchestrator.product_store.append_approval_failure_audit(
+            _audit_request(32)
+        )
+    pointer, events = orchestrator.product_store.read_approval_failure_audit(
+        "run-approval-audit-limits"
+    )
+    with pytest.raises(ApprovalFailureAuditError) as limited:
+        orchestrator.product_store.append_approval_failure_audit(
+            _audit_request(33)
+        )
+    unchanged, unchanged_events = orchestrator.product_store.read_approval_failure_audit(
+        "run-approval-audit-limits"
+    )
+
+    assert marker.value.failure.code is ApprovalFailureCode.AUDIT_RATE_LIMITED
+    assert marker.value.failure.audit_confirmed is True
+    assert limited.value.failure.code is ApprovalFailureCode.AUDIT_RATE_LIMITED
+    assert pointer.audit_sequence == 33
+    assert events[-1].event_kind == "rate_limit"
+    assert unchanged == pointer
+    assert unchanged_events == events
+
+
+def test_security_audit_capacity_exhaustion_never_overwrites(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _audit_orchestrator(tmp_path)
+    first = orchestrator.product_store.append_approval_failure_audit(
+        _audit_request(0),
+        max_events=1,
+    )
+
+    with pytest.raises(ApprovalFailureAuditError) as captured:
+        orchestrator.product_store.append_approval_failure_audit(
+            _audit_request(1),
+            max_events=1,
+        )
+    pointer, events = orchestrator.product_store.read_approval_failure_audit(
+        "run-approval-audit-limits"
+    )
+
+    assert captured.value.failure.code is ApprovalFailureCode.AUDIT_CAPACITY_EXCEEDED
+    assert pointer == first.pointer
+    assert events == (first.event,)

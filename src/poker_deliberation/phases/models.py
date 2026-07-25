@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from poker_deliberation.approval_models import (
+    ApprovalDisplayV2,
+    CanonicalActionPlanV2,
+)
 from poker_deliberation.budgets import (
     BudgetFailure,
     BudgetPolicyV2,
@@ -66,11 +70,24 @@ class IntakeValidationInput(PhasePayload):
         return value
 
 
+class ApprovalProposalV2(PhasePayload):
+    """Untrusted V2 proposal input; every decision-owned field is absent."""
+
+    schema_version: Literal["2.0.0"]
+    stable_proposal_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    action_plan: CanonicalActionPlanV2
+    display: ApprovalDisplayV2
+
+
 class IntakeValidationOutput(PhasePayload):
     case: CaseInput
     safe_case: CaseInput
     accepted_evidence: tuple[EvidenceRecord, ...] = ()
-    approval_proposals: tuple[ApprovalProposal, ...] = ()
+    approval_proposals: tuple[ApprovalProposal | ApprovalProposalV2, ...] = ()
     security_events: tuple[SecurityEvent, ...] = ()
     data_quality: tuple[str, ...] = ()
 

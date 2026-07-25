@@ -9,13 +9,25 @@ import json
 import os
 import platform
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pydantic
 
 from poker_deliberation import __version__
 from poker_deliberation.agents import ROLE_CATALOG
+from poker_deliberation.approval_canonical import parse_canonical_model
+from poker_deliberation.approval_models import (
+    ApprovalDecisionBatch,
+    ApprovalDecisionItemV2,
+    DecisionValue,
+)
+from poker_deliberation.approvals import (
+    ApprovalDecisionValidationError,
+    LocalCliAuthorityProvider,
+    read_approval_state_v2,
+)
 from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.config import AppConfig
 from poker_deliberation.normalization import normalize_hand_text
@@ -181,6 +193,13 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--approve", action="append", default=[])
     resume.add_argument("--reject", action="append", default=[])
     resume.add_argument("--reason", default="human decision recorded by CLI")
+    resume.add_argument("--decision-file")
+    resume.add_argument("--actor-id")
+    resume.add_argument("--decision-id")
+    resume.add_argument("--idempotency-key")
+    resume.add_argument("--expected-run-revision", type=int)
+    resume.add_argument("--expected-ledger-revision", type=int)
+    resume.add_argument("--decision-at")
     resume.add_argument("--format", choices=["json", "markdown"], default="markdown")
     show = subparsers.add_parser("show")
     show.add_argument("run_id")
@@ -228,7 +247,36 @@ def main(argv: list[str] | None = None) -> int:
             ]
             _emit(descriptions, args.format)
             return 0
-        orchestrator = Orchestrator(AppConfig.from_env())
+        decision_batch: ApprovalDecisionBatch | None = None
+        if args.command == "resume" and args.decision_file:
+            conflicting = (
+                args.approve
+                or args.reject
+                or args.actor_id is not None
+                or args.decision_id is not None
+                or args.idempotency_key is not None
+                or args.expected_run_revision is not None
+                or args.expected_ledger_revision is not None
+                or args.decision_at is not None
+            )
+            if conflicting:
+                parser.error(
+                    "--decision-file cannot be combined with decision construction options"
+                )
+            decision_batch = parse_canonical_model(
+                Path(args.decision_file).read_bytes(),
+                ApprovalDecisionBatch,
+            )
+            local_actor_id = decision_batch.actor.actor_id
+        elif args.command == "resume":
+            local_actor_id = args.actor_id or "local-cli-user"
+        else:
+            local_actor_id = "local-cli-user"
+        authority_provider = LocalCliAuthorityProvider(local_actor_id)
+        orchestrator = Orchestrator(
+            AppConfig.from_env(),
+            decision_authority_provider=authority_provider,
+        )
         if args.command == "review-hand":
             report = orchestrator.run(_case_from_hand_file(args.file))
         elif args.command == "review-strategy":
@@ -242,11 +290,85 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         elif args.command == "resume":
+            if decision_batch is None and (args.approve or args.reject):
+                read = orchestrator.product_store.read_current(args.run_id)
+                names = {payload.inventory.logical_name for payload in read.payloads}
+                if "approval_ledger_v2.json" in names:
+                    state = read_approval_state_v2(
+                        read.payload_bytes("approval_ledger_v2.json"),
+                        read.payload_bytes("approval_decisions_v2.jsonl"),
+                        read.payload_bytes("approval_audit_v2.jsonl"),
+                    )
+                    requests = {
+                        request.request_id: request for request in state.ledger.requests
+                    }
+                    decision_at = (
+                        datetime.fromisoformat(args.decision_at)
+                        if args.decision_at is not None
+                        else datetime.now(UTC)
+                    )
+                    actor = authority_provider.resolve_actor(
+                        local_actor_id,
+                        decision_at=decision_at,
+                    ).actor
+                    decisions = [
+                        *((request_id, "approved") for request_id in args.approve),
+                        *((request_id, "rejected") for request_id in args.reject),
+                    ]
+                    items = []
+                    for request_id, decision in decisions:
+                        request = requests.get(request_id)
+                        items.append(
+                            ApprovalDecisionItemV2(
+                                request_id=request_id,
+                                expected_request_revision=(
+                                    1 if request is None else request.request_revision
+                                ),
+                                action_digest_sha256=(
+                                    "0" * 64
+                                    if request is None
+                                    else request.action_digest_sha256
+                                ),
+                                decision=cast(DecisionValue, decision),
+                            )
+                        )
+                    items.sort(
+                        key=lambda item: (
+                            item.request_id.encode("utf-8"),
+                            item.decision.encode("ascii"),
+                        )
+                    )
+                    decision_batch = ApprovalDecisionBatch(
+                        run_id=args.run_id,
+                        expected_run_revision=(
+                            read.revision
+                            if args.expected_run_revision is None
+                            else args.expected_run_revision
+                        ),
+                        expected_ledger_revision=(
+                            state.ledger.ledger_revision
+                            if args.expected_ledger_revision is None
+                            else args.expected_ledger_revision
+                        ),
+                        actor=actor,
+                        decision_id=(
+                            args.decision_id
+                            or orchestrator.terminal_id_factory("decision")
+                        ),
+                        idempotency_key=(
+                            args.idempotency_key
+                            or orchestrator.terminal_id_factory("decision-key")
+                        ),
+                        items=tuple(items),
+                        reason=str(redact_sensitive(args.reason, enabled=True)),
+                        decision_at=decision_at,
+                    )
             report = orchestrator.resume(
                 args.run_id,
-                approve_ids=args.approve,
-                reject_ids=args.reject,
+                approve_ids=(args.approve if decision_batch is None else None),
+                reject_ids=(args.reject if decision_batch is None else None),
                 reason=args.reason,
+                decision_batch=decision_batch,
             )
         elif args.command == "show":
             report = orchestrator.load_report(args.run_id)
@@ -257,6 +379,12 @@ def main(argv: list[str] | None = None) -> int:
         if report.run_status == "approval_required":
             return 3
         return 2 if report.run_status == "failed_with_limitations" else 0
+    except ApprovalDecisionValidationError as exc:
+        if getattr(args, "format", "markdown") == "json":
+            _emit(exc.failure, "json")
+        else:
+            print(f"error: approval decision failed: {exc.failure.code.value}", file=sys.stderr)
+        return 2
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

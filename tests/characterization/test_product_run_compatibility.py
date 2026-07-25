@@ -34,7 +34,9 @@ def test_public_orchestrator_signatures_preserve_existing_parameters() -> None:
         "approve_ids",
         "reject_ids",
         "reason",
+        "decision_batch",
     )
+    assert resume.parameters["decision_batch"].kind is inspect.Parameter.KEYWORD_ONLY
     assert tuple(load_report.parameters) == ("self", "run_id")
     assert tuple(report_path.parameters) == ("self", "run_id", "format_name")
 

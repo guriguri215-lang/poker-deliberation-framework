@@ -25,6 +25,7 @@ from poker_deliberation.phases.contracts import (
 from poker_deliberation.phases.models import (
     AdjudicationInput,
     AdjudicationOutput,
+    ApprovalProposalV2,
     ContextBuildInput,
     ContextBuildOutput,
     ContextDispatch,
@@ -69,6 +70,12 @@ def _constant_clock(value: datetime) -> Callable[[], datetime]:
     return read
 
 
+def _approval_json_default(value: object) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    raise TypeError(f"unsupported approval proposal value: {type(value).__name__}")
+
+
 class PurePhaseService(Generic[InputT, OutputT]):
     phase_id: PhaseId
     input_type: type[InputT]
@@ -106,13 +113,37 @@ class IntakeValidationService(PurePhaseService[IntakeValidationInput, IntakeVali
             else:
                 accepted_evidence.append(record.model_copy(deep=True))
 
-        approval_proposals: list[ApprovalProposal] = []
-        raw_approvals = case.metadata.get("approval_requests", [])
+        approval_proposals: list[ApprovalProposal | ApprovalProposalV2] = []
+        raw_approvals = safe_case.metadata.get("approval_requests", [])
         if isinstance(raw_approvals, list):
             fallback_ids = iter(value.fallback_approval_ids)
             for raw_approval in raw_approvals:
                 fallback_id = next(fallback_ids, None)
                 if not isinstance(raw_approval, dict):
+                    continue
+                supplied_version = raw_approval.get("schema_version")
+                if supplied_version is not None:
+                    if supplied_version != "2.0.0":
+                        warnings.append("unsupported approval proposal schema_version")
+                        continue
+                    try:
+                        proposal_v2 = ApprovalProposalV2.model_validate_json(
+                            json.dumps(
+                                raw_approval,
+                                ensure_ascii=False,
+                                allow_nan=False,
+                                default=_approval_json_default,
+                            )
+                        )
+                    except ValueError as exc:
+                        warnings.append(f"invalid V2 approval proposal: {exc}")
+                        continue
+                    if (
+                        proposal_v2.action_plan.action_category
+                        not in value.sensitive_action_categories
+                    ):
+                        raise ValueError("approval proposal category is not a sensitive action")
+                    approval_proposals.append(proposal_v2)
                     continue
                 proposal_fields = ApprovalProposal.model_fields
                 injected_fields = set(raw_approval) - set(proposal_fields)

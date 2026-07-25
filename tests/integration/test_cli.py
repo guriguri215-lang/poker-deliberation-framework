@@ -219,8 +219,14 @@ def test_approval_required_cli_uses_distinct_exit_code(tmp_path: Path, monkeypat
     )
     resumed = json.loads(capsys.readouterr().out)
     assert resume_exit_code == 2
-    assert resumed["run_status"] == "failed_with_limitations"
-    assert resumed["agent_execution_records"] == report["agent_execution_records"]
+    assert resumed["code"] == "legacy_approval_historical_only"
+    assert resumed["audit_confirmed"] is True
+    shown = Orchestrator(AppConfig.from_env()).load_report(report["run_id"])
+    assert shown.run_status == "approval_required"
+    assert (
+        shown.agent_execution_records
+        == FinalReport.model_validate(report).agent_execution_records
+    )
 
 
 def test_show_corrupt_product_run_exits_two_without_report(

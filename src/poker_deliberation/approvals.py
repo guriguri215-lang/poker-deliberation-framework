@@ -876,6 +876,15 @@ def reverify_approval_authority(
         )
     for request, item in zip(admission.requests, batch.items, strict=True):
         actor = snapshot.actor
+        if evaluated_at >= request.expires_at:
+            _reject(
+                ApprovalFailureCode.APPROVAL_EXPIRED,
+                "Approval request expired before publication.",
+                batch,
+                batch.expected_run_revision,
+                batch.expected_ledger_revision,
+                request_id=request.request_id,
+            )
         authorized = (
             "reject:any" in actor.authority_scopes
             if item.decision == "rejected"

@@ -87,8 +87,13 @@ def _relative_path(value: str) -> str:
     ):
         raise ValueError("cleanup relative path is not portable")
     parts = value.split("/")
-    if any(part in {"", ".", ".."} or _portable_id(part) != part for part in parts):
-        raise ValueError("cleanup relative path contains an invalid segment")
+    for part in parts:
+        if part in {"", ".", ".."}:
+            raise ValueError("cleanup relative path contains an invalid segment")
+        if part in {".cleanup-control", ".terminal-store", ".revision-store"}:
+            continue
+        if _portable_id(part) != part:
+            raise ValueError("cleanup relative path contains an invalid segment")
     return value
 
 
@@ -248,6 +253,21 @@ class CleanupRootMarkerV1(_CleanupModel):
     _initialized_utc = field_validator("initialized_at")(
         lambda value: _utc(value, "initialized_at")
     )
+
+
+class CleanupRootInspectionV1(_CleanupModel):
+    schema_version: Literal["1.0.0"] = CLEANUP_SCHEMA_VERSION
+    status: Literal["uninitialized", "initialized", "incomplete", "corrupt"]
+    root_id: RootId | None = None
+    marker_sha256: Sha256 | None = None
+    recognized_relative_paths: tuple[RelativePath, ...] = ()
+
+    @model_validator(mode="after")
+    def closed_inspection_matrix(self) -> CleanupRootInspectionV1:
+        initialized = self.status == "initialized"
+        if initialized != (self.root_id is not None and self.marker_sha256 is not None):
+            raise ValueError("cleanup root inspection identity mismatch")
+        return self
 
 
 class TreeInventoryEntryV1(_CleanupModel):
@@ -546,6 +566,117 @@ class CleanupDurabilityEvidenceV1(_CleanupModel):
     reconciliation: Literal["confirmed", "required"]
 
 
+class CleanupRootInitializationOutcomeV1(_CleanupModel):
+    schema_version: Literal["1.0.0"] = CLEANUP_SCHEMA_VERSION
+    outcome_kind: Literal["initialized", "already_initialized", "reconciliation_required"]
+    root_id: RootId
+    marker_sha256: Sha256 | None = None
+    filesystem_effect: Literal["none", "control_only"]
+    durability: CleanupDurabilityEvidenceV1
+
+    @model_validator(mode="after")
+    def closed_initialization_matrix(self) -> CleanupRootInitializationOutcomeV1:
+        if self.outcome_kind in {"initialized", "already_initialized"}:
+            if self.marker_sha256 is None or self.durability.reconciliation != "confirmed":
+                raise ValueError("successful cleanup root initialization lacks evidence")
+            expected_effect = "control_only" if self.outcome_kind == "initialized" else "none"
+            if self.filesystem_effect != expected_effect:
+                raise ValueError("cleanup initialization filesystem effect mismatch")
+        elif (
+            self.filesystem_effect != "control_only" or self.durability.reconciliation != "required"
+        ):
+            raise ValueError("uncertain cleanup root initialization matrix mismatch")
+        return self
+
+
+class CleanupTransactionV1(_CleanupModel):
+    schema_version: Literal["1.0.0"] = CLEANUP_SCHEMA_VERSION
+    run_id_sha256: Sha256
+    transaction_id: TransactionId
+    proposed_revision: int = Field(ge=1)
+    expected_revision: int = Field(ge=0)
+    expected_pointer_sha256: Sha256 | None = None
+    action_kind: CleanupActionKind
+    plan_sha256: Sha256
+    approval_binding_sha256: Sha256
+    source_tree_sha256: Sha256
+    created_at: datetime
+    transaction_sha256: Sha256
+
+    _created_utc = field_validator("created_at")(lambda value: _utc(value, "created_at"))
+
+    @model_validator(mode="after")
+    def exact_revision_step(self) -> CleanupTransactionV1:
+        if self.proposed_revision != self.expected_revision + 1:
+            raise ValueError("cleanup transaction revision must increment by one")
+        if (self.expected_revision == 0) != (self.expected_pointer_sha256 is None):
+            raise ValueError("cleanup transaction pointer expectation mismatch")
+        return self
+
+
+class CleanupManifestV1(_CleanupModel):
+    schema_version: Literal["1.0.0"] = CLEANUP_SCHEMA_VERSION
+    cleanup_protocol: Literal["poker-local-data-cleanup-v1"] = "poker-local-data-cleanup-v1"
+    run_id_sha256: Sha256
+    revision: int = Field(ge=1)
+    transaction_id: TransactionId
+    previous_revision: int | None = Field(default=None, ge=1)
+    previous_manifest_sha256: Sha256 | None = None
+    expected_pointer_sha256: Sha256 | None = None
+    state: CleanupState
+    plan_sha256: Sha256
+    approval_binding_sha256: Sha256
+    source_tree_sha256: Sha256
+    receipt_sha256: Sha256
+    tombstone_sha256: Sha256
+    created_at: datetime
+
+    _created_utc = field_validator("created_at")(lambda value: _utc(value, "created_at"))
+
+    @model_validator(mode="after")
+    def exact_manifest_lineage(self) -> CleanupManifestV1:
+        if self.revision == 1:
+            if any(
+                value is not None
+                for value in (
+                    self.previous_revision,
+                    self.previous_manifest_sha256,
+                    self.expected_pointer_sha256,
+                )
+            ):
+                raise ValueError("initial cleanup manifest requires null lineage")
+        elif (
+            self.previous_revision != self.revision - 1
+            or self.previous_manifest_sha256 is None
+            or self.expected_pointer_sha256 is None
+        ):
+            raise ValueError("successor cleanup manifest requires exact lineage")
+        return self
+
+
+class CleanupCurrentPointerV1(_CleanupModel):
+    schema_version: Literal["1.0.0"] = CLEANUP_SCHEMA_VERSION
+    cleanup_protocol: Literal["poker-local-data-cleanup-v1"] = "poker-local-data-cleanup-v1"
+    run_id_sha256: Sha256
+    revision: int = Field(ge=1)
+    transaction_id: TransactionId
+    revision_relative_path: RelativePath
+    state: CleanupState
+    manifest_sha256: Sha256
+    receipt_sha256: Sha256
+    tombstone_sha256: Sha256
+    published_at: datetime
+
+    _published_utc = field_validator("published_at")(lambda value: _utc(value, "published_at"))
+
+    @model_validator(mode="after")
+    def exact_revision_path(self) -> CleanupCurrentPointerV1:
+        expected = f"runs/{self.run_id_sha256}/revisions/r{self.revision}-{self.transaction_id}"
+        if self.revision_relative_path != expected:
+            raise ValueError("cleanup pointer revision path mismatch")
+        return self
+
+
 class CleanupReceiptV1(_CleanupModel):
     schema_version: Literal["1.0.0"] = CLEANUP_SCHEMA_VERSION
     cleanup_policy_id: Literal["p2-027b-local-data-cleanup-v1"] = CLEANUP_POLICY_ID
@@ -699,18 +830,23 @@ __all__ = [
     "CleanupActionV1",
     "CleanupApprovalBindingV1",
     "CleanupCandidateEvidenceV1",
+    "CleanupCurrentPointerV1",
     "CleanupDryRunResultV1",
     "CleanupDurabilityEvidenceV1",
     "CleanupExecutionResultV1",
     "CleanupFailureCode",
     "CleanupFailureV1",
     "CleanupLimitsV1",
+    "CleanupManifestV1",
     "CleanupPlanV1",
     "CleanupReceiptV1",
     "CleanupReconciliationReportV1",
+    "CleanupRootInitializationOutcomeV1",
+    "CleanupRootInspectionV1",
     "CleanupRootMarkerV1",
     "CleanupState",
     "CleanupTombstoneV1",
+    "CleanupTransactionV1",
     "LegalHoldSnapshotV1",
     "LifecycleEligibilityV1",
     "ProductRunSourceV1",

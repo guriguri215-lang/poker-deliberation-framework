@@ -14,10 +14,13 @@ from pydantic import BaseModel, ValidationError
 
 from poker_deliberation.local_data_cleanup_models import (
     CleanupApprovalBindingV1,
+    CleanupCurrentPointerV1,
+    CleanupManifestV1,
     CleanupPlanV1,
     CleanupReceiptV1,
     CleanupRootMarkerV1,
     CleanupTombstoneV1,
+    CleanupTransactionV1,
     TreeInventoryV1,
 )
 
@@ -175,6 +178,34 @@ def cleanup_approval_binding_sha256(binding: CleanupApprovalBindingV1) -> str:
     return canonical_cleanup_sha256(APPROVAL_BINDING_DOMAIN, binding)
 
 
+def cleanup_transaction_sha256(transaction: CleanupTransactionV1 | Mapping[str, Any]) -> str:
+    projection = (
+        transaction.model_dump(mode="python")
+        if isinstance(transaction, CleanupTransactionV1)
+        else dict(transaction)
+    )
+    projection.pop("transaction_sha256", None)
+    return canonical_cleanup_sha256(TRANSACTION_DOMAIN, projection)
+
+
+def cleanup_manifest_sha256(manifest: CleanupManifestV1 | bytes) -> str:
+    value: Any = (
+        parse_cleanup_model(manifest, CleanupManifestV1)
+        if isinstance(manifest, bytes)
+        else manifest
+    )
+    return canonical_cleanup_sha256(MANIFEST_DOMAIN, value)
+
+
+def cleanup_pointer_sha256(pointer: CleanupCurrentPointerV1 | bytes) -> str:
+    value: Any = (
+        parse_cleanup_model(pointer, CleanupCurrentPointerV1)
+        if isinstance(pointer, bytes)
+        else pointer
+    )
+    return canonical_cleanup_sha256(POINTER_DOMAIN, value)
+
+
 def cleanup_receipt_sha256(receipt: CleanupReceiptV1) -> str:
     return canonical_cleanup_sha256(RECEIPT_DOMAIN, receipt)
 
@@ -203,10 +234,13 @@ __all__ = [
     "canonical_cleanup_bytes",
     "canonical_cleanup_sha256",
     "cleanup_approval_binding_sha256",
+    "cleanup_manifest_sha256",
     "cleanup_plan_sha256",
+    "cleanup_pointer_sha256",
     "cleanup_receipt_sha256",
     "cleanup_root_marker_sha256",
     "cleanup_tombstone_sha256",
+    "cleanup_transaction_sha256",
     "format_cleanup_utc",
     "parse_canonical_cleanup_json",
     "parse_cleanup_model",

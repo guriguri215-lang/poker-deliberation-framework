@@ -367,7 +367,7 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
     assert len(scope["policy_decisions"]) == 65
     assert document["milestone_approvals"]["P2-012A"] == reference
     assert document["milestone_approvals"]["P2-012B"] == (
-        "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
+        "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
     )
     assert document["milestone_progress"]["P2-012A"]["state"] == "completed"
     assert document["milestone_progress"]["P2-012B"]["state"] == "in_progress"
@@ -396,7 +396,9 @@ def test_p2_012b_scope_revision_binds_the_exact_approved_proposal() -> None:
     assert document["approval_records"][old_reference]["scope_digest"] == (
         "1b6c003f9ba8d982f30f5e6c2d2b1af07da0c0461abe36760d838e3b3249976f"
     )
-    assert document["milestone_approvals"]["P2-012B"] == reference
+    assert document["milestone_approvals"]["P2-012B"] == (
+        "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
+    )
     assert document["milestone_progress"]["P2-012B"] == {
         "state": "in_progress",
         "history": ["not_started", "in_progress"],
@@ -408,6 +410,8 @@ def test_p2_012b_semantic_scope_revision_is_exact_and_append_only() -> None:
     current = deepcopy(load_roadmap())
     old_reference = "goal-rm012-p2-012b-2026-07-25"
     reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
+    current["approval_records"].pop("goal-rm012-p2-012b-scope-revision-2-2026-07-25")
+    current["milestone_approvals"]["P2-012B"] = reference
     previous = deepcopy(current)
     previous["approval_records"].pop(reference)
     previous["milestone_approvals"]["P2-012B"] = old_reference
@@ -435,6 +439,89 @@ def test_p2_012b_semantic_scope_revision_is_exact_and_append_only() -> None:
 
     changed_progress = deepcopy(current)
     changed_progress["milestone_progress"]["P2-012B"]["completion_evidence"]["commits"] = ["d" * 40]
+    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
+        validate_roadmap_update(previous, changed_progress)
+
+
+def test_p2_012b_final_test_compatibility_scope_is_exact() -> None:
+    document = load_roadmap()
+    old_reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
+    reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
+    old_scope = document["approval_records"][old_reference]["scope"]
+    record = document["approval_records"][reference]
+    scope = record["scope"]
+    canonical = json.dumps(
+        scope,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+    assert hashlib.sha256(canonical).hexdigest() == (
+        "612b6acc3f26ab1b35307f4815cf6787aa939b7a2b1c65919a22c965c3b6d4a9"
+    )
+    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
+    assert record["topics"] == scope["policy_decisions"]
+    assert len(scope["milestone_implementation_scope"]["targets"]) == 30
+    assert len(scope["milestone_implementation_scope"]["tests"]) == 70
+    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
+    assert len(scope["policy_decisions"]) == 36
+    assert scope["policy_decisions"][:-1] == old_scope["policy_decisions"]
+    assert {key: value for key, value in scope.items() if key != "policy_decisions"} == {
+        key: value for key, value in old_scope.items() if key != "policy_decisions"
+    }
+    correction = scope["policy_decisions"][-1]
+    for path in (
+        "tests/adversarial/test_blind_isolation.py",
+        "tests/adversarial/test_phase_boundaries.py",
+        "tests/adversarial/test_review_regressions.py",
+        "tests/adversarial/test_review_security_extensions.py",
+        "tests/characterization/test_run_store_baseline.py",
+        "tests/integration/test_audit_contracts.py",
+        "tests/integration/test_context_lifecycle_integration.py",
+        "tests/integration/test_phase_orchestration.py",
+        "tests/conftest.py",
+    ):
+        assert path in correction
+    assert document["milestone_approvals"]["P2-012B"] == reference
+    assert document["milestone_progress"]["P2-012B"] == {
+        "state": "in_progress",
+        "history": ["not_started", "in_progress"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+
+
+def test_p2_012b_final_test_compatibility_scope_is_append_only() -> None:
+    current = deepcopy(load_roadmap())
+    old_reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
+    reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
+    previous = deepcopy(current)
+    previous["approval_records"].pop(reference)
+    previous["milestone_approvals"]["P2-012B"] = old_reference
+    previous_progress = deepcopy(previous["milestone_progress"]["P2-012B"])
+
+    validate_roadmap(current)
+    validate_roadmap_update(previous, current)
+    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
+    assert current["milestone_progress"]["P2-012B"] == previous_progress
+
+    wrong_label = deepcopy(current)
+    wrong_label["approval_records"][reference]["source_label"] = "self declared"
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, wrong_label)
+
+    wrong_reference = deepcopy(current)
+    wrong_reference_value = f"{reference}-wrong"
+    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
+        "approval_records"
+    ].pop(reference)  # type: ignore[union-attr]
+    wrong_reference["milestone_approvals"]["P2-012B"] = wrong_reference_value
+    validate_roadmap(wrong_reference)
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, wrong_reference)
+
+    changed_progress = deepcopy(current)
+    changed_progress["milestone_progress"]["P2-012B"]["completion_evidence"]["commits"] = ["e" * 40]
     with pytest.raises(ValueError, match="scope revision changed milestone progress"):
         validate_roadmap_update(previous, changed_progress)
 

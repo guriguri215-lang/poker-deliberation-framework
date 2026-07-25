@@ -237,6 +237,61 @@ def test_quarantine_authority_revoked_after_journal_rolls_back_before_effect(
     assert (orchestrator.product_store.foundation.runs_root / run_id).is_dir()
 
 
+def test_quarantine_commit_clock_mutation_cannot_publish_success(tmp_path) -> None:
+    run_id = "cleanup-quarantine-clock-mutation"
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id=run_id)
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id=run_id,
+        root_id="cleanup-root-" + "9" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        run_id,
+        execution_id=f"{run_id}-execution",
+        idempotency_key=f"{run_id}-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+    )
+    destination = executor.store.cleanup_root / dry_run.plan.actions[0].destination_relative_path
+    mutated = False
+
+    def mutating_clock():
+        nonlocal mutated
+        if destination.is_dir() and not mutated:
+            (destination / "clock-mutation.json").write_text("{}", encoding="utf-8")
+            mutated = True
+        return EVALUATED
+
+    executor.clock = mutating_clock
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert mutated
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.filesystem_effect == "source_moved"
+    assert destination.is_dir()
+    assert not (
+        executor.store.cleanup_root / "runs" / run_id_sha256(run_id) / "current.json"
+    ).exists()
+
+
 def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -> None:
     orchestrator = _orchestrator(tmp_path)
     orchestrator.run(_case(), run_id="cleanup-fault-quarantine")
@@ -404,6 +459,82 @@ def test_delete_authority_revoked_after_journal_rolls_back_before_staging(
     assert current is not None
     assert current[0].state == "quarantined"
     assert (executor.store.cleanup_root / "quarantine" / run_id).is_dir()
+
+
+def test_delete_prepare_clock_mutation_cannot_publish_prepared_current(
+    tmp_path,
+) -> None:
+    run_id = "cleanup-delete-prepare-clock"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="5",
+    )
+    destination = executor.store.cleanup_root / plan.actions[0].destination_relative_path
+    mutated = False
+
+    def mutating_clock():
+        nonlocal mutated
+        if destination.is_dir() and not mutated:
+            (destination / "clock-mutation.json").write_text("{}", encoding="utf-8")
+            mutated = True
+        return DELETE_AT
+
+    executor.clock = mutating_clock
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    report = executor.inspect_reconciliation(plan)
+
+    assert mutated
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.filesystem_effect == "delete_staging_moved"
+    assert report.classification == "effect_unknown"
+    assert report.observed_staging == "partial"
+    assert report.observed_current == "unreadable"
+
+
+def test_delete_final_clock_mutation_cannot_publish_deleted_current(tmp_path) -> None:
+    run_id = "cleanup-delete-final-clock"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="6",
+    )
+    source = executor.store.cleanup_root / "quarantine" / run_id
+    destination = executor.store.cleanup_root / plan.actions[0].destination_relative_path
+    mutated = False
+
+    def mutating_clock():
+        nonlocal mutated
+        if not source.exists() and not destination.exists() and not mutated:
+            destination.mkdir()
+            (destination / "clock-recreated.json").write_text("{}", encoding="utf-8")
+            mutated = True
+        return DELETE_AT
+
+    executor.clock = mutating_clock
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    report = executor.inspect_reconciliation(plan)
+
+    assert mutated
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.filesystem_effect == "partial_delete"
+    assert result.failure.domain_effect == "current_advanced"
+    assert report.classification == "reconciliation_required"
+    assert report.observed_current == "prior"
+    assert report.observed_staging == "partial"
+    assert destination.is_dir()
 
 
 @pytest.mark.parametrize(

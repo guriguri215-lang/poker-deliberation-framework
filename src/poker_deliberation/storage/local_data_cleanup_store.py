@@ -823,6 +823,144 @@ class LocalDataCleanupStore:
             require_exact=False,
         )
 
+    def _verify_pending_quarantine_control(
+        self,
+        *,
+        marker: CleanupRootMarkerV1,
+        marker_sha256: str,
+        transaction: CleanupTransactionV1,
+        revision_artifacts: tuple[
+            CleanupManifestV1,
+            CleanupReceiptV1,
+            CleanupTombstoneV1,
+        ]
+        | None = None,
+        pointer_temporary: tuple[str, bytes] | None = None,
+    ) -> None:
+        """Re-read the exact pre-current quarantine control state without callbacks."""
+
+        run_hash = transaction.run_id_sha256
+        try:
+            live_marker, live_marker_sha = self.marker()
+            if live_marker != marker or live_marker_sha != marker_sha256:
+                raise _fail(
+                    CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            control = self._run_control(run_hash)
+            verify_directory(control)
+            entries = {item.name: item for item in control.iterdir()}
+            expected_control_entries = {"transactions", "revisions"}
+            if pointer_temporary is not None:
+                expected_control_entries.add(pointer_temporary[0])
+            if set(entries) != expected_control_entries:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            if pointer_temporary is not None:
+                temporary_path = entries[pointer_temporary[0]]
+                temporary_info = verify_regular_single_link(temporary_path)
+                if temporary_info.st_size > marker.limits.maximum_control_artifact_bytes:
+                    raise _fail(
+                        CleanupFailureCode.STALE_CLEANUP_REVISION,
+                        run_id_sha256=run_hash,
+                        transaction_id=transaction.transaction_id,
+                    )
+                temporary_bytes = temporary_path.read_bytes()
+                if temporary_bytes != pointer_temporary[1]:
+                    raise _fail(
+                        CleanupFailureCode.STALE_CLEANUP_REVISION,
+                        run_id_sha256=run_hash,
+                        transaction_id=transaction.transaction_id,
+                    )
+            transactions = entries["transactions"]
+            revisions = entries["revisions"]
+            verify_directory(transactions)
+            verify_directory(revisions)
+            journal_directories = {item.name: item for item in transactions.iterdir()}
+            if set(journal_directories) != {transaction.transaction_id}:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            journal_root = journal_directories[transaction.transaction_id]
+            verify_directory(journal_root)
+            journal_entries = {item.name: item for item in journal_root.iterdir()}
+            if set(journal_entries) != {"transaction.json"}:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            observed_transaction, observed_bytes = _read_control(
+                journal_entries["transaction.json"],
+                CleanupTransactionV1,
+                max_bytes=marker.limits.maximum_control_artifact_bytes,
+            )
+            if observed_transaction != transaction or observed_bytes != canonical_cleanup_bytes(
+                transaction
+            ):
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            revision_entries = {item.name: item for item in revisions.iterdir()}
+            if revision_artifacts is None:
+                if revision_entries:
+                    raise _fail(
+                        CleanupFailureCode.STALE_CLEANUP_REVISION,
+                        run_id_sha256=run_hash,
+                        transaction_id=transaction.transaction_id,
+                    )
+                return
+            revision_name = f"r1-{transaction.transaction_id}"
+            if set(revision_entries) != {revision_name}:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            revision_root = revision_entries[revision_name]
+            verify_directory(revision_root)
+            artifacts = {item.name: item for item in revision_root.iterdir()}
+            expected = {
+                "transaction.json": transaction,
+                "manifest.json": revision_artifacts[0],
+                "receipt.json": revision_artifacts[1],
+                "tombstone.json": revision_artifacts[2],
+            }
+            if set(artifacts) != set(expected):
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    transaction_id=transaction.transaction_id,
+                )
+            for name, value in expected.items():
+                observed, exact_bytes = _read_control(
+                    artifacts[name],
+                    type(value),
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )
+                if observed != value or exact_bytes != canonical_cleanup_bytes(value):
+                    raise _fail(
+                        CleanupFailureCode.STALE_CLEANUP_REVISION,
+                        run_id_sha256=run_hash,
+                        transaction_id=transaction.transaction_id,
+                    )
+        except CleanupStorageError:
+            raise
+        except Exception:
+            raise _fail(
+                CleanupFailureCode.STALE_CLEANUP_REVISION,
+                run_id_sha256=run_hash,
+                transaction_id=transaction.transaction_id,
+            ) from None
+
     def quarantine_path(self, run_id: str) -> Path:
         return _namespace_child(
             self.cleanup_root / "quarantine",
@@ -849,6 +987,7 @@ class LocalDataCleanupStore:
         run_hash: str,
         *,
         pending_transaction: CleanupTransactionV1 | None = None,
+        pending_pointer: tuple[str, bytes] | None = None,
     ) -> (
         tuple[
             CleanupCurrentPointerV1,
@@ -864,7 +1003,10 @@ class LocalDataCleanupStore:
             return None
         verify_directory(control)
         entries = {item.name: item for item in control.iterdir()}
-        if set(entries) != _RUN_CONTROL_ENTRIES:
+        expected_control_entries = set(_RUN_CONTROL_ENTRIES)
+        if pending_pointer is not None:
+            expected_control_entries.add(pending_pointer[0])
+        if set(entries) != expected_control_entries:
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         pointer, pointer_bytes = _read_control(
             entries["current.json"],
@@ -1109,6 +1251,17 @@ class LocalDataCleanupStore:
             != pointer_bytes
         ):
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
+        if pending_pointer is not None:
+            temporary = entries[pending_pointer[0]]
+            temporary_info = verify_regular_single_link(temporary)
+            if (
+                temporary_info.st_size > marker.limits.maximum_control_artifact_bytes
+                or temporary.read_bytes() != pending_pointer[1]
+            ):
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                )
         return pointer, manifest, receipt, tombstone
 
     def read_operation(
@@ -1677,6 +1830,11 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
+            self._verify_pending_quarantine_control(
+                marker=marker,
+                marker_sha256=marker_sha,
+                transaction=transaction,
+            )
             authority.revalidate()
             final_current = self.terminal_store.read_current(run_id)
             if not self._same_product_current(plan, final_current):
@@ -1733,6 +1891,20 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError("quarantine destination tree changed")
             rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
             committed_at = clock()
+            if os.path.lexists(source):
+                raise CanonicalStorageError("quarantine source reappeared after commit clock")
+            committed_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(committed_inventory) != source_tree_sha:
+                raise CanonicalStorageError("quarantine destination changed after commit clock")
+            self._verify_pending_quarantine_control(
+                marker=marker,
+                marker_sha256=marker_sha,
+                transaction=transaction,
+            )
             revision.mkdir()
             receipt = CleanupReceiptV1(
                 action_kind=CleanupActionKind.QUARANTINE_PRODUCT_RUN,
@@ -1819,9 +1991,34 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "quarantine.before_pointer_replace")
+            if os.path.lexists(source):
+                raise CanonicalStorageError("quarantine source reappeared before pointer replace")
+            pre_pointer_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(pre_pointer_inventory) != source_tree_sha:
+                raise CanonicalStorageError("quarantine destination changed before pointer replace")
+            self._verify_pending_quarantine_control(
+                marker=marker,
+                marker_sha256=marker_sha,
+                transaction=transaction,
+                revision_artifacts=(manifest, receipt, tombstone),
+                pointer_temporary=(temporary.name, pointer_bytes),
+            )
             pointer_replace_attempted = True
             os.replace(temporary, control / "current.json")
             _fault(self.fault_injector, "quarantine.after_pointer_replace")
+            if os.path.lexists(source):
+                raise CanonicalStorageError("quarantine source reappeared after pointer replace")
+            published_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(published_inventory) != source_tree_sha:
+                raise CanonicalStorageError("quarantine destination changed after pointer replace")
             if (control / "current.json").read_bytes() != pointer_bytes:
                 raise CanonicalStorageError("cleanup current pointer reread mismatch")
             _directory_sync(control)
@@ -2320,6 +2517,24 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError("delete staging tree changed")
             rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
             prepared_at = clock()
+            if os.path.lexists(source):
+                raise CanonicalStorageError("quarantine source reappeared after prepare clock")
+            prepared_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(prepared_inventory) != source_tree_sha:
+                raise CanonicalStorageError("delete staging changed after prepare clock")
+            prepared_current = self._read_current(
+                run_hash,
+                pending_transaction=transaction_two,
+            )
+            if (
+                prepared_current is None
+                or cleanup_pointer_sha256(prepared_current[0]) != prior_pointer_sha
+            ):
+                raise CanonicalStorageError("cleanup delete CAS changed after prepare clock")
 
             revision_two.mkdir()
             receipt_two = CleanupReceiptV1(
@@ -2419,9 +2634,43 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "delete.before_prepare_pointer_replace")
+            if os.path.lexists(source):
+                raise CanonicalStorageError(
+                    "quarantine source reappeared before prepare pointer replace"
+                )
+            pre_prepare_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(pre_prepare_inventory) != source_tree_sha:
+                raise CanonicalStorageError("delete staging changed before prepare pointer replace")
+            pending_before_prepare = self._read_current(
+                run_hash,
+                pending_transaction=transaction_two,
+                pending_pointer=(temporary_two.name, pointer_two_bytes),
+            )
+            if (
+                pending_before_prepare is None
+                or cleanup_pointer_sha256(pending_before_prepare[0]) != prior_pointer_sha
+            ):
+                raise CanonicalStorageError(
+                    "cleanup delete CAS changed before prepare pointer replace"
+                )
             prepare_pointer_attempted = True
             os.replace(temporary_two, control / "current.json")
             _fault(self.fault_injector, "delete.after_prepare_pointer_replace")
+            if os.path.lexists(source):
+                raise CanonicalStorageError(
+                    "quarantine source reappeared after prepare pointer replace"
+                )
+            published_prepared_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(published_prepared_inventory) != source_tree_sha:
+                raise CanonicalStorageError("delete staging changed after prepare pointer replace")
             if (control / "current.json").read_bytes() != pointer_two_bytes:
                 raise CanonicalStorageError("delete-prepared current reread mismatch")
             _directory_sync(control)
@@ -2450,6 +2699,11 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError("delete staging remained after unlink")
             delete_directory_sync = _directory_sync(destination.parent)
             final_at = clock()
+            if os.path.lexists(source) or os.path.lexists(destination):
+                raise CanonicalStorageError("delete payload namespace reappeared after final clock")
+            current_after_final_clock = self.read_current(run_hash)
+            if current_after_final_clock is None or current_after_final_clock[0] != pointer_two:
+                raise CanonicalStorageError("cleanup delete CAS changed after final clock")
             transaction_three_base = transaction_base | {
                 "proposed_revision": 3,
                 "expected_revision": 2,
@@ -2553,9 +2807,28 @@ class LocalDataCleanupStore:
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
             _fault(self.fault_injector, "delete.before_final_pointer_replace")
+            if os.path.lexists(source) or os.path.lexists(destination):
+                raise CanonicalStorageError(
+                    "delete payload namespace reappeared before final pointer replace"
+                )
+            current_before_final_replace = self._read_current(
+                run_hash,
+                pending_pointer=(temporary_three.name, pointer_three_bytes),
+            )
+            if (
+                current_before_final_replace is None
+                or current_before_final_replace[0] != pointer_two
+            ):
+                raise CanonicalStorageError(
+                    "cleanup delete CAS changed before final pointer replace"
+                )
             final_pointer_attempted = True
             os.replace(temporary_three, control / "current.json")
             _fault(self.fault_injector, "delete.after_final_pointer_replace")
+            if os.path.lexists(source) or os.path.lexists(destination):
+                raise CanonicalStorageError(
+                    "delete payload namespace reappeared after final pointer replace"
+                )
             if (control / "current.json").read_bytes() != pointer_three_bytes:
                 raise CanonicalStorageError("deleted current reread mismatch")
             _directory_sync(control)

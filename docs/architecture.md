@@ -214,6 +214,8 @@ current-to-genesis 検証される。
 dry-run は effect-free で、実行は exact plan、P2-013A approval evidence、live actor/provider
 authority、source/current/tree identity、same-volume、capacity を lock 内で再検証する。
 final authority/hold admission は journal 公開後かつ effect 直前に行い、その後に local identity を
-再走査する。pending/dangling control state は absent と推定せず effect unknown とする。
+再走査する。quarantine は pending control/journal も exact re-readし、effect後のclock/fault
+callback の後にもpayload/current/controlを再検証する。pending/dangling/corrupt control state は
+absent と推定せず effect unknown とする。
 不確実な effect は成功へ丸めず、read-only reconciliation に停止する。詳細は
 [`local-data-cleanup.md`](local-data-cleanup.md)を正本とする。

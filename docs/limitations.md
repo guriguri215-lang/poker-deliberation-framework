@@ -149,7 +149,8 @@
   pointer 未公開の orphan revision を replay success に採用しない。`delete_prepared` replay は
   staging の exact/partial/absent/unreadable を再観測して effect を保守的に報告する。
   pending control artifact や dangling current link があれば absent/no-effect と推定せず
-  `effect_unknown` に停止する。
+  `effect_unknown` に停止する。canonical/path/link read failure の execute replay も
+  `internal_invariant_error / effect=none` にはしない。
 - same-volume local filesystem と cooperating process/kernel lock が前提である。cross-volume、
   distributed atomicity、network filesystem、exactly-once、process-tree cancellationを保証しない。
 - `os.replace`、file fsync、利用可能な場合のdirectory syncを用いるが、hardware cache、突然の電源断、
@@ -159,3 +160,5 @@
   各 tombstone の保持期限は対応 receipt の `committed_at + 365日` として lineage 全体で検証する。
 - cooperative cancellation は effect 前の mutation zero と effect 後の停止／reconciliation を
   提供するが、OS process hard-stop、undo、process-tree cancellation は提供しない。
+- injected clock/fault/provider callback の後は effect state と controlを再検証するが、
+  callback 内の同権限writerを隔離するprocess sandboxやACL境界を提供するものではない。

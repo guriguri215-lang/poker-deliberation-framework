@@ -185,9 +185,13 @@ final authority/hold admission は durable journal 公開と fault/cancellation 
 destination absence、same-volume を再読してから rename する。cleanup root の read/inspect は
 保存 marker だけでなく live product-root ownership/root identity と再照合し、別 root への
 marker 再利用を initialized/committed と判定しない。
+quarantine の final provider callback 後には cleanup marker、live root binding、control 許可集合、
+standalone journal の canonical bytes も再読する。effect 後の clock/fault callback の後にも
+payload namespace と current/control を再検証し、矛盾した current や成功結果を公開しない。
 delete admission は plan の quarantine entry と fixed policy review window を live tombstone に
 再拘束する。control namespace に dangling link や pending journal/revision/temp があって strict
 current を読めない場合は no-effect と推定せず `effect_unknown` に停止する。
+canonical/path/link failure を伴う execute replay も同じ reconciliation に正規化する。
 
 control artifact は bounded identifiers と purpose-separated SHA-256 binding を保存し、raw payload、
 credential、approval reason、provider input、traceback を保存しない。ただし同権限の malicious

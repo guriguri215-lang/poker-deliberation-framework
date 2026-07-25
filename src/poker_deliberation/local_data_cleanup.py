@@ -29,6 +29,7 @@ from poker_deliberation.approvals import (
     read_approval_state_v2,
 )
 from poker_deliberation.local_data_cleanup_canonical import (
+    CleanupCanonicalError,
     canonical_cleanup_sha256,
     cleanup_approval_binding_sha256,
     cleanup_plan_sha256,
@@ -78,7 +79,10 @@ from poker_deliberation.storage.local_data_cleanup_store import (
     inspect_cleanup_root,
     scan_cleanup_tree,
 )
-from poker_deliberation.storage.revision_canonical import validate_run_id
+from poker_deliberation.storage.revision_canonical import (
+    CanonicalStorageError,
+    validate_run_id,
+)
 from poker_deliberation.storage.revision_lock import LockReleaseError
 from poker_deliberation.storage.revision_store import ExistingRunAuthorityV1
 from poker_deliberation.storage.terminal_models import ProductRunError, VerifiedRunReadV2
@@ -1039,8 +1043,12 @@ class LocalDataCleanupExecutor:
                     approval_run_id_sha256=run_id_sha256(approval_run_id),
                     approval_request_id=approval_request_id,
                 )
-            except CleanupStorageError as exc:
-                if (
+            except (
+                CleanupStorageError,
+                CanonicalStorageError,
+                CleanupCanonicalError,
+            ) as exc:
+                if not isinstance(exc, CleanupStorageError) or (
                     isinstance(exc.failure, CleanupFailureV1)
                     and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
                 ):
@@ -1289,8 +1297,12 @@ class LocalDataCleanupExecutor:
                     approval_run_id_sha256=run_id_sha256(approval_run_id),
                     approval_request_id=approval_request_id,
                 )
-            except CleanupStorageError as exc:
-                if (
+            except (
+                CleanupStorageError,
+                CanonicalStorageError,
+                CleanupCanonicalError,
+            ) as exc:
+                if not isinstance(exc, CleanupStorageError) or (
                     isinstance(exc.failure, CleanupFailureV1)
                     and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
                 ):

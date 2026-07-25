@@ -369,6 +369,59 @@ def test_dangling_cleanup_current_pointer_is_effect_unknown(tmp_path: Path) -> N
     assert report.classification == "effect_unknown"
 
 
+def test_corrupt_cleanup_current_replay_is_effect_unknown(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "6" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-corrupt-current-execution",
+        idempotency_key="security-corrupt-current-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-corrupt-current-approval",
+        decision_at=SECURITY_AT,
+    )
+    committed = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-corrupt-current-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert committed.outcome_kind == "committed"
+
+    current = cleanup_root / "runs" / run_id_sha256("security-run") / "current.json"
+    current.write_bytes(b"{}")
+    report = executor.inspect_reconciliation(dry_run.plan)
+    replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-corrupt-current-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert report.observed_current == "unreadable"
+    assert report.classification == "effect_unknown"
+    assert replay.failure is not None
+    assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert replay.failure.filesystem_effect == "source_moved"
+    assert replay.failure.domain_effect == "current_may_have_advanced"
+
+
 def test_symlink_tree_is_rejected_without_touching_target(tmp_path: Path) -> None:
     target = tmp_path / "target"
     target.mkdir()
@@ -868,6 +921,70 @@ def test_final_authority_callback_mutation_is_rescanned_before_quarantine_move(
     )
     assert run_path.is_dir()
     assert (run_path / "callback-mutation.json").is_file()
+    assert not (cleanup_root / "quarantine" / "security-run").exists()
+
+
+def test_final_authority_callback_cannot_replace_quarantine_journal(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "7" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-final-journal-execution",
+        idempotency_key="security-final-journal-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, approved_provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-final-journal-approval",
+        decision_at=SECURITY_AT,
+    )
+    transactions = cleanup_root / "runs" / run_id_sha256("security-run") / "transactions"
+
+    class ReplaceJournalOnThirdResolution:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve_actor(
+            self,
+            actor_id: str,
+            *,
+            decision_at: datetime,
+        ) -> ApprovalAuthoritySnapshotV2:
+            self.calls += 1
+            if self.calls == 3:
+                journal_root = next(transactions.iterdir())
+                (journal_root / "transaction.json").write_bytes(b"{}")
+            return approved_provider.resolve_actor(actor_id, decision_at=decision_at)
+
+    provider = ReplaceJournalOnThirdResolution()
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-final-journal-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert provider.calls == 3
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
+    assert result.failure.filesystem_effect == "none"
+    assert (orchestrator.product_store.foundation.runs_root / "security-run").is_dir()
+    assert not (cleanup_root / "runs" / run_id_sha256("security-run")).exists()
     assert not (cleanup_root / "quarantine" / "security-run").exists()
 
 

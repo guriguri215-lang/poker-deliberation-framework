@@ -105,6 +105,8 @@ product source absent を要求する。
 standalone journal、未公開 revision、一時 pointer、dangling current link などが control namespace に
 存在して strict current を読めない場合、current absent/no-effect とは推定せず
 `current=unreadable / effect_unknown` とする。再実行も保存済み成功へ昇格させない。
+canonical current の破損や path/link 検証失敗も execute replay で
+`internal_invariant_error / effect=none` へ落とさず、同じ bounded reconciliation 経路へ送る。
 cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink 前に確認する。journal 後
 かつ effect 前の cancellation は exact journal/scaffold だけを巻き戻し、effect 開始後は
 `reconciliation_required` として停止する。
@@ -117,6 +119,9 @@ cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink
   再解決する。その外部 callback 完了後、effect 直前に authority、current、tree identity、
   destination absence、same-volume をローカル再検証する。失効は journal を exact rollback し、
   rename/staging/unlink に進まない。
+- quarantine の final authority callback 後は cleanup marker、live product binding、許可された
+  control entry、exact standalone journal もローカル再検証する。effect 後の clock/fault callback
+  の後にも source/destination/staging と current/control を再読し、矛盾時は committed を公開しない。
 - journal directory 作成後から publish 完了前までの write/fsync fault は、部分 file を含む exact
   transaction root を巻き戻す。巻き戻しを確認できない場合は成功にせず reconciliation を要求する。
 - plan は1 action、tree 10,000 entries、target 100,000,000 bytes、control artifact

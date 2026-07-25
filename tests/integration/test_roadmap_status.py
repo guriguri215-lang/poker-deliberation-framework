@@ -777,12 +777,25 @@ def test_p2_013a_has_exact_digest_bound_scope_and_downstream_stays_closed() -> N
     assert record["scope_digest"] == P2_013A_SCOPE_DIGEST
     assert record["topics"] == record["scope"]["policy_decisions"]
     assert document["milestone_approvals"]["P2-013A"] == reference
-    assert document["milestone_progress"]["P2-013A"] == {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
+    progress = document["milestone_progress"]["P2-013A"]
+    evidence = progress["completion_evidence"]
+    assert progress["state"] == "completed"
+    assert progress["history"] == ["not_started", "in_progress", "completed"]
+    assert evidence["commits"] == [
+        "3a7a39b52ac4420c255a82600a0f03f1bafdbc99",
+        "68250b3f1c515418f87b912de34b000abc67d9c8",
+        "4d79b5c058a63c061efcd32e1424e383b90c9692",
+        "150e04a50ca66ba041ec0dd603ec5c74add22491",
+        "f9f508ef8f99e142c263cdfdb7e8558d3a6f0e56",
+        "cd379817b91957332cb621e62e88e207041e25c2",
+    ]
+    assert evidence["paths"] == record["scope"]["milestone_implementation_scope"]["targets"]
+    assert evidence["tests"] == record["scope"]["milestone_implementation_scope"]["tests"]
     assert rm_013["status"] == "in_progress"
+    assert rm_013["completion_evidence"] == {"commits": [], "paths": [], "tests": []}
+    assert (
+        "P2-013B lifecycle/reissue integration is separately unapproved" in rm_013["status_reason"]
+    )
     assert rm_013["human_approval"]["approval_reference"] == reference
     assert rm_013["human_approval"]["scope_digest"] == P2_013A_SCOPE_DIGEST
     assert rm_013["human_approval"]["topics"] == record["topics"]
@@ -1447,8 +1460,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 8,
-        "in_progress": 1,
+        "completed": 9,
         "not_started": 3,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

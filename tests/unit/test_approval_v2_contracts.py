@@ -8,12 +8,14 @@ from pydantic import ValidationError
 from poker_deliberation.approval_canonical import (
     action_digest_sha256,
     approval_actor_sha256,
+    approval_decision_outcome_sha256,
     approval_decision_record_sha256,
     approval_domain_audit_event_sha256,
     approval_request_idempotency_key,
 )
 from poker_deliberation.approval_models import (
     ApprovalActor,
+    ApprovalAuthoritySnapshotV2,
     ApprovalDecisionBatch,
     ApprovalDecisionFailureV2,
     ApprovalDecisionItemV2,
@@ -27,6 +29,16 @@ from poker_deliberation.approval_models import (
     ApprovalRequestV2,
     CanonicalActionPlanV2,
     OutboundFieldBindingV2,
+)
+from poker_deliberation.approvals import (
+    ApprovalDecisionValidationError,
+    LocalCliAuthorityProvider,
+    add_approval_request_v2,
+    build_approval_decision_update,
+    empty_approval_ledger_v2,
+    encode_approval_state_v2,
+    read_approval_state_v2,
+    validate_approval_decision,
 )
 
 NOW = datetime(2026, 7, 25, 0, 0, tzinfo=UTC)
@@ -134,6 +146,68 @@ def _request(**changes: object) -> ApprovalRequestV2:
     }
     values.update(changes)
     return ApprovalRequestV2(**values)
+
+
+def _state() -> tuple[ApprovalRequestV2, object]:
+    request = _request()
+    ledger, _, created = add_approval_request_v2(
+        empty_approval_ledger_v2("run-1"),
+        request,
+    )
+    assert created
+    encoded = encode_approval_state_v2(ledger, (), ())
+    return request, read_approval_state_v2(*encoded)
+
+
+def _batch(
+    *,
+    actor: ApprovalActor | None = None,
+    decision: str = "rejected",
+    items: tuple[ApprovalDecisionItemV2, ...] | None = None,
+    **changes: object,
+) -> ApprovalDecisionBatch:
+    request = _request()
+    values: dict[str, object] = {
+        "run_id": "run-1",
+        "expected_run_revision": 2,
+        "expected_ledger_revision": 1,
+        "actor": actor or _local_actor(),
+        "decision_id": "decision-1",
+        "idempotency_key": "decision-key-1",
+        "items": items
+        or (
+            ApprovalDecisionItemV2(
+                request_id=request.request_id,
+                expected_request_revision=request.request_revision,
+                action_digest_sha256=request.action_digest_sha256,
+                decision=decision,
+            ),
+        ),
+        "reason": "Decide the exact pending request.",
+        "decision_at": NOW + timedelta(minutes=1),
+    }
+    values.update(changes)
+    return ApprovalDecisionBatch(**values)
+
+
+class _StaticAuthorityProvider:
+    def __init__(self, actor: ApprovalActor) -> None:
+        self.actor = actor
+
+    def resolve_actor(
+        self,
+        actor_id: str,
+        *,
+        decision_at: datetime,
+    ) -> ApprovalAuthoritySnapshotV2:
+        del actor_id
+        return ApprovalAuthoritySnapshotV2(
+            provider_id="test-provider",
+            provider_version="1.0.0",
+            resolved_at=decision_at,
+            actor=self.actor,
+            actor_sha256=approval_actor_sha256(self.actor),
+        )
 
 
 def test_actor_trust_matrix_is_closed() -> None:
@@ -291,9 +365,8 @@ def test_outcome_matrix_distinguishes_safe_reject_and_unavailable_approval() -> 
                 decision="rejected",
             ),
         ),
+        remaining_pending_count=0,
         run_status="completed",
-        decision_record_sha256=HASH_B,
-        domain_audit_event_sha256=HASH_C,
         committed_at=NOW,
     )
     assert rejected.limitation is None
@@ -322,6 +395,29 @@ def test_outcome_matrix_distinguishes_safe_reject_and_unavailable_approval() -> 
 
 
 def test_decision_and_audit_chain_hashes_exclude_only_the_derived_hash() -> None:
+    outcome = ApprovalDecisionOutcome(
+        outcome_kind="committed",
+        run_id="run-1",
+        decision_id="decision-1",
+        idempotency_key="decision-key-1",
+        actor_sha256=HASH_A,
+        batch_sha256=HASH_B,
+        previous_run_revision=2,
+        current_run_revision=3,
+        previous_ledger_revision=1,
+        current_ledger_revision=2,
+        request_results=(
+            ApprovalDecisionResultV2(
+                request_id="request-1",
+                request_revision=2,
+                action_digest_sha256=HASH_C,
+                decision="rejected",
+            ),
+        ),
+        remaining_pending_count=0,
+        run_status="completed",
+        committed_at=NOW,
+    )
     partial_record = ApprovalDecisionRecordV2.model_construct(
         sequence=1,
         previous_record_sha256=None,
@@ -330,7 +426,8 @@ def test_decision_and_audit_chain_hashes_exclude_only_the_derived_hash() -> None
         idempotency_key="decision-key-1",
         actor_sha256=HASH_A,
         batch_sha256=HASH_B,
-        outcome_sha256=HASH_C,
+        outcome=outcome,
+        outcome_sha256=approval_decision_outcome_sha256(outcome),
         committed_at=NOW,
         record_sha256="0" * 64,
     )
@@ -352,7 +449,8 @@ def test_decision_and_audit_chain_hashes_exclude_only_the_derived_hash() -> None
         decision_id="decision-1",
         actor_sha256=HASH_A,
         batch_sha256=HASH_B,
-        outcome_sha256=HASH_C,
+        decision_record_sha256=record.record_sha256,
+        outcome_sha256=approval_decision_outcome_sha256(outcome),
         occurred_at=NOW,
         event_sha256="0" * 64,
     )
@@ -373,3 +471,132 @@ def test_only_run_locked_is_retryable() -> None:
             retryable=True,
             audit_confirmed=True,
         )
+
+
+def test_pure_reject_update_round_trips_and_exact_replay_precedes_stale_revision() -> None:
+    request, state = _state()
+    batch = _batch()
+    provider = LocalCliAuthorityProvider(
+        "local-user",
+        session_reference_sha256=HASH_A,
+    )
+    admission = validate_approval_decision(
+        state,
+        batch,
+        provider,
+        observed_run_revision=2,
+        evaluated_at=batch.decision_at,
+    )
+    update = build_approval_decision_update(admission)
+
+    assert update.outcome.run_status == "completed"
+    assert update.ledger.requests[0].state == "rejected"
+    assert update.ledger.requests[0].request_revision == request.request_revision + 1
+    verified = read_approval_state_v2(
+        *encode_approval_state_v2(
+            update.ledger,
+            update.decision_records,
+            update.domain_audit_events,
+        )
+    )
+
+    replay = validate_approval_decision(
+        verified,
+        batch,
+        provider,
+        observed_run_revision=3,
+        evaluated_at=batch.decision_at,
+    )
+    assert replay.kind == "replay"
+    assert replay.replay_outcome == update.outcome
+
+
+def test_same_idempotency_key_with_different_payload_fails_before_stale_revision() -> None:
+    _, state = _state()
+    provider = LocalCliAuthorityProvider(
+        "local-user",
+        session_reference_sha256=HASH_A,
+    )
+    batch = _batch()
+    update = build_approval_decision_update(
+        validate_approval_decision(
+            state,
+            batch,
+            provider,
+            observed_run_revision=2,
+            evaluated_at=batch.decision_at,
+        )
+    )
+    verified = read_approval_state_v2(
+        *encode_approval_state_v2(
+            update.ledger,
+            update.decision_records,
+            update.domain_audit_events,
+        )
+    )
+    changed = _batch(reason="Different canonical reason.")
+
+    with pytest.raises(ApprovalDecisionValidationError) as captured:
+        validate_approval_decision(
+            verified,
+            changed,
+            provider,
+            observed_run_revision=99,
+            evaluated_at=changed.decision_at,
+        )
+    assert captured.value.failure.code is ApprovalFailureCode.IDEMPOTENCY_CONFLICT
+
+
+def test_local_actor_can_reject_but_cannot_approve() -> None:
+    _, state = _state()
+    provider = LocalCliAuthorityProvider(
+        "local-user",
+        session_reference_sha256=HASH_A,
+    )
+    approved = _batch(decision="approved")
+
+    with pytest.raises(ApprovalDecisionValidationError) as captured:
+        validate_approval_decision(
+            state,
+            approved,
+            provider,
+            observed_run_revision=2,
+            evaluated_at=approved.decision_at,
+        )
+    assert captured.value.failure.code is ApprovalFailureCode.UNAUTHORIZED_DECISION
+
+
+def test_verified_exact_scope_approval_commits_unavailable_limitation() -> None:
+    _, state = _state()
+    actor = _verified_actor()
+    batch = _batch(actor=actor, decision="approved")
+    admission = validate_approval_decision(
+        state,
+        batch,
+        _StaticAuthorityProvider(actor),
+        observed_run_revision=2,
+        evaluated_at=batch.decision_at,
+    )
+    update = build_approval_decision_update(admission)
+
+    assert update.outcome.run_status == "failed_with_limitations"
+    assert update.outcome.limitation is not None
+    assert update.outcome.limitation.code is ApprovalFailureCode.EXTERNAL_EXECUTOR_UNAVAILABLE
+
+
+def test_request_idempotency_is_exact_and_conflicting_payload_is_rejected() -> None:
+    request = _request()
+    ledger, prior, created = add_approval_request_v2(
+        empty_approval_ledger_v2("run-1"),
+        request,
+    )
+    assert created
+    same_ledger, same_request, repeated = add_approval_request_v2(ledger, request)
+    assert (same_ledger, same_request, repeated) == (ledger, prior, False)
+
+    with pytest.raises(ApprovalDecisionValidationError) as captured:
+        add_approval_request_v2(
+            ledger,
+            request.model_copy(update={"request_id": "request-changed"}),
+        )
+    assert captured.value.failure.code is ApprovalFailureCode.IDEMPOTENCY_CONFLICT

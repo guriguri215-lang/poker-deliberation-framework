@@ -444,10 +444,9 @@ class ApprovalDecisionOutcome(_ApprovalModel):
     previous_ledger_revision: int = Field(ge=0)
     current_ledger_revision: int = Field(ge=0)
     request_results: tuple[ApprovalDecisionResultV2, ...] = Field(max_length=128)
+    remaining_pending_count: int = Field(ge=0, le=1024)
     run_status: ReportRunStatus | None = None
     limitation: ApprovalDecisionFailureV2 | None = None
-    decision_record_sha256: Sha256 | None = None
-    domain_audit_event_sha256: Sha256 | None = None
     committed_at: datetime | None = None
 
     @field_validator("committed_at")
@@ -475,8 +474,6 @@ class ApprovalDecisionOutcome(_ApprovalModel):
                 or self.run_status is None
                 or self.current_run_revision != self.previous_run_revision + 1
                 or self.current_ledger_revision != self.previous_ledger_revision + 1
-                or self.decision_record_sha256 is None
-                or self.domain_audit_event_sha256 is None
                 or self.committed_at is None
             ):
                 raise ValueError("committed approval outcome matrix mismatch")
@@ -488,16 +485,19 @@ class ApprovalDecisionOutcome(_ApprovalModel):
                     or self.limitation.code is not ApprovalFailureCode.EXTERNAL_EXECUTOR_UNAVAILABLE
                 ):
                     raise ValueError("approved action requires unavailable limitation")
-            elif self.run_status != "completed" or self.limitation is not None:
-                raise ValueError("all-reject outcome must complete without limitation")
+            elif (
+                self.run_status
+                != ("approval_required" if self.remaining_pending_count else "completed")
+                or self.limitation is not None
+            ):
+                raise ValueError("reject outcome status must match remaining pending requests")
         elif (
             self.request_results
+            or self.remaining_pending_count != 0
             or self.run_status is not None
             or self.limitation is not None
             or self.current_run_revision != self.previous_run_revision
             or self.current_ledger_revision != self.previous_ledger_revision
-            or self.decision_record_sha256 is not None
-            or self.domain_audit_event_sha256 is not None
             or self.committed_at is not None
         ):
             raise ValueError("failed approval outcome must be mutation-zero")
@@ -516,6 +516,7 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
     idempotency_key: PortableId
     actor_sha256: Sha256
     batch_sha256: Sha256
+    outcome: ApprovalDecisionOutcome
     outcome_sha256: Sha256
     committed_at: datetime
     record_sha256: Sha256
@@ -525,9 +526,20 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
     @model_validator(mode="after")
     def record_hash_matches(self) -> ApprovalDecisionRecordV2:
         from poker_deliberation.approval_canonical import (
+            approval_decision_outcome_sha256,
             approval_decision_record_sha256,
         )
 
+        if self.outcome_sha256 != approval_decision_outcome_sha256(self.outcome):
+            raise ValueError("approval decision outcome hash mismatch")
+        if (
+            self.outcome.run_id != self.run_id
+            or self.outcome.decision_id != self.decision_id
+            or self.outcome.idempotency_key != self.idempotency_key
+            or self.outcome.actor_sha256 != self.actor_sha256
+            or self.outcome.batch_sha256 != self.batch_sha256
+        ):
+            raise ValueError("approval decision record outcome identity mismatch")
         if self.record_sha256 != approval_decision_record_sha256(self):
             raise ValueError("approval decision record hash mismatch")
         if (self.sequence == 1) != (self.previous_record_sha256 is None):
@@ -546,6 +558,7 @@ class ApprovalDomainAuditEventV2(_ApprovalModel):
     decision_id: PortableId
     actor_sha256: Sha256
     batch_sha256: Sha256
+    decision_record_sha256: Sha256
     outcome_sha256: Sha256
     occurred_at: datetime
     event_sha256: Sha256

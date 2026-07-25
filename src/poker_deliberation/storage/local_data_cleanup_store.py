@@ -79,6 +79,7 @@ _ROOT_ENTRIES = frozenset({"ownership.json", ".cleanup-control", "runs", "quaran
 _RUN_CONTROL_ENTRIES = frozenset({"transactions", "revisions", "current.json"})
 _StreamSignature = tuple[tuple[str, int], ...]
 _DirectoryChain = tuple[tuple[Path, int, int, _StreamSignature | None], ...]
+_DirectoryChains = tuple[_DirectoryChain, ...]
 
 
 @dataclass(frozen=True)
@@ -963,15 +964,21 @@ def _observe_staging_failure(
     return "partial_delete", False
 
 
-def _control_tree_bytes(control: Path, *, maximum_bytes: int) -> int:
+def _control_tree_bytes(
+    control: Path,
+    *,
+    maximum_bytes: int,
+    owned_anchor: Path,
+) -> int:
     if not _strict_lexists(control):
         return 0
-    verify_directory(control)
+    _capture_directory_chain(control, owned_anchor=owned_anchor)
     total = 0
     entries = 0
     stack = [control]
     while stack:
         directory = stack.pop()
+        _capture_directory_chain(directory, owned_anchor=owned_anchor)
         for child in directory.iterdir():
             entries += 1
             if entries > 256:
@@ -982,8 +989,14 @@ def _control_tree_bytes(control: Path, *, maximum_bytes: int) -> int:
             if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
                 raise _fail(CleanupFailureCode.LINK_OR_REPARSE_DETECTED)
             if stat.S_ISDIR(info.st_mode):
+                if _has_nondefault_windows_stream(child):
+                    raise _fail(CleanupFailureCode.PATH_CONFINEMENT_FAILED)
                 stack.append(child)
-            elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+            elif (
+                stat.S_ISREG(info.st_mode)
+                and info.st_nlink == 1
+                and not _has_nondefault_windows_stream(child)
+            ):
                 total += info.st_size
                 if total > maximum_bytes:
                     raise _fail(CleanupFailureCode.AUDIT_CAPACITY_EXCEEDED)
@@ -1154,7 +1167,7 @@ class LocalDataCleanupStore:
                     transaction_id=transaction.transaction_id,
                 )
             control = self._run_control(run_hash)
-            verify_directory(control)
+            _capture_directory_chain(control, owned_anchor=self.cleanup_root)
             entries = {item.name: item for item in control.iterdir()}
             expected_control_entries = {"transactions", "revisions"}
             if pointer_temporary is not None:
@@ -1179,8 +1192,8 @@ class LocalDataCleanupStore:
                     )
             transactions = entries["transactions"]
             revisions = entries["revisions"]
-            verify_directory(transactions)
-            verify_directory(revisions)
+            _capture_directory_chain(transactions, owned_anchor=self.cleanup_root)
+            _capture_directory_chain(revisions, owned_anchor=self.cleanup_root)
             journal_directories = {item.name: item for item in transactions.iterdir()}
             if set(journal_directories) != {transaction.transaction_id}:
                 raise _fail(
@@ -1189,7 +1202,7 @@ class LocalDataCleanupStore:
                     transaction_id=transaction.transaction_id,
                 )
             journal_root = journal_directories[transaction.transaction_id]
-            verify_directory(journal_root)
+            _capture_directory_chain(journal_root, owned_anchor=self.cleanup_root)
             journal_entries = {item.name: item for item in journal_root.iterdir()}
             if set(journal_entries) != {"transaction.json"}:
                 raise _fail(
@@ -1227,7 +1240,7 @@ class LocalDataCleanupStore:
                     transaction_id=transaction.transaction_id,
                 )
             revision_root = revision_entries[revision_name]
-            verify_directory(revision_root)
+            _capture_directory_chain(revision_root, owned_anchor=self.cleanup_root)
             artifacts = {item.name: item for item in revision_root.iterdir()}
             expected = {
                 "transaction.json": transaction,
@@ -1310,7 +1323,7 @@ class LocalDataCleanupStore:
         control = self._run_control(run_hash)
         if not _strict_lexists(control):
             return None
-        verify_directory(control)
+        _capture_directory_chain(control, owned_anchor=self.cleanup_root)
         entries = {item.name: item for item in control.iterdir()}
         expected_control_entries = set(_RUN_CONTROL_ENTRIES)
         if pending_pointer is not None:
@@ -1326,7 +1339,7 @@ class LocalDataCleanupStore:
         if pointer.run_id_sha256 != run_hash:
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         revision = self.cleanup_root / pointer.revision_relative_path
-        verify_directory(revision)
+        _capture_directory_chain(revision, owned_anchor=self.cleanup_root)
         revision_entries = {item.name: item for item in revision.iterdir()}
         if set(revision_entries) != {
             "transaction.json",
@@ -1406,7 +1419,7 @@ class LocalDataCleanupStore:
         reachable_transactions = {pointer.revision: transaction}
         for prior_revision in range(pointer.revision - 1, 0, -1):
             revisions_root = control / "revisions"
-            verify_directory(revisions_root)
+            _capture_directory_chain(revisions_root, owned_anchor=self.cleanup_root)
             prefix = f"r{prior_revision}-"
             matches = tuple(
                 child for child in revisions_root.iterdir() if child.name.startswith(prefix)
@@ -1417,7 +1430,7 @@ class LocalDataCleanupStore:
                     run_id_sha256=run_hash,
                 )
             prior_directory = matches[0]
-            verify_directory(prior_directory)
+            _capture_directory_chain(prior_directory, owned_anchor=self.cleanup_root)
             prior_entries = {item.name: item for item in prior_directory.iterdir()}
             if set(prior_entries) != {
                 "transaction.json",
@@ -1526,13 +1539,13 @@ class LocalDataCleanupStore:
                 )
             expected_journals[pending_transaction.transaction_id] = pending_transaction
         transactions_root = entries["transactions"]
-        verify_directory(transactions_root)
+        _capture_directory_chain(transactions_root, owned_anchor=self.cleanup_root)
         journal_directories = {item.name: item for item in transactions_root.iterdir()}
         if set(journal_directories) != set(expected_journals):
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         for journal_id, expected_transaction in expected_journals.items():
             journal_root = journal_directories[journal_id]
-            verify_directory(journal_root)
+            _capture_directory_chain(journal_root, owned_anchor=self.cleanup_root)
             journal_entries = {item.name: item for item in journal_root.iterdir()}
             if set(journal_entries) != {"transaction.json"}:
                 raise _fail(
@@ -1638,7 +1651,7 @@ class LocalDataCleanupStore:
         self._require_product_binding(marker, binding)
         control = self._run_control(run_hash)
         revisions_root = control / "revisions"
-        verify_directory(revisions_root)
+        _capture_directory_chain(revisions_root, owned_anchor=self.cleanup_root)
         current_pointer = current[0]
         reachable_directories = [self.cleanup_root / current_pointer.revision_relative_path]
         for prior_revision in range(current_pointer.revision - 1, 0, -1):
@@ -1664,7 +1677,7 @@ class LocalDataCleanupStore:
         ] = []
         identity_seen = False
         for revision_directory in reachable_directories:
-            verify_directory(revision_directory)
+            _capture_directory_chain(revision_directory, owned_anchor=self.cleanup_root)
             entries = {item.name: item for item in revision_directory.iterdir()}
             if set(entries) != {
                 "transaction.json",
@@ -2014,12 +2027,30 @@ class LocalDataCleanupStore:
         rollback_journal: _RollbackJournal | None = None
         source_parent_chain: _DirectoryChain | None = None
         destination_parent_chain: _DirectoryChain | None = None
+        control_directory_chains: _DirectoryChains = ()
+
+        def capture_control_directory_chains(*directories: Path) -> None:
+            nonlocal control_directory_chains
+            control_directory_chains = tuple(
+                _capture_directory_chain(
+                    directory,
+                    owned_anchor=self.cleanup_root,
+                )
+                for directory in directories
+            )
+
+        def verify_control_directory_chains() -> None:
+            if not control_directory_chains:
+                raise CanonicalStorageError("cleanup control directory state is unavailable")
+            for chain in control_directory_chains:
+                _verify_directory_chain(chain)
 
         def verify_effect_parent_chains() -> None:
             if source_parent_chain is None or destination_parent_chain is None:
                 raise CanonicalStorageError("quarantine effect parent chain is unavailable")
             _verify_directory_chain(source_parent_chain)
             _verify_directory_chain(destination_parent_chain)
+            verify_control_directory_chains()
 
         def current_failure_uncertain() -> bool:
             try:
@@ -2150,6 +2181,7 @@ class LocalDataCleanupStore:
             projected = _control_tree_bytes(
                 control,
                 maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+                owned_anchor=self.cleanup_root,
             ) + (5 * marker.limits.maximum_control_artifact_bytes + 2 * len(transaction_bytes))
             if projected > marker.limits.maximum_control_bytes_per_run:
                 raise _fail(
@@ -2194,7 +2226,12 @@ class LocalDataCleanupStore:
             )
             journal_published = True
             _directory_sync(transaction_root)
+            capture_control_directory_chains(
+                transaction_root,
+                control / "revisions",
+            )
             _fault(self.fault_injector, "quarantine.before_effect")
+            verify_control_directory_chains()
             _require_not_cancelled(
                 cancelled,
                 run_id_sha256=run_hash,
@@ -2202,7 +2239,9 @@ class LocalDataCleanupStore:
                 transaction_id=transaction_id,
             )
             effect_at = clock()
+            verify_control_directory_chains()
             final_approval = authorize(effect_at)
+            verify_control_directory_chains()
             if final_approval != approval:
                 raise _fail(
                     CleanupFailureCode.APPROVAL_MISMATCH,
@@ -2296,6 +2335,7 @@ class LocalDataCleanupStore:
                 marker_sha256=marker_sha,
                 transaction=transaction,
             )
+            verify_control_directory_chains()
             revision.mkdir()
             receipt = CleanupReceiptV1(
                 action_kind=CleanupActionKind.QUARANTINE_PRODUCT_RUN,
@@ -2380,6 +2420,11 @@ class LocalDataCleanupStore:
                 temporary,
                 pointer_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
+            )
+            verify_control_directory_chains()
+            capture_control_directory_chains(
+                transaction_root,
+                revision,
             )
             _fault(self.fault_injector, "quarantine.before_pointer_replace")
             verify_effect_parent_chains()
@@ -2660,12 +2705,30 @@ class LocalDataCleanupStore:
         rollback_journal: _RollbackJournal | None = None
         source_parent_chain: _DirectoryChain | None = None
         staging_parent_chain: _DirectoryChain | None = None
+        control_directory_chains: _DirectoryChains = ()
+
+        def capture_control_directory_chains(*directories: Path) -> None:
+            nonlocal control_directory_chains
+            control_directory_chains = tuple(
+                _capture_directory_chain(
+                    directory,
+                    owned_anchor=self.cleanup_root,
+                )
+                for directory in directories
+            )
+
+        def verify_control_directory_chains() -> None:
+            if not control_directory_chains:
+                raise CanonicalStorageError("cleanup control directory state is unavailable")
+            for chain in control_directory_chains:
+                _verify_directory_chain(chain)
 
         def verify_effect_parent_chains() -> None:
             if source_parent_chain is None or staging_parent_chain is None:
                 raise CanonicalStorageError("delete effect parent chain is unavailable")
             _verify_directory_chain(source_parent_chain)
             _verify_directory_chain(staging_parent_chain)
+            verify_control_directory_chains()
 
         def observed_staging_failure() -> tuple[
             Literal["delete_staging_moved", "partial_delete"],
@@ -2810,6 +2873,8 @@ class LocalDataCleanupStore:
             journal_at = clock()
             control = self._run_control(run_hash)
             transaction_root = control / "transactions" / transaction_id
+            prior_transaction_root = control / "transactions" / prior_manifest.transaction_id
+            prior_revision = self.cleanup_root / prior_pointer.revision_relative_path
             revision_two = control / "revisions" / f"r2-{transaction_id}"
             revision_three = control / "revisions" / f"r3-{transaction_id}"
             if (
@@ -2848,6 +2913,7 @@ class LocalDataCleanupStore:
             projected = _control_tree_bytes(
                 control,
                 maximum_bytes=marker.limits.maximum_control_bytes_per_run,
+                owned_anchor=self.cleanup_root,
             ) + (8 * marker.limits.maximum_control_artifact_bytes + 3 * len(transaction_two_bytes))
             if projected > marker.limits.maximum_control_bytes_per_run:
                 raise _fail(
@@ -2884,7 +2950,13 @@ class LocalDataCleanupStore:
             )
             journal_published = True
             _directory_sync(transaction_root)
+            capture_control_directory_chains(
+                prior_transaction_root,
+                transaction_root,
+                prior_revision,
+            )
             _fault(self.fault_injector, "delete.before_staging_rename")
+            verify_control_directory_chains()
             _require_not_cancelled(
                 cancelled,
                 run_id_sha256=run_hash,
@@ -2892,7 +2964,9 @@ class LocalDataCleanupStore:
                 transaction_id=transaction_id,
             )
             effect_at = clock()
+            verify_control_directory_chains()
             final_approval = authorize(effect_at, transaction_two)
+            verify_control_directory_chains()
             if final_approval != approval:
                 raise _fail(
                     CleanupFailureCode.APPROVAL_MISMATCH,
@@ -3092,6 +3166,13 @@ class LocalDataCleanupStore:
                 pointer_two_bytes,
                 max_bytes=marker.limits.maximum_control_artifact_bytes,
             )
+            verify_control_directory_chains()
+            capture_control_directory_chains(
+                prior_transaction_root,
+                transaction_root,
+                prior_revision,
+                revision_two,
+            )
             _fault(self.fault_injector, "delete.before_prepare_pointer_replace")
             verify_effect_parent_chains()
             if _strict_lexists(source):
@@ -3176,7 +3257,10 @@ class LocalDataCleanupStore:
                 destination,
                 staged_inventory,
                 expected_parent_chain=staging_parent_chain,
-                additional_parent_chains=(source_parent_chain,),
+                additional_parent_chains=(
+                    source_parent_chain,
+                    *control_directory_chains,
+                ),
                 expected_root_identity=staging_root_identity,
                 fault_injector=self.fault_injector,
                 progress=delete_progress,
@@ -3295,6 +3379,14 @@ class LocalDataCleanupStore:
             )
             if verified_before_final is None or verified_before_final[0] != pointer_two:
                 raise CanonicalStorageError("cleanup delete CAS changed before final")
+            verify_control_directory_chains()
+            capture_control_directory_chains(
+                prior_transaction_root,
+                transaction_root,
+                prior_revision,
+                revision_two,
+                revision_three,
+            )
             pointer_three_bytes = canonical_cleanup_bytes(pointer_three)
             temporary_three = control / f"current.{transaction_id}.deleted.tmp"
             _fault(self.fault_injector, "delete.before_final_pointer_temp_write")

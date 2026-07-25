@@ -992,8 +992,10 @@ def test_final_authority_callback_cannot_replace_quarantine_journal(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows alternate data stream check")
-def test_quarantine_current_pointer_alternate_stream_is_effect_unknown(
+@pytest.mark.parametrize("target_kind", ("current", "revisions"))
+def test_quarantine_control_alternate_stream_is_effect_unknown(
     tmp_path: Path,
+    target_kind: str,
 ) -> None:
     orchestrator = _orchestrator(tmp_path)
     cleanup_root = tmp_path / "cleanup"
@@ -1021,11 +1023,12 @@ def test_quarantine_current_pointer_alternate_stream_is_effect_unknown(
         approval_run_id="security-current-ads-approval",
         decision_at=SECURITY_AT,
     )
-    current = cleanup_root / "runs" / run_id_sha256("security-run") / "current.json"
+    control = cleanup_root / "runs" / run_id_sha256("security-run")
+    target = control / ("current.json" if target_kind == "current" else "revisions")
 
     def add_alternate_stream(hook: str) -> None:
         if hook == "quarantine.after_pointer_replace":
-            Path(f"{current}:hidden").write_bytes(b"untrusted")
+            Path(f"{target}:hidden").write_bytes(b"untrusted")
 
     executor.store.fault_injector = add_alternate_stream
     result = executor.execute_quarantine(
@@ -1050,6 +1053,62 @@ def test_quarantine_current_pointer_alternate_stream_is_effect_unknown(
     assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert replay.failure.filesystem_effect == "source_moved"
     assert replay.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_quarantine_control_directory_replacement_is_not_committed(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "b" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-control-directory-replacement-execution",
+        idempotency_key="security-control-directory-replacement-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-control-directory-replacement-approval",
+        decision_at=SECURITY_AT,
+    )
+    revisions = cleanup_root / "runs" / run_id_sha256("security-run") / "revisions"
+    relocated = tmp_path / "relocated-revisions"
+
+    def replace_control_directory(hook: str) -> None:
+        if hook != "quarantine.after_pointer_replace":
+            return
+        revisions.rename(relocated)
+        revisions.mkdir()
+        for child in relocated.iterdir():
+            child.rename(revisions / child.name)
+
+    executor.store.fault_injector = replace_control_directory
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-control-directory-replacement-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert relocated.is_dir()
+    assert revisions.is_dir()
 
 
 def test_final_authority_callback_mutation_is_rescanned_before_delete_move(

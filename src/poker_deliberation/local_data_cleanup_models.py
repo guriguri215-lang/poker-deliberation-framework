@@ -6,6 +6,8 @@ payload bytes, credentials, exception text, or unrestricted absolute paths.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import unicodedata
 from datetime import datetime
@@ -72,6 +74,18 @@ def _portable_id(value: str) -> str:
     if value.split(".", maxsplit=1)[0].upper() in _WINDOWS_RESERVED:
         raise ValueError("cleanup identifier uses a reserved device stem")
     return value
+
+
+def derive_cleanup_run_id_sha256(run_id: str) -> str:
+    """Derive the canonical cleanup identity for one already-validated run ID."""
+
+    payload = json.dumps(
+        {"run_id": run_id},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(b"poker-local-data-cleanup-run-id-v1\x00" + payload).hexdigest()
 
 
 def _relative_path(value: str) -> str:
@@ -323,6 +337,12 @@ class ProductRunSourceV1(_CleanupModel):
         lambda value: _utc(value, "terminal_published_at")
     )
 
+    @model_validator(mode="after")
+    def exact_run_identity(self) -> ProductRunSourceV1:
+        if self.run_id_sha256 != derive_cleanup_run_id_sha256(self.run_id):
+            raise ValueError("product run ID hash mismatch")
+        return self
+
 
 class QuarantineSourceV1(_CleanupModel):
     run_id: PortableId
@@ -342,9 +362,31 @@ class QuarantineSourceV1(_CleanupModel):
 
     @model_validator(mode="after")
     def review_window_is_positive(self) -> QuarantineSourceV1:
+        if self.run_id_sha256 != derive_cleanup_run_id_sha256(self.run_id):
+            raise ValueError("quarantine run ID hash mismatch")
         if self.delete_eligible_at <= self.quarantine_entered_at:
             raise ValueError("delete eligibility must follow quarantine entry")
         return self
+
+
+def delete_staging_relative_path(source: QuarantineSourceV1, execution_id: str) -> str:
+    """Return the only staging path admitted for a delete plan."""
+
+    payload = json.dumps(
+        {
+            "cleanup_pointer_sha256": source.cleanup_pointer_sha256,
+            "cleanup_revision": source.cleanup_revision,
+            "execution_id": execution_id,
+            "run_id_sha256": source.run_id_sha256,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    identity = hashlib.sha256(
+        b"poker-local-data-cleanup-delete-staging-v1\x00" + payload
+    ).hexdigest()
+    return f"deleting/{source.run_id_sha256[:32]}-{identity[:16]}"
 
 
 class LifecycleEligibilityV1(_CleanupModel):
@@ -458,11 +500,22 @@ class CleanupPlanV1(_CleanupModel):
                 raise ValueError("product source requires quarantine action")
             if self.source.run_id_sha256 != self.legal_hold.run_id_sha256:
                 raise ValueError("product plan run identity mismatch")
+            if (
+                action.source_relative_path != f"runs/{self.source.run_id}"
+                or action.destination_relative_path != f"quarantine/{self.source.run_id}"
+            ):
+                raise ValueError("product plan action paths are not exact")
         else:
             if action.action_kind is not CleanupActionKind.DELETE_QUARANTINE_PAYLOAD:
                 raise ValueError("quarantine source requires delete action")
             if self.source.run_id_sha256 != self.legal_hold.run_id_sha256:
                 raise ValueError("delete plan run identity mismatch")
+            if (
+                action.source_relative_path != f"quarantine/{self.source.run_id}"
+                or action.destination_relative_path
+                != delete_staging_relative_path(self.source, self.execution_id)
+            ):
+                raise ValueError("delete plan action paths are not exact")
         if self.expires_at <= self.generated_at:
             raise ValueError("cleanup plan expiry must follow generation")
         lifetime = (self.expires_at - self.generated_at).total_seconds()
@@ -936,4 +989,6 @@ __all__ = [
     "TreeInventoryEntryV1",
     "TreeInventoryV1",
     "cleanup_failure",
+    "delete_staging_relative_path",
+    "derive_cleanup_run_id_sha256",
 ]

@@ -62,6 +62,7 @@ def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:
     assert "cleanup" not in subparsers.choices
     assert {
         "dry_run_quarantine",
+        "execute",
         "execute_quarantine",
         "dry_run_delete",
         "execute_delete",

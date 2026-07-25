@@ -1370,6 +1370,15 @@ class ExistingRunAuthorityV1:
         self.release()
 
 
+@dataclass(frozen=True)
+class RunAuthorityBindingV1:
+    """Side-effect-free identity of one initialized product root."""
+
+    run_id: str
+    ownership_marker_sha256: str
+    revision_root_identity_sha256: str
+
+
 @dataclass
 class DetachedRunAuthorityV1:
     """Bounded lease for a run intentionally detached into cleanup quarantine."""
@@ -1391,8 +1400,7 @@ class DetachedRunAuthorityV1:
         self._store._scan_case_aliases(self.run_id)
         if self.former_run_path != self._store.runs_root / self.run_id:
             raise CanonicalStorageError("detached run authority path changed")
-        if self.former_run_path.exists():
-            raise CanonicalStorageError("detached run unexpectedly exists in product root")
+        self._store._require_detached_namespace(self.run_id)
 
     def release(self) -> None:
         if self.released:
@@ -1808,6 +1816,60 @@ class RunRevisionStore:
                 reconciliation=exc.control_changed,
             ) from exc
 
+    def _revision_root_authority_identity_sha256(self) -> str:
+        return canonical_domain_sha256(
+            "poker-run-existing-authority-root-v1",
+            {
+                "adapter": platform_adapter(),
+                "resolved_path": str(self.revision_root.resolve()),
+                "st_dev": self.revision_root.stat().st_dev,
+                "st_ino": self.revision_root.stat().st_ino,
+            },
+        )
+
+    def _require_detached_namespace(self, run_id: str) -> None:
+        verify_directory(self.runs_root)
+        alias = ascii_casefold(run_id)
+        for sibling in self.runs_root.iterdir():
+            if ascii_casefold(sibling.name) != alias:
+                continue
+            info = sibling.lstat()
+            attributes = getattr(info, "st_file_attributes", 0)
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
+                raise CanonicalStorageError("detached namespace contains a link or reparse point")
+            raise CanonicalStorageError("detached run unexpectedly exists in product root")
+
+    def inspect_run_authority_binding(
+        self,
+        run_id: str,
+        *,
+        detached: bool,
+    ) -> RunAuthorityBindingV1:
+        """Return product-root identities without creating a namespace or lock metadata."""
+
+        try:
+            validate_run_id(run_id)
+            _marker, marker_sha = self._ownership(run_id)
+            self._scan_case_aliases(run_id)
+            if detached:
+                self._require_detached_namespace(run_id)
+            else:
+                verify_directory(self.runs_root / run_id)
+            return RunAuthorityBindingV1(
+                run_id=run_id,
+                ownership_marker_sha256=marker_sha,
+                revision_root_identity_sha256=self._revision_root_authority_identity_sha256(),
+            )
+        except RunStorageError:
+            raise
+        except (CanonicalStorageError, OSError, ValidationError) as exc:
+            raise _run_failure(
+                run_id,
+                RunStorageFailureCode.PATH_CONFINEMENT_FAILED,
+                stage="preflight",
+            ) from exc
+
     def acquire_existing_run_authority(self, run_id: str) -> ExistingRunAuthorityV1:
         """Acquire the existing P2-012A per-run authority without bootstrapping.
 
@@ -1817,33 +1879,23 @@ class RunRevisionStore:
         """
 
         try:
-            validate_run_id(run_id)
-            _marker, marker_sha = self._ownership(run_id)
-            self._scan_case_aliases(run_id)
+            binding = self.inspect_run_authority_binding(run_id, detached=False)
+            marker_sha = binding.ownership_marker_sha256
             run_path = self.runs_root / run_id
-            verify_directory(run_path)
         except RunStorageError:
             raise
         except (CanonicalStorageError, OSError, ValidationError) as exc:
             raise _run_failure(
                 run_id,
                 RunStorageFailureCode.PATH_CONFINEMENT_FAILED,
-                stage="existing_authority_preflight",
+                stage="preflight",
             ) from exc
         lease = self._authority(run_id, marker_sha, bootstrap=False)
         authority = ExistingRunAuthorityV1(
             run_id=run_id,
             run_path=run_path,
             ownership_marker_sha256=marker_sha,
-            revision_root_identity_sha256=canonical_domain_sha256(
-                "poker-run-existing-authority-root-v1",
-                {
-                    "adapter": platform_adapter(),
-                    "resolved_path": str(self.revision_root.resolve()),
-                    "st_dev": self.revision_root.stat().st_dev,
-                    "st_ino": self.revision_root.stat().st_ino,
-                },
-            ),
+            revision_root_identity_sha256=binding.revision_root_identity_sha256,
             _store=self,
             _lease=lease,
         )
@@ -1859,34 +1911,23 @@ class RunRevisionStore:
         """Acquire the same nonbootstrapping authority after verified quarantine."""
 
         try:
-            validate_run_id(run_id)
-            _marker, marker_sha = self._ownership(run_id)
-            self._scan_case_aliases(run_id)
+            binding = self.inspect_run_authority_binding(run_id, detached=True)
+            marker_sha = binding.ownership_marker_sha256
             former_run_path = self.runs_root / run_id
-            if former_run_path.exists():
-                raise CanonicalStorageError("product run is not detached")
         except RunStorageError:
             raise
         except (CanonicalStorageError, OSError, ValidationError) as exc:
             raise _run_failure(
                 run_id,
                 RunStorageFailureCode.PATH_CONFINEMENT_FAILED,
-                stage="detached_authority_preflight",
+                stage="preflight",
             ) from exc
         lease = self._authority(run_id, marker_sha, bootstrap=False)
         authority = DetachedRunAuthorityV1(
             run_id=run_id,
             former_run_path=former_run_path,
             ownership_marker_sha256=marker_sha,
-            revision_root_identity_sha256=canonical_domain_sha256(
-                "poker-run-existing-authority-root-v1",
-                {
-                    "adapter": platform_adapter(),
-                    "resolved_path": str(self.revision_root.resolve()),
-                    "st_dev": self.revision_root.stat().st_dev,
-                    "st_ino": self.revision_root.stat().st_ino,
-                },
-            ),
+            revision_root_identity_sha256=binding.revision_root_identity_sha256,
             _store=self,
             _lease=lease,
         )
@@ -4121,6 +4162,7 @@ __all__ = [
     "DEFAULT_MAX_RUN_BYTES",
     "DetachedRunAuthorityV1",
     "ExistingRunAuthorityV1",
+    "RunAuthorityBindingV1",
     "RunRevisionStore",
     "initialize_revision_root",
     "inspect_root_initialization",

@@ -239,10 +239,14 @@ CAS winner は 1 つだけである。loser は current を再読し、同一 id
 quarantine の rename 後は product namespace から run が消えるため、delete 段階は
 `RunRevisionStore.acquire_detached_run_authority` で同じ P2-012A stable lock authority を取得する。
 このAPIは既存 ownership/control marker と run storage の完全一致を要求し、root/runを初期化、
-adopt、repairしない。lock 内で immutable product tree と cleanup current を再検証してからだけ
-staging rename または unlink を許可する。
+adopt、repairしない。`inspect_run_authority_binding` は lock metadata を作らない read-only binding
+を返す。detached 判定は `Path.exists()` に依存せず runs namespace を列挙し、dangling
+symlink/junction/reparse と case alias を拒否する。lock 内で immutable product tree と cleanup
+current を再検証してからだけ staging rename または unlink を許可する。
 
-cleanup root は product revision root と共有せず、`transactions/`、`manifests/`、`receipts/`、
-`tombstones/`、`current/` に独立した immutable historyを持つ。current readerは pointer、
-transaction、manifest、payload location、plan/approval hash、state matrix、previous manifest hashを
-revision 1まで再計算する。product terminal stateは書き換えず、direct product delete APIも公開しない。
+cleanup root は product revision root と共有せず、run hash ごとの
+`runs/<run-hash>/transactions/`、`runs/<run-hash>/revisions/`、`current.json` に独立した immutable
+historyを持つ。各 revision は transaction、manifest、receipt、tombstone を保持する。current
+readerは pointer、transaction、payload location、plan/approval hash、state matrix、previous
+manifest hashを revision 1まで再計算する。product terminal stateは書き換えず、direct product
+delete APIも公開しない。

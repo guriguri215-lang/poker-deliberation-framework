@@ -58,6 +58,7 @@ from poker_deliberation.local_data_cleanup_models import (
     ProductRunSourceV1,
     QuarantineSourceV1,
     cleanup_failure,
+    delete_staging_relative_path,
 )
 from poker_deliberation.local_data_policy import (
     DEFAULT_LOCAL_DATA_POLICY,
@@ -68,6 +69,7 @@ from poker_deliberation.local_data_policy import (
     evaluate_local_data,
 )
 from poker_deliberation.schemas import ApprovalRequest, ApprovalStatus
+from poker_deliberation.storage.lifecycle_hooks import build_terminal_lifecycle_audit
 from poker_deliberation.storage.local_data_cleanup_store import (
     CleanupStorageError,
     LocalDataCleanupStore,
@@ -179,6 +181,9 @@ def _execution_failure(
     code: CleanupFailureCode,
     *,
     transaction_id: str | None = None,
+    cleanup_revision: int | None = None,
+    filesystem_effect: str = "none",
+    domain_effect: str = "none",
 ) -> CleanupExecutionResultV1:
     plan_sha = cleanup_plan_sha256(plan)
     transaction_id = transaction_id or _transaction_id(plan)
@@ -189,13 +194,59 @@ def _execution_failure(
         idempotency_key=plan.idempotency_key,
         transaction_id=transaction_id,
         plan_sha256=plan_sha,
-        cleanup_revision=plan.expected_cleanup_revision,
+        cleanup_revision=(
+            plan.expected_cleanup_revision if cleanup_revision is None else cleanup_revision
+        ),
         failure=cleanup_failure(
             code,
             run_id_sha256=plan.source.run_id_sha256,
             plan_sha256=plan_sha,
             transaction_id=transaction_id,
+            filesystem_effect=cast(Any, filesystem_effect),
+            domain_effect=cast(Any, domain_effect),
         ),
+    )
+
+
+def _persisted_execution_result(
+    plan: CleanupPlanV1,
+    persisted: tuple[Any, Any, Any, Any],
+) -> CleanupExecutionResultV1:
+    pointer, manifest, receipt, tombstone = persisted
+    if pointer.state is CleanupState.DELETE_PREPARED:
+        return _execution_failure(
+            plan,
+            CleanupFailureCode.RECONCILIATION_REQUIRED,
+            transaction_id=manifest.transaction_id,
+            cleanup_revision=pointer.revision,
+            filesystem_effect="delete_staging_moved",
+            domain_effect="current_advanced",
+        )
+    expected_state = (
+        CleanupState.QUARANTINED
+        if isinstance(plan.source, ProductRunSourceV1)
+        else CleanupState.DELETED
+    )
+    if pointer.state is not expected_state:
+        return _execution_failure(
+            plan,
+            CleanupFailureCode.IDEMPOTENCY_CONFLICT,
+            transaction_id=manifest.transaction_id,
+            cleanup_revision=pointer.revision,
+        )
+    return CleanupExecutionResultV1(
+        outcome_kind="committed",
+        run_id_sha256=plan.source.run_id_sha256,
+        execution_id=plan.execution_id,
+        idempotency_key=plan.idempotency_key,
+        transaction_id=manifest.transaction_id,
+        plan_sha256=manifest.plan_sha256,
+        cleanup_revision=pointer.revision,
+        cleanup_pointer_sha256=cleanup_pointer_sha256(pointer),
+        receipt=receipt,
+        receipt_sha256=cleanup_receipt_sha256(receipt),
+        tombstone=tombstone,
+        tombstone_sha256=cleanup_tombstone_sha256(tombstone),
     )
 
 
@@ -332,6 +383,7 @@ def _executor_inventory_sha256() -> str:
         package / "local_data_cleanup_canonical.py",
         package / "local_data_cleanup.py",
         package / "storage" / "local_data_cleanup_store.py",
+        package / "storage" / "revision_store.py",
     )
     inventory = []
     for path in paths:
@@ -374,11 +426,43 @@ def _audit_subject(audit: LifecycleAuditMetadata) -> LifecycleSubject:
 
 
 def _lifecycle_evidence(
-    lifecycle_bytes: bytes,
+    current: VerifiedRunReadV2,
     *,
-    lifecycle_sha256: str,
     evaluated_at: datetime,
 ) -> LifecycleEligibilityV1:
+    payloads = _payload_map(current)
+    lifecycle_bytes = payloads.get("lifecycle_audit.json")
+    if (
+        lifecycle_bytes is None
+        or current.completion_marker is None
+        or current.manifest.lifecycle_audit_sha256 is None
+    ):
+        raise ValueError("terminal lifecycle evidence is incomplete")
+    approval_names = {
+        "approval_ledger_v2.json",
+        "approval_decisions_v2.jsonl",
+        "approval_audit_v2.jsonl",
+    }
+    present_approval_names = approval_names & set(payloads)
+    if present_approval_names and present_approval_names != approval_names:
+        raise ValueError("terminal approval control evidence is incomplete")
+    excluded_names = {"lifecycle_audit.json", *present_approval_names}
+    audited_inventory = tuple(
+        payload.inventory
+        for payload in current.payloads
+        if payload.inventory.logical_name not in excluded_names
+    )
+    expected = build_terminal_lifecycle_audit(
+        run_id=current.run_id,
+        revision=current.revision,
+        published_at=current.completion_marker.published_at,
+        inventory=audited_inventory,
+    )
+    if (
+        lifecycle_bytes != expected.canonical_bytes
+        or current.manifest.lifecycle_audit_sha256 != expected.sha256
+    ):
+        raise ValueError("lifecycle audit does not cover the exact product inventory")
     try:
         audits = TypeAdapter(tuple[LifecycleAuditMetadata, ...]).validate_json(
             lifecycle_bytes,
@@ -404,13 +488,18 @@ def _lifecycle_evidence(
         if result.audit.retention_expires_at is None:
             raise ValueError("lifecycle evidence lacks a retention expiry")
         expiries.append(result.audit.retention_expires_at)
+    control_count = len(excluded_names)
+    control_expiry = current.completion_marker.published_at + timedelta(
+        days=DEFAULT_LOCAL_DATA_POLICY.lifecycle_audit_days
+    )
+    control_delete_count = control_count if evaluated_at >= control_expiry else 0
     return LifecycleEligibilityV1(
         local_data_policy_id=DEFAULT_LOCAL_DATA_POLICY.policy_id,
         local_data_policy_sha256=DEFAULT_LOCAL_DATA_POLICY.canonical_sha256,
-        lifecycle_audit_sha256=lifecycle_sha256,
-        audited_subject_count=len(audits),
-        delete_candidate_count=delete_count,
-        latest_retention_expires_at=max(expiries),
+        lifecycle_audit_sha256=current.manifest.lifecycle_audit_sha256,
+        audited_subject_count=len(audits) + control_count,
+        delete_candidate_count=delete_count + control_delete_count,
+        latest_retention_expires_at=max((*expiries, control_expiry)),
         evaluated_at=evaluated_at,
     )
 
@@ -486,17 +575,21 @@ def _approval_retention_expired(evidence: ApprovalRetentionEvidenceV1) -> bool:
     return expiry is None or evidence.evaluated_at >= expiry
 
 
-def _delete_staging_relative_path(source: QuarantineSourceV1, execution_id: str) -> str:
-    identity = canonical_cleanup_sha256(
-        "poker-local-data-cleanup-delete-staging-v1",
-        {
-            "run_id_sha256": source.run_id_sha256,
-            "execution_id": execution_id,
-            "cleanup_revision": source.cleanup_revision,
-            "cleanup_pointer_sha256": source.cleanup_pointer_sha256,
-        },
+def _legal_hold_matches(
+    saved: LegalHoldSnapshotV1,
+    live: LegalHoldSnapshotV1,
+    *,
+    evaluated_at: datetime,
+) -> bool:
+    return (
+        not saved.legal_hold
+        and not live.legal_hold
+        and live.provider_id == saved.provider_id
+        and live.provider_version == saved.provider_version
+        and live.run_id_sha256 == saved.run_id_sha256
+        and live.snapshot_reference_sha256 == saved.snapshot_reference_sha256
+        and live.resolved_at == evaluated_at
     )
-    return f"deleting/{source.run_id_sha256[:32]}-{identity[:16]}"
 
 
 def evaluate_cleanup_candidate(
@@ -554,7 +647,7 @@ def evaluate_cleanup_candidate(
         action = CleanupActionV1(
             action_kind=CleanupActionKind.DELETE_QUARANTINE_PAYLOAD,
             source_relative_path=f"quarantine/{source.run_id}",
-            destination_relative_path=_delete_staging_relative_path(
+            destination_relative_path=delete_staging_relative_path(
                 source,
                 evidence.execution_id,
             ),
@@ -609,6 +702,33 @@ class LocalDataCleanupExecutor:
         self.store = LocalDataCleanupStore(cleanup_root, terminal_store)
         self.legal_hold_provider = legal_hold_provider or UnavailableLegalHoldProvider()
         self.clock = clock
+
+    def execute(
+        self,
+        plan: CleanupPlanV1,
+        *,
+        approval_run_id: str,
+        approval_request_id: str,
+        authority_provider: DecisionAuthorityProvider,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> CleanupExecutionResultV1:
+        """Dispatch one exact cleanup plan to its only permitted action."""
+
+        if isinstance(plan.source, ProductRunSourceV1):
+            return self.execute_quarantine(
+                plan,
+                approval_run_id=approval_run_id,
+                approval_request_id=approval_request_id,
+                authority_provider=authority_provider,
+                cancelled=cancelled,
+            )
+        return self.execute_delete(
+            plan,
+            approval_run_id=approval_run_id,
+            approval_request_id=approval_request_id,
+            authority_provider=authority_provider,
+            cancelled=cancelled,
+        )
 
     def inspect_cleanup_root(self) -> CleanupRootInspectionV1:
         return inspect_cleanup_root(self.store.cleanup_root)
@@ -667,11 +787,7 @@ class LocalDataCleanupExecutor:
                 or not current.lifecycle_verified
             ):
                 raise _ApprovalExecutionError(CleanupFailureCode.ACTIVE_OR_PENDING)
-            lifecycle = _lifecycle_evidence(
-                payloads["lifecycle_audit.json"],
-                lifecycle_sha256=cast(str, current.manifest.lifecycle_audit_sha256),
-                evaluated_at=evaluated_at,
-            )
+            lifecycle = _lifecycle_evidence(current, evaluated_at=evaluated_at)
             approvals = _approval_retention(
                 self.terminal_store,
                 plan.source.run_id,
@@ -705,11 +821,7 @@ class LocalDataCleanupExecutor:
             raise _ApprovalExecutionError(CleanupFailureCode.ACTIVE_OR_PENDING)
         if not _approval_retention_expired(approvals):
             raise _ApprovalExecutionError(CleanupFailureCode.CANDIDATE_INELIGIBLE)
-        if (
-            hold.run_id_sha256 != plan.source.run_id_sha256
-            or hold.resolved_at != evaluated_at
-            or hold.legal_hold
-        ):
+        if not _legal_hold_matches(plan.legal_hold, hold, evaluated_at=evaluated_at):
             raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD)
         if (
             shutil.disk_usage(self.store.cleanup_root).free
@@ -735,6 +847,15 @@ class LocalDataCleanupExecutor:
         try:
             evaluated_at = self.clock()
             marker, marker_sha = self.store.marker()
+            binding = self.terminal_store.foundation.inspect_run_authority_binding(
+                run_id,
+                detached=True,
+            )
+            if (
+                marker.product_root_identity_sha256 != binding.revision_root_identity_sha256
+                or marker.product_ownership_marker_sha256 != binding.ownership_marker_sha256
+            ):
+                return _dry_failure(run_hash, CleanupFailureCode.OWNERSHIP_UNVERIFIED)
             current = self.store.read_current(run_hash)
             if current is None:
                 return _dry_failure(run_hash, CleanupFailureCode.CANDIDATE_INELIGIBLE)
@@ -852,6 +973,13 @@ class LocalDataCleanupExecutor:
 
         transaction_id = _transaction_id(plan)
         try:
+            persisted = self.store.read_operation(
+                plan,
+                approval_run_id_sha256=run_id_sha256(approval_run_id),
+                approval_request_id=approval_request_id,
+            )
+            if persisted is not None:
+                return _persisted_execution_result(plan, persisted)
             if _cancelled(cancelled):
                 raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
             evaluated_at = self.clock()
@@ -932,8 +1060,9 @@ class LocalDataCleanupExecutor:
             return self.store._publish_quarantine(
                 plan,
                 transaction_id=transaction_id,
-                effect_at=evaluated_at,
+                clock=self.clock,
                 authorize=authorize_in_lock,
+                cancelled=cancelled,
             )
         except _ApprovalExecutionError as exc:
             return _execution_failure(plan, exc.code, transaction_id=transaction_id)
@@ -1037,11 +1166,7 @@ class LocalDataCleanupExecutor:
             or tree_inventory_sha256(inventory) != plan.source.quarantine_tree_sha256
         ):
             raise _ApprovalExecutionError(CleanupFailureCode.STALE_SOURCE)
-        if (
-            hold.run_id_sha256 != plan.source.run_id_sha256
-            or hold.resolved_at != evaluated_at
-            or hold.legal_hold
-        ):
+        if not _legal_hold_matches(plan.legal_hold, hold, evaluated_at=evaluated_at):
             raise _ApprovalExecutionError(CleanupFailureCode.LEGAL_HOLD)
         if (
             shutil.disk_usage(self.store.cleanup_root).free
@@ -1062,6 +1187,13 @@ class LocalDataCleanupExecutor:
 
         transaction_id = _transaction_id(plan)
         try:
+            persisted = self.store.read_operation(
+                plan,
+                approval_run_id_sha256=run_id_sha256(approval_run_id),
+                approval_request_id=approval_request_id,
+            )
+            if persisted is not None:
+                return _persisted_execution_result(plan, persisted)
             if _cancelled(cancelled):
                 raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
             evaluated_at = self.clock()
@@ -1143,8 +1275,9 @@ class LocalDataCleanupExecutor:
             return self.store._publish_delete(
                 plan,
                 transaction_id=transaction_id,
-                effect_at=evaluated_at,
+                clock=self.clock,
                 authorize=authorize_in_lock,
+                cancelled=cancelled,
             )
         except _ApprovalExecutionError as exc:
             return _execution_failure(plan, exc.code, transaction_id=transaction_id)
@@ -1221,14 +1354,7 @@ class LocalDataCleanupExecutor:
             ):
                 return _dry_failure(run_hash, CleanupFailureCode.STALE_SOURCE)
             payloads = _payload_map(current)
-            lifecycle_bytes = payloads.get("lifecycle_audit.json")
-            if lifecycle_bytes is None:
-                return _dry_failure(run_hash, CleanupFailureCode.CANDIDATE_INELIGIBLE)
-            lifecycle = _lifecycle_evidence(
-                lifecycle_bytes,
-                lifecycle_sha256=current.manifest.lifecycle_audit_sha256,
-                evaluated_at=evaluated_at,
-            )
+            lifecycle = _lifecycle_evidence(current, evaluated_at=evaluated_at)
             approvals = _approval_retention(
                 self.terminal_store,
                 run_id,

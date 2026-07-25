@@ -22,6 +22,7 @@ from poker_deliberation.local_data_cleanup_models import (
     CleanupTombstoneV1,
     CleanupTransactionV1,
     TreeInventoryV1,
+    derive_cleanup_run_id_sha256,
 )
 
 ROOT_MARKER_DOMAIN: Final = "poker-local-data-cleanup-root-marker-v1"
@@ -159,7 +160,7 @@ def parse_cleanup_model(data: bytes, model: type[T], *, max_bytes: int = 1_000_0
 
 
 def run_id_sha256(run_id: str) -> str:
-    return canonical_cleanup_sha256(RUN_ID_DOMAIN, {"run_id": run_id})
+    return derive_cleanup_run_id_sha256(run_id)
 
 
 def cleanup_root_marker_sha256(marker: CleanupRootMarkerV1) -> str:

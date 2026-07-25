@@ -133,7 +133,10 @@
 - V1 request は historical-only であり、approve、action plan 推定、authority 推定、renewal、repair、silent migration を行わない。完全な reissue は P2-013B に残る。
 - request expiry と authority revocation は decision admission と publication lock 内で検証する。P2-027B local cleanup executor は effect 直前にも再検証するが、remote effect と remote reconciliation は未実装である。
 - failure audit は bounded append-only control ledger であり、自動 truncate／delete／repair を行わない。capacity exhaustion は別途承認された lifecycle action まで fail closed となる。
-- approval V2 artifact 名は既存 P2-027A artifact-kind table を変更しないため、terminal lifecycle metadata の対象集合ではなく、manifest inventory／hash／approval lineage により検証する。P2-027B はこの approval evidence を変更せず、exact cleanup plan に拘束して利用する。
+- approval V2 artifact 名は既存 P2-027A artifact-kind table を変更しないため、terminal lifecycle
+  metadata 本体の対象集合ではなく、manifest inventory／hash／approval lineage により検証する。
+  P2-027B は lifecycle audit 自身と approval V2 の3 control artifact を terminal published_at 起点の
+  365日保持 subject として追加評価し、全 inventory の保持満了を exact cleanup plan に拘束する。
 
 ## P2-027B の制限
 
@@ -147,3 +150,5 @@
   Windows directory sync unavailable環境における物理媒体への残存を保証しない。
 - receipt/tombstone/hash chainはcorruptionと相関違反を検出するが、同権限writerのauthenticity、
   cryptographic erasure、raw block overwrite、復元不能性を証明しない。
+- cooperative cancellation は effect 前の mutation zero と effect 後の停止／reconciliation を
+  提供するが、OS process hard-stop、undo、process-tree cancellation は提供しない。

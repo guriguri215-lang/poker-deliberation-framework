@@ -220,6 +220,20 @@ def test_any_plan_field_change_changes_digest() -> None:
     assert cleanup_plan_sha256(changed) != result.plan_sha256
 
 
+def test_run_identity_and_action_paths_are_model_bound() -> None:
+    result = evaluate_cleanup_candidate(_evidence())
+    assert result.plan is not None
+    source_payload = result.plan.source.model_dump()
+    source_payload["run_id_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="run ID hash mismatch"):
+        ProductRunSourceV1.model_validate(source_payload)
+
+    plan_payload = result.plan.model_dump()
+    plan_payload["actions"][0]["destination_relative_path"] = "quarantine/other-run"
+    with pytest.raises(ValidationError, match="action paths are not exact"):
+        CleanupPlanV1.model_validate(plan_payload)
+
+
 def test_p2_013a_action_plan_binds_exact_cleanup_digest_and_resource_bounds() -> None:
     result = evaluate_cleanup_candidate(_evidence())
     assert result.plan is not None

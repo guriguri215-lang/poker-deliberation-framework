@@ -25,6 +25,7 @@ from poker_deliberation.storage.local_data_cleanup_store import (
     scan_cleanup_tree,
 )
 from poker_deliberation.storage.revision_canonical import CanonicalStorageError
+from poker_deliberation.storage.terminal_models import ProductRunError
 from tests.integration.test_local_data_cleanup_executor import (
     CleanupAuthority,
     _approve_cleanup,
@@ -96,6 +97,137 @@ def test_cleanup_root_cannot_be_inside_repository_workspace(tmp_path: Path) -> N
             Path.cwd() / "unapproved-cleanup-root",
             orchestrator.product_store,
         )
+
+
+def test_cleanup_root_cannot_be_inside_another_repository(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    repository = tmp_path / "other-repository"
+    (repository / ".git").mkdir(parents=True)
+
+    with pytest.raises(CanonicalStorageError, match="excluded root"):
+        LocalDataCleanupExecutor(repository / "cleanup", orchestrator.product_store)
+
+
+def test_cleanup_root_path_cannot_traverse_a_reparse_or_symlink(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    target = tmp_path / "cleanup-target"
+    target.mkdir()
+    link = tmp_path / "cleanup-link"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is not available")
+
+    with pytest.raises(CanonicalStorageError, match="link or reparse"):
+        LocalDataCleanupExecutor(link, orchestrator.product_store)
+
+
+def test_cleanup_root_unknown_entry_blocks_normal_marker_reads(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(cleanup_root, orchestrator.product_store)
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "9" * 32,
+        initialized_at=NOW,
+    )
+    (cleanup_root / "unexpected.txt").write_text("untrusted", encoding="utf-8")
+
+    with pytest.raises(CleanupStorageError) as caught:
+        executor.store.marker()
+
+    assert caught.value.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+
+
+def test_cleanup_root_product_binding_cannot_be_reused_with_another_root(
+    tmp_path: Path,
+) -> None:
+    first = _orchestrator(tmp_path / "first")
+    second = _orchestrator(tmp_path / "second")
+    cleanup_root = tmp_path / "cleanup"
+    first_executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        first.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    first_executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "a" * 32,
+        initialized_at=NOW,
+    )
+    second_executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        second.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+
+    result = second_executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-cross-root-execution",
+        idempotency_key="security-cross-root-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+
+    plan = first_executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-first-root-execution",
+        idempotency_key="security-first-root-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert plan.plan is not None
+    request_id, provider = _approve_cleanup(
+        first,
+        plan.plan,
+        approval_run_id="security-first-root-approval",
+        decision_at=SECURITY_AT,
+    )
+    committed = first_executor.execute(
+        plan.plan,
+        approval_run_id="security-first-root-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert committed.outcome_kind == "committed"
+
+    with pytest.raises(CleanupStorageError) as replay_error:
+        second_executor.store.read_operation(
+            plan.plan,
+            approval_run_id_sha256=run_id_sha256("security-first-root-approval"),
+            approval_request_id=request_id,
+        )
+    assert replay_error.value.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+
+    cross_root_replay = second_executor.execute(
+        plan.plan,
+        approval_run_id="security-first-root-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert cross_root_replay.failure is not None
+    assert cross_root_replay.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+
+
+def test_dangling_former_product_namespace_is_not_treated_as_detached(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    run_path = orchestrator.product_store.foundation.runs_root / "security-run"
+    detached_payload = tmp_path / "detached-payload"
+    run_path.rename(detached_payload)
+    try:
+        run_path.symlink_to(tmp_path / "missing-target", target_is_directory=True)
+    except OSError:
+        pytest.skip("directory symlink creation is not available")
+
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.foundation.acquire_detached_run_authority("security-run")
+
+    assert caught.value.failure.code.value == "path_confinement_failed"
 
 
 def test_symlink_tree_is_rejected_without_touching_target(tmp_path: Path) -> None:
@@ -309,6 +441,70 @@ def test_live_revocation_after_approval_prevents_effect(tmp_path: Path) -> None:
     assert result.failure.code is CleanupFailureCode.AUTHORITY_REVOKED
     assert (tmp_path / "product" / "runs" / "security-run").is_dir()
     assert not (cleanup_root / "quarantine" / "security-run").exists()
+
+
+def test_legal_hold_provider_substitution_fails_before_journal(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "b" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-hold-swap-execution",
+        idempotency_key="security-hold-swap-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-approval-hold-swap",
+        decision_at=SECURITY_AT,
+    )
+
+    class SwitchingHold:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def resolve(
+            self,
+            run_id_sha256: str,
+            *,
+            evaluated_at: datetime,
+        ) -> LegalHoldSnapshotV1:
+            self.calls += 1
+            exact = NoHold().resolve(run_id_sha256, evaluated_at=evaluated_at)
+            return (
+                exact
+                if self.calls == 1
+                else exact.model_copy(update={"provider_id": "substituted-hold-provider"})
+            )
+
+    switching = SwitchingHold()
+    executor.legal_hold_provider = switching
+    before = tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*"))
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-approval-hold-swap",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert switching.calls == 2
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.LEGAL_HOLD
+    assert tuple(path.relative_to(cleanup_root) for path in cleanup_root.rglob("*")) == before
+    assert (orchestrator.product_store.foundation.runs_root / "security-run").is_dir()
 
 
 def test_pre_effect_cancellation_is_mutation_zero(tmp_path: Path) -> None:

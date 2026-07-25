@@ -27,6 +27,7 @@ from poker_deliberation.local_data_cleanup_canonical import (
 from poker_deliberation.local_data_cleanup_models import (
     CleanupManifestV1,
     CleanupPlanV1,
+    CleanupTransactionV1,
     LegalHoldSnapshotV1,
 )
 from poker_deliberation.orchestrator import Orchestrator
@@ -50,9 +51,7 @@ class NoLegalHold:
             provider_version="1.0.0",
             run_id_sha256=run_id_sha256,
             legal_hold=False,
-            snapshot_reference_sha256=hashlib.sha256(
-                f"{run_id_sha256}:{evaluated_at.isoformat()}:false".encode()
-            ).hexdigest(),
+            snapshot_reference_sha256=hashlib.sha256(f"{run_id_sha256}:false".encode()).hexdigest(),
             resolved_at=evaluated_at,
         )
 
@@ -225,6 +224,59 @@ def test_dry_run_is_bounded_and_filesystem_mutation_zero(tmp_path: Path) -> None
     assert _snapshot(tmp_path) == before
 
 
+def test_v2_approval_controls_are_covered_by_synthetic_lifecycle_retention(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id="cleanup-lifecycle-seed")
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="cleanup-lifecycle-seed",
+        root_id="cleanup-root-" + "7" * 32,
+        initialized_at=PUBLISHED,
+    )
+    seed = executor.dry_run_quarantine(
+        "cleanup-lifecycle-seed",
+        execution_id="cleanup-lifecycle-seed-execution",
+        idempotency_key="cleanup-lifecycle-seed-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert seed.plan is not None
+    _approve_cleanup(
+        orchestrator,
+        seed.plan,
+        approval_run_id="cleanup-lifecycle-approval-run",
+    )
+    approval_read = orchestrator.product_store.read_current("cleanup-lifecycle-approval-run")
+    names = {payload.inventory.logical_name for payload in approval_read.payloads}
+    assert {
+        "approval_ledger_v2.json",
+        "approval_decisions_v2.jsonl",
+        "approval_audit_v2.jsonl",
+    } <= names
+    late = EVALUATED + timedelta(days=400)
+    executor.clock = lambda: late
+
+    result = executor.dry_run_quarantine(
+        "cleanup-lifecycle-approval-run",
+        execution_id="cleanup-lifecycle-approval-execution",
+        idempotency_key="cleanup-lifecycle-approval-key",
+        expires_at=late + timedelta(hours=1),
+    )
+
+    assert result.plan is not None, result
+    assert result.plan.lifecycle.audited_subject_count == len(approval_read.payloads)
+    assert result.plan.lifecycle.all_delete_candidates
+    assert result.plan.lifecycle.latest_retention_expires_at == (
+        approval_read.completion_marker.published_at + timedelta(days=365)
+    )
+
+
 def test_quarantine_uses_single_rename_and_publishes_receipt_and_tombstone(
     tmp_path: Path,
 ) -> None:
@@ -254,8 +306,10 @@ def test_quarantine_uses_single_rename_and_publishes_receipt_and_tombstone(
         dry_run.plan,
         approval_run_id="cleanup-approval-run-2",
     )
+    execution_times = iter(EVALUATED + timedelta(seconds=index) for index in range(8))
+    executor.clock = lambda: next(execution_times)
 
-    result = executor.execute_quarantine(
+    result = executor.execute(
         dry_run.plan,
         approval_run_id="cleanup-approval-run-2",
         approval_request_id=request_id,
@@ -267,15 +321,47 @@ def test_quarantine_uses_single_rename_and_publishes_receipt_and_tombstone(
         approval_request_id=request_id,
         authority_provider=provider,
     )
+    executor.clock = lambda: dry_run.plan.expires_at + timedelta(days=2)
+    late_replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="cleanup-approval-run-2",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    changed_plan = dry_run.plan.model_copy(
+        update={"expires_at": dry_run.plan.expires_at - timedelta(minutes=1)}
+    )
+    conflict = executor.execute_quarantine(
+        changed_plan,
+        approval_run_id="cleanup-approval-run-2",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
 
     run_hash = run_id_sha256("cleanup-run-2")
-    assert result.outcome_kind == "committed"
+    assert result.outcome_kind == "committed", result.model_dump_json()
     assert result.cleanup_revision == 1
     assert result.receipt is not None
     assert result.tombstone is not None
     assert result.receipt.result_state == "quarantined"
     assert result.tombstone.state == "quarantined"
+    transaction_path = (
+        cleanup_root
+        / "runs"
+        / run_id_sha256("cleanup-run-2")
+        / "transactions"
+        / result.transaction_id
+        / "transaction.json"
+    )
+    transaction = parse_cleanup_model(
+        transaction_path.read_bytes(),
+        CleanupTransactionV1,
+    )
+    assert transaction.created_at < result.receipt.effect_started_at < result.receipt.committed_at
     assert replay == result
+    assert late_replay == result
+    assert conflict.failure is not None
+    assert conflict.failure.code == "idempotency_conflict"
     assert not (tmp_path / "product" / "runs" / "cleanup-run-2").exists()
     assert (cleanup_root / "quarantine" / "cleanup-run-2").is_dir()
     current = executor.store.read_current(run_hash)
@@ -323,6 +409,7 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
     assert quarantined.outcome_kind == "committed"
 
     executor.clock = lambda: DELETE_AT
+    before_delete_dry_run = _snapshot(tmp_path)
     delete_dry_run = executor.dry_run_delete(
         "cleanup-run-delete",
         execution_id="cleanup-delete-execution",
@@ -330,13 +417,14 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
         expires_at=DELETE_AT + timedelta(hours=1),
     )
     assert delete_dry_run.plan is not None
+    assert _snapshot(tmp_path) == before_delete_dry_run
     delete_request, delete_provider = _approve_cleanup(
         orchestrator,
         delete_dry_run.plan,
         approval_run_id="cleanup-approval-delete",
         decision_at=DELETE_AT,
     )
-    deleted = executor.execute_delete(
+    deleted = executor.execute(
         delete_dry_run.plan,
         approval_run_id="cleanup-approval-delete",
         approval_request_id=delete_request,
@@ -348,6 +436,19 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
         approval_request_id=delete_request,
         authority_provider=delete_provider,
     )
+    executor.clock = lambda: delete_dry_run.plan.expires_at + timedelta(days=2)
+    late_replay = executor.execute_delete(
+        delete_dry_run.plan,
+        approval_run_id="cleanup-approval-delete",
+        approval_request_id=delete_request,
+        authority_provider=delete_provider,
+    )
+    historical_quarantine_replay = executor.execute_quarantine(
+        quarantine_dry_run.plan,
+        approval_run_id="cleanup-approval-quarantine-delete",
+        approval_request_id=quarantine_request,
+        authority_provider=quarantine_provider,
+    )
 
     run_hash = run_id_sha256("cleanup-run-delete")
     assert deleted.outcome_kind == "committed"
@@ -355,6 +456,9 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
     assert deleted.receipt is not None
     assert deleted.receipt.result_state == "deleted"
     assert replay == deleted
+    assert late_replay == deleted
+    assert historical_quarantine_replay.outcome_kind == "committed"
+    assert historical_quarantine_replay.cleanup_revision == 1
     assert not (cleanup_root / "quarantine" / "cleanup-run-delete").exists()
     assert not any((cleanup_root / "deleting").iterdir())
     current = executor.store.read_current(run_hash)

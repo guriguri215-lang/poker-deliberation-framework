@@ -15,6 +15,7 @@
 
 - `initialize_cleanup_root(...)`
 - `dry_run_quarantine(...)`
+- `execute(...)`
 - `execute_quarantine(...)`
 - `dry_run_delete(...)`
 - `execute_delete(...)`
@@ -23,6 +24,9 @@
 構築と inspect は root を暗黙作成しない。cleanup root の初期化だけが control-only mutation を
 許可される。repository/workspace 配下、home root、`.git`、`user_materials`、`tmp/goals`、
 product/legacy root と重なる場所は cleanup root にできない。
+cleanup root の marker は、各 dry-run/execute/read で actual product authority の root identity と
+ownership marker に再照合する。別 repository の配下、path component に symlink/junction/reparse
+を含む root、unknown root entry がある root も fail closed とする。
 
 ## 2段階の状態遷移
 
@@ -57,6 +61,10 @@ reader は revision 1 まで lineage を再計算する。
 - cost/runtime/memory/output/process 上限
 - result type、execution ID、idempotency key、UTC expiry
 
+cleanup module inventory は `local_data_cleanup_models.py`、`local_data_cleanup_canonical.py`、
+`local_data_cleanup.py`、`storage/local_data_cleanup_store.py`、
+`storage/revision_store.py` の exact bytes を含む。
+
 実行時は approval run の current immutable ledger/decision/audit chain を完全検証し、approved
 request、request revision、action digest、decision record/outcome hash、verified actor、
 authority provider ID/version、`approve:destructive_change`、revocation、authority expiry を照合する。
@@ -71,12 +79,18 @@ manifest と receipt は execution ID、idempotency key、plan hash、approval b
 actor hash、authority snapshot hash、source tree hash を持つ。完全一致する成功 replay は保存済み
 pointer/receipt/tombstone を再読して byte-equivalent result を返し、write zero である。同じ
 execution ID または key に異なる plan/approval を与えると `idempotency_conflict` になる。
+保存済み成功の照合は新しい effect admission より先に行うため、plan/request/actor authority の
+期限後や delete 完了後でも、同一 plan と approval identity の historical replay は保存済み revision
+を返す。ただし新しい filesystem effect を許可するものではない。
 
 effect 前の失敗は mutation zero とする。journal、rename、unlink、pointer replace の後に結果を
 確定できない場合は `reconciliation_required` または `effect_unknown` で停止する。
 `inspect_reconciliation(plan)` は source/destination/staging/current/receipt/tombstone を
 read-only 分類するだけで、repair、resume、retry、lock stealing は行わない。
 partial delete の `delete_prepared` は新しい人間判断なしに自動再開しない。
+cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink 前に確認する。journal 後
+かつ effect 前の cancellation は exact journal/scaffold だけを巻き戻し、effect 開始後は
+`reconciliation_required` として停止する。
 
 ## filesystem と容量境界
 
@@ -86,6 +100,11 @@ partial delete の `delete_prepared` は新しい人間判断なしに自動再�
 - plan は1 action、tree 10,000 entries、target 100,000,000 bytes、control artifact
   1,000,000 bytes、control/run 10,000,000 bytes、lifetime 86,400秒を上限とする。
 - capacity admission と cancellation は effect 前に fail closed とする。
+
+terminal lifecycle audit は lifecycle audit 自身と approval V2 の3 control artifact を除く exact
+inventory bytes/hash と再構築結果を照合する。除外した4 control artifact は terminal
+`published_at` を起点とする365日保持の synthetic lifecycle subjects として件数・満了時刻へ加え、
+全 product inventory が delete candidate になるまで quarantine を許可しない。
 
 ## 非保証
 

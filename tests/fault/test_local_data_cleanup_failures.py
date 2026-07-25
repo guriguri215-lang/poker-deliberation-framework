@@ -12,6 +12,7 @@ from tests.integration.test_local_data_cleanup_executor import (
     _approve_cleanup,
     _case,
     _orchestrator,
+    _snapshot,
 )
 
 
@@ -25,6 +26,103 @@ def _raise_at(expected: str):
             raise InjectedFault(expected)
 
     return injector
+
+
+def test_quarantine_before_journal_fault_has_no_control_or_payload_effect(tmp_path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id="cleanup-fault-before-journal")
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="cleanup-fault-before-journal",
+        root_id="cleanup-root-" + "d" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        "cleanup-fault-before-journal",
+        execution_id="cleanup-before-journal-execution",
+        idempotency_key="cleanup-before-journal-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="cleanup-before-journal-approval",
+    )
+    before = _snapshot(executor.store.cleanup_root)
+    executor.store.fault_injector = _raise_at("quarantine.before_journal")
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="cleanup-before-journal-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.INTERNAL_INVARIANT_ERROR
+    assert result.failure.filesystem_effect == "none"
+    assert _snapshot(executor.store.cleanup_root) == before
+    assert (
+        orchestrator.product_store.foundation.runs_root / "cleanup-fault-before-journal"
+    ).is_dir()
+
+
+def test_quarantine_cancellation_after_journal_rolls_back_exact_scaffold(tmp_path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id="cleanup-cancel-after-journal")
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="cleanup-cancel-after-journal",
+        root_id="cleanup-root-" + "e" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        "cleanup-cancel-after-journal",
+        execution_id="cleanup-cancel-after-journal-execution",
+        idempotency_key="cleanup-cancel-after-journal-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="cleanup-cancel-after-journal-approval",
+    )
+    before = _snapshot(executor.store.cleanup_root)
+    calls = 0
+
+    def cancelled() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls >= 4
+
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="cleanup-cancel-after-journal-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+        cancelled=cancelled,
+    )
+
+    assert calls == 4
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.CANCELLED
+    assert result.failure.filesystem_effect == "none"
+    assert _snapshot(executor.store.cleanup_root) == before
+    assert (
+        orchestrator.product_store.foundation.runs_root / "cleanup-cancel-after-journal"
+    ).is_dir()
 
 
 def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -> None:
@@ -128,7 +226,9 @@ def test_post_pointer_response_loss_reconciles_as_committed_and_replays(tmp_path
     assert replay.receipt is not None
 
 
-def test_partial_delete_stops_at_delete_prepared_and_never_auto_resumes(tmp_path) -> None:
+def test_partial_delete_cancellation_stops_at_prepared_and_never_auto_resumes(
+    tmp_path,
+) -> None:
     orchestrator = _orchestrator(tmp_path)
     orchestrator.run(_case(), run_id="cleanup-fault-delete")
     executor = LocalDataCleanupExecutor(
@@ -177,13 +277,20 @@ def test_partial_delete_stops_at_delete_prepared_and_never_auto_resumes(tmp_path
         approval_run_id="cleanup-fault-delete-approval",
         decision_at=DELETE_AT,
     )
-    executor.store.fault_injector = _raise_at("delete.after_unlink.0")
+    cancellation = {"requested": False}
+
+    def request_cancel_after_first_unlink(hook: str) -> None:
+        if hook == "delete.after_unlink.0":
+            cancellation["requested"] = True
+
+    executor.store.fault_injector = request_cancel_after_first_unlink
 
     result = executor.execute_delete(
         delete.plan,
         approval_run_id="cleanup-fault-delete-approval",
         approval_request_id=delete_request,
         authority_provider=delete_provider,
+        cancelled=lambda: cancellation["requested"],
     )
     report = executor.inspect_reconciliation(delete.plan)
     retry = executor.execute_delete(

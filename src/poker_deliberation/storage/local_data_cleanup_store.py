@@ -63,9 +63,11 @@ from poker_deliberation.storage.revision_lock import (
     verify_directory,
     verify_regular_single_link,
 )
+from poker_deliberation.storage.revision_models import RunStorageError
 from poker_deliberation.storage.revision_store import (
     DetachedRunAuthorityV1,
     ExistingRunAuthorityV1,
+    RunAuthorityBindingV1,
 )
 from poker_deliberation.storage.terminal_models import ProductRunError, VerifiedRunReadV2
 from poker_deliberation.storage.terminal_store import TerminalRunStore
@@ -124,7 +126,22 @@ def _fault(injector: FaultInjector | None, hook: str) -> None:
 def _resolved_absolute(path: Path, field_name: str) -> Path:
     if not path.is_absolute():
         raise CanonicalStorageError(f"{field_name} must be absolute")
-    resolved = path.resolve(strict=False)
+    absolute = Path(os.path.abspath(path))
+    parts_to_check = absolute.parts
+    current = Path(parts_to_check[0])
+    for part in parts_to_check[1:]:
+        current /= part
+        if not os.path.lexists(current):
+            continue
+        info = current.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
+            raise CanonicalStorageError(f"{field_name} contains a link or reparse point")
+    for ancestor in (absolute, *absolute.parents):
+        if os.path.lexists(ancestor / ".git"):
+            raise CanonicalStorageError(f"{field_name} is an excluded root inside a repository")
+    resolved = absolute.resolve(strict=False)
     parts = tuple(part.casefold() for part in resolved.parts)
     if (
         resolved == Path.home().resolve()
@@ -168,6 +185,51 @@ def _directory_sync(path: Path) -> Literal["confirmed", "unavailable"]:
     finally:
         os.close(descriptor)
     return "confirmed"
+
+
+def _directory_sync_many(*paths: Path) -> Literal["confirmed", "unavailable"]:
+    states = {_directory_sync(path) for path in paths}
+    return "unavailable" if "unavailable" in states else "confirmed"
+
+
+def _rollback_pre_effect_journal(
+    transaction_root: Path,
+    *,
+    empty_directories: tuple[Path, ...] = (),
+) -> bool:
+    """Remove only the exact journal/scaffold created by this attempt."""
+
+    try:
+        transaction = transaction_root / "transaction.json"
+        if os.path.lexists(transaction):
+            verify_regular_single_link(transaction)
+            transaction.unlink()
+        if os.path.lexists(transaction_root):
+            verify_directory(transaction_root)
+            transaction_root.rmdir()
+        for directory in empty_directories:
+            if os.path.lexists(directory):
+                verify_directory(directory)
+                directory.rmdir()
+        return True
+    except (CanonicalStorageError, OSError):
+        return False
+
+
+def _require_not_cancelled(
+    cancelled: Callable[[], bool] | None,
+    *,
+    run_id_sha256: str,
+    plan_sha256: str,
+    transaction_id: str,
+) -> None:
+    if cancelled is not None and cancelled():
+        raise _fail(
+            CleanupFailureCode.CANCELLED,
+            run_id_sha256=run_id_sha256,
+            plan_sha256=plan_sha256,
+            transaction_id=transaction_id,
+        )
 
 
 def _write_exclusive(path: Path, data: bytes, *, max_bytes: int) -> None:
@@ -219,6 +281,8 @@ def inspect_cleanup_root(
         return CleanupRootInspectionV1(status="uninitialized")
     try:
         verify_directory(root)
+        if _has_nondefault_windows_stream(root):
+            raise CanonicalStorageError("cleanup root has an alternate data stream")
         entries = {entry.name: entry for entry in root.iterdir()}
         recognized = tuple(sorted(set(entries) & _ROOT_ENTRIES, key=lambda item: item.encode()))
         if not entries:
@@ -230,6 +294,12 @@ def inspect_cleanup_root(
             )
         for name in _ROOT_ENTRIES - {"ownership.json"}:
             verify_directory(entries[name])
+            if _has_nondefault_windows_stream(entries[name]):
+                raise CanonicalStorageError(
+                    "cleanup control directory has an alternate data stream"
+                )
+        if _has_nondefault_windows_stream(entries["ownership.json"]):
+            raise CanonicalStorageError("cleanup ownership marker has an alternate data stream")
         marker, marker_bytes = _read_control(
             entries["ownership.json"],
             CleanupRootMarkerV1,
@@ -528,6 +598,9 @@ def _unlink_inventory_tree(
     *,
     fault_injector: FaultInjector | None,
     progress: list[int],
+    cancelled: Callable[[], bool] | None,
+    plan_sha256: str,
+    transaction_id: str,
 ) -> int:
     """Unlink one previously verified tree without traversal or link following."""
 
@@ -541,13 +614,19 @@ def _unlink_inventory_tree(
         reverse=True,
     )
     for index, entry in enumerate(ordered):
+        _fault(fault_injector, f"delete.before_unlink.{index}")
+        _require_not_cancelled(
+            cancelled,
+            run_id_sha256=inventory.run_id_sha256,
+            plan_sha256=plan_sha256,
+            transaction_id=transaction_id,
+        )
         target = root / entry.relative_path
         info = target.lstat()
         attributes = getattr(info, "st_file_attributes", 0)
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
             raise CanonicalStorageError("delete staging contains a link or reparse point")
-        _fault(fault_injector, f"delete.before_unlink.{index}")
         if entry.entry_kind == "file":
             if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                 raise CanonicalStorageError("delete staging file identity changed")
@@ -560,9 +639,21 @@ def _unlink_inventory_tree(
         progress[0] = deleted
         _fault(fault_injector, f"delete.after_unlink.{index}")
     _fault(fault_injector, "delete.before_staging_rmdir")
+    _require_not_cancelled(
+        cancelled,
+        run_id_sha256=inventory.run_id_sha256,
+        plan_sha256=plan_sha256,
+        transaction_id=transaction_id,
+    )
     root.rmdir()
     progress[0] = deleted + 1
     _fault(fault_injector, "delete.after_staging_rmdir")
+    _require_not_cancelled(
+        cancelled,
+        run_id_sha256=inventory.run_id_sha256,
+        plan_sha256=plan_sha256,
+        transaction_id=transaction_id,
+    )
     return deleted + 1
 
 
@@ -684,9 +775,31 @@ class LocalDataCleanupStore:
             max_bytes=DEFAULT_CLEANUP_LIMITS.maximum_control_artifact_bytes,
         )
         marker = cast(CleanupRootMarkerV1, marker)
-        if marker.cleanup_root_identity_sha256 != _root_identity(self.cleanup_root):
+        marker_sha = cleanup_root_marker_sha256(marker)
+        inspection = inspect_cleanup_root(
+            self.cleanup_root,
+            expected_product_root_identity_sha256=marker.product_root_identity_sha256,
+            expected_product_ownership_marker_sha256=marker.product_ownership_marker_sha256,
+            max_artifact_bytes=marker.limits.maximum_control_artifact_bytes,
+        )
+        if (
+            marker.cleanup_root_identity_sha256 != _root_identity(self.cleanup_root)
+            or inspection.status != "initialized"
+            or inspection.marker_sha256 != marker_sha
+        ):
             raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
-        return marker, cleanup_root_marker_sha256(marker)
+        return marker, marker_sha
+
+    @staticmethod
+    def _require_product_binding(
+        marker: CleanupRootMarkerV1,
+        binding: RunAuthorityBindingV1 | ExistingRunAuthorityV1 | DetachedRunAuthorityV1,
+    ) -> None:
+        if (
+            marker.product_root_identity_sha256 != binding.revision_root_identity_sha256
+            or marker.product_ownership_marker_sha256 != binding.ownership_marker_sha256
+        ):
+            raise _fail(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
 
     def _run_control(self, run_hash: str) -> Path:
         return _namespace_child(
@@ -916,6 +1029,137 @@ class LocalDataCleanupStore:
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         return pointer, manifest, receipt, tombstone
 
+    def read_operation(
+        self,
+        plan: CleanupPlanV1,
+        *,
+        approval_run_id_sha256: str,
+        approval_request_id: str,
+    ) -> (
+        tuple[
+            CleanupCurrentPointerV1,
+            CleanupManifestV1,
+            CleanupReceiptV1,
+            CleanupTombstoneV1,
+        ]
+        | None
+    ):
+        """Find one exact persisted operation after validating the full current lineage."""
+
+        run_hash = plan.source.run_id_sha256
+        current = self.read_current(run_hash)
+        if current is None:
+            return None
+        marker, _marker_sha = self.marker()
+        try:
+            binding = self.terminal_store.foundation.inspect_run_authority_binding(
+                plan.source.run_id,
+                detached=True,
+            )
+        except (ProductRunError, RunStorageError) as exc:
+            raise _fail(
+                CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                run_id_sha256=run_hash,
+                plan_sha256=cleanup_plan_sha256(plan),
+            ) from exc
+        self._require_product_binding(marker, binding)
+        control = self._run_control(run_hash)
+        revisions_root = control / "revisions"
+        verify_directory(revisions_root)
+        plan_sha = cleanup_plan_sha256(plan)
+        exact: list[
+            tuple[
+                CleanupCurrentPointerV1,
+                CleanupManifestV1,
+                CleanupReceiptV1,
+                CleanupTombstoneV1,
+            ]
+        ] = []
+        identity_seen = False
+        for revision_directory in revisions_root.iterdir():
+            verify_directory(revision_directory)
+            entries = {item.name: item for item in revision_directory.iterdir()}
+            if set(entries) != {
+                "transaction.json",
+                "manifest.json",
+                "receipt.json",
+                "tombstone.json",
+            }:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                )
+            manifest = cast(
+                CleanupManifestV1,
+                _read_control(
+                    entries["manifest.json"],
+                    CleanupManifestV1,
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )[0],
+            )
+            receipt = cast(
+                CleanupReceiptV1,
+                _read_control(
+                    entries["receipt.json"],
+                    CleanupReceiptV1,
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )[0],
+            )
+            tombstone = cast(
+                CleanupTombstoneV1,
+                _read_control(
+                    entries["tombstone.json"],
+                    CleanupTombstoneV1,
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )[0],
+            )
+            same_identity = (
+                manifest.execution_id == plan.execution_id
+                or manifest.idempotency_key == plan.idempotency_key
+            )
+            if not same_identity:
+                continue
+            identity_seen = True
+            approval = manifest.approval_binding
+            if (
+                manifest.execution_id != plan.execution_id
+                or manifest.idempotency_key != plan.idempotency_key
+                or manifest.plan_sha256 != plan_sha
+                or approval.approval_run_id_sha256 != approval_run_id_sha256
+                or approval.request_id != approval_request_id
+                or cleanup_plan_sha256(manifest.plan) != plan_sha
+                or receipt.plan_sha256 != plan_sha
+                or receipt.approval_binding_sha256 != manifest.approval_binding_sha256
+                or cleanup_receipt_sha256(receipt) != manifest.receipt_sha256
+                or cleanup_tombstone_sha256(tombstone) != manifest.tombstone_sha256
+            ):
+                raise _fail(
+                    CleanupFailureCode.IDEMPOTENCY_CONFLICT,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                )
+            pointer = CleanupCurrentPointerV1(
+                run_id_sha256=run_hash,
+                revision=manifest.revision,
+                transaction_id=manifest.transaction_id,
+                revision_relative_path=revision_directory.relative_to(self.cleanup_root).as_posix(),
+                state=manifest.state,
+                manifest_sha256=cleanup_manifest_sha256(manifest),
+                receipt_sha256=cleanup_receipt_sha256(receipt),
+                tombstone_sha256=cleanup_tombstone_sha256(tombstone),
+                published_at=manifest.created_at,
+            )
+            exact.append((pointer, manifest, receipt, tombstone))
+        if identity_seen and not exact:
+            raise _fail(
+                CleanupFailureCode.IDEMPOTENCY_CONFLICT,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+            )
+        if not exact:
+            return None
+        return max(exact, key=lambda item: item[0].revision)
+
     def inspect_reconciliation(
         self,
         plan: CleanupPlanV1,
@@ -1086,8 +1330,9 @@ class LocalDataCleanupStore:
         plan: CleanupPlanV1,
         *,
         transaction_id: str,
-        effect_at: datetime,
+        clock: Callable[[], datetime],
         authorize: Callable[[], CleanupApprovalBindingV1],
+        cancelled: Callable[[], bool] | None = None,
     ) -> CleanupExecutionResultV1:
         """Internal quarantine transition with in-lock authorization.
 
@@ -1117,10 +1362,12 @@ class LocalDataCleanupStore:
             )
         authority: ExistingRunAuthorityV1 | None = None
         journal_published = False
+        control_created = False
         source_moved = False
         pointer_replace_attempted = False
         try:
             authority = self.terminal_store.foundation.acquire_existing_run_authority(run_id)
+            self._require_product_binding(marker, authority)
             current = self.terminal_store.read_current(run_id)
             if not self._same_product_current(plan, current):
                 raise _fail(
@@ -1151,7 +1398,12 @@ class LocalDataCleanupStore:
                 run_id,
                 require_exact=False,
             )
-            if destination != self.cleanup_root / plan.actions[0].destination_relative_path:
+            if (
+                source
+                != self.terminal_store.foundation.revision_root
+                / plan.actions[0].source_relative_path
+                or destination != self.cleanup_root / plan.actions[0].destination_relative_path
+            ):
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
             if destination.exists() or source.stat().st_dev != destination.parent.stat().st_dev:
                 raise _fail(
@@ -1187,6 +1439,7 @@ class LocalDataCleanupStore:
                 )
             approval = authorize()
             approval_sha = cleanup_approval_binding_sha256(approval)
+            journal_at = clock()
             control = self._run_control(run_hash)
             transaction_root = control / "transactions" / transaction_id
             revision = control / "revisions" / f"r1-{transaction_id}"
@@ -1212,7 +1465,7 @@ class LocalDataCleanupStore:
                 "approval_binding": approval,
                 "approval_binding_sha256": approval_sha,
                 "source_tree_sha256": source_tree_sha,
-                "created_at": effect_at,
+                "created_at": journal_at,
             }
             transaction = CleanupTransactionV1(
                 **transaction_base,
@@ -1232,11 +1485,18 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
+            _fault(self.fault_injector, "quarantine.before_journal")
+            _require_not_cancelled(
+                cancelled,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
+            )
             control.mkdir()
+            control_created = True
             (control / "transactions").mkdir()
             (control / "revisions").mkdir()
             transaction_root.mkdir()
-            _fault(self.fault_injector, "quarantine.before_journal")
             _write_exclusive(
                 transaction_root / "transaction.json",
                 canonical_cleanup_bytes(transaction),
@@ -1245,10 +1505,25 @@ class LocalDataCleanupStore:
             journal_published = True
             _directory_sync(transaction_root)
             _fault(self.fault_injector, "quarantine.before_effect")
+            final_approval = authorize()
+            if final_approval != approval:
+                raise _fail(
+                    CleanupFailureCode.APPROVAL_MISMATCH,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                )
+            _require_not_cancelled(
+                cancelled,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
+            )
+            effect_at = clock()
             os.replace(source, destination)
             source_moved = True
             _fault(self.fault_injector, "quarantine.after_effect")
-            if source.exists():
+            if os.path.lexists(source):
                 raise CanonicalStorageError("quarantine source remained after rename")
             destination_inventory = scan_cleanup_tree(
                 destination,
@@ -1257,6 +1532,8 @@ class LocalDataCleanupStore:
             )
             if tree_inventory_sha256(destination_inventory) != source_tree_sha:
                 raise CanonicalStorageError("quarantine destination tree changed")
+            rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
+            committed_at = clock()
             revision.mkdir()
             receipt = CleanupReceiptV1(
                 action_kind=CleanupActionKind.QUARANTINE_PRODUCT_RUN,
@@ -1271,13 +1548,13 @@ class LocalDataCleanupStore:
                 source_tree_sha256=source_tree_sha,
                 result_state=CleanupState.QUARANTINED,
                 effect_started_at=effect_at,
-                committed_at=effect_at,
+                committed_at=committed_at,
                 durability=CleanupDurabilityEvidenceV1(
                     platform_adapter=cast(Any, platform_adapter()),
                     journal_file_sync="confirmed",
                     effect_rename="confirmed",
                     control_file_sync="confirmed",
-                    directory_sync=_directory_sync(destination.parent),
+                    directory_sync=rename_directory_sync,
                     pointer_replace="confirmed",
                     reconciliation="confirmed",
                 ),
@@ -1309,7 +1586,7 @@ class LocalDataCleanupStore:
                 source_tree_sha256=source_tree_sha,
                 receipt_sha256=receipt_sha,
                 tombstone_sha256=tombstone_sha,
-                created_at=effect_at,
+                created_at=committed_at,
             )
             manifest_sha = cleanup_manifest_sha256(manifest)
             pointer = CleanupCurrentPointerV1(
@@ -1321,7 +1598,7 @@ class LocalDataCleanupStore:
                 manifest_sha256=manifest_sha,
                 receipt_sha256=receipt_sha,
                 tombstone_sha256=tombstone_sha,
-                published_at=effect_at,
+                published_at=committed_at,
             )
             for name, value in (
                 ("transaction.json", transaction),
@@ -1366,9 +1643,7 @@ class LocalDataCleanupStore:
                 tombstone=tombstone,
                 tombstone_sha256=tombstone_sha,
             )
-        except CleanupStorageError:
-            raise
-        except ProductRunError as exc:
+        except (ProductRunError, RunStorageError) as exc:
             code = (
                 CleanupFailureCode.RUN_LOCKED
                 if exc.failure.code.value == "run_locked"
@@ -1380,6 +1655,67 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             ) from exc
+        except CleanupStorageError as exc:
+            if pointer_replace_attempted:
+                raise _fail(
+                    CleanupFailureCode.EFFECT_UNKNOWN,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="source_moved",
+                    domain_effect="current_may_have_advanced",
+                ) from exc
+            if source_moved:
+                raise _fail(
+                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="source_moved",
+                    domain_effect="current_unchanged",
+                ) from exc
+            if journal_published:
+                rolled_back = _rollback_pre_effect_journal(
+                    transaction_root,
+                    empty_directories=(
+                        (control / "revisions", control / "transactions", control)
+                        if control_created
+                        else ()
+                    ),
+                )
+                if rolled_back:
+                    journal_published = False
+                    control_created = False
+                    raise
+                raise _fail(
+                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="journal_only",
+                    domain_effect="current_unchanged",
+                ) from exc
+            if control_created:
+                rolled_back = _rollback_pre_effect_journal(
+                    transaction_root,
+                    empty_directories=(
+                        control / "revisions",
+                        control / "transactions",
+                        control,
+                    ),
+                )
+                if rolled_back:
+                    control_created = False
+                    raise
+                raise _fail(
+                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="control_published",
+                    domain_effect="current_unchanged",
+                ) from exc
+            raise
         except Exception as exc:
             if pointer_replace_attempted:
                 code = CleanupFailureCode.EFFECT_UNKNOWN
@@ -1390,9 +1726,42 @@ class LocalDataCleanupStore:
                 effect = "source_moved"
                 domain_effect = "current_unchanged"
             elif journal_published:
-                code = CleanupFailureCode.RECONCILIATION_REQUIRED
-                effect = "journal_only"
-                domain_effect = "current_unchanged"
+                rolled_back = _rollback_pre_effect_journal(
+                    transaction_root,
+                    empty_directories=(
+                        (control / "revisions", control / "transactions", control)
+                        if control_created
+                        else ()
+                    ),
+                )
+                if rolled_back:
+                    journal_published = False
+                    control_created = False
+                    code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
+                    effect = "none"
+                    domain_effect = "none"
+                else:
+                    code = CleanupFailureCode.RECONCILIATION_REQUIRED
+                    effect = "journal_only"
+                    domain_effect = "current_unchanged"
+            elif control_created:
+                rolled_back = _rollback_pre_effect_journal(
+                    transaction_root,
+                    empty_directories=(
+                        control / "revisions",
+                        control / "transactions",
+                        control,
+                    ),
+                )
+                if rolled_back:
+                    control_created = False
+                    code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
+                    effect = "none"
+                    domain_effect = "none"
+                else:
+                    code = CleanupFailureCode.RECONCILIATION_REQUIRED
+                    effect = "control_published"
+                    domain_effect = "current_unchanged"
             else:
                 code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
                 effect = "none"
@@ -1415,7 +1784,15 @@ class LocalDataCleanupStore:
                         run_id_sha256=run_hash,
                         plan_sha256=plan_sha,
                         transaction_id=transaction_id,
-                        filesystem_effect=("source_moved" if source_moved else "journal_only"),
+                        filesystem_effect=(
+                            "source_moved"
+                            if source_moved
+                            else "journal_only"
+                            if journal_published
+                            else "control_published"
+                            if control_created
+                            else "none"
+                        ),
                         domain_effect="current_may_have_advanced",
                     ) from exc
 
@@ -1424,8 +1801,9 @@ class LocalDataCleanupStore:
         plan: CleanupPlanV1,
         *,
         transaction_id: str,
-        effect_at: datetime,
+        clock: Callable[[], datetime],
         authorize: Callable[[], CleanupApprovalBindingV1],
+        cancelled: Callable[[], bool] | None = None,
     ) -> CleanupExecutionResultV1:
         """Internal staged delete with a durable delete-prepared checkpoint."""
 
@@ -1458,6 +1836,7 @@ class LocalDataCleanupStore:
         prepare_pointer_attempted = False
         final_pointer_attempted = False
         try:
+            storage_checked_at = clock()
             current = self.read_current(run_hash)
             if current is None:
                 raise _fail(
@@ -1477,7 +1856,7 @@ class LocalDataCleanupStore:
                 or prior_pointer_sha != plan.source.cleanup_pointer_sha256
                 or cleanup_tombstone_sha256(prior_tombstone) != plan.source.tombstone_sha256
                 or prior_tombstone.quarantine_tree_sha256 != plan.source.quarantine_tree_sha256
-                or effect_at < plan.source.delete_eligible_at
+                or storage_checked_at < plan.source.delete_eligible_at
             ):
                 raise _fail(
                     CleanupFailureCode.STALE_CLEANUP_REVISION,
@@ -1490,16 +1869,18 @@ class LocalDataCleanupStore:
                 run_id,
                 require_exact=True,
             )
-            destination_name = Path(plan.actions[0].destination_relative_path).name
+            planned_destination = self.cleanup_root / plan.actions[0].destination_relative_path
+            if planned_destination.parent != self.cleanup_root / "deleting":
+                raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
             destination = _namespace_child(
                 self.cleanup_root / "deleting",
-                destination_name,
+                planned_destination.name,
                 require_exact=False,
             )
             if (
                 plan.actions[0].action_kind is not CleanupActionKind.DELETE_QUARANTINE_PAYLOAD
-                or source != self.cleanup_root / "quarantine" / run_id
-                or destination.parent != self.cleanup_root / "deleting"
+                or source != self.cleanup_root / plan.actions[0].source_relative_path
+                or destination != planned_destination
             ):
                 raise _fail(CleanupFailureCode.INVALID_PLAN, run_id_sha256=run_hash)
             if destination.exists() or source.stat().st_dev != destination.parent.stat().st_dev:
@@ -1530,6 +1911,7 @@ class LocalDataCleanupStore:
                     transaction_id=transaction_id,
                 )
             authority = self.terminal_store.foundation.acquire_detached_run_authority(run_id)
+            self._require_product_binding(marker, authority)
             authority.revalidate()
             locked_current = self.read_current(run_hash)
             if (
@@ -1556,6 +1938,7 @@ class LocalDataCleanupStore:
                 )
             approval = authorize()
             approval_sha = cleanup_approval_binding_sha256(approval)
+            journal_at = clock()
             control = self._run_control(run_hash)
             transaction_root = control / "transactions" / transaction_id
             revision_two = control / "revisions" / f"r2-{transaction_id}"
@@ -1582,7 +1965,7 @@ class LocalDataCleanupStore:
                 "approval_binding": approval,
                 "approval_binding_sha256": approval_sha,
                 "source_tree_sha256": source_tree_sha,
-                "created_at": effect_at,
+                "created_at": journal_at,
             }
             transaction_two = CleanupTransactionV1(
                 **transaction_base,
@@ -1602,8 +1985,14 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            transaction_root.mkdir()
             _fault(self.fault_injector, "delete.before_journal")
+            _require_not_cancelled(
+                cancelled,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
+            )
+            transaction_root.mkdir()
             _write_exclusive(
                 transaction_root / "transaction.json",
                 canonical_cleanup_bytes(transaction_two),
@@ -1612,10 +2001,25 @@ class LocalDataCleanupStore:
             journal_published = True
             _directory_sync(transaction_root)
             _fault(self.fault_injector, "delete.before_staging_rename")
+            final_approval = authorize()
+            if final_approval != approval:
+                raise _fail(
+                    CleanupFailureCode.APPROVAL_MISMATCH,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                )
+            _require_not_cancelled(
+                cancelled,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
+            )
+            effect_at = clock()
             os.replace(source, destination)
             staging_moved = True
             _fault(self.fault_injector, "delete.after_staging_rename")
-            if source.exists():
+            if os.path.lexists(source):
                 raise CanonicalStorageError("quarantine source remained after staging rename")
             staged_inventory = scan_cleanup_tree(
                 destination,
@@ -1624,6 +2028,8 @@ class LocalDataCleanupStore:
             )
             if tree_inventory_sha256(staged_inventory) != source_tree_sha:
                 raise CanonicalStorageError("delete staging tree changed")
+            rename_directory_sync = _directory_sync_many(source.parent, destination.parent)
+            prepared_at = clock()
 
             revision_two.mkdir()
             receipt_two = CleanupReceiptV1(
@@ -1639,13 +2045,13 @@ class LocalDataCleanupStore:
                 source_tree_sha256=source_tree_sha,
                 result_state=CleanupState.DELETE_PREPARED,
                 effect_started_at=effect_at,
-                committed_at=effect_at,
+                committed_at=prepared_at,
                 durability=CleanupDurabilityEvidenceV1(
                     platform_adapter=cast(Any, platform_adapter()),
                     journal_file_sync="confirmed",
                     effect_rename="confirmed",
                     control_file_sync="confirmed",
-                    directory_sync=_directory_sync(destination.parent),
+                    directory_sync=rename_directory_sync,
                     pointer_replace="confirmed",
                     reconciliation="confirmed",
                 ),
@@ -1680,7 +2086,7 @@ class LocalDataCleanupStore:
                 source_tree_sha256=source_tree_sha,
                 receipt_sha256=receipt_two_sha,
                 tombstone_sha256=tombstone_two_sha,
-                created_at=effect_at,
+                created_at=prepared_at,
             )
             manifest_two_sha = cleanup_manifest_sha256(manifest_two)
             pointer_two = CleanupCurrentPointerV1(
@@ -1692,7 +2098,7 @@ class LocalDataCleanupStore:
                 manifest_sha256=manifest_two_sha,
                 receipt_sha256=receipt_two_sha,
                 tombstone_sha256=tombstone_two_sha,
-                published_at=effect_at,
+                published_at=prepared_at,
             )
             for name, value in (
                 ("transaction.json", transaction_two),
@@ -1727,18 +2133,31 @@ class LocalDataCleanupStore:
             if verified_two is None or verified_two[0] != pointer_two:
                 raise CanonicalStorageError("delete-prepared state did not verify")
 
+            _fault(self.fault_injector, "delete.before_unlink_start")
+            _require_not_cancelled(
+                cancelled,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
+            )
             deleted_entries = _unlink_inventory_tree(
                 destination,
                 staged_inventory,
                 fault_injector=self.fault_injector,
                 progress=delete_progress,
+                cancelled=cancelled,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
             )
-            if destination.exists():
+            if os.path.lexists(destination):
                 raise CanonicalStorageError("delete staging remained after unlink")
+            delete_directory_sync = _directory_sync(destination.parent)
+            final_at = clock()
             transaction_three_base = transaction_base | {
                 "proposed_revision": 3,
                 "expected_revision": 2,
                 "expected_pointer_sha256": cleanup_pointer_sha256(pointer_two),
+                "created_at": final_at,
             }
             transaction_three = CleanupTransactionV1(
                 **transaction_three_base,
@@ -1758,13 +2177,13 @@ class LocalDataCleanupStore:
                 source_tree_sha256=source_tree_sha,
                 result_state=CleanupState.DELETED,
                 effect_started_at=effect_at,
-                committed_at=effect_at,
+                committed_at=final_at,
                 durability=CleanupDurabilityEvidenceV1(
                     platform_adapter=cast(Any, platform_adapter()),
                     journal_file_sync="confirmed",
                     effect_rename="confirmed",
                     control_file_sync="confirmed",
-                    directory_sync=_directory_sync(destination.parent),
+                    directory_sync=delete_directory_sync,
                     pointer_replace="confirmed",
                     reconciliation="confirmed",
                 ),
@@ -1799,7 +2218,7 @@ class LocalDataCleanupStore:
                 source_tree_sha256=source_tree_sha,
                 receipt_sha256=receipt_three_sha,
                 tombstone_sha256=tombstone_three_sha,
-                created_at=effect_at,
+                created_at=final_at,
             )
             manifest_three_sha = cleanup_manifest_sha256(manifest_three)
             pointer_three = CleanupCurrentPointerV1(
@@ -1811,7 +2230,7 @@ class LocalDataCleanupStore:
                 manifest_sha256=manifest_three_sha,
                 receipt_sha256=receipt_three_sha,
                 tombstone_sha256=tombstone_three_sha,
-                published_at=effect_at,
+                published_at=final_at,
             )
             for name, value in (
                 ("transaction.json", transaction_three),
@@ -1859,9 +2278,7 @@ class LocalDataCleanupStore:
                 tombstone=tombstone_three,
                 tombstone_sha256=tombstone_three_sha,
             )
-        except CleanupStorageError:
-            raise
-        except ProductRunError as exc:
+        except (ProductRunError, RunStorageError) as exc:
             code = (
                 CleanupFailureCode.RUN_LOCKED
                 if exc.failure.code.value == "run_locked"
@@ -1873,6 +2290,45 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             ) from exc
+        except CleanupStorageError as exc:
+            deleted_entries = max(deleted_entries, delete_progress[0])
+            if final_pointer_attempted or (prepare_pointer_attempted and not prepared_published):
+                raise _fail(
+                    CleanupFailureCode.EFFECT_UNKNOWN,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect=(
+                        "partial_delete" if deleted_entries else "delete_staging_moved"
+                    ),
+                    domain_effect="current_may_have_advanced",
+                ) from exc
+            if staging_moved:
+                raise _fail(
+                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect=(
+                        "partial_delete" if deleted_entries else "delete_staging_moved"
+                    ),
+                    domain_effect=(
+                        "current_advanced" if prepared_published else "current_unchanged"
+                    ),
+                ) from exc
+            if journal_published:
+                if _rollback_pre_effect_journal(transaction_root):
+                    journal_published = False
+                    raise
+                raise _fail(
+                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="journal_only",
+                    domain_effect="current_unchanged",
+                ) from exc
+            raise
         except Exception as exc:
             deleted_entries = max(deleted_entries, delete_progress[0])
             if final_pointer_attempted or (prepare_pointer_attempted and not prepared_published):
@@ -1882,8 +2338,13 @@ class LocalDataCleanupStore:
                 code = CleanupFailureCode.RECONCILIATION_REQUIRED
                 domain_effect = "current_advanced" if prepared_published else "current_unchanged"
             elif journal_published:
-                code = CleanupFailureCode.RECONCILIATION_REQUIRED
-                domain_effect = "current_unchanged"
+                if _rollback_pre_effect_journal(transaction_root):
+                    journal_published = False
+                    code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
+                    domain_effect = "none"
+                else:
+                    code = CleanupFailureCode.RECONCILIATION_REQUIRED
+                    domain_effect = "current_unchanged"
             else:
                 code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
                 domain_effect = "none"
@@ -1921,6 +2382,8 @@ class LocalDataCleanupStore:
                             else "delete_staging_moved"
                             if staging_moved
                             else "journal_only"
+                            if journal_published
+                            else "none"
                         ),
                         domain_effect="current_may_have_advanced",
                     ) from exc

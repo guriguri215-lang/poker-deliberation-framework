@@ -65,4 +65,4 @@ def test_capability_truth_remains_ordinary_product_scoped() -> None:
     assert states["parallel_deliberation_and_tool_retry"] == "disabled"
     assert states["process_sandbox"] == "unavailable"
     assert states["immutable_revision_storage_foundation"] == "implemented"
-    assert states["product_integrated_durable_run"] == "planned"
+    assert states["product_integrated_durable_run"] == "implemented"

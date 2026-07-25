@@ -80,6 +80,7 @@ _ROOT_ENTRIES = frozenset({"ownership.json", ".cleanup-control", "runs", "quaran
 _PRODUCT_ROOT_ENTRIES = frozenset(
     {"ownership.json", ".revision-init.authority.lock", ".revision-control", "runs"}
 )
+_NAMESPACE_ENTRY_LIMIT = 10_000
 _RUN_CONTROL_ENTRIES = frozenset({"transactions", "revisions", "current.json"})
 _StreamSignature = tuple[tuple[str, int], ...]
 _DirectoryChain = tuple[tuple[Path, int, int, _StreamSignature | None], ...]
@@ -559,7 +560,7 @@ def initialize_cleanup_root(
         initialization_state = _capture_initialization_state(
             root,
             run_hash=run_id_sha256(existing_run_id),
-            maximum_entries=limits.maximum_tree_entries,
+            maximum_entries=_NAMESPACE_ENTRY_LIMIT,
             maximum_bytes=limits.maximum_control_bytes_per_run,
         )
         held_authority = authority
@@ -722,7 +723,7 @@ def initialize_cleanup_root(
                 initialization_state = _capture_initialization_state(
                     root,
                     run_hash=run_id_sha256(existing_run_id),
-                    maximum_entries=limits.maximum_tree_entries,
+                    maximum_entries=_NAMESPACE_ENTRY_LIMIT,
                     maximum_bytes=limits.maximum_control_bytes_per_run,
                 )
             except Exception:
@@ -1609,7 +1610,7 @@ def _capture_namespace_tree_snapshot(
     aliases: set[str] = set()
     exact = False
     for entry_count, child in enumerate(path.parent.iterdir(), start=1):
-        if entry_count > limits.maximum_tree_entries:
+        if entry_count > _NAMESPACE_ENTRY_LIMIT:
             raise CanonicalStorageError("namespace entry capacity exceeded")
         normalized = unicodedata.normalize("NFC", child.name)
         alias = normalized.casefold()
@@ -1635,7 +1636,7 @@ def _capture_namespace_tree_snapshot(
         path=path,
         parent_chain=parent_chain,
         target_chain=target_chain,
-        maximum_entries=limits.maximum_tree_entries,
+        maximum_entries=_NAMESPACE_ENTRY_LIMIT,
         state=state,
         tree_sha256=tree_sha256,
     )
@@ -1710,7 +1711,7 @@ def _namespace_child(
     expected_name: str,
     *,
     require_exact: bool,
-    maximum_entries: int = DEFAULT_CLEANUP_LIMITS.maximum_tree_entries,
+    maximum_entries: int = _NAMESPACE_ENTRY_LIMIT,
 ) -> Path:
     verify_directory(parent)
     expected_alias = unicodedata.normalize("NFC", expected_name).casefold()
@@ -2057,6 +2058,7 @@ class LocalDataCleanupStore:
         *,
         pending_transaction: CleanupTransactionV1 | None = None,
         pending_pointer: tuple[str, bytes] | None = None,
+        pending_revision_name: str | None = None,
         expected_marker: tuple[CleanupRootMarkerV1, str] | None = None,
     ) -> (
         tuple[
@@ -2188,6 +2190,7 @@ class LocalDataCleanupStore:
             1: CleanupState.QUARANTINED,
         }
         reachable_transactions = {pointer.revision: transaction}
+        reachable_revision_names = {revision.name}
         for prior_revision in range(pointer.revision - 1, 0, -1):
             prefix = f"r{prior_revision}-"
             matches = tuple(
@@ -2286,7 +2289,43 @@ class LocalDataCleanupStore:
                     run_id_sha256=run_hash,
                 )
             reachable_transactions[prior_revision] = prior_transaction
+            reachable_revision_names.add(prior_directory.name)
             successor_manifest = prior_manifest
+        allowed_revision_names = set(reachable_revision_names)
+        if pending_transaction is not None:
+            allowed_revision_names.add(
+                f"r{pending_transaction.proposed_revision}-{pending_transaction.transaction_id}"
+            )
+        if pending_revision_name is not None:
+            if _revision_number_from_directory_name(pending_revision_name) != pointer.revision + 1:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                )
+            allowed_revision_names.add(pending_revision_name)
+        if pending_pointer is not None:
+            pending_value = parse_cleanup_model(
+                pending_pointer[1],
+                CleanupCurrentPointerV1,
+                max_bytes=marker.limits.maximum_control_artifact_bytes,
+            )
+            pending_revision_path = self.cleanup_root / pending_value.revision_relative_path
+            if (
+                pending_value.run_id_sha256 != run_hash
+                or pending_value.revision != pointer.revision + 1
+                or pending_revision_path.parent != entries["revisions"]
+            ):
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                )
+            allowed_revision_names.add(pending_revision_path.name)
+        observed_revision_names = set(revision_directories)
+        if (
+            not reachable_revision_names <= observed_revision_names
+            or not observed_revision_names <= allowed_revision_names
+        ):
+            raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         expected_journals = {
             candidate.transaction_id: candidate
             for revision_number, candidate in reachable_transactions.items()
@@ -4420,6 +4459,7 @@ class LocalDataCleanupStore:
             verified_before_final = self._read_current(
                 run_hash,
                 expected_marker=(marker, marker_sha),
+                pending_revision_name=revision_three.name,
             )
             if verified_before_final is None or verified_before_final[0] != pointer_two:
                 raise CanonicalStorageError("cleanup delete CAS changed before final")

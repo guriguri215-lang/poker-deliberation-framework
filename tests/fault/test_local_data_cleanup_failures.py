@@ -16,7 +16,10 @@ from poker_deliberation.local_data_cleanup_models import (
     CleanupPlanV1,
     CleanupRootMarkerV1,
 )
-from poker_deliberation.storage.local_data_cleanup_store import initialize_cleanup_root
+from poker_deliberation.storage.local_data_cleanup_store import (
+    CleanupStorageError,
+    initialize_cleanup_root,
+)
 from tests.integration.test_local_data_cleanup_executor import (
     DELETE_AT,
     EVALUATED,
@@ -1058,27 +1061,26 @@ def test_orphan_deleted_revision_is_not_replayed_past_delete_prepared(tmp_path) 
         approval_request_id=request_id,
         authority_provider=provider,
     )
-    current = executor.store.read_current(run_id_sha256(run_id))
+    with pytest.raises(CleanupStorageError) as current_error:
+        executor.store.read_current(run_id_sha256(run_id))
     retry = executor.execute_delete(
         plan,
         approval_run_id=f"{run_id}-delete-approval",
         approval_request_id=request_id,
         authority_provider=provider,
     )
-    stable = executor.store.read_current(run_id_sha256(run_id))
+    with pytest.raises(CleanupStorageError) as stable_error:
+        executor.store.read_current(run_id_sha256(run_id))
     revisions = executor.store.cleanup_root / "runs" / run_id_sha256(run_id) / "revisions"
 
     assert result.failure is not None
-    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert result.failure.filesystem_effect == "partial_delete"
-    assert current is not None
-    assert current[0].state == "delete_prepared"
+    assert current_error.value.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
     assert retry.failure is not None
-    assert retry.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert retry.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
     assert retry.failure.filesystem_effect == "partial_delete"
-    assert retry.cleanup_revision == 2
-    assert stable is not None
-    assert stable[0].revision == 2
+    assert stable_error.value.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
     assert any(path.name.startswith("r3-") for path in revisions.iterdir())
 
 

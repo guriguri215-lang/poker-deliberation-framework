@@ -82,6 +82,8 @@ from poker_deliberation.storage.revision_models import (
 
 DEFAULT_MAX_ARTIFACT_BYTES = 1_000_000
 DEFAULT_MAX_RUN_BYTES = 10_000_000
+_MAX_ROOT_NAMESPACE_ENTRIES = 16
+_MAX_RUN_NAMESPACE_ENTRIES = 10_000
 _ROOT_TEMP = re.compile(r"^(?:ownership|\.revision-control|runs)\.(root-[0-9a-f]{32})\.tmp$")
 _REVISION_DIR = re.compile(r"^r(?P<revision>[1-9][0-9]*)-(?P<transaction>txn-[0-9a-f]{32})$")
 _TRANSACTION_DIR = re.compile(r"^txn-[0-9a-f]{32}$")
@@ -557,7 +559,12 @@ def inspect_root_initialization(
         return RootInitializationInspectionV1(status="uninitialized")
     if _directory_is_reparse(root):
         return RootInitializationInspectionV1(status="corrupt")
-    names = tuple(sorted((item.name for item in root.iterdir()), key=lambda item: item.encode()))
+    discovered_names: list[str] = []
+    for entry_count, item in enumerate(root.iterdir(), start=1):
+        if entry_count > _MAX_ROOT_NAMESPACE_ENTRIES:
+            return RootInitializationInspectionV1(status="corrupt")
+        discovered_names.append(item.name)
+    names = tuple(sorted(discovered_names, key=lambda item: item.encode()))
     recognized: list[str] = []
     root_ids: set[str] = set()
     allowed_fixed = {
@@ -1666,7 +1673,13 @@ class RunRevisionStore:
         alias = ascii_casefold(run_id)
         for root in (self.runs_root, self.legacy_runs_root):
             verify_directory(root)
-            for sibling in root.iterdir():
+            for entry_count, sibling in enumerate(root.iterdir(), start=1):
+                if entry_count > _MAX_RUN_NAMESPACE_ENTRIES:
+                    raise _run_failure(
+                        run_id,
+                        RunStorageFailureCode.ARTIFACT_BUDGET_EXCEEDED,
+                        stage="locked_admission",
+                    )
                 if ascii_casefold(sibling.name) != alias:
                     continue
                 if root == self.legacy_runs_root or sibling.name != run_id:
@@ -1840,7 +1853,9 @@ class RunRevisionStore:
     def _require_detached_namespace(self, run_id: str) -> None:
         verify_directory(self.runs_root)
         alias = ascii_casefold(run_id)
-        for sibling in self.runs_root.iterdir():
+        for entry_count, sibling in enumerate(self.runs_root.iterdir(), start=1):
+            if entry_count > _MAX_RUN_NAMESPACE_ENTRIES:
+                raise CanonicalStorageError("run namespace capacity exceeded")
             if ascii_casefold(sibling.name) != alias:
                 continue
             info = sibling.lstat()

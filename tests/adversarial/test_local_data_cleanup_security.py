@@ -19,6 +19,7 @@ from poker_deliberation.local_data_cleanup_models import (
 )
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.schemas import CaseInput
+from poker_deliberation.storage import revision_store as revision_store_module
 from poker_deliberation.storage.local_data_cleanup_store import (
     CleanupStorageError,
     _capture_control_tree_snapshot,
@@ -28,6 +29,10 @@ from poker_deliberation.storage.local_data_cleanup_store import (
     scan_cleanup_tree,
 )
 from poker_deliberation.storage.revision_canonical import CanonicalStorageError
+from poker_deliberation.storage.revision_models import (
+    RunStorageError,
+    RunStorageFailureCode,
+)
 from poker_deliberation.storage.terminal_models import ProductRunError
 from tests.fault.test_local_data_cleanup_failures import _prepare_delete_fixture
 from tests.integration.test_local_data_cleanup_executor import (
@@ -2037,3 +2042,102 @@ def test_root_inspection_and_namespace_lookup_are_bounded(
     assert namespace_error.value.failure.code is CleanupFailureCode.CAPACITY_EXCEEDED
     assert consumed[root] == 6
     assert consumed[namespace] == 2
+
+
+def test_canonical_unreachable_revision_prevents_idempotent_replay(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "e" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-unreachable-revision-execution",
+        idempotency_key="security-unreachable-revision-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-unreachable-revision-approval",
+        decision_at=SECURITY_AT,
+    )
+    committed = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-unreachable-revision-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert committed.outcome_kind == "committed"
+    revisions = cleanup_root / "runs" / run_id_sha256("security-run") / "revisions"
+    unreachable = revisions / ("r1-cleanup-txn-" + "f" * 32)
+    unreachable.mkdir()
+    for name in ("transaction.json", "manifest.json", "receipt.json", "tombstone.json"):
+        (unreachable / name).write_bytes(b"")
+
+    replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-unreachable-revision-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert replay.failure is not None
+    assert replay.failure.code in {
+        CleanupFailureCode.STALE_CLEANUP_REVISION,
+        CleanupFailureCode.EFFECT_UNKNOWN,
+    }
+
+
+def test_strict_revision_set_preserves_normal_delete(tmp_path: Path) -> None:
+    run_id = "security-strict-revision-delete"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="f",
+    )
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.outcome_kind == "committed", result.failure
+
+
+def test_product_foundation_namespace_scans_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    store = orchestrator.product_store
+    foundation = store.foundation
+
+    monkeypatch.setattr(revision_store_module, "_MAX_ROOT_NAMESPACE_ENTRIES", 1)
+    inspection = revision_store_module.inspect_root_initialization(
+        foundation.revision_root,
+        foundation.legacy_runs_root,
+    )
+    assert inspection.status == "corrupt"
+
+    monkeypatch.setattr(revision_store_module, "_MAX_ROOT_NAMESPACE_ENTRIES", 16)
+    monkeypatch.setattr(revision_store_module, "_MAX_RUN_NAMESPACE_ENTRIES", 1)
+    (foundation.runs_root / "unrelated-run").mkdir()
+    with pytest.raises(RunStorageError) as admission_error:
+        foundation._scan_case_aliases("missing-run")
+    with pytest.raises(CanonicalStorageError, match="namespace capacity"):
+        foundation._require_detached_namespace("missing-run")
+
+    assert admission_error.value.failure.code is RunStorageFailureCode.ARTIFACT_BUDGET_EXCEEDED

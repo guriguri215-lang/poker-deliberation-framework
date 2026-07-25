@@ -953,6 +953,7 @@ class TerminalRunStore:
                     payload_map,
                     run_id=request.run_id,
                     status=request.status,
+                    revision=request.proposed_revision,
                 )
                 if commitments != (
                     request.canonical_input_sha256,
@@ -1185,6 +1186,7 @@ class TerminalRunStore:
                 payloads,
                 run_id=run_id,
                 status=manifest.status,
+                revision=manifest.revision,
             )
             if commitments != (
                 manifest.canonical_input_sha256,
@@ -1537,6 +1539,10 @@ class TerminalRunStore:
                     completion_marker_sha256=prepared.marker_sha256,
                     durability_evidence=_idle_durability(),
                 )
+            if pre_manifest_verifier is not None:
+                _fault(self.fault_injector, "pre_manifest_verifier.before")
+                pre_manifest_verifier()
+                _fault(self.fault_injector, "pre_manifest_verifier.after")
             _run, control, transactions, revisions = self._bootstrap_namespace(request.run_id)
             staging = transactions / request.transaction_id
             revision = revisions / f"r{request.proposed_revision}-{request.transaction_id}"
@@ -1565,10 +1571,6 @@ class TerminalRunStore:
                     injector=self.fault_injector,
                     hook=f"payload.{entry.logical_name.replace('/', '_')}",
                 )
-            if pre_manifest_verifier is not None:
-                _fault(self.fault_injector, "pre_manifest_verifier.before")
-                pre_manifest_verifier()
-                _fault(self.fault_injector, "pre_manifest_verifier.after")
             _write_exclusive_verified(
                 staging / "manifest.json",
                 prepared.manifest_bytes,
@@ -1896,37 +1898,39 @@ class TerminalRunStore:
         events: tuple[ApprovalSecurityAuditEventV2, ...],
     ) -> tuple[ApprovalSecurityAuditRateStateV2, ...]:
         states: dict[str, ApprovalSecurityAuditRateStateV2] = {}
+        failures: dict[str, list[datetime]] = {}
         for event in events:
             prior = states.get(event.actor_sha256)
-            if prior is None or event.rate_window_started_at > prior.window_started_at:
-                if event.rate_window_started_at != event.occurred_at:
-                    raise CanonicalStorageError(
-                        "approval audit window must start at its first event"
-                    )
-                prior = ApprovalSecurityAuditRateStateV2(
-                    actor_sha256=event.actor_sha256,
-                    window_started_at=event.rate_window_started_at,
-                    failed_event_count=0,
-                    rate_limit_marker_recorded=False,
-                )
-            elif event.rate_window_started_at != prior.window_started_at:
-                raise CanonicalStorageError("approval audit window moved backwards")
+            window_floor = event.occurred_at - timedelta(seconds=APPROVAL_AUDIT_WINDOW_SECONDS)
+            recent = [
+                occurred_at
+                for occurred_at in failures.get(event.actor_sha256, [])
+                if occurred_at > window_floor
+            ]
+            marker_active = bool(
+                prior is not None
+                and prior.rate_limit_marker_recorded
+                and len(recent) == APPROVAL_AUDIT_MAX_FAILED_EVENTS
+            )
             if event.event_kind == "failure":
-                if prior.failed_event_count >= APPROVAL_AUDIT_MAX_FAILED_EVENTS:
+                if len(recent) >= APPROVAL_AUDIT_MAX_FAILED_EVENTS:
                     raise CanonicalStorageError("approval audit failure count exceeds its window")
-                prior = prior.model_copy(
-                    update={
-                        "failed_event_count": prior.failed_event_count + 1,
-                    }
-                )
+                recent.append(event.occurred_at)
+                marker_active = False
             else:
-                if (
-                    prior.failed_event_count != APPROVAL_AUDIT_MAX_FAILED_EVENTS
-                    or prior.rate_limit_marker_recorded
-                ):
+                if len(recent) != APPROVAL_AUDIT_MAX_FAILED_EVENTS or marker_active:
                     raise CanonicalStorageError("approval audit rate-limit marker mismatch")
-                prior = prior.model_copy(update={"rate_limit_marker_recorded": True})
-            states[event.actor_sha256] = ApprovalSecurityAuditRateStateV2.model_validate(prior)
+                marker_active = True
+            expected_window_start = recent[0]
+            if event.rate_window_started_at != expected_window_start:
+                raise CanonicalStorageError("approval audit rolling window mismatch")
+            failures[event.actor_sha256] = recent
+            states[event.actor_sha256] = ApprovalSecurityAuditRateStateV2(
+                actor_sha256=event.actor_sha256,
+                window_started_at=expected_window_start,
+                failed_event_count=len(recent),
+                rate_limit_marker_recorded=marker_active,
+            )
         return tuple(states[key] for key in sorted(states, key=lambda item: item.encode("ascii")))
 
     def read_approval_failure_audit(
@@ -1996,20 +2000,24 @@ class TerminalRunStore:
                     "Approval failure audit event capacity is exhausted.",
                 )
             rate_by_actor = {state.actor_sha256: state for state in pointer.rate_states}
-            rate = rate_by_actor.get(request.actor_sha256)
-            if rate is None or request.occurred_at >= rate.window_started_at + timedelta(
-                seconds=window_seconds
-            ):
-                rate = ApprovalSecurityAuditRateStateV2(
-                    actor_sha256=request.actor_sha256,
-                    window_started_at=request.occurred_at,
-                    failed_event_count=0,
-                    rate_limit_marker_recorded=False,
-                )
+            prior_rate = rate_by_actor.get(request.actor_sha256)
+            window_floor = request.occurred_at - timedelta(seconds=window_seconds)
+            recent_failures = [
+                event.occurred_at
+                for event in events
+                if event.actor_sha256 == request.actor_sha256
+                and event.event_kind == "failure"
+                and event.occurred_at > window_floor
+            ]
+            marker_active = bool(
+                prior_rate is not None
+                and prior_rate.rate_limit_marker_recorded
+                and len(recent_failures) == max_failed_events
+            )
             event_kind: Literal["failure", "rate_limit"]
             failure_code = request.failure_code
-            if rate.failed_event_count >= max_failed_events:
-                if rate.rate_limit_marker_recorded:
+            if len(recent_failures) >= max_failed_events:
+                if marker_active:
                     raise self._approval_audit_error(
                         request,
                         ApprovalFailureCode.AUDIT_RATE_LIMITED,
@@ -2020,6 +2028,7 @@ class TerminalRunStore:
                 failure_code = ApprovalFailureCode.AUDIT_RATE_LIMITED
             else:
                 event_kind = "failure"
+            rate_window_started_at = recent_failures[0] if recent_failures else request.occurred_at
             partial = ApprovalSecurityAuditEventV2.model_construct(
                 sequence=pointer.audit_sequence + 1,
                 previous_event_sha256=pointer.head_event_sha256,
@@ -2033,7 +2042,7 @@ class TerminalRunStore:
                 observed_run_revision=request.observed_run_revision,
                 observed_ledger_revision=request.observed_ledger_revision,
                 occurred_at=request.occurred_at,
-                rate_window_started_at=rate.window_started_at,
+                rate_window_started_at=rate_window_started_at,
                 event_sha256="0" * 64,
             )
             event = ApprovalSecurityAuditEventV2(

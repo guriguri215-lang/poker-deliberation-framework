@@ -282,7 +282,11 @@ def _audit_orchestrator(tmp_path: Path) -> Orchestrator:
     return orchestrator
 
 
-def _audit_request(sequence: int) -> ApprovalFailureAuditRequest:
+def _audit_request(
+    sequence: int,
+    *,
+    occurred_at: datetime | None = None,
+) -> ApprovalFailureAuditRequest:
     return ApprovalFailureAuditRequest(
         run_id="run-approval-audit-limits",
         actor_sha256=HASH_A,
@@ -292,7 +296,7 @@ def _audit_request(sequence: int) -> ApprovalFailureAuditRequest:
         failure_code=ApprovalFailureCode.STALE_DECISION,
         observed_run_revision=1,
         observed_ledger_revision=0,
-        occurred_at=NOW + timedelta(seconds=sequence),
+        occurred_at=occurred_at or NOW + timedelta(seconds=sequence),
     )
 
 
@@ -301,21 +305,15 @@ def test_security_audit_records_one_rate_marker_then_fails_write_zero(
 ) -> None:
     orchestrator = _audit_orchestrator(tmp_path)
     for sequence in range(32):
-        orchestrator.product_store.append_approval_failure_audit(
-            _audit_request(sequence)
-        )
+        orchestrator.product_store.append_approval_failure_audit(_audit_request(sequence))
 
     with pytest.raises(ApprovalFailureAuditError) as marker:
-        orchestrator.product_store.append_approval_failure_audit(
-            _audit_request(32)
-        )
+        orchestrator.product_store.append_approval_failure_audit(_audit_request(32))
     pointer, events = orchestrator.product_store.read_approval_failure_audit(
         "run-approval-audit-limits"
     )
     with pytest.raises(ApprovalFailureAuditError) as limited:
-        orchestrator.product_store.append_approval_failure_audit(
-            _audit_request(33)
-        )
+        orchestrator.product_store.append_approval_failure_audit(_audit_request(33))
     unchanged, unchanged_events = orchestrator.product_store.read_approval_failure_audit(
         "run-approval-audit-limits"
     )
@@ -327,6 +325,36 @@ def test_security_audit_records_one_rate_marker_then_fails_write_zero(
     assert events[-1].event_kind == "rate_limit"
     assert unchanged == pointer
     assert unchanged_events == events
+
+
+def test_security_audit_uses_a_rolling_not_tumbling_sixty_second_window(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _audit_orchestrator(tmp_path)
+    for sequence in range(32):
+        orchestrator.product_store.append_approval_failure_audit(_audit_request(sequence))
+    with pytest.raises(ApprovalFailureAuditError):
+        orchestrator.product_store.append_approval_failure_audit(_audit_request(32))
+
+    boundary_time = NOW + timedelta(seconds=60)
+    admitted = orchestrator.product_store.append_approval_failure_audit(
+        _audit_request(1000, occurred_at=boundary_time)
+    )
+    assert admitted.event.event_kind == "failure"
+    assert admitted.pointer.rate_states[0].failed_event_count == 32
+    assert admitted.pointer.rate_states[0].window_started_at == NOW + timedelta(seconds=1)
+    assert admitted.pointer.rate_states[0].rate_limit_marker_recorded is False
+
+    with pytest.raises(ApprovalFailureAuditError) as marker:
+        orchestrator.product_store.append_approval_failure_audit(
+            _audit_request(1001, occurred_at=boundary_time)
+        )
+    assert marker.value.failure.code is ApprovalFailureCode.AUDIT_RATE_LIMITED
+    pointer, events = orchestrator.product_store.read_approval_failure_audit(
+        "run-approval-audit-limits"
+    )
+    assert pointer.rate_states[0].rate_limit_marker_recorded is True
+    assert events[-1].event_kind == "rate_limit"
 
 
 def test_security_audit_capacity_exhaustion_never_overwrites(

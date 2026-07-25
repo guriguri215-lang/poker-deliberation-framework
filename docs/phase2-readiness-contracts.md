@@ -775,3 +775,12 @@ P2-012B completion evidenceが成立するには、通常経路がverified V2を
 gate、4観点レビュー、append-only roadmap validationが同じfinal HEADで成功しなければならない。
 それまではcanonical capabilityをpromoteしない。P2-013A/B、P2-027B、P2-028A、external provider/
 solver、parallel execution、automatic retry、cleanup/release操作は別承認のままである。
+## P2-013A 実装境界
+
+**FACT**: P2-013A は strict V2 approval schema、canonical action digest、注入された authority provider、all-or-nothing batch、decision idempotency、RM-012 current-pointer CAS、bounded failure audit を実装する。V1 report schema は変更せず、V2 ledger から projection する。
+
+**FACT**: approve を含む decision は authority を記録するだけであり、P2-013A には executor がないため `external_executor_unavailable` / `failed_with_limitations` になる。reject だけで pending がなくなれば safe no-action path を `completed` にする。
+
+**FACT**: P2-013B の request reissue、pre-execution expiry/revocation recheck、完全な resume lifecycle は未実装である。P2-027B、P2-028A、外部 provider/solver、retry/parallel scheduling も有効化しない。
+
+詳細は `docs/approval-authority-contract.md` を正本とする。

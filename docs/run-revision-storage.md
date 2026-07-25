@@ -225,3 +225,10 @@ exact settleする。missing、overrun、conflict、effect-unknown settlementで
 `lifecycle_audit.json`はmarker前のrequired payloadである。retention anchorは同じtransactionでfreezeした
 `CompletionMarkerV2.published_at`で、P2-027A pure evaluatorのbounded metadataだけを保存する。
 scan、move、quarantine、delete、encryption、receipt、tombstone、secure eraseは実行しない。
+## P2-013A approval successor
+
+approval decision は、検証済み current revision から ledger、decision log、domain audit、V1 projection、state、JSON/Markdown report を memory 上で構築する。decision record は authority snapshot とその digest を保持し、run/ledger revision の連続鎖と最後の decision revision を successor manifest revision へ拘束する。deterministic transaction ID、expected revision、manifest hash、pointer hash を `TerminalRunStore.publish_approval_decision` に渡し、RM-012 lock 内で actor と authority provider identity/version を再検証してから manifest と current pointer を公開する。
+
+CAS winner は 1 つだけである。loser は current を再読し、同一 idempotency key／actor／batch の完全 replay なら保存済み outcome を返す。それ以外では domain current を変更せず、別の bounded control ledger に失敗 event を追加する。
+
+失敗監査は `.terminal-store/approval-failure-audit/` に immutable event と `current.json` pointer を持つ。event は sequence と previous hash を拘束し、最大 1024 件、1 件 16,384 bytes、run 合計 1,048,576 bytes、actor/run の rolling 60 秒で 32 failure events に制限する。自動 cleanup は P2-027B より前には行わない。

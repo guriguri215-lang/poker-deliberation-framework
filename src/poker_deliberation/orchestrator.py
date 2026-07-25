@@ -760,6 +760,7 @@ class Orchestrator:
             payload_map,
             run_id=run_id,
             status=status,
+            revision=revision,
         )
         created_at = published_at if previous is None else previous.manifest.created_at
         request = TerminalPublishRequest(
@@ -2414,20 +2415,6 @@ class Orchestrator:
                 )
                 self._raise_audited_approval_failure(batch, failure)
                 raise AssertionError("unreachable") from exc
-            if (
-                str(redact_sensitive(batch.reason, enabled=True))
-                != batch.reason
-            ):
-                failure = approval_failure_v2(
-                    ApprovalFailureCode.RESUME_CONFLICT,
-                    "Decision reason must already be redacted.",
-                    run_id=batch.run_id,
-                    decision_id=batch.decision_id,
-                    idempotency_key=batch.idempotency_key,
-                    observed_run_revision=read.revision,
-                    observed_ledger_revision=state.ledger.ledger_revision,
-                )
-                self._raise_audited_approval_failure(batch, failure)
             admission = validate_approval_decision(
                 state,
                 batch,
@@ -2439,6 +2426,17 @@ class Orchestrator:
                 if admission.replay_outcome is None:
                     raise RuntimeError("approval replay outcome is absent")
                 return admission.replay_outcome
+            if str(redact_sensitive(batch.reason, enabled=True)) != batch.reason:
+                failure = approval_failure_v2(
+                    ApprovalFailureCode.RESUME_CONFLICT,
+                    "Decision reason must already be redacted.",
+                    run_id=batch.run_id,
+                    decision_id=batch.decision_id,
+                    idempotency_key=batch.idempotency_key,
+                    observed_run_revision=read.revision,
+                    observed_ledger_revision=state.ledger.ledger_revision,
+                )
+                self._raise_audited_approval_failure(batch, failure)
             update = build_approval_decision_update(admission)
             self._load_verified_buffer(read)
             self._approval_v2_payloads[batch.run_id] = dict(
@@ -2534,8 +2532,8 @@ class Orchestrator:
                     ),
                     authority_verifier=verify_authority,
                 )
-            except ApprovalDecisionValidationError:
-                raise
+            except ApprovalDecisionValidationError as exc:
+                self._raise_audited_approval_failure(batch, exc.failure)
             except ProductRunError as exc:
                 try:
                     winner = self.product_store.read_current(batch.run_id)
@@ -2679,10 +2677,7 @@ class Orchestrator:
             decision_id = self.terminal_id_factory("decision")
             idempotency_key = self.terminal_id_factory("decision-key")
             decision_at = self.terminal_clock()
-            actor = self.decision_authority_provider.resolve_actor(
-                "local-cli-user",
-                decision_at=decision_at,
-            ).actor
+            actor = LocalCliAuthorityProvider("local-cli-user").actor()
             failure = approval_failure_v2(
                 ApprovalFailureCode.LEGACY_APPROVAL_HISTORICAL_ONLY,
                 "V1 approval artifacts are historical-only and cannot authorize approval.",
@@ -2739,15 +2734,11 @@ class Orchestrator:
                 str(redact_sensitive(reason, enabled=not self.config.record_sensitive_data)),
             )
         for approval_id in reject_ids or []:
-            prior_request = next(
-                item for item in ledger.all() if item.approval_id == approval_id
-            )
+            prior_request = next(item for item in ledger.all() if item.approval_id == approval_id)
             historical_binding = HistoricalApprovalV1Binding(
                 run_id=run_id,
                 approval_id=approval_id,
-                v1_request_sha256=sha256_bytes(
-                    canonical_storage_json_bytes(prior_request)
-                ),
+                v1_request_sha256=sha256_bytes(canonical_storage_json_bytes(prior_request)),
                 v1_status=prior_request.status.value,
             )
             ledger.decide(

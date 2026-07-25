@@ -157,3 +157,10 @@ writer authenticity、OS crash後のpower-loss durability、network/distributed 
 Windows directory fsync、ACL/signature/HMAC、automatic orphan cleanupは保証しない。
 manifestのall-zero `source_commit_id`はruntimeでauthoritative commitが得られない場合の
 **UNKNOWN** sentinelであり、Git/build provenanceのattestationとして信頼してはならない。
+## Approval authority threat boundary
+
+P2-013A は claimed actor を信用せず、注入された `DecisionAuthorityProvider` の canonical snapshot と全 field を照合する。snapshot の provider ID/version、resolved UTC、actor と専用 digest は immutable decision record、outcome、domain audit に拘束し、publication lock 内の再検証でも provider ID/version と actor の一致を要求する。既定 CLI actor は unverified で `reject:any` しか持たない。approve は verified actor、exact category scope、未失効、not-revoked の全条件を必要とする。
+
+action plan と outbound content は raw payload ではなく bounded identifier／classification／SHA-256 binding として保存する。failure audit は actor、decision、idempotency、batch の hash と failure code だけを保存し、raw reason、credential、token、provider input、traceback を保存しない。failure 制限は actor/run ごとの真の rolling 60 秒窓として再構成し、窓内 32 件と単一 marker を strict pointer state へ拘束する。
+
+SHA-256 と hash chain は accidental corruption と substitution を検出するためのものであり、same-privilege malicious writer の authenticity は保証しない。default CLI は remote identity を検証せず、external effect、network verification、signature/HMAC、secure erase を実装しない。

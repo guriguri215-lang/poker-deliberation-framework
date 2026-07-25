@@ -179,6 +179,7 @@ def product_payload_commitments(
     *,
     run_id: str,
     status: str,
+    revision: int | None = None,
 ) -> tuple[str, str, str, str, str, str]:
     """Recompute product input, checkpoint, and scalar lineage commitments."""
 
@@ -236,6 +237,23 @@ def product_payload_commitments(
             raise CanonicalStorageError(
                 "V1 approval projection differs from authoritative V2 state"
             )
+        if revision is not None:
+            records = approval_state.decision_records
+            checkpoint_revision = revision - len(records)
+            if any(
+                request.created_run_revision != checkpoint_revision
+                for request in approval_state.ledger.requests
+            ):
+                raise CanonicalStorageError(
+                    "approval request creation is not bound to its checkpoint revision"
+                )
+            if records and (
+                records[-1].outcome.current_run_revision != revision
+                or records[0].outcome.previous_run_revision != checkpoint_revision
+            ):
+                raise CanonicalStorageError(
+                    "approval decision chain is not bound to the terminal revision"
+                )
         approval_authority_head = canonical_domain_sha256(
             APPROVAL_AUTHORITY_LINEAGE_DOMAIN,
             {

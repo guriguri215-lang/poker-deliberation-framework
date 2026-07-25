@@ -21,6 +21,8 @@ from poker_deliberation.approvals import (
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.schemas import CaseInput
+from poker_deliberation.storage.revision_canonical import CanonicalStorageError
+from poker_deliberation.storage.terminal_canonical import product_payload_commitments
 from poker_deliberation.storage.terminal_models import RunReadStatus
 
 NOW = datetime(2026, 7, 25, 0, 0, tzinfo=UTC)
@@ -148,6 +150,19 @@ def test_reject_transaction_is_atomic_and_exact_replay_is_write_zero(
     assert committed.ledger.domain_audit_count == 1
     assert replay == outcome
     assert after_replay.current_pointer_sha256 == terminal.current_pointer_sha256
+    payload_map = {
+        payload.inventory.logical_name: payload.exact_bytes for payload in terminal.payloads
+    }
+    with pytest.raises(
+        CanonicalStorageError,
+        match="not bound",
+    ):
+        product_payload_commitments(
+            payload_map,
+            run_id=report.run_id,
+            status=terminal.manifest.status,
+            revision=terminal.revision + 1,
+        )
 
 
 def test_validation_failure_changes_no_domain_revision_and_is_audited(
@@ -245,6 +260,91 @@ class _VerifiedProvider:
         )
 
 
+class _RevokingProvider(_VerifiedProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def resolve_actor(
+        self,
+        actor_id: str,
+        *,
+        decision_at: datetime,
+    ) -> ApprovalAuthoritySnapshotV2:
+        self.calls += 1
+        if self.calls == 1:
+            return super().resolve_actor(actor_id, decision_at=decision_at)
+        revoked = ApprovalActor.model_validate(
+            self.actor.model_dump() | {"revocation_status": "revoked"}
+        )
+        return ApprovalAuthoritySnapshotV2(
+            provider_id="test-authority",
+            provider_version="1.0.0",
+            resolved_at=decision_at,
+            actor=revoked,
+            actor_sha256=approval_actor_sha256(revoked),
+        )
+
+
+def test_in_lock_revocation_is_audited_without_staging_or_domain_change(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    creator = Orchestrator(config, terminal_clock=lambda: NOW)
+    report = creator.run(
+        CaseInput(
+            kind="strategy",
+            raw_text="review",
+            analysis_scope="retrospective",
+            metadata={"approval_requests": [_proposal()]},
+        ),
+        run_id="run-approval-v2-revoked-in-lock",
+    )
+    checkpoint, state = _state(creator, report.run_id)
+    request = state.ledger.requests[0]
+    provider = _RevokingProvider()
+    batch = ApprovalDecisionBatch(
+        run_id=report.run_id,
+        expected_run_revision=checkpoint.revision,
+        expected_ledger_revision=state.ledger.ledger_revision,
+        actor=provider.actor,
+        decision_id="decision-revoked",
+        idempotency_key="decision-key-revoked",
+        items=(
+            ApprovalDecisionItemV2(
+                request_id=request.request_id,
+                expected_request_revision=request.request_revision,
+                action_digest_sha256=request.action_digest_sha256,
+                decision="approved",
+            ),
+        ),
+        reason="Approve the exact plan.",
+        decision_at=NOW,
+    )
+    decider = Orchestrator(
+        config,
+        terminal_clock=lambda: NOW,
+        decision_authority_provider=provider,
+    )
+    transaction_root = (
+        config.revision_runs_dir / "runs" / report.run_id / ".terminal-store" / "transactions"
+    )
+    before_transactions = tuple(transaction_root.iterdir())
+
+    with pytest.raises(ApprovalDecisionValidationError) as captured:
+        decider.decide_approvals(batch)
+
+    current = decider.product_store.read_current(report.run_id)
+    pointer, events = decider.product_store.read_approval_failure_audit(report.run_id)
+    assert captured.value.failure.code.value == "authority_revoked"
+    assert captured.value.failure.audit_confirmed is True
+    assert current.current_pointer_sha256 == checkpoint.current_pointer_sha256
+    assert current.revision == checkpoint.revision
+    assert tuple(transaction_root.iterdir()) == before_transactions
+    assert pointer.audit_sequence == 1
+    assert events[0].failure_code.value == "authority_revoked"
+
+
 def test_verified_approve_records_authority_but_never_executes(
     tmp_path: Path,
 ) -> None:
@@ -294,6 +394,16 @@ def test_verified_approve_records_authority_but_never_executes(
         outcome,
         provider.resolve_actor(provider.actor.actor_id, decision_at=NOW),
     )
+    mismatched_authority = provider.resolve_actor(
+        provider.actor.actor_id,
+        decision_at=NOW,
+    ).model_copy(update={"provider_version": "2.0.0"})
+    with pytest.raises(ValueError, match="exact approved request"):
+        UnavailableExternalExecutionBindingProvider().bind_unavailable(
+            updated_request,
+            outcome,
+            mismatched_authority,
+        )
 
     assert outcome.run_status == "failed_with_limitations"
     assert outcome.limitation is not None

@@ -12,6 +12,7 @@ from poker_deliberation.approval_canonical import (
     CanonicalApprovalError,
     action_digest_sha256,
     approval_actor_sha256,
+    approval_authority_snapshot_sha256,
     approval_decision_batch_sha256,
     approval_decision_outcome_sha256,
     approval_decision_record_sha256,
@@ -138,10 +139,11 @@ class UnavailableExternalExecutionBindingProvider:
             or result.request_revision != request.request_revision
             or result.action_digest_sha256 != request.action_digest_sha256
             or outcome.actor_sha256 != authority_snapshot.actor_sha256
+            or outcome.authority_snapshot_sha256
+            != approval_authority_snapshot_sha256(authority_snapshot)
         ):
             raise ValueError("external binding requires the exact approved request")
         from poker_deliberation.approval_canonical import (
-            approval_authority_snapshot_sha256,
             approval_decision_outcome_sha256,
         )
 
@@ -154,9 +156,7 @@ class UnavailableExternalExecutionBindingProvider:
             decision_id=outcome.decision_id,
             outcome_sha256=approval_decision_outcome_sha256(outcome),
             actor_sha256=outcome.actor_sha256,
-            authority_snapshot_sha256=approval_authority_snapshot_sha256(
-                authority_snapshot
-            ),
+            authority_snapshot_sha256=approval_authority_snapshot_sha256(authority_snapshot),
         )
 
 
@@ -383,11 +383,15 @@ def _validate_decision_chain(
 ) -> None:
     if ledger.decision_count != len(records):
         raise ApprovalLedgerCorruptError("approval decision log is truncated")
+    initial_ledger_revision = ledger.ledger_revision - len(records)
+    if initial_ledger_revision != len(ledger.requests):
+        raise ApprovalLedgerCorruptError("approval ledger mutation count mismatch")
     expected_previous: str | None = None
     decision_ids: set[str] = set()
     idempotency_keys: set[str] = set()
     prior_time: datetime | None = None
-    prior_ledger_revision = -1
+    prior_ledger_revision: int | None = None
+    prior_run_revision: int | None = None
     for sequence, record in enumerate(records, start=1):
         if (
             record.sequence != sequence
@@ -400,8 +404,16 @@ def _validate_decision_chain(
             raise ApprovalLedgerCorruptError("duplicate approval decision identity")
         if prior_time is not None and record.committed_at < prior_time:
             raise ApprovalLedgerCorruptError("approval decision clock rollback")
-        if record.outcome.current_ledger_revision <= prior_ledger_revision:
-            raise ApprovalLedgerCorruptError("approval decision ledger order mismatch")
+        if record.outcome.previous_ledger_revision != initial_ledger_revision + sequence - 1:
+            raise ApprovalLedgerCorruptError("approval decision ledger sequence mismatch")
+        if prior_ledger_revision is not None and (
+            record.outcome.previous_ledger_revision != prior_ledger_revision
+        ):
+            raise ApprovalLedgerCorruptError("approval decision ledger chain mismatch")
+        if prior_run_revision is not None and (
+            record.outcome.previous_run_revision != prior_run_revision
+        ):
+            raise ApprovalLedgerCorruptError("approval decision run chain mismatch")
         if record.outcome.current_ledger_revision > ledger.ledger_revision:
             raise ApprovalLedgerCorruptError("approval decision exceeds ledger revision")
         decision_ids.add(record.decision_id)
@@ -409,6 +421,7 @@ def _validate_decision_chain(
         expected_previous = record.record_sha256
         prior_time = record.committed_at
         prior_ledger_revision = record.outcome.current_ledger_revision
+        prior_run_revision = record.outcome.current_run_revision
     if ledger.decision_log_head_sha256 != expected_previous:
         raise ApprovalLedgerCorruptError("approval decision head mismatch")
 
@@ -428,6 +441,7 @@ def _validate_domain_audit_chain(
             or event.run_id != ledger.run_id
             or event.decision_id != record.decision_id
             or event.actor_sha256 != record.actor_sha256
+            or event.authority_snapshot_sha256 != record.authority_snapshot_sha256
             or event.batch_sha256 != record.batch_sha256
             or event.decision_record_sha256 != record.record_sha256
             or event.outcome_sha256 != record.outcome_sha256
@@ -722,6 +736,7 @@ def build_approval_decision_update(
                 decision=decision,
             )
         )
+    updated_requests.sort(key=lambda item: (item.ledger_revision, item.request_id.encode("utf-8")))
     results.sort(key=lambda item: item.request_id.encode("utf-8"))
     remaining_pending_count = sum(request.state == "pending" for request in updated_requests)
     has_approval = any(result.decision == "approved" for result in results)
@@ -746,12 +761,14 @@ def build_approval_decision_update(
         if remaining_pending_count
         else "completed"
     )
+    authority_snapshot_sha256 = approval_authority_snapshot_sha256(admission.actor_snapshot)
     outcome = ApprovalDecisionOutcome(
         outcome_kind="committed",
         run_id=batch.run_id,
         decision_id=batch.decision_id,
         idempotency_key=batch.idempotency_key,
         actor_sha256=admission.actor_sha256,
+        authority_snapshot_sha256=authority_snapshot_sha256,
         batch_sha256=admission.batch_sha256,
         previous_run_revision=batch.expected_run_revision,
         current_run_revision=batch.expected_run_revision + 1,
@@ -771,6 +788,8 @@ def build_approval_decision_update(
         decision_id=batch.decision_id,
         idempotency_key=batch.idempotency_key,
         actor_sha256=admission.actor_sha256,
+        authority_snapshot=admission.actor_snapshot,
+        authority_snapshot_sha256=authority_snapshot_sha256,
         batch=batch,
         batch_sha256=admission.batch_sha256,
         outcome=outcome,
@@ -793,6 +812,7 @@ def build_approval_decision_update(
         ledger_revision=next_ledger_revision,
         decision_id=batch.decision_id,
         actor_sha256=admission.actor_sha256,
+        authority_snapshot_sha256=authority_snapshot_sha256,
         batch_sha256=admission.batch_sha256,
         decision_record_sha256=record.record_sha256,
         outcome_sha256=outcome_sha256,
@@ -861,7 +881,11 @@ def reverify_approval_authority(
             batch.expected_run_revision,
             batch.expected_ledger_revision,
         )
-    if snapshot.actor != admission.actor_snapshot.actor:
+    if (
+        snapshot.actor != admission.actor_snapshot.actor
+        or snapshot.provider_id != admission.actor_snapshot.provider_id
+        or snapshot.provider_version != admission.actor_snapshot.provider_version
+    ):
         code = (
             ApprovalFailureCode.AUTHORITY_REVOKED
             if snapshot.actor.revocation_status == "revoked"
@@ -932,11 +956,7 @@ def approval_reference_sha256(
     kind: Literal["decision_id", "idempotency_key"],
     value: str,
 ) -> str:
-    domain = (
-        _DECISION_REFERENCE_DOMAIN
-        if kind == "decision_id"
-        else _IDEMPOTENCY_REFERENCE_DOMAIN
-    )
+    domain = _DECISION_REFERENCE_DOMAIN if kind == "decision_id" else _IDEMPOTENCY_REFERENCE_DOMAIN
     return domain_sha256(domain, value.encode("utf-8"))
 
 
@@ -994,13 +1014,9 @@ def project_v1_approvals(
                 effect_of_declining=request.display.effect_of_declining,
                 exact_command_or_tool_call=request.display.exact_command_or_tool_call,
                 status=status,
-                decision_reason=(
-                    None if decision_record is None else decision_record.batch.reason
-                ),
+                decision_reason=(None if decision_record is None else decision_record.batch.reason),
                 created_at=request.created_at,
-                decided_at=(
-                    None if decision_record is None else decision_record.committed_at
-                ),
+                decided_at=(None if decision_record is None else decision_record.committed_at),
             )
         )
     return projected

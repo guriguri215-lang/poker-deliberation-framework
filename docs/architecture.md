@@ -185,3 +185,10 @@ cross-rootのrevision publicationとbudget settlementは一つのfilesystem tran
 そのためpointer/marker hashへ束縛したdeterministic settlementを必須とし、settlement未確認時は
 物理的に完全なrevisionでも`incomplete`として扱う。このavailability lossはsuccess誤認を避ける
 fail-closed境界である。
+## Approval authority V2
+
+P2-013A では phase intake が V1 proposal と V2 proposal を version dispatch する。V2 proposal は application-owned request identity に変換され、Orchestrator が唯一の transaction coordinator になる。
+
+`DecisionAuthorityProvider` は actor の信頼境界、`TerminalRunStore` は per-run authority と CAS の所有者である。pure validation は lookup より前に ledger/log chain 全体を検証する。`UnavailableExternalExecutionBindingProvider` は承認済み request/outcome/authority lineage の一致だけを拘束し、外部 effect は起動しない。
+
+V2 artifact は product manifest と approval lineage commitment に含まれる。既存の V1 `FinalReport.approvals` は authoritative V2 state の projection であり、public schema を拡張しない。

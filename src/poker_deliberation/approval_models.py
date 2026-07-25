@@ -438,6 +438,7 @@ class ApprovalDecisionOutcome(_ApprovalModel):
     decision_id: PortableId
     idempotency_key: PortableId
     actor_sha256: Sha256
+    authority_snapshot_sha256: Sha256
     batch_sha256: Sha256
     previous_run_revision: int = Field(ge=1)
     current_run_revision: int = Field(ge=1)
@@ -515,6 +516,8 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
     decision_id: PortableId
     idempotency_key: PortableId
     actor_sha256: Sha256
+    authority_snapshot: ApprovalAuthoritySnapshotV2
+    authority_snapshot_sha256: Sha256
     batch: ApprovalDecisionBatch
     batch_sha256: Sha256
     outcome: ApprovalDecisionOutcome
@@ -528,6 +531,7 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
     def record_hash_matches(self) -> ApprovalDecisionRecordV2:
         from poker_deliberation.approval_canonical import (
             approval_actor_sha256,
+            approval_authority_snapshot_sha256,
             approval_decision_batch_sha256,
             approval_decision_outcome_sha256,
             approval_decision_record_sha256,
@@ -560,6 +564,11 @@ class ApprovalDecisionRecordV2(_ApprovalModel):
             or self.batch.decision_id != self.decision_id
             or self.batch.idempotency_key != self.idempotency_key
             or approval_actor_sha256(self.batch.actor) != self.actor_sha256
+            or self.authority_snapshot.actor != self.batch.actor
+            or self.authority_snapshot.actor_sha256 != self.actor_sha256
+            or approval_authority_snapshot_sha256(self.authority_snapshot)
+            != self.authority_snapshot_sha256
+            or self.outcome.authority_snapshot_sha256 != self.authority_snapshot_sha256
             or self.batch.expected_run_revision != self.outcome.previous_run_revision
             or self.batch.expected_ledger_revision != self.outcome.previous_ledger_revision
             or self.batch.decision_at != self.committed_at
@@ -589,6 +598,7 @@ class ApprovalDomainAuditEventV2(_ApprovalModel):
     ledger_revision: int = Field(ge=1)
     decision_id: PortableId
     actor_sha256: Sha256
+    authority_snapshot_sha256: Sha256
     batch_sha256: Sha256
     decision_record_sha256: Sha256
     outcome_sha256: Sha256

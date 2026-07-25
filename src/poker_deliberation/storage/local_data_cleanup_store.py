@@ -313,21 +313,35 @@ def _write_exclusive(
                 fault_preparer()
             _fault(fault_injector, f"{fault_hook}.after_write")
         os.fsync(stream.fileno())
-    verify_regular_single_link(path)
-    if path.read_bytes() != data:
+    if _read_control_bytes(path, max_bytes=max_bytes) != data:
         raise CanonicalStorageError("cleanup control artifact reread mismatch")
 
 
-def _read_control(path: Path, model: type[Any], *, max_bytes: int) -> tuple[Any, bytes]:
+def _read_control_bytes(path: Path, *, max_bytes: int) -> bytes:
     try:
-        info = verify_regular_single_link(path)
-        if info.st_size > max_bytes:
+        before = verify_regular_single_link(path)
+        if before.st_size > max_bytes:
             raise CanonicalStorageError("cleanup control artifact exceeds its byte limit")
+        if _has_nondefault_windows_stream(path):
+            raise CanonicalStorageError("cleanup control artifact has an alternate data stream")
         data = path.read_bytes()
+        after = verify_regular_single_link(path)
+        if (
+            len(data) != before.st_size
+            or (after.st_dev, after.st_ino, after.st_size)
+            != (before.st_dev, before.st_ino, before.st_size)
+            or _has_nondefault_windows_stream(path)
+        ):
+            raise CanonicalStorageError("cleanup control artifact changed during read")
     except CanonicalStorageError:
         raise
     except OSError as exc:
         raise CanonicalStorageError("cleanup control artifact read failed") from exc
+    return data
+
+
+def _read_control(path: Path, model: type[Any], *, max_bytes: int) -> tuple[Any, bytes]:
+    data = _read_control_bytes(path, max_bytes=max_bytes)
     return parse_cleanup_model(data, model, max_bytes=max_bytes), data
 
 
@@ -1153,14 +1167,10 @@ class LocalDataCleanupStore:
                 )
             if pointer_temporary is not None:
                 temporary_path = entries[pointer_temporary[0]]
-                temporary_info = verify_regular_single_link(temporary_path)
-                if temporary_info.st_size > marker.limits.maximum_control_artifact_bytes:
-                    raise _fail(
-                        CleanupFailureCode.STALE_CLEANUP_REVISION,
-                        run_id_sha256=run_hash,
-                        transaction_id=transaction.transaction_id,
-                    )
-                temporary_bytes = temporary_path.read_bytes()
+                temporary_bytes = _read_control_bytes(
+                    temporary_path,
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )
                 if temporary_bytes != pointer_temporary[1]:
                     raise _fail(
                         CleanupFailureCode.STALE_CLEANUP_REVISION,
@@ -1552,10 +1562,12 @@ class LocalDataCleanupStore:
             raise _fail(CleanupFailureCode.STALE_CLEANUP_REVISION, run_id_sha256=run_hash)
         if pending_pointer is not None:
             temporary = entries[pending_pointer[0]]
-            temporary_info = verify_regular_single_link(temporary)
             if (
-                temporary_info.st_size > marker.limits.maximum_control_artifact_bytes
-                or temporary.read_bytes() != pending_pointer[1]
+                _read_control_bytes(
+                    temporary,
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )
+                != pending_pointer[1]
             ):
                 raise _fail(
                     CleanupFailureCode.STALE_CLEANUP_REVISION,
@@ -2400,7 +2412,13 @@ class LocalDataCleanupStore:
             )
             if tree_inventory_sha256(published_inventory) != source_tree_sha:
                 raise CanonicalStorageError("quarantine destination changed after pointer replace")
-            if (control / "current.json").read_bytes() != pointer_bytes:
+            if (
+                _read_control_bytes(
+                    control / "current.json",
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )
+                != pointer_bytes
+            ):
                 raise CanonicalStorageError("cleanup current pointer reread mismatch")
             _directory_sync(control)
             verified = self._read_current(
@@ -3115,7 +3133,13 @@ class LocalDataCleanupStore:
             )
             if tree_inventory_sha256(published_prepared_inventory) != source_tree_sha:
                 raise CanonicalStorageError("delete staging changed after prepare pointer replace")
-            if (control / "current.json").read_bytes() != pointer_two_bytes:
+            if (
+                _read_control_bytes(
+                    control / "current.json",
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )
+                != pointer_two_bytes
+            ):
                 raise CanonicalStorageError("delete-prepared current reread mismatch")
             _directory_sync(control)
             prepared_published = True
@@ -3306,7 +3330,13 @@ class LocalDataCleanupStore:
                 raise CanonicalStorageError(
                     "delete payload namespace reappeared after final pointer replace"
                 )
-            if (control / "current.json").read_bytes() != pointer_three_bytes:
+            if (
+                _read_control_bytes(
+                    control / "current.json",
+                    max_bytes=marker.limits.maximum_control_artifact_bytes,
+                )
+                != pointer_three_bytes
+            ):
                 raise CanonicalStorageError("deleted current reread mismatch")
             _directory_sync(control)
             verified_three = self._read_current(

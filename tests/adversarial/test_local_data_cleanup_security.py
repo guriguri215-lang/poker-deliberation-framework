@@ -983,11 +983,73 @@ def test_final_authority_callback_cannot_replace_quarantine_journal(
 
     assert provider.calls == 3
     assert result.failure is not None
-    assert result.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
-    assert result.failure.filesystem_effect == "none"
+    assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert result.failure.filesystem_effect == "journal_only"
+    assert result.failure.domain_effect == "current_unchanged"
     assert (orchestrator.product_store.foundation.runs_root / "security-run").is_dir()
-    assert not (cleanup_root / "runs" / run_id_sha256("security-run")).exists()
+    assert (cleanup_root / "runs" / run_id_sha256("security-run")).is_dir()
     assert not (cleanup_root / "quarantine" / "security-run").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows alternate data stream check")
+def test_quarantine_current_pointer_alternate_stream_is_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "a" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-current-ads-execution",
+        idempotency_key="security-current-ads-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-current-ads-approval",
+        decision_at=SECURITY_AT,
+    )
+    current = cleanup_root / "runs" / run_id_sha256("security-run") / "current.json"
+
+    def add_alternate_stream(hook: str) -> None:
+        if hook == "quarantine.after_pointer_replace":
+            Path(f"{current}:hidden").write_bytes(b"untrusted")
+
+    executor.store.fault_injector = add_alternate_stream
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-current-ads-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    executor.store.fault_injector = None
+    replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-current-ads-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+    assert replay.failure is not None
+    assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert replay.failure.filesystem_effect == "source_moved"
+    assert replay.failure.domain_effect == "current_may_have_advanced"
 
 
 def test_final_authority_callback_mutation_is_rescanned_before_delete_move(

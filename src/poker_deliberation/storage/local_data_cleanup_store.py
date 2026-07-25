@@ -28,6 +28,7 @@ from poker_deliberation.local_data_cleanup_canonical import (
     cleanup_tombstone_sha256,
     cleanup_transaction_sha256,
     parse_cleanup_model,
+    run_id_sha256,
     tree_inventory_sha256,
 )
 from poker_deliberation.local_data_cleanup_models import (
@@ -141,13 +142,14 @@ class _InitializationStateSnapshot:
     parent_chain: _DirectoryChain
     root_present: bool
     directories: tuple[_DirectoryEntriesSnapshot, ...]
-    control_trees: tuple[_ControlTreeSnapshot, ...]
+    run_control: _OptionalControlSnapshot | None
 
 
 @dataclass(frozen=True)
 class _NamespaceTreeSnapshot:
     path: Path
     parent_chain: _DirectoryChain
+    target_chain: _DirectoryChain | None
     maximum_entries: int
     state: Literal["absent", "present"]
     tree_sha256: str | None
@@ -448,7 +450,17 @@ def inspect_cleanup_root(
         verify_directory(root)
         if _has_nondefault_windows_stream(root):
             raise CanonicalStorageError("cleanup root has an alternate data stream")
-        entries = {entry.name: entry for entry in root.iterdir()}
+        entries: dict[str, Path] = {}
+        for entry in root.iterdir():
+            if len(entries) >= len(_ROOT_ENTRIES):
+                recognized = tuple(
+                    sorted(set(entries) & _ROOT_ENTRIES, key=lambda item: item.encode())
+                )
+                return CleanupRootInspectionV1(
+                    status="corrupt",
+                    recognized_relative_paths=cast(Any, recognized),
+                )
+            entries[entry.name] = entry
         recognized = tuple(sorted(set(entries) & _ROOT_ENTRIES, key=lambda item: item.encode()))
         if not entries:
             return CleanupRootInspectionV1(status="uninitialized")
@@ -546,6 +558,7 @@ def initialize_cleanup_root(
             raise CanonicalStorageError("product authority snapshot is unavailable")
         initialization_state = _capture_initialization_state(
             root,
+            run_hash=run_id_sha256(existing_run_id),
             maximum_entries=limits.maximum_tree_entries,
             maximum_bytes=limits.maximum_control_bytes_per_run,
         )
@@ -708,6 +721,7 @@ def initialize_cleanup_root(
             try:
                 initialization_state = _capture_initialization_state(
                     root,
+                    run_hash=run_id_sha256(existing_run_id),
                     maximum_entries=limits.maximum_tree_entries,
                     maximum_bytes=limits.maximum_control_bytes_per_run,
                 )
@@ -755,17 +769,19 @@ def scan_cleanup_tree(
         )
     entries: list[TreeInventoryEntryV1] = []
     total_bytes = 0
+    discovered_entries = 0
 
     def walk(directory: Path) -> None:
-        nonlocal total_bytes
+        nonlocal discovered_entries, total_bytes
         children: list[Path] = []
         aliases: set[str] = set()
         for child in directory.iterdir():
-            if len(entries) + len(children) >= limits.maximum_tree_entries:
+            if discovered_entries >= limits.maximum_tree_entries:
                 raise _fail(
                     CleanupFailureCode.CAPACITY_EXCEEDED,
                     run_id_sha256=run_id_sha256,
                 )
+            discovered_entries += 1
             normalized = unicodedata.normalize("NFC", child.name)
             alias = normalized.casefold()
             if normalized != child.name or alias in aliases:
@@ -1230,6 +1246,7 @@ def _verify_directory_entries_snapshot(
 def _capture_initialization_state(
     root: Path,
     *,
+    run_hash: str,
     maximum_entries: int,
     maximum_bytes: int,
 ) -> _InitializationStateSnapshot:
@@ -1243,7 +1260,7 @@ def _capture_initialization_state(
             parent_chain=parent_chain,
             root_present=False,
             directories=(),
-            control_trees=(),
+            run_control=None,
         )
     directories = tuple(
         _capture_directory_entries_snapshot(
@@ -1266,14 +1283,14 @@ def _capture_initialization_state(
         parent_chain=parent_chain,
         root_present=True,
         directories=directories,
-        control_trees=tuple(
-            _capture_control_tree_snapshot(
-                path,
+        run_control=(
+            _capture_optional_control_snapshot(
+                root / "runs" / run_hash,
                 owned_anchor=root,
                 maximum_bytes=maximum_bytes,
             )
-            for path in (root / ".cleanup-control", root / "runs")
-            if _strict_lexists(path)
+            if _strict_lexists(root / "runs")
+            else None
         ),
     )
 
@@ -1289,9 +1306,9 @@ def _verify_initialization_state(
             directory,
             owned_anchor=expected.root,
         )
-    for control_tree in expected.control_trees:
-        _verify_control_tree_snapshot(
-            control_tree,
+    if expected.run_control is not None:
+        _verify_optional_control_snapshot(
+            expected.run_control,
             owned_anchor=expected.root,
         )
     _verify_directory_chain(expected.parent_chain)
@@ -1603,6 +1620,7 @@ def _capture_namespace_tree_snapshot(
             if child.name != path.name:
                 raise CanonicalStorageError("namespace target has a case alias")
             exact = True
+    target_chain = _capture_directory_chain(path, owned_anchor=owned_anchor) if exact else None
     state, tree_sha256 = _tree_observation_token(
         path,
         run_id_sha256=run_id_sha256,
@@ -1610,10 +1628,13 @@ def _capture_namespace_tree_snapshot(
     )
     if exact != (state == "present"):
         raise CanonicalStorageError("namespace target presence changed during snapshot")
+    if target_chain is not None:
+        _verify_directory_chain(target_chain)
     _verify_directory_chain(parent_chain)
     return _NamespaceTreeSnapshot(
         path=path,
         parent_chain=parent_chain,
+        target_chain=target_chain,
         maximum_entries=limits.maximum_tree_entries,
         state=state,
         tree_sha256=tree_sha256,
@@ -1628,12 +1649,16 @@ def _verify_namespace_tree_snapshot(
     limits: CleanupLimitsV1,
 ) -> None:
     _verify_directory_chain(expected.parent_chain)
+    if expected.target_chain is not None:
+        _verify_directory_chain(expected.target_chain)
     observed = _capture_namespace_tree_snapshot(
         expected.path,
         owned_anchor=owned_anchor,
         run_id_sha256=run_id_sha256,
         limits=limits,
     )
+    if expected.target_chain is not None:
+        _verify_directory_chain(expected.target_chain)
     _verify_directory_chain(expected.parent_chain)
     if observed != expected:
         raise CanonicalStorageError("namespace target changed")
@@ -1685,12 +1710,15 @@ def _namespace_child(
     expected_name: str,
     *,
     require_exact: bool,
+    maximum_entries: int = DEFAULT_CLEANUP_LIMITS.maximum_tree_entries,
 ) -> Path:
     verify_directory(parent)
     expected_alias = unicodedata.normalize("NFC", expected_name).casefold()
     exact = False
     aliases: set[str] = set()
-    for child in parent.iterdir():
+    for entry_count, child in enumerate(parent.iterdir(), start=1):
+        if entry_count > maximum_entries:
+            raise _fail(CleanupFailureCode.CAPACITY_EXCEEDED)
         normalized = unicodedata.normalize("NFC", child.name)
         alias = normalized.casefold()
         if normalized != child.name or alias in aliases:

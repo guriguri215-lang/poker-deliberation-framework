@@ -22,7 +22,9 @@ from poker_deliberation.schemas import CaseInput
 from poker_deliberation.storage.local_data_cleanup_store import (
     CleanupStorageError,
     _capture_control_tree_snapshot,
+    _namespace_child,
     initialize_cleanup_root,
+    inspect_cleanup_root,
     scan_cleanup_tree,
 )
 from poker_deliberation.storage.revision_canonical import CanonicalStorageError
@@ -1888,3 +1890,150 @@ def test_tree_and_control_scans_stop_at_limit_plus_one(
     assert target_error.value.failure.code is CleanupFailureCode.CAPACITY_EXCEEDED
     assert consumed[target] == 2
     assert consumed[control] == 257
+
+
+def test_nested_tree_cannot_exceed_configured_global_entry_limit(tmp_path: Path) -> None:
+    target = tmp_path / "nested-target"
+    target.mkdir()
+    first = target / "a"
+    first.mkdir()
+    (first / "nested").write_bytes(b"x")
+    (target / "b").write_bytes(b"x")
+
+    with pytest.raises(CleanupStorageError) as error:
+        scan_cleanup_tree(
+            target,
+            run_id_sha256=run_id_sha256("security-run"),
+            limits=CleanupLimitsV1(maximum_tree_entries=2),
+        )
+
+    assert error.value.failure.code is CleanupFailureCode.CAPACITY_EXCEEDED
+
+
+def test_namespace_target_identity_replacement_after_release_is_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "c" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-target-identity-execution",
+        idempotency_key="security-target-identity-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-target-identity-approval",
+        decision_at=SECURITY_AT,
+    )
+    destination = cleanup_root / "quarantine" / "security-run"
+
+    def replace_destination_directory(hook: str) -> None:
+        if hook != "authority.after_close":
+            return
+        old = destination.parent / "old-destination"
+        replacement = destination.parent / "replacement-destination"
+        destination.rename(old)
+        replacement.mkdir()
+        for child in old.iterdir():
+            child.rename(replacement / child.name)
+        old.rmdir()
+        replacement.rename(destination)
+
+    orchestrator.product_store.foundation.fault_injector = replace_destination_directory
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-target-identity-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_initialization_snapshots_only_the_target_run_control(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    root_id = "cleanup-root-" + "d" * 32
+    initialize_cleanup_root(
+        cleanup_root,
+        orchestrator.product_store,
+        existing_run_id="security-run",
+        root_id=root_id,
+        initialized_at=NOW,
+    )
+    for index in range(257):
+        (cleanup_root / "runs" / f"{index:064x}").mkdir()
+
+    result = initialize_cleanup_root(
+        cleanup_root,
+        orchestrator.product_store,
+        existing_run_id="security-run",
+        root_id=root_id,
+        initialized_at=NOW,
+    )
+
+    assert result.outcome_kind == "already_initialized"
+    assert result.filesystem_effect == "none"
+
+
+def test_root_inspection_and_namespace_lookup_are_bounded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    for index in range(7):
+        (root / f"entry-{index}").mkdir()
+    namespace = tmp_path / "namespace"
+    namespace.mkdir()
+    (namespace / "first").mkdir()
+    (namespace / "second").mkdir()
+    original_iterdir = Path.iterdir
+    consumed = {root: 0, namespace: 0}
+
+    def counted_iterdir(path: Path):
+        iterator = original_iterdir(path)
+        if path not in consumed:
+            return iterator
+
+        def counted():
+            for child in iterator:
+                consumed[path] += 1
+                limit = 6 if path == root else 2
+                if consumed[path] > limit:
+                    raise AssertionError("namespace iterator consumed past limit + 1")
+                yield child
+
+        return counted()
+
+    monkeypatch.setattr(Path, "iterdir", counted_iterdir)
+    inspection = inspect_cleanup_root(root)
+    with pytest.raises(CleanupStorageError) as namespace_error:
+        _namespace_child(
+            namespace,
+            "missing",
+            require_exact=False,
+            maximum_entries=1,
+        )
+
+    assert inspection.status == "corrupt"
+    assert namespace_error.value.failure.code is CleanupFailureCode.CAPACITY_EXCEEDED
+    assert consumed[root] == 6
+    assert consumed[namespace] == 2

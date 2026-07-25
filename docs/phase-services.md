@@ -89,9 +89,10 @@ P2-011A usage values are schema `2.0.0` internal fields and preserve the phase c
 outer request/outcome version. No durable usage artifact is added. See
 `docs/budget-execution-contract.md` for units, migration, and deferred behavior.
 
-The existing whole-run atomicity limitation is unchanged: the completion transition can be written
-before a later final-report write fails. P2-010B adds a separate opt-in revision-only seam; it does
-not retrofit ordinary flat-v1 execution or claim whole-run fault-atomic completion.
+P2-010B adds a separate opt-in revision-only seam. P2-012Bはpure/effect phase ownershipを変更せず、
+orchestratorが全fixed artifactをcanonical in-memory bufferへ書いた後のterminal boundaryだけを
+marker-last V2 publicationへ接続する。通常runはflat-v1へ書かず、final report write前後のfaultで
+verified completedを返さない。
 
 ## P2-010B internal revision-only seam
 
@@ -129,3 +130,19 @@ state transition authorityを変更しない。
 
 したがって通常product経路はserialのままで、automatic retryを実行しない。P2-011Bのworkerは
 shared mutable payloadを受け取らず、in-process cooperative tokenをhard stopと表現しない。
+
+## P2-012B product publication boundary
+
+Synthesisは引き続きpureで、固定artifact intentだけを返す。Orchestratorはexecution/security/state/
+approval/dispute/final reportをbufferへcanonical materializeし、state/report/statusと各ledgerを
+再検証してから`TerminalRunStore`へ一つのfrozen requestを渡す。Synthesis自身はmanifest、marker、
+pointer、budget root、filesystemを知らない。
+
+ToolResearchの完全な`ToolResult`とexact input artifactはterminal inventoryへpairで入り、execution
+ordinalとreport orderを変えない。再現argvはfreezeしたdestination revision内のinput payloadを指し、
+publication後に実在する。calculator metadata、numeric exactness、verification、seed/sample/iteration/
+stopping dataを再serializeで落とさない。
+
+publicationのstorage/budget fault、CAS loss、effect unknown、settlement ambiguityはphase successへ
+変換しない。通常のprovider/tool実行はserial、automatic retry 0のままで、P2-012Bは外部provider、
+solver、process isolation、cleanup executorを開始しない。

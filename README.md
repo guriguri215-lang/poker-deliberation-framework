@@ -40,9 +40,9 @@ free local providerと決定論calculatorは利用でき、parallel実行とauto
 P2-011Bでは、P2-012Aのimmutable revision/CASを利用する専用rootに、strictな
 `budget_state.json`、resource reservation、settlement、resume検査、bounded concurrency、
 typed retry、cooperative cancellation、RM-028 evidence interfaceを追加しています。これは
-`poker_deliberation.budgets.durable_*`の内部opt-in APIであり、通常の`Orchestrator`、CLI、
-flat-v1 runには接続しません。通常経路のserial実行、automatic retry 0、capability表示は変わりません。
-P2-012Bのcompletion marker、product reader/status、migration、通常run/resume統合は別承認のままです。
+`poker_deliberation.budgets.durable_*`の内部APIです。P2-012Bの通常product経路は、この専用budget
+rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
+settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
 **FACT**: milestone/RMの現在状態とcompletion evidenceの正は、canonical SSOTである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
@@ -50,9 +50,9 @@ P2-012Bのcompletion marker、product reader/status、migration、通常run/resu
 P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
 `structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで
 `FINAL_SYNTHESIS`から`COMPLETED`へのin-memory transitionを適用する内部opt-in seamである。
-通常の`run`、`resume`、`show`、`load_report`、flat-v1 artifact orderには接続しない。
-`product_integrated_durable_run`は引き続き`planned`であり、terminal reader、durable resume、
-migration、cleanup、external provider/solver、GTO・均衡・正確なrangeの主張を追加しない。
+このP2-010B seam自体は通常経路へ接続しません。通常の`run`、`resume`、`show`、`load_report`、
+`report_path`はP2-012Bの別terminal protocolを使用します。cleanup、external provider/solver、
+GTO・均衡・正確なrangeの主張は追加しません。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
@@ -197,7 +197,10 @@ Python側は`AgentProvider`境界でそれぞれ実行されます。現在のPy
 Python MVPは常に`LocalProvider`を使い、モデルへ外部送信せず、文章的な専門分析を生成しません。
 `POKER_DELIBERATION_PROVIDER`は`local`だけを許可し、モデル名・推論強度の環境設定は未対応として
 エラーにします。外部providerは、承認と統合テスト後に`Orchestrator(provider=...)`へ明示注入します。
-成果物の保存先だけは`POKER_DELIBERATION_RUNS_DIR`でワークスペース内に変更できます。
+`from_env()`ではlegacy、product revision、durable budgetの保存先をそれぞれ
+`POKER_DELIBERATION_RUNS_DIR`、`POKER_DELIBERATION_REVISION_RUNS_DIR`、
+`POKER_DELIBERATION_DURABLE_BUDGET_RUNS_DIR`で変更できます。3 rootはすべてワークスペース内かつ
+相互に非重複でなければなりません。
 
 ## 状態と成果物
 
@@ -206,25 +209,36 @@ budgetはactive runtime、external micro-USD、provider/tool/artifact/runのbyte
 serial peak concurrencyを通常経路で検証します。tool retry数は分類上の候補上限であり、通常経路は
 automatic retryを実行しません。
 
-各runには次を保存します。
+通常の新規runは、flat-v1 rootではなく専用terminal revision rootへ保存します。
 
 ```text
-runs/<run_id>/
-  input.json
-  normalized_case.json
-  assumptions.json
-  assignments.json
-  agent_reports/
-  agent_execution_records.json
-  security_events.json
-  tool_results/
-  evidence.jsonl
-  disputes.json
-  approvals.json
-  state.json
-  final_report.md
-  final_report.json
+.poker-run-revisions/
+  ownership.json
+  runs/<run_id>/.terminal-store/
+    current.json
+    transactions/
+    revisions/r<revision>-<transaction_id>/
+      transaction.json
+      manifest.json
+      completion.json
+      payload/
+        input.json
+        state.json
+        final_report.json
+        final_report.md
+        ...
 ```
+
+`completion.json`はterminal revision内の最後のdata artifactであり、全payload・manifest・markerを
+再検証してから`current.json`をCAS更新します。`succeeded`だけがpublic
+`run_status=completed`になります。`approval_required` checkpointだけがresume可能です。
+`failed`、`cancelled`、`cancel_unconfirmed`もmarker付きterminal revisionとして保存しますが、
+public successにはなりません。
+
+既存の`runs/<run_id>/`はread-only flat-v1 namespaceです。exact `b"v1\n"` sentinelと現行schemaを
+検証できた場合も`legacy_unverified`であり、completedやresumableへ昇格しません。
+`Orchestrator.migrate_legacy_run`は明示的quiescence確認の下で別run IDへexact byte copyを作りますが、
+copy先もmissing guaranteesを保持した`legacy_unverified`です。元runは変更しません。
 
 `agent_execution_records.json`の既存`context_sha256`は従来の完全な`AgentContext` hash計算を維持します。
 P2-024Aはcontext/attemptとsparse payload/source/policy/integrity/runtime/expiryの監査metadataを

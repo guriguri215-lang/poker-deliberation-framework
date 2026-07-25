@@ -4,13 +4,19 @@
 
 P2-012A は、明示的に初期化した専用 root へ immutable な
 `structural_nonterminal` revision を保存する内部 foundation である。
-既存の `RunStore`、`Orchestrator`、CLI、`run/resume/show/load_report/report_path`、
-flat-v1 の bytes・layout・write order は変更しない。新しい型は
+P2-012A完了時点では既存の `RunStore`、`Orchestrator`、CLI、
+`run/resume/show/load_report/report_path`、flat-v1 の bytes・layout・write order を変更しなかった。
+新しい型は
 `poker_deliberation.storage.revision_*` から内部利用し、package-root API には公開しない。
 
 P2-012A は completion marker、terminal manifest/pointer、completed status mapping、
 migration、retention、cleanup、resume integration を実装しない。これらは別承認が必要な
 P2-012B 以降の範囲である。したがって revision の検証成功は「run 完了」や「再開可能」を意味しない。
+
+P2-012BはこのfoundationのV1 schemaを変更せず、別の
+`terminal_models.py`、`terminal_canonical.py`、`terminal_store.py`でproduct terminal V2を実装する。
+以下のP2-012A節はimmutable foundationの契約であり、末尾のP2-012B節が通常product経路の追加層を
+定義する。
 
 ## 専用 root
 
@@ -95,8 +101,8 @@ P2-010B で v2 を使用する場合、ownership marker が
 freeze した元の request/plan bundle の exact `current_committed` replay だけである。
 same-canonical-build、no-mixed-build、no-rolling access は trusted deployment assumption であり、
 変更していない ownership/manifest/pointer schema はこれを attest、detect、prevent しない。
-`product_integrated_durable_run` は planned のままで、terminal reader/status、completion marker、
-migration、resume integration は P2-012B の別範囲である。
+これはP2-012A/P2-010B foundation単独の境界である。terminal reader/status、completion marker、
+migration、resume integrationは、後段のP2-012B product protocolだけが所有する。
 
 ## publish と read
 
@@ -180,3 +186,42 @@ policy/activation substitution、semantic successor forgeryは`reconciliation_re
 このreaderは`poker_deliberation.storage` package rootからexportせず、terminal、completed、
 resumable-product、migrated statusへmappingしない。P2-012Aのphysical quotaとP2-011Bのlogical
 resource reservationは独立しており、どちらか厳しい側がfail closedになる。
+
+## P2-012B product terminal V2
+
+通常の`Orchestrator.run`はflat-v1 `runs_dir`へ書かず、`revision_runs_dir`の
+`runs/<run_id>/.terminal-store/`へimmutable revisionをpublishする。既定rootは
+`.poker-run-revisions`、対応するdurable budget rootは`.poker-budget-revisions`である。3 rootは
+同一・祖先・子孫関係を拒否し、初回run時だけ明示ownershipで初期化する。既存rootのproducer、
+legacy-root identity、schema、ownershipが一致しなければ自動adoptやrepairをしない。
+
+product revisionはcanonical payload inventory、`RunManifestV2`、terminalの場合だけ
+`CompletionMarkerV2`を持つ。payloadとmanifestをexclusive create・fsync・rereadした後、
+`completion.json`をrevision-localの最後のdata artifactとして書く。marker/manifest/payloadを
+再検証後にだけ、expected previous pointerを束縛した`current.json` CASを行う。CAS lossは
+last-write-winsにせずunreferenced revisionとしてreconciliationを要求する。
+
+readerはpointerから選択したrevisionについてrun/revision/transaction/path、inventory、
+size/hash/schema、required payload、state/report/status、approval/context/execution/event lineage、
+lifecycle audit、completion marker、RM-011 settlementを再計算し、pointerを再読してbyte identityを
+確認する。返すstatusは`in_progress`、`approval_required`、`succeeded`、`failed`、`cancelled`、
+`cancel_unconfirmed`、`incomplete`、`corrupt`、`unsupported_version`、`legacy_unverified`である。
+public `completed`へ写像するのはverified `succeeded`だけで、resume可能なのはstableな
+`in_progress`または`approval_required` checkpointだけである。
+
+flat-v1 adapterはexact LF sentinel、portable ID/path、既知artifact、bounded canonical schemaだけを
+read-onlyで検査する。integrity evidenceが存在しないため常に`legacy_unverified`である。
+Windowsのtext newline変換に依存せず、legacy writerもsentinelをexact `b"v1\n"`で保存する。
+copy migrationは異なるdestination run ID、明示quiescence、copy前後のsource inventory hash一致、
+deterministic identityを要求し、元bytesを変更しない。copy先もcompletion markerを持たず
+`legacy_unverified`かつnon-resumableである。
+
+terminal publicationはrevision mutation前に専用RM-011 rootへremaining active runtime、1 slot、
+最大artifact bytes、persistent deltaをatomic reserveし、pointer publication後にpointer/marker hashへ
+exact settleする。missing、overrun、conflict、effect-unknown settlementではreaderがterminal statusを
+返さない。短すぎるruntimeやartifact hard capによってfailure report自体をdurable publishできない
+場合、ordinary callはsuccessを返さず固定code付き`failed_with_limitations`にdowngradeする。
+
+`lifecycle_audit.json`はmarker前のrequired payloadである。retention anchorは同じtransactionでfreezeした
+`CompletionMarkerV2.published_at`で、P2-027A pure evaluatorのbounded metadataだけを保存する。
+scan、move、quarantine、delete、encryption、receipt、tombstone、secure eraseは実行しない。

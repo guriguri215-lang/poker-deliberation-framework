@@ -74,8 +74,8 @@ the only effect adapters; they remain serial and cannot write artifacts or trans
 The orchestrator validates request/outcome correlation, exact synthesis artifact intents, and the
 only permitted requested terminal state before performing the existing fixed writes/transitions.
 Calculation still assigns `math-auditor` and `report-writer` without executing either provider role.
-Phase values are internal and are not persisted as new artifacts. P2-010A does not change the known
-whole-run atomicity limitation; durable transition ordering belongs to P2-012A/P2-010B.
+Phase values are internal and are not persisted as new artifacts. P2-010A単独は当時のwhole-run
+atomicity limitationを変更せず、通常product terminal publicationは後段のP2-012Bが所有する。
 
 P2-011A extends Analysis and ToolResearch values with policy-bound usage deltas, typed budget
 failures, retry classification, and deadline/cancellation status. Each effect adapter preflights its
@@ -142,10 +142,10 @@ verified current chainのrevision、transaction、manifest、pointerと一致し
 変換する。
 
 このseamはterminal manifest、completion marker、product reader/status、durable resume、
-migration、budget CAS、parallel schedulingを持たない。通常のflat-v1 runとCLIは従来順序を保ち、
-既知のCOMPLETED-before-final-report-write failureも未解決のままである。
+migration、budget CAS、parallel schedulingを持たない。これはP2-010B seam単独の歴史的境界であり、
+通常product runのmarker-last publicationは後段のP2-012B節に従う。
 
-## P2-011B durable budget architecture
+## P2-011B durable budget architecture（完了時点の履歴境界）
 
 `budgets/durable_models.py`、`durable_store.py`、`execution.py`は通常product経路から切り離した
 内部layerである。model layerはstrict immutable snapshotとcanonical hash、store layerはP2-012A
@@ -158,6 +158,30 @@ previous hash、usage、active permits、settlements、attempt/context/owner lin
 idempotency operations、failure latch、deterministic eventsを結合する。resourceとslotは1 CASで
 atomic reservationされ、result reductionはcompletion timingでなくexecution ordinalに従う。
 
-通常`Orchestrator`、P2-010A phase executor、P2-010B coordinator、`RunStore`、CLI、flat-v1 artifact
-orderにはこのlayerを注入しない。P2-012B product integrationとP2-028A isolation implementationは
-別のarchitecture boundaryである。
+P2-011B完了時点では、通常`Orchestrator`、P2-010A phase executor、P2-010B coordinator、
+`RunStore`、CLI、flat-v1 artifact orderにこのlayerを注入しなかった。後続P2-012Bは下記の
+product terminal publicationだけにこのstoreをcompositionし、P2-011Bの一般purpose executorや
+P2-028A isolation implementationを通常経路へ有効化しない。
+
+## P2-012B product durable-run architecture
+
+P2-012Bでは`Orchestrator`の既存4 positional constructor parameterとpublic method signatureを維持し、
+新しいstorage/budget/clock/ID dependencyをkeyword-onlyにする。通常実行中のartifactは
+`BufferedRunStore`へcanonical bytesとして保持し、terminal boundaryで一つのfrozen
+`TerminalPublishRequest`に変換する。flat-v1 `RunStore`はlegacy writer/reader互換面に限定され、
+通常product runはそこへmaterializeしない。
+
+依存方向はorchestrator → terminal store → P2-012A revision foundation、およびterminal store →
+P2-011B durable budget storeである。product payload commitmentsはinput/state/report、
+event、approval、context、execution、ToolResult/evidence/security/dispute ledgerを再計算する。
+ToolResultの再現argvはpublish前にfreezeしたimmutable revision内のinput payload pathを指す。
+
+`load_report`、`show`、`report_path`はverified V2 readerの結果だけを信頼する。同じrun IDまたは
+ASCII-case aliasがlegacy/product両namespaceにある場合はconflictであり、自動選択しない。
+v1-onlyはread-only projectionとして`failed_with_limitations`へdowngradeし、明示copy migration後も
+`legacy_unverified`を維持する。
+
+cross-rootのrevision publicationとbudget settlementは一つのfilesystem transactionではない。
+そのためpointer/marker hashへ束縛したdeterministic settlementを必須とし、settlement未確認時は
+物理的に完全なrevisionでも`incomplete`として扱う。このavailability lossはsuccess誤認を避ける
+fail-closed境界である。

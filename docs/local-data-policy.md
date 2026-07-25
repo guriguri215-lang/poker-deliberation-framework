@@ -97,3 +97,16 @@ traceback、secret-shaped valueは拒否する。
 
 この限定例外は他のP2-012A artifactへdefault-internal admissionを拡張しない。budget rootは
 product run rootと別であり、P2-027Aのretention evaluatorやP2-027Bのcleanup authorityを実行しない。
+
+## P2-012B terminal lifecycle hook
+
+product terminal revisionは全admitted payloadのclassification/evidenceを再検証し、
+`lifecycle_audit.json`をrequired payloadとしてcompletion markerより前に保存する。
+`retention_started_at`はexact `CompletionMarkerV2.published_at`、verification basisは
+`verified_terminal`である。provider contextのuse-expiryやfilesystem mtimeをretention anchorへ
+流用しない。
+
+incomplete、corrupt、orphan、path/lineage/encryption mismatchはpure
+`quarantine_candidate`/manual-review evaluationへ写像できるが、P2-012Bはscan、move、delete、
+quarantine、encryption、receipt、tombstone、secure eraseを行わない。flat-v1とcopy migrationは
+`legacy_unverified`かつprotected/manual reviewのままである。

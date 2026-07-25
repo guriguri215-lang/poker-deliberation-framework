@@ -157,3 +157,22 @@ P2-010Bは現在の`BudgetPolicyV2` schema versionとcanonical SHA-256を
 usage、retry classification、deadline/cancellation値は既存validationを通るが、coordinatorは
 usageを再settleせず、reservation、durable ledger、retry、wait、parallel slot、budget CASを
 開始しない。publishまたはapply失敗も自動retryへ変換しない。
+
+## P2-012B terminal publication settlement
+
+P2-012Bの通常product経路は、専用terminal revision rootとは別のP2-011B budget rootを使う。
+terminal requestをfreezeした後、revision filesystem mutationより前に`local_free`、external cost 0、
+concurrency slot 1、verified remaining active runtime、最大planned artifact bytes、exact persistent
+deltaを一つのreservationとして確保する。provider/tool/retry/cost resourceはterminal publicationで
+二重計上しない。
+
+pointer publication後はactual terminal I/O runtime、artifact/run bytesを、verified pointer SHA-256と
+completion marker SHA-256（checkpoint/migrationではmanifest SHA-256）へexactly-once settleする。
+readerはpolicy/run/operation/permit/settlement ID、reservation request hash、result/effect hash、
+terminal settlement statusを再検証する。missing、overrun、conflict、effect unknown、reconciliation
+requiredではterminal statusを返さない。
+
+2 rootを跨ぐatomic filesystem transactionはない。pointer後settlement前のcrashは物理revisionを
+残し得るが、completedへ昇格しない。prewrite no-effect failureだけがexact releaseを許される。
+terminalization自体が短いruntime/artifact hard capを超えた場合、ordinary callはdurabilityを主張せず
+`failed_with_limitations`へdowngradeする。

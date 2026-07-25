@@ -133,3 +133,27 @@ failure latchは最初のunsafe observationを保持する。
 in-process cooperative tokenはprocess-tree kill、remote billing停止、OS resource isolationの証拠ではない。
 それらを要求するtaskは、実装されていないRM-028 boundary evidenceなしに開始しない。unkeyed SHA-256は
 corruption/correlation検出であり、same-privilege malicious writerに対するauthenticityではない。
+
+## P2-012B product terminal threat boundary
+
+product writer/readerはlegacy/product両rootのcase-insensitive alias、mixed namespace、traversal、
+absolute/drive/URI/ADS、非NFC、Windows reserved name、symlink/reparse/hardlink、cross-run substitution、
+duplicate JSON key、unknown version、hash/algorithm downgradeをtrust前に拒否する。run ID validationは
+root初期化より先に行い、不正IDでproduct/budget rootを作らない。
+
+`RunManifestV2`はpayload inventoryとinput/state/event/approval/context/execution lineage、
+budget settlement、lifecycle metadataを束縛する。terminal statusはrevision-local marker-last、
+manifest/payload reread、current pointer CAS、pointer/marker-bound budget settlementの全てが確認できた
+場合だけ返す。manifest-only、marker-only、terminal state-only、missing payload、CAS ambiguity、
+settlement uncertaintyはsuccessにならない。
+
+flat-v1はexact bytesをread-onlyで扱い、欠けているintegrity guaranteeを捏造しない。
+copy migrationは元root/run IDをhashだけで束縛し、raw pathやpayload excerptをcontrol metadataへ
+保存しない。source inventoryがcopy中に変化した場合、destination currentをpublishせず
+staging orphanとしてreconciliationを要求する。
+
+この境界もunkeyed SHA-256とcooperating local process/kernel lockに依存する。同権限のmalicious
+writer authenticity、OS crash後のpower-loss durability、network/distributed filesystem、
+Windows directory fsync、ACL/signature/HMAC、automatic orphan cleanupは保証しない。
+manifestのall-zero `source_commit_id`はruntimeでauthoritative commitが得られない場合の
+**UNKNOWN** sentinelであり、Git/build provenanceのattestationとして信頼してはならない。

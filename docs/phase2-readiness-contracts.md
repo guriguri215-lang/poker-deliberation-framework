@@ -730,17 +730,16 @@ appended with the milestone binding change. Neither binding commit can change
 P2-010B state, history, or completion evidence. No other semantic reapproval
 pair is admitted.
 
-## P2-010B internal integration boundary
+## P2-010B internal integration boundary（完了時点の履歴境界）
 
 P2-010Bの実装境界は、完全なin-memory phase traceを再検証して専用revision rootへ
 `structural_nonterminal` revisionをpublishし、その後だけsame-process authorizationで
 `FINAL_SYNTHESIS`から`COMPLETED`へのlive machine transitionを適用する内部seamである。
 通常の`run`、`resume`、`load_report`、CLI、flat-v1 layout/orderには接続しない。
-P2-011Bは別の明示承認scopeによりinternal durable budget APIだけを実装する。P2-012Bは
-approval null・`not_started`を維持し、completion marker、verified product status、通常resume、
-migration、cleanupは実装しない。
+これはP2-010B完了時点の境界である。P2-011BとP2-012Bは後続の別明示承認scopeであり、
+P2-010Bのcompletion evidenceを遡及変更しない。
 
-## P2-012A completion boundary
+## P2-012A completion boundary（完了時点の履歴境界）
 
 P2-012A の完了条件は、専用 root、strict nonterminal schema/canonical bytes、typed provenance、
 process/kernel lock、immutable revision、serialized CAS、structural reader、orphan inspection と
@@ -748,11 +747,11 @@ metadata-only claim、quota/fault/concurrency evidence までである。`RM-012
 `in_progress` のまま、`P2-012B` の completion marker、terminal reader/status、product
 integration、migration/lifecycle hook は `not_started` のままにする。
 
-capability は `immutable_revision_storage_foundation` だけを implemented にできる。
-`product_integrated_durable_run` は planned を維持し、P2-010B/P2-011B/P2-012B の readiness
-や approval を暗黙に昇格させない。
+P2-012A単独のcapabilityは`immutable_revision_storage_foundation`である。後続の
+`product_integrated_durable_run`昇格はP2-012Bの別approval、実装、全gate、completion evidenceを
+必要とし、P2-012Aのevidenceを遡及変更しない。
 
-## P2-011B completion boundary
+## P2-011B completion boundary（完了時点の履歴境界）
 
 P2-011Bの境界は、専用revision root上のdurable policy/usage/reservation/settlement、verified
 structural resume、revision CASとexact idempotency、bounded internal executor、typed retry、
@@ -761,5 +760,18 @@ Orchestrator/CLI/flat-v1、capability state、P2-011A value/schemaを変更し�
 
 `parallel_deliberation_and_tool_retry`は通常product経路では`disabled`、
 `process_sandbox`は`unavailable`、`immutable_revision_storage_foundation`は`implemented`、
-`product_integrated_durable_run`は`planned`のままである。P2-012B、P2-013A/B、P2-027B、
-P2-028Aを先取りしない。
+P2-011B完了時点では`product_integrated_durable_run`は`planned`であった。この履歴境界は
+P2-013A/B、P2-027B、P2-028Aを先取りしない。
+
+## P2-012B implementation boundary
+
+P2-012Bは通常`run/resume/show/load_report/report_path`を専用terminal V2 rootへ接続する。
+revision-local marker-last、verified current reader/status、P2-011B reservation/settlement、
+P2-027A lifecycle metadata、read-only flat-v1 adapter、copy-only migrationを一つのproduct contract
+として実装する。flat-v1をcompletedへ昇格せず、migration destinationも
+`legacy_unverified`かつnon-resumableである。
+
+P2-012B completion evidenceが成立するには、通常経路がverified V2をdefaultとし、全targeted/full
+gate、4観点レビュー、append-only roadmap validationが同じfinal HEADで成功しなければならない。
+それまではcanonical capabilityをpromoteしない。P2-013A/B、P2-027B、P2-028A、external provider/
+solver、parallel execution、automatic retry、cleanup/release操作は別承認のままである。

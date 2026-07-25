@@ -122,3 +122,16 @@ IDとapproved scalar hash/provenanceだけを保存する。`ContextEnvelope.can
 retry admissionはcontext constructionと別で、transientかつidempotent、またはauthoritative
 reconciliation済みの場合だけ進む。fresh factoryがない、ID/context再利用、owner/role/phase/
 assignment/ordinal substitution、source hash mismatchは実行前にfail closedになる。
+
+## P2-012B terminal lineage and retention
+
+P2-012Bのproduct manifestは`agent_execution_records.json`に保存済みのscalar context fieldsだけから
+context lineage headを再計算する。raw `ContextEnvelope`、canonical payload、`ContextPolicy`、
+`AgentContext`、dispatch、provider input、mutable contextを新しいartifactとして保存しない。
+final reportのexecution ledgerと個別payloadが一致しない場合、terminal publication/readはfail closedに
+なる。
+
+terminal lifecycle auditの`retention_started_at`はprovider use-expiryではなく、同じpublicationで
+freezeした`CompletionMarkerV2.published_at`である。classificationはadmitted sourceの最大値から
+downgradeせず、restricted persistenceを拒否する。P2-012B hookはP2-027A pure evaluatorのbounded
+metadataだけをmarker前に保存し、削除・quarantine・暗号化などのactionを実行しない。

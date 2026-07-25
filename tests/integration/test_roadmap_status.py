@@ -28,6 +28,7 @@ from poker_deliberation.roadmap import (
 from scripts.generate_roadmap_status import main as generate_roadmap_status
 
 ROOT = Path(__file__).resolve().parents[2]
+P2_013A_SCOPE_DIGEST = "c084087ee28b0c51c6907259372d82c0965e4b31f5bd3fbfc670ee5e3644b557"
 P2_012B_EVIDENCE_COMMITS = [
     "f8f2ed5501015d9d6602434fec4f52e4d85df36a",
     "16a12e455003eef5c8c7663f3ba925cf0c5e0c36",
@@ -87,7 +88,19 @@ def _scope_digest(scope: object) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
+def _rewind_p2_013a(document: dict[str, object]) -> None:
+    rm_013 = next(item for item in document["items"] if item["id"] == "RM-013")
+    rm_013["status"] = "planned"
+    document["status_history"]["RM-013"] = ["proposed", "planned"]
+    document["milestone_progress"]["P2-013A"] = {
+        "state": "not_started",
+        "history": ["not_started"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+
+
 def _rewind_split_rm_010(document: dict[str, object]) -> None:
+    _rewind_p2_013a(document)
     rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
     rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
     rm_010["status"] = "in_progress"
@@ -109,6 +122,7 @@ def _rewind_split_rm_010(document: dict[str, object]) -> None:
 
 
 def _rewind_p2_011b(document: dict[str, object]) -> None:
+    _rewind_p2_013a(document)
     rm_011 = next(item for item in document["items"] if item["id"] == "RM-011")
     rm_011["status"] = "in_progress"
     rm_011["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
@@ -121,6 +135,7 @@ def _rewind_p2_011b(document: dict[str, object]) -> None:
 
 
 def _rewind_p2_012b_completion(document: dict[str, object]) -> None:
+    _rewind_p2_013a(document)
     rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
     rm_012["status"] = "in_progress"
     rm_012["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
@@ -205,7 +220,8 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert items["RM-010"]["status"] == "completed"
     assert items["RM-011"]["status"] == "completed"
     assert items["RM-012"]["status"] == "completed"
-    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(13, 18))
+    assert items["RM-013"]["status"] == "in_progress"
+    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(14, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
     assert items["RM-027"]["status"] == "in_progress"
@@ -747,6 +763,39 @@ def test_exact_rm_and_milestone_sets_are_required() -> None:
         validate_roadmap(status_on_ordering_node)
 
 
+def test_p2_013a_has_exact_digest_bound_scope_and_downstream_stays_closed() -> None:
+    document = load_roadmap()
+    reference = "goal-rm013-p2-013a-2026-07-25"
+    record = document["approval_records"][reference]
+    canonical = json.dumps(
+        record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    rm_013 = next(item for item in document["items"] if item["id"] == "RM-013")
+
+    assert len(canonical) == 30132
+    assert hashlib.sha256(canonical).hexdigest() == P2_013A_SCOPE_DIGEST
+    assert record["scope_digest"] == P2_013A_SCOPE_DIGEST
+    assert record["topics"] == record["scope"]["policy_decisions"]
+    assert document["milestone_approvals"]["P2-013A"] == reference
+    assert document["milestone_progress"]["P2-013A"] == {
+        "state": "in_progress",
+        "history": ["not_started", "in_progress"],
+        "completion_evidence": {"commits": [], "paths": [], "tests": []},
+    }
+    assert rm_013["status"] == "in_progress"
+    assert rm_013["human_approval"]["approval_reference"] == reference
+    assert rm_013["human_approval"]["scope_digest"] == P2_013A_SCOPE_DIGEST
+    assert rm_013["human_approval"]["topics"] == record["topics"]
+
+    for milestone_id in ("P2-013B", "P2-027B", "P2-028A"):
+        assert document["milestone_approvals"][milestone_id] is None
+        assert document["milestone_progress"][milestone_id] == {
+            "state": "not_started",
+            "history": ["not_started"],
+            "completion_evidence": {"commits": [], "paths": [], "tests": []},
+        }
+
+
 def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
     document = load_roadmap()
     p2_010a_reference = "goal-rm010-p2-010a-2026-07-20"
@@ -1235,6 +1284,7 @@ def test_completed_milestone_requires_parent_dependency_and_evidence_consistency
         validate_roadmap(counterexample)
 
     pending_parent = deepcopy(load_roadmap())
+    _rewind_p2_013a(pending_parent)
     pending_parent_rm_012 = next(item for item in pending_parent["items"] if item["id"] == "RM-012")
     pending_parent_rm_012["status"] = "planned"
     pending_parent["status_history"]["RM-012"] = ["proposed", "planned"]
@@ -1398,7 +1448,8 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
         "completed": 8,
-        "not_started": 4,
+        "in_progress": 1,
+        "not_started": 3,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []
     assert doctor()["roadmap"]["implementation_ready_ids"] == []

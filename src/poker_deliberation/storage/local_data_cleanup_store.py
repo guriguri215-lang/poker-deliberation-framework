@@ -611,6 +611,7 @@ def _unlink_inventory_tree(
     root: Path,
     inventory: TreeInventoryV1,
     *,
+    expected_root_identity: tuple[int, int],
     fault_injector: FaultInjector | None,
     progress: list[int],
     cancelled: Callable[[], bool] | None,
@@ -619,8 +620,59 @@ def _unlink_inventory_tree(
 ) -> int:
     """Unlink one previously verified tree without traversal or link following."""
 
-    root_info = root.lstat()
-    root_identity = (root_info.st_dev, root_info.st_ino)
+    directory_entries = {
+        entry.relative_path: entry for entry in inventory.entries if entry.entry_kind == "directory"
+    }
+
+    def verify_directory_identity(
+        path: Path,
+        *,
+        relative_path: str | None,
+        expected_identity: tuple[int, int] | None = None,
+    ) -> None:
+        info = path.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or attributes & reparse_flag
+            or _has_nondefault_windows_stream(path)
+        ):
+            raise CanonicalStorageError("delete staging directory identity changed")
+        if expected_identity is not None:
+            if (info.st_dev, info.st_ino) != expected_identity:
+                raise CanonicalStorageError("delete staging root identity changed")
+            return
+        if relative_path is None:
+            raise CanonicalStorageError("delete staging directory identity changed")
+        expected = directory_entries.get(relative_path)
+        identity = canonical_cleanup_sha256(
+            TREE_IDENTITY_DOMAIN,
+            {
+                "entry_kind": "directory",
+                "relative_path": relative_path,
+                "st_dev": info.st_dev,
+                "st_ino": info.st_ino,
+            },
+        )
+        if expected is None or identity != expected.identity_sha256:
+            raise CanonicalStorageError("delete staging directory identity changed")
+
+    def verify_root_and_ancestors(relative_path: str) -> None:
+        verify_directory_identity(
+            root,
+            relative_path=None,
+            expected_identity=expected_root_identity,
+        )
+        parts = relative_path.split("/")
+        for index in range(1, len(parts)):
+            ancestor_relative = "/".join(parts[:index])
+            verify_directory_identity(
+                root.joinpath(*parts[:index]),
+                relative_path=ancestor_relative,
+            )
+
     deleted = 0
     ordered = sorted(
         inventory.entries,
@@ -638,7 +690,8 @@ def _unlink_inventory_tree(
             plan_sha256=plan_sha256,
             transaction_id=transaction_id,
         )
-        target = root / entry.relative_path
+        verify_root_and_ancestors(entry.relative_path)
+        target = root.joinpath(*entry.relative_path.split("/"))
         info = target.lstat()
         attributes = getattr(info, "st_file_attributes", 0)
         reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -700,16 +753,11 @@ def _unlink_inventory_tree(
         plan_sha256=plan_sha256,
         transaction_id=transaction_id,
     )
-    final_root_info = root.lstat()
-    final_root_attributes = getattr(final_root_info, "st_file_attributes", 0)
-    if (
-        not stat.S_ISDIR(final_root_info.st_mode)
-        or stat.S_ISLNK(final_root_info.st_mode)
-        or final_root_attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-        or (final_root_info.st_dev, final_root_info.st_ino) != root_identity
-        or _has_nondefault_windows_stream(root)
-    ):
-        raise CanonicalStorageError("delete staging root identity changed")
+    verify_directory_identity(
+        root,
+        relative_path=None,
+        expected_identity=expected_root_identity,
+    )
     root.rmdir()
     progress[0] = deleted + 1
     _fault(fault_injector, "delete.after_staging_rmdir")
@@ -720,6 +768,30 @@ def _unlink_inventory_tree(
         transaction_id=transaction_id,
     )
     return deleted + 1
+
+
+def _observe_staging_failure(
+    staging: Path,
+    *,
+    run_id_sha256: str,
+    expected_tree_sha256: str,
+    limits: CleanupLimitsV1,
+) -> tuple[Literal["delete_staging_moved", "partial_delete"], bool]:
+    """Boundedly classify staging after a failed delete; bool means unreadable."""
+
+    if not os.path.lexists(staging):
+        return "partial_delete", False
+    try:
+        observed = scan_cleanup_tree(
+            staging,
+            run_id_sha256=run_id_sha256,
+            limits=limits,
+        )
+    except Exception:
+        return "partial_delete", True
+    if tree_inventory_sha256(observed) == expected_tree_sha256:
+        return "delete_staging_moved", False
+    return "partial_delete", False
 
 
 def _control_tree_bytes(control: Path, *, maximum_bytes: int) -> int:
@@ -1345,10 +1417,37 @@ class LocalDataCleanupStore:
         """Find one exact persisted operation after validating the full current lineage."""
 
         run_hash = plan.source.run_id_sha256
-        current = self.read_current(run_hash)
+        if not os.path.lexists(self._run_control(run_hash)):
+            return None
+        marker, marker_sha = self.marker()
+        if (
+            marker.root_id != plan.cleanup_root_id
+            or marker_sha != plan.cleanup_root_marker_sha256
+            or marker.limits != plan.limits
+            or (
+                isinstance(plan.source, ProductRunSourceV1)
+                and (
+                    marker.product_root_identity_sha256 != plan.source.product_root_identity_sha256
+                    or marker.product_ownership_marker_sha256
+                    != plan.source.product_ownership_marker_sha256
+                )
+            )
+            or (
+                not isinstance(plan.source, ProductRunSourceV1)
+                and marker.cleanup_root_identity_sha256 != plan.source.cleanup_root_identity_sha256
+            )
+        ):
+            raise _fail(
+                CleanupFailureCode.STALE_CLEANUP_REVISION,
+                run_id_sha256=run_hash,
+                plan_sha256=cleanup_plan_sha256(plan),
+            )
+        current = self._read_current(
+            run_hash,
+            expected_marker=(marker, marker_sha),
+        )
         if current is None:
             return None
-        marker, _marker_sha = self.marker()
         try:
             binding = self.terminal_store.foundation.inspect_run_authority_binding(
                 plan.source.run_id,
@@ -2339,6 +2438,21 @@ class LocalDataCleanupStore:
         prepared_published = False
         prepare_pointer_attempted = False
         final_pointer_attempted = False
+        destination: Path | None = None
+
+        def observed_staging_failure() -> tuple[
+            Literal["delete_staging_moved", "partial_delete"],
+            bool,
+        ]:
+            if destination is None:
+                return "partial_delete", True
+            return _observe_staging_failure(
+                destination,
+                run_id_sha256=run_hash,
+                expected_tree_sha256=plan.tree_inventory_sha256,
+                limits=marker.limits,
+            )
+
         try:
             storage_checked_at = clock()
             current = self._read_current(
@@ -2763,6 +2877,19 @@ class LocalDataCleanupStore:
             )
             if verified_two is None or verified_two[0] != pointer_two:
                 raise CanonicalStorageError("delete-prepared state did not verify")
+            staging_root_info = destination.lstat()
+            staging_root_attributes = getattr(staging_root_info, "st_file_attributes", 0)
+            if (
+                not stat.S_ISDIR(staging_root_info.st_mode)
+                or stat.S_ISLNK(staging_root_info.st_mode)
+                or staging_root_attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                or _has_nondefault_windows_stream(destination)
+            ):
+                raise CanonicalStorageError("delete staging root identity changed")
+            staging_root_identity = (
+                staging_root_info.st_dev,
+                staging_root_info.st_ino,
+            )
 
             _fault(self.fault_injector, "delete.before_unlink_start")
             _require_not_cancelled(
@@ -2774,6 +2901,7 @@ class LocalDataCleanupStore:
             deleted_entries = _unlink_inventory_tree(
                 destination,
                 staged_inventory,
+                expected_root_identity=staging_root_identity,
                 fault_injector=self.fault_injector,
                 progress=delete_progress,
                 cancelled=cancelled,
@@ -2952,16 +3080,23 @@ class LocalDataCleanupStore:
             )
             deleted_entries = max(deleted_entries, delete_progress[0])
             if staging_moved:
+                filesystem_effect, staging_unreadable = observed_staging_failure()
                 raise _fail(
-                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    (
+                        CleanupFailureCode.EFFECT_UNKNOWN
+                        if staging_unreadable
+                        else CleanupFailureCode.RECONCILIATION_REQUIRED
+                    ),
                     run_id_sha256=run_hash,
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
-                    filesystem_effect=(
-                        "partial_delete" if deleted_entries else "delete_staging_moved"
-                    ),
+                    filesystem_effect=filesystem_effect,
                     domain_effect=(
-                        "current_advanced" if prepared_published else "current_unchanged"
+                        "current_may_have_advanced"
+                        if staging_unreadable
+                        else "current_advanced"
+                        if prepared_published
+                        else "current_unchanged"
                     ),
                 ) from exc
             if journal_published or transaction_root_created:
@@ -2986,27 +3121,35 @@ class LocalDataCleanupStore:
         except CleanupStorageError as exc:
             deleted_entries = max(deleted_entries, delete_progress[0])
             if final_pointer_attempted or (prepare_pointer_attempted and not prepared_published):
+                filesystem_effect = (
+                    observed_staging_failure()[0] if staging_moved else "delete_staging_moved"
+                )
                 raise _fail(
                     CleanupFailureCode.EFFECT_UNKNOWN,
                     run_id_sha256=run_hash,
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
-                    filesystem_effect=(
-                        "partial_delete" if deleted_entries else "delete_staging_moved"
-                    ),
+                    filesystem_effect=filesystem_effect,
                     domain_effect="current_may_have_advanced",
                 ) from exc
             if staging_moved:
+                filesystem_effect, staging_unreadable = observed_staging_failure()
                 raise _fail(
-                    CleanupFailureCode.RECONCILIATION_REQUIRED,
+                    (
+                        CleanupFailureCode.EFFECT_UNKNOWN
+                        if staging_unreadable
+                        else CleanupFailureCode.RECONCILIATION_REQUIRED
+                    ),
                     run_id_sha256=run_hash,
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
-                    filesystem_effect=(
-                        "partial_delete" if deleted_entries else "delete_staging_moved"
-                    ),
+                    filesystem_effect=filesystem_effect,
                     domain_effect=(
-                        "current_advanced" if prepared_published else "current_unchanged"
+                        "current_may_have_advanced"
+                        if staging_unreadable
+                        else "current_advanced"
+                        if prepared_published
+                        else "current_unchanged"
                     ),
                 ) from exc
             if journal_published or transaction_root_created:
@@ -3025,12 +3168,25 @@ class LocalDataCleanupStore:
             raise
         except Exception as exc:
             deleted_entries = max(deleted_entries, delete_progress[0])
+            staging_effect, staging_unreadable = (
+                observed_staging_failure() if staging_moved else ("partial_delete", False)
+            )
             if final_pointer_attempted or (prepare_pointer_attempted and not prepared_published):
                 code = CleanupFailureCode.EFFECT_UNKNOWN
                 domain_effect = "current_may_have_advanced"
             elif staging_moved:
-                code = CleanupFailureCode.RECONCILIATION_REQUIRED
-                domain_effect = "current_advanced" if prepared_published else "current_unchanged"
+                code = (
+                    CleanupFailureCode.EFFECT_UNKNOWN
+                    if staging_unreadable
+                    else CleanupFailureCode.RECONCILIATION_REQUIRED
+                )
+                domain_effect = (
+                    "current_may_have_advanced"
+                    if staging_unreadable
+                    else "current_advanced"
+                    if prepared_published
+                    else "current_unchanged"
+                )
             elif journal_published or transaction_root_created:
                 if _rollback_pre_effect_journal(transaction_root):
                     journal_published = False
@@ -3043,10 +3199,8 @@ class LocalDataCleanupStore:
             else:
                 code = CleanupFailureCode.INTERNAL_INVARIANT_ERROR
                 domain_effect = "none"
-            filesystem_effect = (
-                "partial_delete"
-                if deleted_entries
-                else "delete_staging_moved"
+            generic_filesystem_effect = (
+                staging_effect
                 if staging_moved
                 else "journal_only"
                 if journal_published or transaction_root_created
@@ -3057,7 +3211,7 @@ class LocalDataCleanupStore:
                 run_id_sha256=run_hash,
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
-                filesystem_effect=cast(Any, filesystem_effect),
+                filesystem_effect=cast(Any, generic_filesystem_effect),
                 domain_effect=cast(Any, domain_effect),
             ) from exc
         finally:
@@ -3066,15 +3220,16 @@ class LocalDataCleanupStore:
                 try:
                     authority.release()
                 except LockReleaseError as exc:
+                    release_staging_effect = (
+                        observed_staging_failure()[0] if staging_moved else "partial_delete"
+                    )
                     raise _fail(
                         CleanupFailureCode.EFFECT_UNKNOWN,
                         run_id_sha256=run_hash,
                         plan_sha256=plan_sha,
                         transaction_id=transaction_id,
                         filesystem_effect=(
-                            "partial_delete"
-                            if deleted_entries
-                            else "delete_staging_moved"
+                            release_staging_effect
                             if staging_moved
                             else "journal_only"
                             if journal_published or transaction_root_created

@@ -297,6 +297,22 @@ def _uncertain_replay_result(
     )
 
 
+def _unreadable_replay_result(
+    plan: CleanupPlanV1,
+    *,
+    transaction_id: str,
+) -> CleanupExecutionResultV1:
+    return _execution_failure(
+        plan,
+        CleanupFailureCode.EFFECT_UNKNOWN,
+        transaction_id=transaction_id,
+        filesystem_effect=(
+            "source_moved" if isinstance(plan.source, ProductRunSourceV1) else "partial_delete"
+        ),
+        domain_effect="current_may_have_advanced",
+    )
+
+
 def _cancelled(callback: Callable[[], bool] | None) -> bool:
     return callback is not None and callback()
 
@@ -1047,15 +1063,27 @@ class LocalDataCleanupExecutor:
                 CleanupStorageError,
                 CanonicalStorageError,
                 CleanupCanonicalError,
+                OSError,
             ) as exc:
                 if not isinstance(exc, CleanupStorageError) or (
                     isinstance(exc.failure, CleanupFailureV1)
                     and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
                 ):
-                    report = self.store.inspect_reconciliation(
-                        plan,
-                        transaction_id=transaction_id,
-                    )
+                    try:
+                        report = self.store.inspect_reconciliation(
+                            plan,
+                            transaction_id=transaction_id,
+                        )
+                    except (
+                        CleanupStorageError,
+                        CanonicalStorageError,
+                        CleanupCanonicalError,
+                        OSError,
+                    ):
+                        return _unreadable_replay_result(
+                            plan,
+                            transaction_id=transaction_id,
+                        )
                     if report.classification != "no_effect":
                         return _uncertain_replay_result(plan, report)
                 raise
@@ -1301,15 +1329,27 @@ class LocalDataCleanupExecutor:
                 CleanupStorageError,
                 CanonicalStorageError,
                 CleanupCanonicalError,
+                OSError,
             ) as exc:
                 if not isinstance(exc, CleanupStorageError) or (
                     isinstance(exc.failure, CleanupFailureV1)
                     and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
                 ):
-                    report = self.store.inspect_reconciliation(
-                        plan,
-                        transaction_id=transaction_id,
-                    )
+                    try:
+                        report = self.store.inspect_reconciliation(
+                            plan,
+                            transaction_id=transaction_id,
+                        )
+                    except (
+                        CleanupStorageError,
+                        CanonicalStorageError,
+                        CleanupCanonicalError,
+                        OSError,
+                    ):
+                        return _unreadable_replay_result(
+                            plan,
+                            transaction_id=transaction_id,
+                        )
                     if report.classification != "no_effect":
                         return _uncertain_replay_result(plan, report)
                 raise

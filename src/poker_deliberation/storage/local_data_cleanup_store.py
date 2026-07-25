@@ -763,6 +763,43 @@ def _verify_directory_chain(
             raise CanonicalStorageError("delete staging ancestor identity changed")
 
 
+def _capture_control_directory_tree(
+    control: Path,
+    *,
+    owned_anchor: Path,
+) -> _DirectoryChains:
+    chains: list[_DirectoryChain] = []
+    stack = [control]
+    while stack:
+        directory = stack.pop()
+        chains.append(
+            _capture_directory_chain(
+                directory,
+                owned_anchor=owned_anchor,
+            )
+        )
+        if len(chains) > 256:
+            raise CanonicalStorageError("cleanup control directory capacity exceeded")
+        for child in directory.iterdir():
+            info = child.lstat()
+            attributes = getattr(info, "st_file_attributes", 0)
+            reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            if stat.S_ISLNK(info.st_mode) or attributes & reparse_flag:
+                raise CanonicalStorageError("cleanup control directory contains a link")
+            if stat.S_ISDIR(info.st_mode):
+                stack.append(child)
+            elif not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise CanonicalStorageError("cleanup control entry is not a regular artifact")
+    return tuple(chains)
+
+
+def _verify_directory_chains(expected: _DirectoryChains) -> None:
+    if not expected:
+        raise CanonicalStorageError("cleanup control directory state is unavailable")
+    for chain in expected:
+        _verify_directory_chain(chain)
+
+
 def _unlink_inventory_tree(
     root: Path,
     inventory: TreeInventoryV1,
@@ -1637,6 +1674,26 @@ class LocalDataCleanupStore:
         )
         if current is None:
             return None
+        control = self._run_control(run_hash)
+        lineage_directory_chains = _capture_control_directory_tree(
+            control,
+            owned_anchor=self.cleanup_root,
+        )
+
+        def verify_persisted_lineage() -> None:
+            _verify_directory_chains(lineage_directory_chains)
+            observed = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
+            _verify_directory_chains(lineage_directory_chains)
+            if observed != current:
+                raise _fail(
+                    CleanupFailureCode.STALE_CLEANUP_REVISION,
+                    run_id_sha256=run_hash,
+                    plan_sha256=cleanup_plan_sha256(plan),
+                )
+
         try:
             binding = self.terminal_store.foundation.inspect_run_authority_binding(
                 plan.source.run_id,
@@ -1649,7 +1706,7 @@ class LocalDataCleanupStore:
                 plan_sha256=cleanup_plan_sha256(plan),
             ) from exc
         self._require_product_binding(marker, binding)
-        control = self._run_control(run_hash)
+        verify_persisted_lineage()
         revisions_root = control / "revisions"
         _capture_directory_chain(revisions_root, owned_anchor=self.cleanup_root)
         current_pointer = current[0]
@@ -1780,8 +1837,11 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
             )
         if not exact:
+            verify_persisted_lineage()
             return None
-        return max(exact, key=lambda item: item[0].revision)
+        result = max(exact, key=lambda item: item[0].revision)
+        verify_persisted_lineage()
+        return result
 
     def inspect_reconciliation(
         self,
@@ -2190,6 +2250,10 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
+            journal_parent_chain = _capture_directory_chain(
+                control.parent,
+                owned_anchor=self.cleanup_root,
+            )
             _fault(self.fault_injector, "quarantine.before_journal")
             _require_not_cancelled(
                 cancelled,
@@ -2197,6 +2261,14 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             )
+            _verify_directory_chain(journal_parent_chain)
+            if _strict_lexists(control):
+                raise _fail(
+                    CleanupFailureCode.IDEMPOTENCY_CONFLICT,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                )
             control.mkdir()
             control_created = True
             (control / "transactions").mkdir()
@@ -2473,7 +2545,7 @@ class LocalDataCleanupStore:
             if verified is None or verified[0] != pointer:
                 raise CanonicalStorageError("cleanup committed state did not verify")
             verify_effect_parent_chains()
-            return CleanupExecutionResultV1(
+            result = CleanupExecutionResultV1(
                 outcome_kind="committed",
                 run_id_sha256=run_hash,
                 execution_id=plan.execution_id,
@@ -2487,6 +2559,41 @@ class LocalDataCleanupStore:
                 tombstone=tombstone,
                 tombstone_sha256=tombstone_sha,
             )
+            if authority is None:
+                raise CanonicalStorageError("quarantine authority disappeared before release")
+            held_authority = authority
+            authority = None
+            try:
+                held_authority.release()
+            except LockReleaseError as exc:
+                raise _fail(
+                    CleanupFailureCode.EFFECT_UNKNOWN,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="source_moved",
+                    domain_effect="current_may_have_advanced",
+                ) from exc
+            verify_effect_parent_chains()
+            if _strict_lexists(source):
+                raise CanonicalStorageError("quarantine source reappeared after authority release")
+            released_inventory = scan_cleanup_tree(
+                destination,
+                run_id_sha256=run_hash,
+                limits=marker.limits,
+            )
+            if tree_inventory_sha256(released_inventory) != source_tree_sha:
+                raise CanonicalStorageError(
+                    "quarantine destination changed after authority release"
+                )
+            released_current = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
+            if released_current is None or released_current[0] != pointer:
+                raise CanonicalStorageError("cleanup state changed after authority release")
+            verify_effect_parent_chains()
+            return result
         except (ProductRunError, RunStorageError) as exc:
             code = (
                 CleanupFailureCode.RUN_LOCKED
@@ -2922,6 +3029,10 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
+            pre_journal_control_chains = _capture_control_directory_tree(
+                control,
+                owned_anchor=self.cleanup_root,
+            )
             _fault(self.fault_injector, "delete.before_journal")
             _require_not_cancelled(
                 cancelled,
@@ -2929,6 +3040,14 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             )
+            _verify_directory_chains(pre_journal_control_chains)
+            if _strict_lexists(transaction_root):
+                raise _fail(
+                    CleanupFailureCode.IDEMPOTENCY_CONFLICT,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                )
             transaction_root.mkdir()
             transaction_root_created = True
 
@@ -3438,7 +3557,7 @@ class LocalDataCleanupStore:
             if verified_three is None or verified_three[0] != pointer_three:
                 raise CanonicalStorageError("deleted state did not verify")
             verify_effect_parent_chains()
-            return CleanupExecutionResultV1(
+            result = CleanupExecutionResultV1(
                 outcome_kind="committed",
                 run_id_sha256=run_hash,
                 execution_id=plan.execution_id,
@@ -3452,6 +3571,34 @@ class LocalDataCleanupStore:
                 tombstone=tombstone_three,
                 tombstone_sha256=tombstone_three_sha,
             )
+            if authority is None:
+                raise CanonicalStorageError("delete authority disappeared before release")
+            held_authority = authority
+            authority = None
+            try:
+                held_authority.release()
+            except LockReleaseError as exc:
+                raise _fail(
+                    CleanupFailureCode.EFFECT_UNKNOWN,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                    filesystem_effect="partial_delete",
+                    domain_effect="current_may_have_advanced",
+                ) from exc
+            verify_effect_parent_chains()
+            if _strict_lexists(source) or _strict_lexists(destination):
+                raise CanonicalStorageError(
+                    "delete payload namespace changed after authority release"
+                )
+            released_current = self._read_current(
+                run_hash,
+                expected_marker=(marker, marker_sha),
+            )
+            if released_current is None or released_current[0] != pointer_three:
+                raise CanonicalStorageError("deleted state changed after authority release")
+            verify_effect_parent_chains()
+            return result
         except (ProductRunError, RunStorageError) as exc:
             code = (
                 CleanupFailureCode.RUN_LOCKED

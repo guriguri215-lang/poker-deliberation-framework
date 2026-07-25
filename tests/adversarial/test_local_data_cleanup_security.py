@@ -1111,6 +1111,186 @@ def test_quarantine_control_directory_replacement_is_not_committed(
     assert revisions.is_dir()
 
 
+def test_quarantine_before_journal_parent_replacement_creates_no_control(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "c" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-pre-journal-parent-execution",
+        idempotency_key="security-pre-journal-parent-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-pre-journal-parent-approval",
+        decision_at=SECURITY_AT,
+    )
+    runs = cleanup_root / "runs"
+    relocated = tmp_path / "relocated-runs"
+
+    def replace_runs_parent(hook: str) -> None:
+        if hook == "quarantine.before_journal":
+            runs.rename(relocated)
+            runs.mkdir()
+
+    executor.store.fault_injector = replace_runs_parent
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-pre-journal-parent-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.filesystem_effect == "none"
+    assert not (runs / run_id_sha256("security-run")).exists()
+    assert not tuple(relocated.iterdir())
+    assert (orchestrator.product_store.foundation.runs_root / "security-run").is_dir()
+
+
+def test_quarantine_authority_release_mutation_is_not_committed(
+    tmp_path: Path,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "d" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-release-mutation-execution",
+        idempotency_key="security-release-mutation-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-release-mutation-approval",
+        decision_at=SECURITY_AT,
+    )
+    revisions = cleanup_root / "runs" / run_id_sha256("security-run") / "revisions"
+    relocated = tmp_path / "release-relocated-revisions"
+
+    def replace_after_release(hook: str) -> None:
+        if hook != "authority.after_close":
+            return
+        revisions.rename(relocated)
+        revisions.mkdir()
+        for child in relocated.iterdir():
+            child.rename(revisions / child.name)
+
+    orchestrator.product_store.foundation.fault_injector = replace_after_release
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-release-mutation-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    orchestrator.product_store.foundation.fault_injector = None
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert result.failure.filesystem_effect == "source_moved"
+    assert result.failure.domain_effect == "current_may_have_advanced"
+
+
+def test_persisted_operation_authority_boundary_preserves_lineage_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "e" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-replay-lineage-execution",
+        idempotency_key="security-replay-lineage-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-replay-lineage-approval",
+        decision_at=SECURITY_AT,
+    )
+    first = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-replay-lineage-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert first.outcome_kind == "committed"
+
+    control = cleanup_root / "runs" / run_id_sha256("security-run")
+    transactions = control / "transactions"
+    relocated = tmp_path / "replay-relocated-transactions"
+    original = orchestrator.product_store.foundation.inspect_run_authority_binding
+    mutated = False
+
+    def replace_during_binding(run_id: str, *, detached: bool):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            transactions.rename(relocated)
+            transactions.mkdir()
+            for child in relocated.iterdir():
+                child.rename(transactions / child.name)
+        return original(run_id, detached=detached)
+
+    monkeypatch.setattr(
+        orchestrator.product_store.foundation,
+        "inspect_run_authority_binding",
+        replace_during_binding,
+    )
+    replay = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-replay-lineage-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert mutated
+    assert replay.failure is not None
+    assert replay.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert replay.failure.filesystem_effect == "source_moved"
+    assert replay.failure.domain_effect == "current_may_have_advanced"
+
+
 def test_final_authority_callback_mutation_is_rescanned_before_delete_move(
     tmp_path: Path,
 ) -> None:

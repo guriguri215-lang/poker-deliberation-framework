@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -22,6 +21,10 @@ from poker_deliberation.schemas import (
     Claim,
     EpistemicLabel,
 )
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+)
 
 
 class FailingNormalizationService(NormalizationService):
@@ -38,11 +41,18 @@ def test_pure_phase_failure_does_not_write_its_or_later_artifacts(tmp_path: Path
     )
     with pytest.raises(RuntimeError, match="forced pure compute failure"):
         orchestrator.run(CaseInput(kind="calculation", raw_text="review"), run_id=run_id)
-    run_dir = tmp_path / "runs" / run_id
-    assert (run_dir / "input.json").is_file()
-    assert not (run_dir / "normalized_case.json").exists()
-    assert not (run_dir / "assignments.json").exists()
-    assert not (run_dir / "final_report.json").exists()
+    assert orchestrator.store.read_json(run_id, "input.json")["raw_text"] == "review"
+    for logical_name in (
+        "normalized_case.json",
+        "assignments.json",
+        "final_report.json",
+    ):
+        with pytest.raises(FileNotFoundError):
+            orchestrator.store.read_json(run_id, logical_name)
+    with pytest.raises(ProductRunError) as failure:
+        orchestrator.product_store.read_current(run_id)
+    assert failure.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+    assert not (orchestrator.product_store.runs_root / run_id).exists()
 
 
 class CorruptRoutingService(RoutingService):
@@ -62,9 +72,15 @@ def test_malformed_phase_outcome_fails_before_assignment_materialization(tmp_pat
             CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
             run_id=run_id,
         )
-    run_dir = tmp_path / "runs" / run_id
-    assert not (run_dir / "assignments.json").exists()
-    assert not list((run_dir / "agent_reports").glob("*.json"))
+    with pytest.raises(FileNotFoundError):
+        orchestrator.store.read_json(run_id, "assignments.json")
+    assert not any(
+        payload.inventory.logical_name.startswith("agent_reports/")
+        for payload in orchestrator.store.verified_payloads(run_id)
+    )
+    with pytest.raises(ProductRunError) as failure:
+        orchestrator.product_store.read_current(run_id)
+    assert failure.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
 
 
 class TimeoutProvider:
@@ -176,6 +192,11 @@ def test_final_write_fault_keeps_known_p2_010b_atomicity_limitation(
             CaseInput(kind="calculation", raw_text="review", analysis_scope="retrospective"),
             run_id=run_id,
         )
-    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+    state = orchestrator.store.read_json(run_id, "state.json")
     assert state["state"] == "COMPLETED"
-    assert not (tmp_path / "runs" / run_id / "final_report.json").exists()
+    with pytest.raises(FileNotFoundError):
+        orchestrator.store.read_json(run_id, "final_report.json")
+    with pytest.raises(ProductRunError) as failure:
+        orchestrator.product_store.read_current(run_id)
+    assert failure.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+    assert not (orchestrator.product_store.runs_root / run_id).exists()

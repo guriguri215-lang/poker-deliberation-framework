@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +25,7 @@ from poker_deliberation.providers import (
     ProviderStatus,
 )
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport, CaseInput
+from poker_deliberation.storage.terminal_models import RunReadStatus
 from poker_deliberation.tools import default_registry
 from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 
@@ -795,15 +795,18 @@ def test_internal_approval_report_work_is_charged_before_human_wait_pause(
         },
     )
 
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         monotonic_clock=clock,
         synthesis_service=AdvancingSynthesisService(clock),
-    ).run(case, run_id=run_id)
-    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+    )
+    report = orchestrator.run(case, run_id=run_id)
+    state = orchestrator.store.read_json(run_id, "state.json")
+    verified = orchestrator.product_store.read_current(run_id)
 
     assert report.run_status == "approval_required"
     assert state["elapsed_seconds"] == 0.5
+    assert verified.read_status is RunReadStatus.APPROVAL_REQUIRED
 
 
 @pytest.mark.parametrize("approval_required", [False, True])
@@ -831,12 +834,13 @@ def test_final_synthesis_runtime_overrun_is_structured_and_not_completed(
         else {}
     )
     run_id = f"run-synthesis-overrun-{approval_required}"
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         monotonic_clock=clock,
         budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
         synthesis_service=AdvancingSynthesisService(clock, 2_000_000_000),
-    ).run(
+    )
+    report = orchestrator.run(
         CaseInput(
             kind="calculation",
             raw_text="review final synthesis runtime",
@@ -845,10 +849,12 @@ def test_final_synthesis_runtime_overrun_is_structured_and_not_completed(
         ),
         run_id=run_id,
     )
-    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
+    state = orchestrator.store.read_json(run_id, "state.json")
+    verified = orchestrator.product_store.read_current(run_id)
 
     assert report.run_status == "failed_with_limitations"
     assert state["state"] == "FAILED_WITH_LIMITATIONS"
+    assert verified.read_status is RunReadStatus.FAILED
     assert "maximum runtime exceeded during final synthesis" in report.data_quality
 
 
@@ -880,14 +886,14 @@ def test_final_artifact_runtime_overrun_rewrites_terminal_state_fail_closed(
         ),
         run_id=run_id,
     )
-    state = json.loads((tmp_path / "runs" / run_id / "state.json").read_text(encoding="utf-8"))
-    stored_report = json.loads(
-        (tmp_path / "runs" / run_id / "final_report.json").read_text(encoding="utf-8")
-    )
+    state = orchestrator.store.read_json(run_id, "state.json")
+    stored_report = orchestrator.store.read_json(run_id, "final_report.json")
+    verified = orchestrator.product_store.read_current(run_id)
 
     assert report.run_status == "failed_with_limitations"
     assert state["state"] == "FAILED_WITH_LIMITATIONS"
     assert stored_report["run_status"] == "failed_with_limitations"
+    assert verified.read_status is RunReadStatus.FAILED
     assert "maximum runtime exceeded during final artifact writes" in report.data_quality
 
 
@@ -912,12 +918,14 @@ def test_run_store_writes_settle_peak_artifact_and_current_run_bytes(tmp_path: P
         ),
         run_id=run_id,
     )
-    run_dir = tmp_path / "runs" / run_id
-    sizes = [path.stat().st_size for path in run_dir.rglob("*") if path.is_file()]
+    payloads = orchestrator.store.verified_payloads(run_id)
+    sizes = [len(payload.exact_bytes) for payload in payloads]
     usage = orchestrator._run_machines[run_id].usage_snapshot()
+    verified = orchestrator.product_store.read_current(run_id)
 
     assert usage.artifact_bytes == max(sizes)
     assert usage.run_bytes == sum(sizes)
+    assert verified.read_status is RunReadStatus.SUCCEEDED
 
 
 def test_tool_failure_has_non_retryable_production_classification(tmp_path: Path) -> None:

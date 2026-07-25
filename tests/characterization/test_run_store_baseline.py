@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -18,8 +17,7 @@ def test_flat_v1_run_store_bytes_layout_and_write_order_remain_unchanged(
     store.append_jsonl("legacy-1", "events.jsonl", {"event": 1})
     store.write_text("legacy-1", "final_report.md", "unchanged\n")
 
-    marker_bytes = b"v1\r\n" if os.name == "nt" else b"v1\n"
-    assert (run / ".poker-deliberation-run").read_bytes() == marker_bytes
+    assert (run / ".poker-deliberation-run").read_bytes() == b"v1\n"
     assert (run / "input.json").read_bytes() == b'{\n  "a": 1,\n  "b": 2\n}\n'
     assert (run / "events.jsonl").read_bytes() == b'{"event": 1}\n'
     assert (run / "final_report.md").read_bytes() == b"unchanged\n"

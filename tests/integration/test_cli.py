@@ -2,8 +2,18 @@ import json
 from pathlib import Path
 
 from poker_deliberation.cli import main
+from poker_deliberation.config import AppConfig
+from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.schemas import CaseInput, FinalReport
+from poker_deliberation.storage.run_store import RunStore
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _set_run_roots(monkeypatch, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("POKER_DELIBERATION_RUNS_DIR", str(tmp_path / "runs"))
+    monkeypatch.setenv("POKER_DELIBERATION_REVISION_RUNS_DIR", str(tmp_path / "p"))
+    monkeypatch.setenv("POKER_DELIBERATION_DURABLE_BUDGET_RUNS_DIR", str(tmp_path / "b"))
 
 
 def test_doctor_without_api_key(capsys) -> None:  # type: ignore[no-untyped-def]
@@ -120,7 +130,7 @@ def test_calculate_cli_requires_explicit_retrospective_scope(capsys) -> None:  #
 
 def test_review_hand_and_show_cli(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("POKER_DELIBERATION_RUNS_DIR", str(tmp_path / "runs"))
+    _set_run_roots(monkeypatch, tmp_path)
     exit_code = main(
         [
             "review-hand",
@@ -149,7 +159,7 @@ def test_review_hand_and_show_cli(tmp_path: Path, monkeypatch, capsys) -> None: 
 
 def test_review_hand_normalizes_documented_free_text(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("POKER_DELIBERATION_RUNS_DIR", str(tmp_path / "runs"))
+    _set_run_roots(monkeypatch, tmp_path)
     exit_code = main(
         [
             "review-hand",
@@ -191,7 +201,7 @@ def test_approval_required_cli_uses_distinct_exit_code(tmp_path: Path, monkeypat
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("POKER_DELIBERATION_RUNS_DIR", str(tmp_path / "runs"))
+    _set_run_roots(monkeypatch, tmp_path)
     exit_code = main(["review-strategy", "--file", str(case_path), "--format", "json"])
     report = json.loads(capsys.readouterr().out)
     assert exit_code == 3
@@ -211,3 +221,76 @@ def test_approval_required_cli_uses_distinct_exit_code(tmp_path: Path, monkeypat
     assert resume_exit_code == 2
     assert resumed["run_status"] == "failed_with_limitations"
     assert resumed["agent_execution_records"] == report["agent_execution_records"]
+
+
+def test_show_corrupt_product_run_exits_two_without_report(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.chdir(tmp_path)
+    _set_run_roots(monkeypatch, tmp_path)
+    config = AppConfig.from_env()
+    Orchestrator(config).run(
+        CaseInput(
+            kind="calculation",
+            raw_text="corrupt CLI fixture",
+            analysis_scope="retrospective",
+        ),
+        run_id="run-cli-corrupt",
+    )
+    current = (
+        config.revision_runs_dir / "runs" / "run-cli-corrupt" / ".terminal-store" / "current.json"
+    )
+    current.write_bytes(current.read_bytes() + b"\n")
+
+    exit_code = main(["show", "run-cli-corrupt", "--format", "json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "run_corrupt" in captured.err
+
+
+def test_show_legacy_run_is_downgraded_and_exits_two(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.chdir(tmp_path)
+    _set_run_roots(monkeypatch, tmp_path)
+    config = AppConfig.from_env()
+    legacy = RunStore(config.runs_dir)
+    legacy.create_run("run-cli-legacy")
+    legacy.write_json(
+        "run-cli-legacy",
+        "input.json",
+        CaseInput(
+            kind="calculation",
+            raw_text="legacy CLI fixture",
+            analysis_scope="retrospective",
+        ),
+    )
+    legacy.write_json(
+        "run-cli-legacy",
+        "state.json",
+        {
+            "state": "COMPLETED",
+            "events": [],
+            "deliberation_rounds": 0,
+            "tool_retries": {},
+            "elapsed_seconds": 0.0,
+        },
+    )
+    legacy.write_json(
+        "run-cli-legacy",
+        "final_report.json",
+        FinalReport(run_id="run-cli-legacy", conclusion="legacy"),
+    )
+
+    exit_code = main(["show", "run-cli-legacy", "--format", "json"])
+    report = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 2
+    assert report["run_status"] == "failed_with_limitations"
+    assert "legacy_unverified_integrity_guarantees_missing" in report["limitations"]

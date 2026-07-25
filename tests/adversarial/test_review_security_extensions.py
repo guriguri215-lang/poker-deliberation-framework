@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -241,10 +242,11 @@ def test_agent_execution_records_include_context_hash_and_provider(tmp_path: Pat
         role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         provider=DeterministicMockProvider(scripts),
-    ).run(
+    )
+    report = orchestrator.run(
         CaseInput(
             kind="strategy",
             raw_text="retrospective review",
@@ -254,5 +256,9 @@ def test_agent_execution_records_include_context_hash_and_provider(tmp_path: Pat
     assert len(report.agent_execution_records) == 4
     assert all(record.provider == "deterministic-mock" for record in report.agent_execution_records)
     assert all(len(record.context_sha256) == 64 for record in report.agent_execution_records)
-    artifact = tmp_path / "runs" / report.run_id / "agent_execution_records.json"
-    assert artifact.is_file()
+    persisted = json.loads(
+        orchestrator.product_store.read_current(report.run_id).payload_bytes(
+            "agent_execution_records.json"
+        )
+    )
+    assert len(persisted) == 4

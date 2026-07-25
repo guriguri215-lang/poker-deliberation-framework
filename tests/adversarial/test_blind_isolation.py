@@ -139,9 +139,8 @@ def test_strategy_analyst_receives_only_blind_context(tmp_path: Path) -> None:
     data["analysis_scope"] = "retrospective"
     data["objective"] = "prove the winning action was right"
     data["assumptions"] = [Assumption(text="winning proves correctness", reason="user preference")]
-    report = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider).run(
-        CaseInput.model_validate(data)
-    )
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider)
+    report = orchestrator.run(CaseInput.model_validate(data))
     contexts = {role: context for role, context in provider.contexts}
     blind = contexts["strategy-analyst"]
     assert blind.objective == "decision_quality_baseline"
@@ -150,9 +149,8 @@ def test_strategy_analyst_receives_only_blind_context(tmp_path: Path) -> None:
     assert blind.hand is None
     assert blind.claims == []
     assert blind.assumptions == []
-    assignments = json.loads(
-        (tmp_path / "runs" / report.run_id / "assignments.json").read_text(encoding="utf-8")
-    )
+    verified = orchestrator.product_store.read_current(report.run_id)
+    assignments = json.loads(verified.payload_bytes("assignments.json"))
     strategy_assignment = next(
         item for item in assignments if item["agent_role"] == "strategy-analyst"
     )
@@ -224,10 +222,9 @@ def test_isolation_error_becomes_structured_failed_report(
     orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider)
 
     report = orchestrator.run(CaseInput.model_validate(data))
-    run_dir = tmp_path / "runs" / report.run_id
-
     assert report.run_status == "failed_with_limitations"
     assert any("blind decision isolation failed" in item for item in report.data_quality)
     assert [role for role, _ in provider.contexts] == ["intake"]
-    assert (run_dir / "state.json").is_file()
-    assert (run_dir / "final_report.json").is_file()
+    verified = orchestrator.product_store.read_current(report.run_id)
+    assert json.loads(verified.payload_bytes("state.json"))["state"] == ("FAILED_WITH_LIMITATIONS")
+    assert verified.payload_bytes("final_report.json")

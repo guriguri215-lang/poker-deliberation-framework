@@ -100,48 +100,57 @@ def test_orchestrator_delivers_exact_allowlisted_fresh_contexts(tmp_path: Path) 
 
 def test_context_payload_is_not_persisted_as_a_new_lifecycle_artifact(tmp_path: Path) -> None:
     provider = CapturingProvider()
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         provider=provider,
         context_clock=lambda: FIXED_NOW,
-    ).run(CaseInput(kind="strategy", raw_text="artifact canary", analysis_scope="retrospective"))
-    run_dir = tmp_path / "runs" / report.run_id
-    names = {path.name for path in run_dir.rglob("*") if path.is_file()}
+    )
+    report = orchestrator.run(
+        CaseInput(kind="strategy", raw_text="artifact canary", analysis_scope="retrospective")
+    )
+    verified = orchestrator.product_store.read_current(report.run_id)
+    names = {payload.inventory.logical_name for payload in verified.payloads}
 
     assert "context_envelope.json" not in names
     assert "context_policy.json" not in names
-    records = json.loads((run_dir / "agent_execution_records.json").read_text(encoding="utf-8"))
+    records = json.loads(verified.payload_bytes("agent_execution_records.json"))
     assert records
     assert all("canonical_payload" not in record for record in records)
 
 
 def test_local_provider_behavior_remains_non_generative_and_completed(tmp_path: Path) -> None:
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         context_clock=lambda: FIXED_NOW,
-    ).run(CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"))
+    )
+    report = orchestrator.run(
+        CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective")
+    )
 
     assert report.run_status == "completed"
     assert report.agent_execution_records
     assert {
         (record.provider, record.status.value) for record in report.agent_execution_records
     } == {("local", "completed")}
-    report_files = list((tmp_path / "runs" / report.run_id / "agent_reports").glob("*.json"))
-    assert report_files
-    assert all(
-        json.loads(path.read_text(encoding="utf-8"))["conclusions"] == [] for path in report_files
-    )
+    report_payloads = [
+        payload
+        for payload in orchestrator.product_store.read_current(report.run_id).payloads
+        if payload.inventory.logical_name.startswith("agent_reports/")
+    ]
+    assert report_payloads
+    assert all(json.loads(payload.exact_bytes)["conclusions"] == [] for payload in report_payloads)
 
 
 def test_calculation_case_keeps_provider_uninvoked_and_assignment_artifact_valid(
     tmp_path: Path,
 ) -> None:
     provider = CapturingProvider()
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         provider=provider,
         context_clock=lambda: FIXED_NOW,
-    ).run(
+    )
+    report = orchestrator.run(
         CaseInput(
             kind="calculation",
             analysis_scope="retrospective",
@@ -162,7 +171,7 @@ def test_calculation_case_keeps_provider_uninvoked_and_assignment_artifact_valid
     assert provider.calls == []
     assert report.agent_execution_records == []
     assignments = json.loads(
-        (tmp_path / "runs" / report.run_id / "assignments.json").read_text(encoding="utf-8")
+        orchestrator.product_store.read_current(report.run_id).payload_bytes("assignments.json")
     )
     assert all(assignment["context_keys"] == [] for assignment in assignments)
 

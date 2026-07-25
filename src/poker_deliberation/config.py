@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from decimal import Decimal
 from pathlib import Path
@@ -43,9 +44,61 @@ class AppConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     runs_dir: Path = Path("runs")
+    revision_runs_dir: Path = Path(".poker-run-revisions")
+    durable_budget_runs_dir: Path = Path(".poker-budget-revisions")
     output_language: str = "ja"
     record_sensitive_data: bool = False
     budgets: BudgetConfig = Field(default_factory=BudgetConfig)
+
+    def resolved_storage_roots(self) -> tuple[Path, Path, Path]:
+        legacy = self.runs_dir.resolve()
+        workspace = Path.cwd().resolve()
+        absolute_legacy_namespace = hashlib.sha256(
+            os.fsencode(os.path.normcase(str(legacy)))
+        ).hexdigest()[:8]
+
+        def resolve(path: Path, *, default: Path, prefix: str) -> Path:
+            if path.is_absolute():
+                return path.resolve()
+            if self.runs_dir.is_absolute() and path == default:
+                return (legacy.parent / f".{prefix}-{absolute_legacy_namespace}").resolve()
+            return (workspace / path).resolve()
+
+        return (
+            legacy,
+            resolve(
+                self.revision_runs_dir,
+                default=Path(".poker-run-revisions"),
+                prefix="p",
+            ),
+            resolve(
+                self.durable_budget_runs_dir,
+                default=Path(".poker-budget-revisions"),
+                prefix="b",
+            ),
+        )
+
+    @staticmethod
+    def _validate_nonoverlapping_roots(roots: tuple[Path, Path, Path]) -> None:
+        for index, left in enumerate(roots):
+            for right in roots[index + 1 :]:
+                if left == right or left in right.parents or right in left.parents:
+                    raise ValueError(
+                        "legacy, product, and durable-budget roots must be pairwise nonoverlapping"
+                    )
+
+    @classmethod
+    def _validate_roots_inside_workspace(
+        cls,
+        roots: tuple[Path, Path, Path],
+        workspace: Path,
+    ) -> None:
+        for root in roots:
+            if root != workspace and workspace not in root.parents:
+                raise ValueError(
+                    "all configured run roots must remain inside the current workspace"
+                )
+        cls._validate_nonoverlapping_roots(roots)
 
     @classmethod
     def from_env(cls) -> AppConfig:
@@ -66,14 +119,26 @@ class AppConfig(BaseModel):
                 "the local provider does not call a model"
             )
         configured_runs_dir = Path(os.getenv("POKER_DELIBERATION_RUNS_DIR", "runs"))
-        resolved_runs_dir = configured_runs_dir.resolve()
-        workspace = Path.cwd().resolve()
-        if resolved_runs_dir != workspace and workspace not in resolved_runs_dir.parents:
-            raise ValueError(
-                "POKER_DELIBERATION_RUNS_DIR must remain inside the current workspace; "
-                "construct AppConfig explicitly only after approving an external location"
+        configured_revision_dir = Path(
+            os.getenv(
+                "POKER_DELIBERATION_REVISION_RUNS_DIR",
+                ".poker-run-revisions",
             )
-        return cls(runs_dir=configured_runs_dir)
+        )
+        configured_budget_dir = Path(
+            os.getenv(
+                "POKER_DELIBERATION_DURABLE_BUDGET_RUNS_DIR",
+                ".poker-budget-revisions",
+            )
+        )
+        config = cls(
+            runs_dir=configured_runs_dir,
+            revision_runs_dir=configured_revision_dir,
+            durable_budget_runs_dir=configured_budget_dir,
+        )
+        workspace = Path.cwd().resolve()
+        cls._validate_roots_inside_workspace(config.resolved_storage_roots(), workspace)
+        return config
 
 
 def migrate_budget_config(config: BudgetConfig) -> V1BudgetMigrationResult:

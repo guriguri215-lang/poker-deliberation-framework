@@ -64,6 +64,7 @@ BUDGET_BINDING_DOMAIN = "poker-run-budget-settlement-binding-v2"
 EMPTY_HEAD_DOMAIN = "poker-run-terminal-empty-head-v2"
 LIFECYCLE_AUDIT_DOMAIN = "poker-run-lifecycle-audit-v2"
 LEGACY_SOURCE_INVENTORY_DOMAIN = "poker-run-legacy-source-inventory-v2"
+PRODUCT_LINEAGE_DOMAIN_PREFIX = "poker-product"
 
 _SUPPORTED_VERSION = TERMINAL_SCHEMA_VERSION
 _VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}$")
@@ -141,6 +142,127 @@ def empty_lineage_head_sha256(kind: str) -> str:
     return domain_sha256(EMPTY_HEAD_DOMAIN, encoded + b"\0" + b"[]")
 
 
+def _lineage_head(kind: str, value: Sequence[object]) -> str:
+    if not value:
+        return empty_lineage_head_sha256(kind)
+    return canonical_domain_sha256(
+        f"{PRODUCT_LINEAGE_DOMAIN_PREFIX}-{kind}-lineage-v2",
+        value,
+    )
+
+
+def product_payload_commitments(
+    payloads: Mapping[str, bytes],
+    *,
+    run_id: str,
+    status: str,
+) -> tuple[str, str, str, str, str, str]:
+    """Recompute product input, checkpoint, and scalar lineage commitments."""
+
+    required = {"input.json", "state.json", "final_report.json"}
+    if not required <= set(payloads):
+        raise CanonicalStorageError("product publication lacks a required core payload")
+    parse_canonical_model(payloads["input.json"], CaseInput)
+    report = _parse_json_model(payloads["final_report.json"], FinalReport)
+    state = parse_canonical_json(payloads["state.json"])
+    if not isinstance(state, dict):
+        raise CanonicalStorageError("state checkpoint must be an object")
+    events = state.get("events")
+    if not isinstance(events, list) or any(not isinstance(item, dict) for item in events):
+        raise CanonicalStorageError("state checkpoint events must be an object list")
+    if report.run_id != run_id:
+        raise CanonicalStorageError("final report run ID mismatch")
+
+    expected_public_status = {
+        "approval_required": "approval_required",
+        "succeeded": "completed",
+        "failed": "failed_with_limitations",
+        "cancelled": "failed_with_limitations",
+        "cancel_unconfirmed": "failed_with_limitations",
+    }.get(status)
+    expected_machine_state = {
+        "approval_required": "HUMAN_REVIEW_REQUIRED",
+        "succeeded": "COMPLETED",
+        "failed": "FAILED_WITH_LIMITATIONS",
+        "cancelled": "FAILED_WITH_LIMITATIONS",
+        "cancel_unconfirmed": "FAILED_WITH_LIMITATIONS",
+    }.get(status)
+    if expected_public_status is not None and (
+        report.run_status != expected_public_status or state.get("state") != expected_machine_state
+    ):
+        raise CanonicalStorageError("product state/report/status correlation mismatch")
+
+    approvals = TypeAdapter(list[ApprovalRequest]).validate_json(
+        payloads.get("approvals.json", b"[]")
+    )
+    execution_records = TypeAdapter(list[AgentExecutionRecord]).validate_json(
+        payloads.get("agent_execution_records.json", b"[]")
+    )
+    security_events = TypeAdapter(list[SecurityEvent]).validate_json(
+        payloads.get("security_events.json", b"[]")
+    )
+    disputes = TypeAdapter(list[Dispute]).validate_json(payloads.get("disputes.json", b"[]"))
+    evidence = parse_canonical_jsonl(payloads.get("evidence.jsonl", b""), EvidenceRecord)
+    tool_results = {
+        logical_name.removeprefix("tool_results/").removesuffix(".json"): (
+            _parse_json_model(data, ToolResult)
+        )
+        for logical_name, data in payloads.items()
+        if logical_name.startswith("tool_results/")
+        and logical_name.endswith(".json")
+        and not logical_name.endswith(".input.json")
+    }
+    tool_inputs = {
+        logical_name.removeprefix("tool_results/").removesuffix(".input.json")
+        for logical_name in payloads
+        if logical_name.startswith("tool_results/") and logical_name.endswith(".input.json")
+    }
+    if tool_inputs != set(tool_results):
+        raise CanonicalStorageError("tool input/result inventory pairing mismatch")
+    if report.approvals != approvals:
+        raise CanonicalStorageError("final report approval payload correlation mismatch")
+    if report.agent_execution_records != execution_records:
+        raise CanonicalStorageError("final report execution payload correlation mismatch")
+    if report.security_events != security_events:
+        raise CanonicalStorageError("final report security payload correlation mismatch")
+    if report.disputes != disputes:
+        raise CanonicalStorageError("final report dispute payload correlation mismatch")
+    if report.evidence != list(evidence):
+        raise CanonicalStorageError("final report evidence payload correlation mismatch")
+    if len(report.tool_results) != len(tool_results) or any(
+        tool_results.get(item.result_id) != item for item in report.tool_results
+    ):
+        raise CanonicalStorageError("final report tool payload correlation mismatch")
+    for result in report.tool_results:
+        input_name = f"tool_results/{result.result_id}.input.json"
+        if input_name not in payloads or parse_canonical_json(payloads[input_name]) != result.input:
+            raise CanonicalStorageError("tool input/result correlation mismatch")
+
+    context_bindings = [
+        {
+            key: value
+            for key, value in record.model_dump(mode="json").items()
+            if key == "context_sha256" or key.startswith("context_") or key == "parent_context_id"
+        }
+        for record in execution_records
+    ]
+    execution_bindings: list[object] = [
+        record.model_dump(mode="json") for record in execution_records
+    ]
+    execution_bindings.extend(item.model_dump(mode="json") for item in report.tool_results)
+    return (
+        sha256_bytes(payloads["input.json"]),
+        sha256_bytes(payloads["state.json"]),
+        _lineage_head("event", events),
+        _lineage_head(
+            "approval",
+            [item.model_dump(mode="json") for item in approvals],
+        ),
+        _lineage_head("context", context_bindings),
+        _lineage_head("execution", execution_bindings),
+    )
+
+
 def _canonical_entries(
     inventory: Sequence[PayloadInventoryEntryV1],
 ) -> tuple[PayloadInventoryEntryV1, ...]:
@@ -192,6 +314,8 @@ def required_inventory_sha256(
 def verify_payload_inventory(
     inventory: Sequence[PayloadInventoryEntryV1],
     payloads: Mapping[str, bytes],
+    *,
+    allow_opaque: bool = False,
 ) -> tuple[PayloadInventoryEntryV1, ...]:
     entries = _canonical_entries(inventory)
     expected = {entry.logical_name for entry in entries}
@@ -205,7 +329,7 @@ def verify_payload_inventory(
             or sha256_bytes(data) != entry.sha256
         ):
             raise CanonicalStorageError("terminal payload size or hash mismatch")
-        validate_payload_bytes(entry, data)
+        validate_payload_bytes(entry, data, allow_opaque=allow_opaque)
     return entries
 
 
@@ -221,6 +345,22 @@ def _validate_json_models(data: bytes, model: type[BaseModel]) -> None:
             raise CanonicalStorageError("terminal payload list schema mismatch") from fallback_exc
     if canonical_json_bytes(values) != data:
         raise CanonicalStorageError("terminal payload list canonical bytes mismatch")
+
+
+def _parse_json_model(data: bytes, model: type[T]) -> T:
+    parse_canonical_json(data)
+    adapter = TypeAdapter(model)
+    try:
+        value = adapter.validate_json(data, strict=False)
+    except ValidationError as exc:
+        raise CanonicalStorageError("terminal payload schema mismatch") from exc
+    if canonical_json_bytes(value) != data:
+        raise CanonicalStorageError("terminal payload canonical bytes mismatch")
+    return value
+
+
+def _validate_json_model(data: bytes, model: type[BaseModel]) -> None:
+    _parse_json_model(data, model)
 
 
 def _validate_json_value(logical_name: str, data: bytes) -> None:
@@ -240,7 +380,7 @@ def _validate_json_value(logical_name: str, data: bytes) -> None:
     }
     model = single_models.get(logical_name)
     if model is not None:
-        parse_canonical_model(data, model)
+        _validate_json_model(data, model)
         return
     model = list_models.get(logical_name)
     if model is not None:
@@ -250,7 +390,7 @@ def _validate_json_value(logical_name: str, data: bytes) -> None:
         parse_canonical_model(data, AgentReport)
         return
     if logical_name.startswith("tool_results/") and not logical_name.endswith(".input.json"):
-        parse_canonical_model(data, ToolResult)
+        _validate_json_model(data, ToolResult)
         return
     value = parse_canonical_json(data)
     if logical_name == "state.json" and not isinstance(value, dict):
@@ -259,7 +399,12 @@ def _validate_json_value(logical_name: str, data: bytes) -> None:
         raise CanonicalStorageError("tool input payload must be an object")
 
 
-def validate_payload_bytes(entry: PayloadInventoryEntryV1, data: bytes) -> None:
+def validate_payload_bytes(
+    entry: PayloadInventoryEntryV1,
+    data: bytes,
+    *,
+    allow_opaque: bool = False,
+) -> None:
     if entry.serialization == CONTROL_CANONICALIZATION:
         _validate_json_value(entry.logical_name, data)
     elif entry.serialization == JSONL_SERIALIZATION:
@@ -268,6 +413,9 @@ def validate_payload_bytes(entry: PayloadInventoryEntryV1, data: bytes) -> None:
         parse_canonical_jsonl(data, EvidenceRecord)
     elif entry.serialization == TEXT_SERIALIZATION:
         validate_canonical_text(data)
+    elif entry.serialization == "opaque-bytes-v1" and allow_opaque:
+        if not isinstance(data, bytes):
+            raise CanonicalStorageError("legacy opaque payload must be exact bytes")
     else:
         raise CanonicalStorageError("opaque terminal payloads are not admitted")
 
@@ -354,6 +502,7 @@ __all__ = [
     "parse_completion_marker",
     "parse_current_pointer",
     "parse_run_manifest",
+    "product_payload_commitments",
     "required_inventory_sha256",
     "terminal_inventory_sha256",
     "verify_payload_inventory",

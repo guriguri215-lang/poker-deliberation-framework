@@ -3,11 +3,16 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
+from poker_deliberation.config import AppConfig
 from poker_deliberation.local_data_policy import (
+    LifecycleAuditMetadata,
     LifecycleDisposition,
     SubjectState,
 )
-from poker_deliberation.schemas import FinalReport
+from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.schemas import CaseInput, FinalReport
 from poker_deliberation.storage.lifecycle_hooks import (
     build_terminal_lifecycle_audit,
     evaluate_reader_candidate,
@@ -78,3 +83,34 @@ def test_corrupt_reader_subject_is_only_a_quarantine_candidate() -> None:
     assert result.audit is not None
     assert result.audit.proposed_disposition is LifecycleDisposition.QUARANTINE_CANDIDATE
     assert result.audit.action_digest is None
+
+
+def test_product_terminal_persists_verified_marker_anchored_lifecycle_metadata(
+    tmp_path: Path,
+) -> None:
+    config = AppConfig(
+        runs_dir=tmp_path / "legacy",
+        revision_runs_dir=tmp_path / "product",
+        durable_budget_runs_dir=tmp_path / "budget",
+    )
+    orchestrator = Orchestrator(config)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="lifecycle integration",
+            analysis_scope="retrospective",
+        ),
+        run_id="run-lifecycle-product",
+    )
+    current = orchestrator.product_store.read_current(report.run_id)
+    audits = TypeAdapter(list[LifecycleAuditMetadata]).validate_json(
+        current.payload_bytes("lifecycle_audit.json")
+    )
+
+    assert current.completion_marker is not None
+    assert current.lifecycle_verified is True
+    assert audits
+    assert all(
+        item.retention_started_at == current.completion_marker.published_at for item in audits
+    )
+    assert all(item.action_digest is None for item in audits)

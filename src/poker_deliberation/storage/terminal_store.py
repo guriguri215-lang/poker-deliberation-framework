@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from collections.abc import Callable
 from contextlib import suppress
@@ -39,6 +40,7 @@ from poker_deliberation.storage.revision_canonical import (
     parse_canonical_json,
     platform_adapter,
     run_id_sha256,
+    validate_logical_name,
     validate_run_id,
 )
 from poker_deliberation.storage.revision_lock import (
@@ -67,6 +69,7 @@ from poker_deliberation.storage.terminal_canonical import (
     parse_completion_marker,
     parse_current_pointer,
     parse_run_manifest,
+    product_payload_commitments,
     required_inventory_sha256,
     terminal_inventory_sha256,
     verify_payload_inventory,
@@ -91,6 +94,7 @@ PRODUCT_PRODUCER_VERSION = "0.1.0"
 PRODUCT_ROOT_DOMAIN = "poker-product-revision-root-v2"
 PRODUCT_TRANSACTION_DOMAIN = "poker-product-transaction-v2"
 PRODUCT_BUDGET_ID_DOMAIN = "poker-product-budget-id-v2"
+_CURRENT_TEMP = re.compile(r"^current\.txn-[0-9a-f]{32}\.tmp$")
 
 Clock = Callable[[], datetime]
 IdFactory = Callable[[str], str]
@@ -492,6 +496,7 @@ class DurableBudgetCoordinator:
             reservation=reservation,
             lineage=lineage,
         )
+        self.store.rebase_monotonic_clock(request.run_id)
         self.store.start(
             request.run_id,
             operation_id=ids["start"],
@@ -693,6 +698,24 @@ class TerminalRunStore:
     def runs_root(self) -> Path:
         return self.revision_root / "runs"
 
+    def planned_payload_path(
+        self,
+        run_id: str,
+        *,
+        revision: int,
+        transaction_id: str,
+        logical_name: str,
+    ) -> Path:
+        """Return the confined immutable payload path for a frozen publication."""
+
+        validate_run_id(run_id)
+        if revision < 1:
+            raise ValueError("revision must be positive")
+        if re.fullmatch(r"txn-[0-9a-f]{32}", transaction_id) is None:
+            raise ValueError("invalid terminal transaction ID")
+        logical = validate_logical_name(logical_name)
+        return self._paths(run_id)[3] / f"r{revision}-{transaction_id}" / "payload" / Path(logical)
+
     def initialize(self, *, initialized_at: datetime | None = None) -> None:
         initialize_terminal_root(
             self.revision_root,
@@ -709,11 +732,27 @@ class TerminalRunStore:
         if not isinstance(self.budget, DurableBudgetCoordinator):
             return request
         provisional = self._prepare(request)
-        binding = self.budget.freeze_binding(
-            request,
-            artifact_bytes=provisional.artifact_bytes,
-            run_bytes=provisional.persistent_delta,
-        )
+        try:
+            binding = self.budget.freeze_binding(
+                request,
+                artifact_bytes=provisional.artifact_bytes,
+                run_bytes=provisional.persistent_delta,
+            )
+        except DurableBudgetError as exc:
+            code = (
+                ProductRunFailureCode.RUN_LOCKED
+                if exc.failure.code.value in {"run_locked", "concurrency_exceeded", "cas_conflict"}
+                else ProductRunFailureCode.BUDGET_RESERVATION_FAILED
+            )
+            raise _failure(
+                request.run_id,
+                code,
+                stage="budget_freeze",
+                transaction_id=request.transaction_id,
+                previous_revision_effect=(
+                    "not_applicable" if request.proposed_revision == 1 else "unchanged"
+                ),
+            ) from exc
         frozen = replace(request, budget_binding=binding)
         final = self._prepare(frozen)
         if (
@@ -765,8 +804,17 @@ class TerminalRunStore:
             raise CanonicalStorageError("mixed or unknown product run namespace")
         verify_directory(control)
         control_entries = {item.name: item for item in control.iterdir()}
-        if set(control_entries) - {"transactions", "revisions", "current.json"}:
+        unknown = {
+            name
+            for name in control_entries
+            if name not in {"transactions", "revisions", "current.json"}
+            and _CURRENT_TEMP.fullmatch(name) is None
+        }
+        if unknown:
             raise CanonicalStorageError("unknown terminal control entry")
+        for name, item in control_entries.items():
+            if _CURRENT_TEMP.fullmatch(name) is not None:
+                verify_regular_single_link(item)
         if transactions.exists():
             verify_directory(transactions)
             for item in transactions.iterdir():
@@ -820,10 +868,27 @@ class TerminalRunStore:
             }
             if len(payload_map) != len(request.payloads):
                 raise CanonicalStorageError("duplicate terminal payload")
+            allow_opaque = request.publication_kind == "legacy_copy"
             inventory = verify_payload_inventory(
                 tuple(payload.inventory for payload in request.payloads),
                 payload_map,
+                allow_opaque=allow_opaque,
             )
+            if request.publication_kind != "legacy_copy":
+                commitments = product_payload_commitments(
+                    payload_map,
+                    run_id=request.run_id,
+                    status=request.status,
+                )
+                if commitments != (
+                    request.canonical_input_sha256,
+                    request.state_checkpoint_sha256,
+                    request.event_head_sha256,
+                    request.approval_lineage_head_sha256,
+                    request.context_lineage_head_sha256,
+                    request.execution_lineage_head_sha256,
+                ):
+                    raise CanonicalStorageError("product payload commitment mismatch")
             lifecycle_bytes = payload_map.get("lifecycle_audit.json")
             if request.publication_kind == "product_terminal":
                 if (
@@ -1034,9 +1099,28 @@ class TerminalRunStore:
             if relative not in expected_paths:
                 raise CanonicalStorageError("unexpected terminal payload")
             payloads[relative] = _read_bounded(item, max_bytes=self.max_artifact_bytes)
-        entries = verify_payload_inventory(manifest.artifacts, payloads)
+        entries = verify_payload_inventory(
+            manifest.artifacts,
+            payloads,
+            allow_opaque=manifest.publication_kind == "legacy_copy",
+        )
         if terminal_inventory_sha256(entries) != manifest.inventory_sha256:
             raise CanonicalStorageError("terminal inventory hash mismatch")
+        if manifest.publication_kind != "legacy_copy":
+            commitments = product_payload_commitments(
+                payloads,
+                run_id=run_id,
+                status=manifest.status,
+            )
+            if commitments != (
+                manifest.canonical_input_sha256,
+                manifest.state_checkpoint_sha256,
+                manifest.event_head_sha256,
+                manifest.approval_lineage_head_sha256,
+                manifest.context_lineage_head_sha256,
+                manifest.execution_lineage_head_sha256,
+            ):
+                raise CanonicalStorageError("terminal payload commitment mismatch")
         marker: CompletionMarkerV2 | None = None
         marker_bytes: bytes | None = None
         if pointer.publication_kind == "product_terminal":
@@ -1108,10 +1192,12 @@ class TerminalRunStore:
             self.foundation._ownership(run_id)
             self._scan_aliases(run_id)
             self._verify_namespace(run_id)
-            _run, control, _transactions, revisions = self._paths(run_id)
+            _run, control, transactions, revisions = self._paths(run_id)
             current = control / "current.json"
             if not current.exists():
-                if revisions.exists() and any(revisions.iterdir()):
+                if (revisions.exists() and any(revisions.iterdir())) or (
+                    transactions.exists() and any(transactions.iterdir())
+                ):
                     raise _failure(
                         run_id,
                         ProductRunFailureCode.RUN_INCOMPLETE,
@@ -1314,7 +1400,12 @@ class TerminalRunStore:
             )
         return None
 
-    def publish(self, request: TerminalPublishRequest) -> TerminalPublishOutcome:
+    def publish(
+        self,
+        request: TerminalPublishRequest,
+        *,
+        pre_manifest_verifier: Callable[[], None] | None = None,
+    ) -> TerminalPublishOutcome:
         prepared = self._prepare(request)
         previous_effect: Literal["not_applicable", "unchanged"] = (
             "not_applicable" if request.proposed_revision == 1 else "unchanged"
@@ -1400,13 +1491,21 @@ class TerminalRunStore:
                     injector=self.fault_injector,
                     hook=f"payload.{entry.logical_name.replace('/', '_')}",
                 )
+            if pre_manifest_verifier is not None:
+                _fault(self.fault_injector, "pre_manifest_verifier.before")
+                pre_manifest_verifier()
+                _fault(self.fault_injector, "pre_manifest_verifier.after")
             _write_exclusive_verified(
                 staging / "manifest.json",
                 prepared.manifest_bytes,
                 injector=self.fault_injector,
                 hook="manifest",
             )
-            verify_payload_inventory(prepared.manifest.artifacts, payload_map)
+            verify_payload_inventory(
+                prepared.manifest.artifacts,
+                payload_map,
+                allow_opaque=request.publication_kind == "legacy_copy",
+            )
             if prepared.marker_bytes is not None:
                 _write_exclusive_verified(
                     staging / "completion.json",

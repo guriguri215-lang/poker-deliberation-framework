@@ -102,7 +102,7 @@ def test_calculation_keeps_report_writer_assignment_unexecuted(
     )
 
     assignments = json.loads(
-        (tmp_path / "runs" / report.run_id / "assignments.json").read_text(encoding="utf-8")
+        orchestrator.product_store.read_current(report.run_id).payload_bytes("assignments.json")
     )
     assert [item["agent_role"] for item in assignments] == ["math-auditor", "report-writer"]
     assert all(item["context_keys"] == [] for item in assignments)
@@ -155,11 +155,9 @@ def test_tool_result_metadata_and_artifact_names_remain_compatible(tmp_path: Pat
     ):
         assert getattr(actual, field) == getattr(expected, field)
 
-    run_dir = tmp_path / "runs" / report.run_id
-    assert {path.name for path in run_dir.iterdir()} == {
-        ".poker-deliberation-run",
-        "agent_reports",
-        "tool_results",
+    verified = orchestrator.product_store.read_current(report.run_id)
+    payload_names = {payload.inventory.logical_name for payload in verified.payloads}
+    assert {name for name in payload_names if "/" not in name} == {
         "input.json",
         "evidence.jsonl",
         "normalized_case.json",
@@ -172,8 +170,10 @@ def test_tool_result_metadata_and_artifact_names_remain_compatible(tmp_path: Pat
         "disputes.json",
         "final_report.json",
         "final_report.md",
+        "lifecycle_audit.json",
     }
-    assert not any(path.name.startswith("phase") for path in run_dir.iterdir())
+    assert len([name for name in payload_names if name.startswith("tool_results/")]) == 2
+    assert not any(Path(name).name.startswith("phase") for name in payload_names)
 
 
 def test_orchestrator_public_methods_and_positional_constructor_remain_compatible() -> None:

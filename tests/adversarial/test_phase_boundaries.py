@@ -101,60 +101,79 @@ def test_unsafe_provider_report_id_cannot_overwrite_run_artifacts(tmp_path: Path
         CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
         run_id="run-unsafe-report",
     )
-    run_dir = tmp_path / "runs" / report.run_id
-    assignments = json.loads((run_dir / "assignments.json").read_text(encoding="utf-8"))
+    verified = orchestrator.product_store.read_current(report.run_id)
+    assignments = json.loads(verified.payload_bytes("assignments.json"))
+    report_names = [
+        payload.inventory.logical_name
+        for payload in verified.payloads
+        if payload.inventory.logical_name.startswith("agent_reports/")
+    ]
     assert [item["agent_role"] for item in assignments] == [
         "strategy-analyst",
         "math-auditor",
         "skeptic",
         "adjudicator",
     ]
-    assert len(list((run_dir / "agent_reports").glob("*.json"))) == 4
-    assert all(
-        "/" not in path.stem and "\\" not in path.stem
-        for path in (run_dir / "agent_reports").glob("*.json")
-    )
+    assert len(report_names) == 4
+    assert all("/" not in Path(name).stem and "\\" not in Path(name).stem for name in report_names)
     assert all(record.status.value == "failed" for record in report.agent_execution_records)
 
 
 def test_duplicate_report_ids_fail_closed_to_unique_fallbacks(tmp_path: Path) -> None:
     provider = MaliciousReportProvider(report_id="report-duplicate")
-    report = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider).run(
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider)
+    report = orchestrator.run(
         CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
         run_id="run-duplicate-report",
     )
-    paths = list((tmp_path / "runs" / report.run_id / "agent_reports").glob("*.json"))
-    assert len(paths) == 4
-    assert len({path.stem for path in paths}) == 4
+    verified = orchestrator.product_store.read_current(report.run_id)
+    report_names = [
+        payload.inventory.logical_name
+        for payload in verified.payloads
+        if payload.inventory.logical_name.startswith("agent_reports/")
+    ]
+    assert len(report_names) == 4
+    assert len({Path(name).stem for name in report_names}) == 4
     assert sum(record.status.value == "completed" for record in report.agent_execution_records) == 1
     assert sum(record.status.value == "failed" for record in report.agent_execution_records) == 3
 
 
 def test_report_id_made_unsafe_by_redaction_uses_safe_fallback(tmp_path: Path) -> None:
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         provider=MaliciousReportProvider(report_id="sk-abcdefghijk"),
-    ).run(
+    )
+    report = orchestrator.run(
         CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
         run_id="run-redacted-report-id",
     )
-    run_dir = tmp_path / "runs" / report.run_id / "agent_reports"
-    assert len(list(run_dir.glob("*.json"))) == 4
-    assert not (run_dir / "[REDACTED].json").exists()
+    verified = orchestrator.product_store.read_current(report.run_id)
+    report_names = [
+        payload.inventory.logical_name
+        for payload in verified.payloads
+        if payload.inventory.logical_name.startswith("agent_reports/")
+    ]
+    assert len(report_names) == 4
+    assert "agent_reports/[REDACTED].json" not in report_names
     assert all(record.status.value == "failed" for record in report.agent_execution_records)
 
 
 def test_provider_cannot_inject_state_or_artifact_fields(tmp_path: Path) -> None:
-    report = Orchestrator(
+    orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
         provider=MaliciousReportProvider(report_id="report-safe", extra_fields=True),
-    ).run(
+    )
+    report = orchestrator.run(
         CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
         run_id="run-provider-injection",
     )
     assert report.run_status == "completed"
     assert all(record.status.value == "failed" for record in report.agent_execution_records)
-    assert not (tmp_path / "runs" / "state.json").exists()
+    assert not (orchestrator.product_store.runs_root / "state.json").exists()
+    assert all(
+        ".." not in Path(payload.inventory.logical_name).parts
+        for payload in orchestrator.product_store.read_current(report.run_id).payloads
+    )
 
 
 def test_forged_analysis_output_fails_before_report_materialization(tmp_path: Path) -> None:
@@ -414,6 +433,5 @@ def test_forged_synthesis_values_fail_before_terminal_artifact_write(
             CaseInput(kind="calculation", raw_text="review", analysis_scope="retrospective"),
             run_id=run_id,
         )
-    run_dir = tmp_path / "runs" / run_id
-    assert not (run_dir / "final_report.json").exists()
-    assert not (run_dir / "final_report.md").exists()
+    current = orchestrator.product_store.runs_root / run_id / ".terminal-store" / "current.json"
+    assert not current.exists()

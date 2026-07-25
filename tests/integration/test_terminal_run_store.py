@@ -13,15 +13,16 @@ from poker_deliberation.budgets.durable_store import (
     DurableBudgetStore,
     initialize_durable_budget_root,
 )
-from poker_deliberation.schemas import FinalReport
+from poker_deliberation.schemas import CaseInput, FinalReport
 from poker_deliberation.storage.revision_canonical import (
+    CanonicalStorageError,
     canonical_json_bytes,
     run_id_sha256,
 )
 from poker_deliberation.storage.terminal_canonical import (
-    empty_lineage_head_sha256,
     inventory_entry,
     lifecycle_audit_sha256,
+    product_payload_commitments,
 )
 from poker_deliberation.storage.terminal_models import (
     BudgetSettlementBindingV2,
@@ -153,14 +154,30 @@ def _request(
     )
     state = canonical_json_bytes(
         {
-            "state": ("HUMAN_REVIEW_REQUIRED" if status == "approval_required" else "COMPLETED"),
+            "state": {
+                "approval_required": "HUMAN_REVIEW_REQUIRED",
+                "succeeded": "COMPLETED",
+                "failed": "FAILED_WITH_LIMITATIONS",
+            }.get(status, "FAILED_WITH_LIMITATIONS"),
             "events": [],
             "deliberation_rounds": 0,
             "tool_retries": {},
             "elapsed_seconds": 0.0,
         }
     )
+    input_bytes = canonical_json_bytes(
+        CaseInput(
+            kind="calculation",
+            raw_text="fixture",
+            analysis_scope="retrospective",
+        )
+    )
     payloads = [
+        _payload(
+            "input.json",
+            input_bytes,
+            schema="poker-case-input-artifact-v1",
+        ),
         _payload(
             "state.json",
             state,
@@ -183,6 +200,11 @@ def _request(
             )
         )
         lifecycle_digest = lifecycle_audit_sha256(lifecycle)
+    commitments = product_payload_commitments(
+        {payload.inventory.logical_name: payload.exact_bytes for payload in payloads},
+        run_id=run_id,
+        status=status,
+    )
     expected_revision, expected_manifest, expected_pointer = (
         (None, None, None) if expected is None else expected
     )
@@ -201,15 +223,15 @@ def _request(
         framework_version="0.1.0",
         source_commit_id="3" * 64,
         tool_contract_versions=(),
-        canonical_input_sha256="4" * 64,
+        canonical_input_sha256=commitments[0],
         config_sha256="5" * 64,
         budget_binding=_binding(run_id, transaction_suffix),
         redaction_policy_sha256="6" * 64,
-        state_checkpoint_sha256=payloads[0].inventory.sha256,
-        event_head_sha256=empty_lineage_head_sha256("event"),
-        approval_lineage_head_sha256=empty_lineage_head_sha256("approval"),
-        context_lineage_head_sha256=empty_lineage_head_sha256("context"),
-        execution_lineage_head_sha256=empty_lineage_head_sha256("execution"),
+        state_checkpoint_sha256=commitments[1],
+        event_head_sha256=commitments[2],
+        approval_lineage_head_sha256=commitments[3],
+        context_lineage_head_sha256=commitments[4],
+        execution_lineage_head_sha256=commitments[5],
         legacy_source=None,
         lifecycle_audit_sha256=lifecycle_digest,
         payloads=tuple(payloads),
@@ -264,6 +286,27 @@ def test_terminal_publish_is_marker_last_then_cas_then_settlement(
         f"reserve:{request.transaction_id}",
         f"settle:{request.transaction_id}",
     ]
+
+
+def test_product_commitments_reject_orphan_tool_input_payload() -> None:
+    request = _request(
+        "run-orphan-tool-input",
+        transaction_suffix="f",
+        publication_kind="product_terminal",
+        status="succeeded",
+    )
+    payloads = {payload.inventory.logical_name: payload.exact_bytes for payload in request.payloads}
+    payloads["tool_results/tool-result-orphan.input.json"] = b"{}"
+
+    with pytest.raises(
+        CanonicalStorageError,
+        match="tool input/result inventory pairing mismatch",
+    ):
+        product_payload_commitments(
+            payloads,
+            run_id=request.run_id,
+            status=request.status,
+        )
 
 
 def test_checkpoint_can_advance_once_by_exact_pointer_cas(tmp_path: Path) -> None:

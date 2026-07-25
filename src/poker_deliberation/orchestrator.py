@@ -6,7 +6,9 @@ import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
+from poker_deliberation import __version__
 from poker_deliberation.agents import select_roles
 from poker_deliberation.approvals import SENSITIVE_ACTIONS, ApprovalLedger
 from poker_deliberation.budgets import (
@@ -17,6 +19,10 @@ from poker_deliberation.budgets import (
     MonotonicClock,
     SystemMonotonicClock,
     V1BudgetMigrationResult,
+)
+from poker_deliberation.budgets.durable_store import (
+    DurableBudgetStore,
+    initialize_durable_budget_root,
 )
 from poker_deliberation.config import AppConfig, migrate_budget_config
 from poker_deliberation.context_lifecycle import (
@@ -116,7 +122,44 @@ from poker_deliberation.schemas import (
 )
 from poker_deliberation.security import redact_sensitive, screen_case
 from poker_deliberation.state_machine import RunState, StateEvent, WorkflowStateMachine
-from poker_deliberation.storage import RunStore
+from poker_deliberation.storage.legacy_migration import (
+    LegacyRunAdapter,
+    legacy_copy_payloads,
+    legacy_failure,
+    legacy_source_binding,
+    same_legacy_snapshot,
+)
+from poker_deliberation.storage.lifecycle_hooks import build_terminal_lifecycle_audit
+from poker_deliberation.storage.revision_canonical import (
+    CanonicalStorageError,
+    canonical_domain_sha256,
+    run_id_sha256,
+    sha256_bytes,
+    validate_run_id,
+)
+from poker_deliberation.storage.revision_models import RunStorageError
+from poker_deliberation.storage.revision_store import inspect_root_initialization
+from poker_deliberation.storage.run_store import BufferedRunStore
+from poker_deliberation.storage.terminal_canonical import (
+    empty_lineage_head_sha256,
+    inventory_entry,
+    product_payload_commitments,
+)
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+    ProductRunFailureV2,
+    RunReadStatus,
+    ToolContractVersionV2,
+    VerifiedPayloadV2,
+    VerifiedRunReadV2,
+)
+from poker_deliberation.storage.terminal_store import (
+    DurableBudgetCoordinator,
+    TerminalPublishRequest,
+    TerminalRunStore,
+    provisional_budget_binding,
+)
 from poker_deliberation.tools import ToolRegistry, default_registry
 
 
@@ -164,6 +207,10 @@ class Orchestrator:
         critique_service: CritiqueService | None = None,
         adjudication_service: AdjudicationService | None = None,
         synthesis_service: SynthesisService | None = None,
+        product_store: TerminalRunStore | None = None,
+        budget_store: DurableBudgetStore | None = None,
+        terminal_clock: Callable[[], datetime] | None = None,
+        terminal_id_factory: Callable[[str], str] | None = None,
     ) -> None:
         self.config = config or AppConfig.from_env()
         self.budget_migration: V1BudgetMigrationResult | None
@@ -267,12 +314,59 @@ class Orchestrator:
             }
         )
         self._run_machines: dict[str, WorkflowStateMachine] = {}
-        self.store = RunStore(
-            self.config.runs_dir,
+        self.terminal_clock = terminal_clock or (lambda: datetime.now(UTC))
+        self.terminal_id_factory = terminal_id_factory or (
+            lambda prefix: f"{prefix}-{secrets.token_hex(16)}"
+        )
+        legacy_root, revision_root, budget_root = self.config.resolved_storage_roots()
+        self.config._validate_nonoverlapping_roots((legacy_root, revision_root, budget_root))
+        legacy_root.mkdir(parents=True, exist_ok=True)
+        self.legacy_runs_root = legacy_root
+        self.revision_runs_root = revision_root
+        self.durable_budget_runs_root = budget_root
+        self.legacy_adapter = LegacyRunAdapter(
+            legacy_root,
+            max_artifact_bytes=self.budget_policy.max_artifact_bytes,
+            max_run_bytes=self.budget_policy.max_run_bytes,
+        )
+        if budget_store is not None and (
+            budget_store.revisions.revision_root != budget_root
+            or budget_store.revisions.legacy_runs_root != legacy_root
+        ):
+            raise ValueError("durable budget store roots must match AppConfig")
+        self.durable_budget_store = budget_store or DurableBudgetStore(
+            budget_root,
+            legacy_root,
+            wall_clock=self.terminal_clock,
+        )
+        self.durable_budget = DurableBudgetCoordinator(
+            self.durable_budget_store,
+            self.budget_policy,
+        )
+        if product_store is not None and (
+            product_store.revision_root != revision_root
+            or product_store.legacy_runs_root != legacy_root
+        ):
+            raise ValueError("product store roots must match AppConfig")
+        self.product_store = product_store or TerminalRunStore(
+            revision_root,
+            legacy_root,
+            budget=self.durable_budget,
+            max_artifact_bytes=self.budget_policy.max_artifact_bytes,
+            max_run_bytes=self.budget_policy.max_run_bytes,
+            clock=self.terminal_clock,
+            id_factory=self.terminal_id_factory,
+            framework_version=__version__,
+            source_commit_id="0" * 64,
+        )
+        self.store = BufferedRunStore(
+            revision_root / "buffer",
             max_artifact_bytes=self.budget_policy.max_artifact_bytes,
             max_run_bytes=self.budget_policy.max_run_bytes,
             usage_observer=self._observe_storage_usage,
         )
+        self._product_storage_initialized = False
+        self._publication_plans: dict[str, tuple[int, str]] = {}
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
         machine = self._run_machines.get(run_id)
@@ -281,6 +375,303 @@ class Orchestrator:
                 artifact_bytes=artifact_bytes,
                 run_bytes=run_bytes,
             )
+
+    @staticmethod
+    def _product_error(
+        run_id: str,
+        code: ProductRunFailureCode,
+        *,
+        stage: str,
+        read_status: RunReadStatus | None = None,
+    ) -> ProductRunError:
+        try:
+            hashed_run_id = run_id_sha256(run_id)
+        except ValueError:
+            hashed_run_id = canonical_domain_sha256(
+                "poker-invalid-product-run-id-v2",
+                {"run_id": run_id},
+            )
+        return ProductRunError(
+            ProductRunFailureV2(
+                code=code,
+                stage=stage,
+                read_status=read_status,
+                message_code=code.value,
+                retryable=code is ProductRunFailureCode.RUN_LOCKED,
+                reconciliation_required=read_status
+                in {
+                    RunReadStatus.INCOMPLETE,
+                    RunReadStatus.CORRUPT,
+                },
+                filesystem_effect="none",
+                domain_effect="not_started",
+                previous_revision_effect="not_applicable",
+                run_id_sha256=hashed_run_id,
+            )
+        )
+
+    def _initialize_product_storage(self, run_id: str) -> None:
+        if self._product_storage_initialized:
+            return
+        if not self.legacy_runs_root.exists():
+            self.legacy_runs_root.mkdir(parents=True)
+        budget_root_digest = canonical_domain_sha256(
+            "poker-product-budget-root-id-v1",
+            {
+                "budget_root": str(self.durable_budget_runs_root),
+                "legacy_root": str(self.legacy_runs_root),
+            },
+        )
+        try:
+            budget_inspection = inspect_root_initialization(
+                self.durable_budget_runs_root,
+                self.legacy_runs_root,
+                max_artifact_bytes=self.budget_policy.max_artifact_bytes,
+            )
+            if budget_inspection.status == "uninitialized":
+                initialize_durable_budget_root(
+                    self.durable_budget_runs_root,
+                    self.legacy_runs_root,
+                    root_id=f"root-{budget_root_digest[:32]}",
+                    initialized_at=self.terminal_clock(),
+                )
+            elif budget_inspection.status != "initialized":
+                raise self._product_error(
+                    run_id,
+                    (
+                        ProductRunFailureCode.RUN_INCOMPLETE
+                        if budget_inspection.status == "incomplete"
+                        else ProductRunFailureCode.RUN_CORRUPT
+                    ),
+                    stage="budget_root_preflight",
+                    read_status=(
+                        RunReadStatus.INCOMPLETE
+                        if budget_inspection.status == "incomplete"
+                        else RunReadStatus.CORRUPT
+                    ),
+                )
+            self.durable_budget_store.revisions._ownership(run_id)
+
+            product_inspection = inspect_root_initialization(
+                self.revision_runs_root,
+                self.legacy_runs_root,
+                max_artifact_bytes=self.budget_policy.max_artifact_bytes,
+            )
+            if product_inspection.status == "uninitialized":
+                self.product_store.initialize(initialized_at=self.terminal_clock())
+            elif product_inspection.status != "initialized":
+                raise self._product_error(
+                    run_id,
+                    (
+                        ProductRunFailureCode.RUN_INCOMPLETE
+                        if product_inspection.status == "incomplete"
+                        else ProductRunFailureCode.RUN_CORRUPT
+                    ),
+                    stage="product_root_preflight",
+                    read_status=(
+                        RunReadStatus.INCOMPLETE
+                        if product_inspection.status == "incomplete"
+                        else RunReadStatus.CORRUPT
+                    ),
+                )
+            self.product_store.foundation._ownership(run_id)
+        except ProductRunError:
+            raise
+        except (CanonicalStorageError, RunStorageError, OSError) as exc:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="product_root_verification",
+                read_status=RunReadStatus.CORRUPT,
+            ) from exc
+        self._product_storage_initialized = True
+
+    def _namespace_kind(self, run_id: str) -> str | None:
+        try:
+            validate_run_id(run_id)
+        except CanonicalStorageError as exc:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.PATH_CONFINEMENT_FAILED,
+                stage="namespace",
+            ) from exc
+        expected = run_id.lower()
+        matches: dict[str, list[str]] = {"product": [], "legacy": []}
+        for kind, root in (
+            ("product", self.product_store.runs_root),
+            ("legacy", self.legacy_runs_root),
+        ):
+            if not root.exists():
+                continue
+            for entry in root.iterdir():
+                if entry.name.lower() == expected:
+                    matches[kind].append(entry.name)
+        all_matches = matches["product"] + matches["legacy"]
+        if (
+            len(all_matches) > 1
+            or any(name != run_id for name in all_matches)
+            or (matches["product"] and matches["legacy"])
+        ):
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.CROSS_RUN_MISMATCH,
+                stage="namespace",
+            )
+        if matches["product"]:
+            return "product"
+        if matches["legacy"]:
+            return "legacy"
+        return None
+
+    def _tool_versions(self) -> tuple[ToolContractVersionV2, ...]:
+        values = []
+        for description in self.registry.describe():
+            name = description.get("name")
+            contract_version = description.get("contract_version")
+            if name is None or contract_version is None:
+                continue
+            values.append(
+                ToolContractVersionV2(
+                    tool_name=str(name),
+                    tool_version=str(description.get("version") or contract_version),
+                    contract_version=str(contract_version),
+                )
+            )
+        return tuple(sorted(values, key=lambda item: item.tool_name.encode("utf-8")))
+
+    def _terminal_payloads(
+        self,
+        run_id: str,
+        *,
+        terminal: bool,
+        revision: int,
+        published_at: datetime,
+    ) -> tuple[tuple[VerifiedPayloadV2, ...], str | None]:
+        payloads = self.store.verified_payloads(run_id)
+        if not terminal:
+            return payloads, None
+        lifecycle = build_terminal_lifecycle_audit(
+            run_id=run_id,
+            revision=revision,
+            published_at=published_at,
+            inventory=tuple(item.inventory for item in payloads),
+        )
+        lifecycle_payload = VerifiedPayloadV2(
+            inventory=inventory_entry(
+                logical_name="lifecycle_audit.json",
+                data=lifecycle.canonical_bytes,
+                media_type="application/json",
+                artifact_schema_version="poker-lifecycle-audit-artifact-v1",
+                serialization="poker-run-storage-json-v1",
+            ),
+            exact_bytes=lifecycle.canonical_bytes,
+        )
+        all_payloads = tuple(
+            sorted(
+                (*payloads, lifecycle_payload),
+                key=lambda item: item.inventory.revision_relative_path.encode("utf-8"),
+            )
+        )
+        return all_payloads, lifecycle.sha256
+
+    def _publish_buffer(
+        self,
+        run_id: str,
+        report: FinalReport,
+    ) -> VerifiedRunReadV2:
+        plan = self._publication_plans.pop(run_id, None)
+        namespace = self._namespace_kind(run_id)
+        if namespace == "legacy":
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.LEGACY_RUN_UNVERIFIED,
+                stage="publish_namespace",
+                read_status=RunReadStatus.LEGACY_UNVERIFIED,
+            )
+        previous = self.product_store.read_current(run_id) if namespace == "product" else None
+        publication_kind: Literal["product_checkpoint", "product_terminal"]
+        status: Literal["approval_required", "succeeded", "failed"]
+        if report.run_status == "approval_required":
+            publication_kind = "product_checkpoint"
+            status = "approval_required"
+        elif report.run_status == "completed":
+            publication_kind = "product_terminal"
+            status = "succeeded"
+        else:
+            publication_kind = "product_terminal"
+            status = "failed"
+        terminal = publication_kind == "product_terminal"
+        revision = 1 if previous is None else previous.revision + 1
+        planned_revision = revision if plan is None else plan[0]
+        if revision != planned_revision:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_CONFLICT,
+                stage="publication_plan",
+            )
+        published_at = self.terminal_clock()
+        transaction_id = self.terminal_id_factory("txn") if plan is None else plan[1]
+        payloads, lifecycle_sha = self._terminal_payloads(
+            run_id,
+            terminal=terminal,
+            revision=revision,
+            published_at=published_at,
+        )
+        payload_map = {payload.inventory.logical_name: payload.exact_bytes for payload in payloads}
+        (
+            canonical_input_sha,
+            state_checkpoint_sha,
+            event_head_sha,
+            approval_head_sha,
+            context_head_sha,
+            execution_head_sha,
+        ) = product_payload_commitments(
+            payload_map,
+            run_id=run_id,
+            status=status,
+        )
+        created_at = published_at if previous is None else previous.manifest.created_at
+        request = TerminalPublishRequest(
+            run_id=run_id,
+            transaction_id=transaction_id,
+            publication_kind=publication_kind,
+            status=status,
+            proposed_revision=revision,
+            expected_revision=None if previous is None else previous.revision,
+            expected_manifest_sha256=(None if previous is None else previous.manifest_sha256),
+            expected_pointer_sha256=(None if previous is None else previous.current_pointer_sha256),
+            created_at=created_at,
+            updated_at=published_at,
+            published_at=published_at,
+            framework_version=__version__,
+            source_commit_id="0" * 64,
+            tool_contract_versions=self._tool_versions(),
+            canonical_input_sha256=canonical_input_sha,
+            config_sha256=canonical_domain_sha256(
+                "poker-product-config-v2",
+                self.config.model_dump(mode="json"),
+            ),
+            budget_binding=provisional_budget_binding(
+                run_id,
+                transaction_id,
+                self.budget_policy,
+            ),
+            redaction_policy_sha256=canonical_domain_sha256(
+                "poker-product-redaction-policy-v2",
+                {"record_sensitive_data": self.config.record_sensitive_data},
+            ),
+            state_checkpoint_sha256=state_checkpoint_sha,
+            event_head_sha256=event_head_sha,
+            approval_lineage_head_sha256=approval_head_sha,
+            context_lineage_head_sha256=context_head_sha,
+            execution_lineage_head_sha256=execution_head_sha,
+            legacy_source=None,
+            lifecycle_audit_sha256=lifecycle_sha,
+            payloads=payloads,
+        )
+        frozen = self.product_store.freeze_budget_binding(request)
+        self.product_store.publish(frozen)
+        return self.product_store.read_current(run_id)
 
     @staticmethod
     def _revision_event_prefix(machine: WorkflowStateMachine) -> tuple[dict[str, str], ...]:
@@ -434,6 +825,29 @@ class Orchestrator:
             )
 
     def _run(self, case: CaseInput, actual_run_id: str) -> FinalReport:
+        try:
+            validate_run_id(actual_run_id)
+        except CanonicalStorageError as exc:
+            raise self._product_error(
+                actual_run_id,
+                ProductRunFailureCode.PATH_CONFINEMENT_FAILED,
+                stage="new_run_preflight",
+            ) from exc
+        self._initialize_product_storage(actual_run_id)
+        namespace = self._namespace_kind(actual_run_id)
+        if namespace is not None:
+            code = (
+                ProductRunFailureCode.LEGACY_RUN_UNVERIFIED
+                if namespace == "legacy"
+                else ProductRunFailureCode.RUN_CONFLICT
+            )
+            status = RunReadStatus.LEGACY_UNVERIFIED if namespace == "legacy" else None
+            raise self._product_error(
+                actual_run_id,
+                code,
+                stage="new_run_namespace",
+                read_status=status,
+            )
         self.store.create_run(actual_run_id)
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         self._run_machines[actual_run_id] = machine
@@ -637,6 +1051,16 @@ class Orchestrator:
                 data_quality.extend(tool_phase_outcome.output.data_quality)
                 validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
+                self.store.write_json(
+                    actual_run_id,
+                    f"tool_results/{validation.result_id}.json",
+                    validation,
+                )
+                self.store.write_json(
+                    actual_run_id,
+                    f"tool_results/{validation.result_id}.input.json",
+                    validation.input,
+                )
                 if tool_phase_outcome.output.budget_failure is not None:
                     data_quality.append(
                         f"strict budget failure: {tool_phase_outcome.output.budget_failure.code}"
@@ -1177,6 +1601,11 @@ class Orchestrator:
             )
         data_quality.extend(requested_tools_outcome.output.data_quality)
         tool_results.extend(binding.result for binding in requested_tools_outcome.output.bindings)
+        for result in tool_results:
+            self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
+            self.store.write_json(
+                actual_run_id, f"tool_results/{result.result_id}.input.json", result.input
+            )
         if requested_tools_outcome.output.budget_failure is not None:
             data_quality.append(
                 f"strict budget failure: {requested_tools_outcome.output.budget_failure.code}"
@@ -1199,11 +1628,6 @@ class Orchestrator:
                 security_events,
                 completed=False,
                 machine=machine,
-            )
-        for result in tool_results:
-            self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
-            self.store.write_json(
-                actual_run_id, f"tool_results/{result.result_id}.input.json", result.input
             )
         if not machine.enforce_runtime():
             data_quality.append("maximum runtime exceeded after tool execution")
@@ -1348,6 +1772,10 @@ class Orchestrator:
         machine: WorkflowStateMachine,
         pause_before_return: bool = False,
     ) -> FinalReport:
+        namespace = self._namespace_kind(run_id)
+        previous = self.product_store.read_current(run_id) if namespace == "product" else None
+        planned_revision = 1 if previous is None else previous.revision + 1
+        transaction_id = self.terminal_id_factory("txn")
         provider_info = self.provider.availability()
         provider_reason = provider_info.reason
         synthesis_request = make_phase_request(
@@ -1375,9 +1803,12 @@ class Orchestrator:
                 ),
                 tool_input_artifact_paths=tuple(
                     str(
-                        self.store.run_dir(run_id)
-                        / "tool_results"
-                        / f"{result.result_id}.input.json"
+                        self.product_store.planned_payload_path(
+                            run_id,
+                            revision=planned_revision,
+                            transaction_id=transaction_id,
+                            logical_name=(f"tool_results/{result.result_id}.input.json"),
+                        )
                     )
                     for result in tool_results
                 ),
@@ -1445,10 +1876,273 @@ class Orchestrator:
         if pause_before_return:
             machine.pause_active_runtime()
             self.store.write_json(run_id, "state.json", machine.snapshot())
+        self._publication_plans[run_id] = (planned_revision, transaction_id)
+        try:
+            verified = self._publish_buffer(run_id, report)
+        except ProductRunError as exc:
+            allowed_ephemeral_failure = (
+                exc.failure.stage == "preflight"
+                and exc.failure.code is ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR
+            ) or (
+                exc.failure.stage == "budget_verify"
+                and exc.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+            )
+            if not allowed_ephemeral_failure:
+                raise
+            persistence_failure = f"product persistence failed: {exc.failure.code.value}"
+            if persistence_failure not in report.data_quality:
+                report.data_quality.append(persistence_failure)
+            if persistence_failure not in report.limitations:
+                report.limitations.append(persistence_failure)
+            report.run_status = "failed_with_limitations"
+            return report
+        expected_status = (
+            RunReadStatus.APPROVAL_REQUIRED
+            if report.run_status == "approval_required"
+            else (
+                RunReadStatus.SUCCEEDED
+                if report.run_status == "completed"
+                else RunReadStatus.FAILED
+            )
+        )
+        if verified.read_status is not expected_status:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.INTERNAL_INVARIANT_ERROR,
+                stage="product_status_projection",
+            )
         return report
 
+    def _read_product(self, run_id: str) -> VerifiedRunReadV2:
+        namespace = self._namespace_kind(run_id)
+        if namespace is None:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_NOT_FOUND,
+                stage="product_lookup",
+            )
+        if namespace == "legacy":
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.LEGACY_RUN_UNVERIFIED,
+                stage="legacy_lookup",
+                read_status=RunReadStatus.LEGACY_UNVERIFIED,
+            )
+        return self.product_store.read_current(run_id)
+
     def load_report(self, run_id: str) -> FinalReport:
-        return FinalReport.model_validate(self.store.read_json(run_id, "final_report.json"))
+        if self._namespace_kind(run_id) == "legacy":
+            return self.legacy_adapter.load_report_projection(run_id)
+        read = self._read_product(run_id)
+        if read.read_status is RunReadStatus.IN_PROGRESS:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_INCOMPLETE,
+                stage="load_report",
+                read_status=RunReadStatus.INCOMPLETE,
+            )
+        report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+        if read.read_status is RunReadStatus.SUCCEEDED:
+            if report.run_status != "completed":
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.RUN_CORRUPT,
+                    stage="load_report_status",
+                    read_status=RunReadStatus.CORRUPT,
+                )
+            return report
+        if read.read_status is RunReadStatus.APPROVAL_REQUIRED:
+            if report.run_status != "approval_required":
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.RUN_CORRUPT,
+                    stage="load_report_status",
+                    read_status=RunReadStatus.CORRUPT,
+                )
+            return report
+        if read.read_status in {
+            RunReadStatus.FAILED,
+            RunReadStatus.CANCELLED,
+            RunReadStatus.CANCEL_UNCONFIRMED,
+        }:
+            report.run_status = "failed_with_limitations"
+            limitation = f"verified product run status: {read.read_status.value}"
+            if limitation not in report.limitations:
+                report.limitations.append(limitation)
+            return report
+        if read.read_status is RunReadStatus.LEGACY_UNVERIFIED:
+            report.run_status = "failed_with_limitations"
+            limitation = "legacy_unverified_integrity_guarantees_missing"
+            if limitation not in report.limitations:
+                report.limitations.append(limitation)
+            return report
+        raise self._product_error(
+            run_id,
+            ProductRunFailureCode.INTERNAL_INVARIANT_ERROR,
+            stage="load_report_projection",
+        )
+
+    def migrate_legacy_run(
+        self,
+        source_run_id: str,
+        destination_run_id: str,
+        *,
+        source_quiescence_acknowledged: bool,
+    ) -> VerifiedRunReadV2:
+        if source_quiescence_acknowledged is not True:
+            raise legacy_failure(
+                destination_run_id,
+                ProductRunFailureCode.MIGRATION_SOURCE_BUSY,
+                stage="migration_preflight",
+            )
+        try:
+            validate_run_id(source_run_id)
+            validate_run_id(destination_run_id)
+        except CanonicalStorageError as exc:
+            raise legacy_failure(
+                destination_run_id,
+                ProductRunFailureCode.PATH_CONFINEMENT_FAILED,
+                stage="migration_preflight",
+            ) from exc
+        if source_run_id.lower() == destination_run_id.lower():
+            raise legacy_failure(
+                destination_run_id,
+                ProductRunFailureCode.MIGRATION_CONFLICT,
+                stage="migration_preflight",
+            )
+        source_namespace = self._namespace_kind(source_run_id)
+        if source_namespace != "legacy":
+            raise legacy_failure(
+                destination_run_id,
+                (
+                    ProductRunFailureCode.RUN_NOT_FOUND
+                    if source_namespace is None
+                    else ProductRunFailureCode.MIGRATION_CONFLICT
+                ),
+                stage="migration_source",
+            )
+        snapshot = self.legacy_adapter.inspect(source_run_id)
+        binding = legacy_source_binding(snapshot)
+        payloads = legacy_copy_payloads(snapshot)
+        self._initialize_product_storage(destination_run_id)
+        destination_namespace = self._namespace_kind(destination_run_id)
+        if destination_namespace == "product":
+            current = self.product_store.read_current(destination_run_id)
+            if (
+                current.read_status is RunReadStatus.LEGACY_UNVERIFIED
+                and current.manifest.legacy_source == binding
+                and {
+                    payload.inventory.logical_name: payload.exact_bytes
+                    for payload in current.payloads
+                }
+                == snapshot.payload_bytes()
+            ):
+                return current
+            raise legacy_failure(
+                destination_run_id,
+                ProductRunFailureCode.MIGRATION_CONFLICT,
+                stage="migration_replay",
+            )
+        if destination_namespace is not None:
+            raise legacy_failure(
+                destination_run_id,
+                ProductRunFailureCode.MIGRATION_CONFLICT,
+                stage="migration_destination",
+            )
+        identity_sha = canonical_domain_sha256(
+            "poker-legacy-copy-identity-v2",
+            {
+                "source_root_identity_sha256": snapshot.source_root_identity_sha256,
+                "source_run_id_sha256": snapshot.source_run_id_sha256,
+                "source_inventory_sha256": snapshot.source_inventory_sha256,
+                "destination_run_id": destination_run_id,
+            },
+        )
+        transaction_id = f"txn-{identity_sha[:32]}"
+        published_at = self.terminal_clock()
+        source_payloads = snapshot.payload_bytes()
+        input_sha = sha256_bytes(
+            source_payloads.get("input.json", snapshot.source_inventory_sha256.encode("ascii"))
+        )
+        state_sha = sha256_bytes(
+            source_payloads.get("state.json", snapshot.source_inventory_sha256.encode("ascii"))
+        )
+        request = TerminalPublishRequest(
+            run_id=destination_run_id,
+            transaction_id=transaction_id,
+            publication_kind="legacy_copy",
+            status="legacy_unverified",
+            proposed_revision=1,
+            expected_revision=None,
+            expected_manifest_sha256=None,
+            expected_pointer_sha256=None,
+            created_at=published_at,
+            updated_at=published_at,
+            published_at=published_at,
+            framework_version=__version__,
+            source_commit_id=self.product_store.source_commit_id,
+            tool_contract_versions=(),
+            canonical_input_sha256=input_sha,
+            config_sha256=canonical_domain_sha256(
+                "poker-legacy-copy-config-v2",
+                {"adapter_version": binding.adapter_version},
+            ),
+            budget_binding=provisional_budget_binding(
+                destination_run_id,
+                transaction_id,
+                self.budget_policy,
+            ),
+            redaction_policy_sha256=canonical_domain_sha256(
+                "poker-legacy-copy-redaction-v2",
+                {"copy_exact_bytes": True},
+            ),
+            state_checkpoint_sha256=state_sha,
+            event_head_sha256=empty_lineage_head_sha256("event"),
+            approval_lineage_head_sha256=empty_lineage_head_sha256("approval"),
+            context_lineage_head_sha256=empty_lineage_head_sha256("context"),
+            execution_lineage_head_sha256=empty_lineage_head_sha256("execution"),
+            legacy_source=binding,
+            lifecycle_audit_sha256=None,
+            payloads=payloads,
+        )
+        frozen = self.product_store.freeze_budget_binding(request)
+
+        def verify_source_unchanged() -> None:
+            try:
+                observed = self.legacy_adapter.inspect(source_run_id)
+            except ProductRunError as exc:
+                raise legacy_failure(
+                    destination_run_id,
+                    ProductRunFailureCode.MIGRATION_SOURCE_CHANGED,
+                    stage="migration_source_reread",
+                    filesystem_effect="staging_orphan",
+                    reconciliation_required=True,
+                ) from exc
+            if not same_legacy_snapshot(snapshot, observed):
+                raise legacy_failure(
+                    destination_run_id,
+                    ProductRunFailureCode.MIGRATION_SOURCE_CHANGED,
+                    stage="migration_source_reread",
+                    filesystem_effect="staging_orphan",
+                    reconciliation_required=True,
+                )
+
+        self.product_store.publish(
+            frozen,
+            pre_manifest_verifier=verify_source_unchanged,
+        )
+        migrated = self.product_store.read_current(destination_run_id)
+        if (
+            migrated.read_status is not RunReadStatus.LEGACY_UNVERIFIED
+            or migrated.resume_eligible
+            or migrated.completion_marker is not None
+        ):
+            raise self._product_error(
+                destination_run_id,
+                ProductRunFailureCode.INTERNAL_INVARIANT_ERROR,
+                stage="migration_projection",
+            )
+        return migrated
 
     def resume(
         self,
@@ -1458,6 +2152,10 @@ class Orchestrator:
         reject_ids: list[str] | None = None,
         reason: str = "human decision recorded by CLI",
     ) -> FinalReport:
+        read = self._read_product(run_id)
+        if not read.resume_eligible:
+            return self.load_report(run_id)
+        self.store.load_verified(read)
         snapshot = self.store.read_json(run_id, "state.json")
         machine = WorkflowStateMachine.from_snapshot(
             self.budget_policy,
@@ -1492,6 +2190,7 @@ class Orchestrator:
             self.store.write_json(run_id, "approvals.json", ledger.all())
             self.store.write_json(run_id, "final_report.json", report)
             self.store.write_text(run_id, "final_report.md", render_markdown(report))
+            self._publish_buffer(run_id, report)
             return report
         rejected = [item for item in ledger.all() if item.status is ApprovalStatus.REJECTED]
         approved = [item for item in ledger.all() if item.status is ApprovalStatus.APPROVED]
@@ -1522,8 +2221,15 @@ class Orchestrator:
         self.store.write_json(run_id, "approvals.json", ledger.all())
         self.store.write_json(run_id, "final_report.json", report)
         self.store.write_text(run_id, "final_report.md", render_markdown(report))
+        self._publish_buffer(run_id, report)
         return report
 
     def report_path(self, run_id: str, format_name: str) -> Path:
-        suffix = "json" if format_name == "json" else "md"
-        return self.store.run_dir(run_id) / f"final_report.{suffix}"
+        read = self._read_product(run_id)
+        if read.read_status is RunReadStatus.LEGACY_UNVERIFIED:
+            raise legacy_failure(
+                run_id,
+                ProductRunFailureCode.LEGACY_RUN_UNVERIFIED,
+                stage="report_path",
+            )
+        return self.product_store.report_path(read, format_name)

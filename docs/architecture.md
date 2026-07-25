@@ -204,6 +204,8 @@ V2 artifact は product manifest と approval lineage commitment に含まれる
 
 第1段階は verified terminal product run を same-volume rename で quarantine し、第2段階は固定30日後、
 別 plan と別 destructive approval を要求して transaction-specific staging から bottom-up unlink する。
+delete plan の entry/eligibility 時刻は live tombstone と policy の固定 window に再拘束し、各 revision
+の tombstone retention は対応 receipt の commit 時刻から365日とする。
 product namespace が detach 済みの間は `RunRevisionStore.acquire_detached_run_authority` が既存
 P2-012A kernel lock を非bootstrappingで取得する。cleanup current は
 `quarantined -> delete_prepared -> deleted` だけを許可し、各 revision は前 revision まで
@@ -211,5 +213,7 @@ current-to-genesis 検証される。
 
 dry-run は effect-free で、実行は exact plan、P2-013A approval evidence、live actor/provider
 authority、source/current/tree identity、same-volume、capacity を lock 内で再検証する。
+final authority/hold admission は journal 公開後かつ effect 直前に行い、その後に local identity を
+再走査する。pending/dangling control state は absent と推定せず effect unknown とする。
 不確実な effect は成功へ丸めず、read-only reconciliation に停止する。詳細は
 [`local-data-cleanup.md`](local-data-cleanup.md)を正本とする。

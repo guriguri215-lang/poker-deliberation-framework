@@ -53,6 +53,7 @@ from poker_deliberation.local_data_cleanup_models import (
     CleanupRootInitializationOutcomeV1,
     CleanupRootInspectionV1,
     CleanupState,
+    CleanupTransactionV1,
     LegalHoldSnapshotV1,
     LifecycleEligibilityV1,
     ProductRunSourceV1,
@@ -264,6 +265,31 @@ def _persisted_execution_result(
         receipt_sha256=cleanup_receipt_sha256(receipt),
         tombstone=tombstone,
         tombstone_sha256=cleanup_tombstone_sha256(tombstone),
+    )
+
+
+def _uncertain_replay_result(
+    plan: CleanupPlanV1,
+    report: CleanupReconciliationReportV1,
+) -> CleanupExecutionResultV1:
+    if isinstance(plan.source, ProductRunSourceV1):
+        filesystem_effect = (
+            "source_moved"
+            if report.observed_source == "absent" or report.observed_destination != "absent"
+            else "journal_only"
+        )
+    elif report.observed_staging == "exact":
+        filesystem_effect = "delete_staging_moved"
+    elif report.observed_staging in {"partial", "unreadable"} or report.observed_source == "absent":
+        filesystem_effect = "partial_delete"
+    else:
+        filesystem_effect = "journal_only"
+    return _execution_failure(
+        plan,
+        CleanupFailureCode.EFFECT_UNKNOWN,
+        transaction_id=report.transaction_id,
+        filesystem_effect=filesystem_effect,
+        domain_effect="current_may_have_advanced",
     )
 
 
@@ -804,6 +830,12 @@ class LocalDataCleanupExecutor:
                 if evaluated_at >= plan.expires_at
                 else CleanupFailureCode.INVALID_PLAN
             )
+        marker, _marker_sha = self.store.marker()
+        if (
+            marker.product_root_identity_sha256 != plan.source.product_root_identity_sha256
+            or marker.product_ownership_marker_sha256 != plan.source.product_ownership_marker_sha256
+        ):
+            raise _ApprovalExecutionError(CleanupFailureCode.OWNERSHIP_UNVERIFIED)
         try:
             current = self.terminal_store.read_current(plan.source.run_id)
             payloads = _payload_map(current)
@@ -933,7 +965,8 @@ class LocalDataCleanupExecutor:
                 tombstone_sha256=cleanup_tombstone_sha256(tombstone),
                 quarantine_tree_sha256=tree_sha,
                 quarantine_entered_at=tombstone.quarantine_entered_at,
-                delete_eligible_at=tombstone.quarantine_entered_at + timedelta(days=30),
+                delete_eligible_at=tombstone.quarantine_entered_at
+                + timedelta(days=DEFAULT_LOCAL_DATA_POLICY.quarantine_review_days),
             )
             lifecycle = LifecycleEligibilityV1.model_validate(
                 manifest.plan.lifecycle.model_dump()
@@ -1000,11 +1033,24 @@ class LocalDataCleanupExecutor:
 
         transaction_id = _transaction_id(plan)
         try:
-            persisted = self.store.read_operation(
-                plan,
-                approval_run_id_sha256=run_id_sha256(approval_run_id),
-                approval_request_id=approval_request_id,
-            )
+            try:
+                persisted = self.store.read_operation(
+                    plan,
+                    approval_run_id_sha256=run_id_sha256(approval_run_id),
+                    approval_request_id=approval_request_id,
+                )
+            except CleanupStorageError as exc:
+                if (
+                    isinstance(exc.failure, CleanupFailureV1)
+                    and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
+                ):
+                    report = self.store.inspect_reconciliation(
+                        plan,
+                        transaction_id=transaction_id,
+                    )
+                    if report.classification != "no_effect":
+                        return _uncertain_replay_result(plan, report)
+                raise
             if persisted is not None:
                 reconciliation = (
                     self.store.inspect_reconciliation(
@@ -1069,11 +1115,10 @@ class LocalDataCleanupExecutor:
                 )
             self._revalidate_quarantine_eligibility(plan, evaluated_at=evaluated_at)
 
-            def authorize_in_lock() -> CleanupApprovalBindingV1:
+            def authorize_in_lock(locked_at: datetime) -> CleanupApprovalBindingV1:
                 try:
                     if _cancelled(cancelled):
                         raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
-                    locked_at = self.clock()
                     self._revalidate_quarantine_eligibility(plan, evaluated_at=locked_at)
                     locked = _verify_cleanup_approval(
                         self.terminal_store,
@@ -1135,6 +1180,7 @@ class LocalDataCleanupExecutor:
         plan: CleanupPlanV1,
         *,
         evaluated_at: datetime,
+        pending_transaction: CleanupTransactionV1 | None = None,
     ) -> None:
         if (
             not isinstance(plan.source, QuarantineSourceV1)
@@ -1171,7 +1217,14 @@ class LocalDataCleanupExecutor:
             )
         ):
             raise _ApprovalExecutionError(CleanupFailureCode.POLICY_MISMATCH)
-        current = self.store.read_current(plan.source.run_id_sha256)
+        current = (
+            self.store._read_current(
+                plan.source.run_id_sha256,
+                pending_transaction=pending_transaction,
+            )
+            if pending_transaction is not None
+            else self.store.read_current(plan.source.run_id_sha256)
+        )
         if current is None:
             raise _ApprovalExecutionError(CleanupFailureCode.STALE_CLEANUP_REVISION)
         pointer, _manifest, _receipt, tombstone = current
@@ -1180,6 +1233,10 @@ class LocalDataCleanupExecutor:
             or pointer.revision != plan.source.cleanup_revision
             or cleanup_pointer_sha256(pointer) != plan.source.cleanup_pointer_sha256
             or cleanup_tombstone_sha256(tombstone) != plan.source.tombstone_sha256
+            or plan.source.quarantine_entered_at != tombstone.quarantine_entered_at
+            or plan.source.delete_eligible_at
+            != tombstone.quarantine_entered_at
+            + timedelta(days=DEFAULT_LOCAL_DATA_POLICY.quarantine_review_days)
         ):
             raise _ApprovalExecutionError(CleanupFailureCode.STALE_CLEANUP_REVISION)
         quarantine = self.store.quarantine_path(plan.source.run_id)
@@ -1226,11 +1283,24 @@ class LocalDataCleanupExecutor:
 
         transaction_id = _transaction_id(plan)
         try:
-            persisted = self.store.read_operation(
-                plan,
-                approval_run_id_sha256=run_id_sha256(approval_run_id),
-                approval_request_id=approval_request_id,
-            )
+            try:
+                persisted = self.store.read_operation(
+                    plan,
+                    approval_run_id_sha256=run_id_sha256(approval_run_id),
+                    approval_request_id=approval_request_id,
+                )
+            except CleanupStorageError as exc:
+                if (
+                    isinstance(exc.failure, CleanupFailureV1)
+                    and exc.failure.code is CleanupFailureCode.STALE_CLEANUP_REVISION
+                ):
+                    report = self.store.inspect_reconciliation(
+                        plan,
+                        transaction_id=transaction_id,
+                    )
+                    if report.classification != "no_effect":
+                        return _uncertain_replay_result(plan, report)
+                raise
             if persisted is not None:
                 reconciliation = (
                     self.store.inspect_reconciliation(
@@ -1296,12 +1366,18 @@ class LocalDataCleanupExecutor:
                 )
             self._revalidate_delete_eligibility(plan, evaluated_at=evaluated_at)
 
-            def authorize_in_lock() -> CleanupApprovalBindingV1:
+            def authorize_in_lock(
+                locked_at: datetime,
+                pending_transaction: CleanupTransactionV1 | None,
+            ) -> CleanupApprovalBindingV1:
                 try:
                     if _cancelled(cancelled):
                         raise _ApprovalExecutionError(CleanupFailureCode.CANCELLED)
-                    locked_at = self.clock()
-                    self._revalidate_delete_eligibility(plan, evaluated_at=locked_at)
+                    self._revalidate_delete_eligibility(
+                        plan,
+                        evaluated_at=locked_at,
+                        pending_transaction=pending_transaction,
+                    )
                     locked = _verify_cleanup_approval(
                         self.terminal_store,
                         plan,

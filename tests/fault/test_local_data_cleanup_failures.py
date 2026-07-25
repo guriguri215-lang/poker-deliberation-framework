@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+import pytest
+
 from poker_deliberation.local_data_cleanup import LocalDataCleanupExecutor
 from poker_deliberation.local_data_cleanup_canonical import run_id_sha256
 from poker_deliberation.local_data_cleanup_models import CleanupFailureCode, CleanupPlanV1
@@ -185,6 +187,56 @@ def test_quarantine_cancellation_after_journal_rolls_back_exact_scaffold(tmp_pat
     ).is_dir()
 
 
+def test_quarantine_authority_revoked_after_journal_rolls_back_before_effect(
+    tmp_path,
+) -> None:
+    run_id = "cleanup-revoke-after-journal"
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.run(_case(), run_id=run_id)
+    executor = LocalDataCleanupExecutor(
+        tmp_path / "cleanup",
+        orchestrator.product_store,
+        legal_hold_provider=NoLegalHold(),
+        clock=lambda: EVALUATED,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id=run_id,
+        root_id="cleanup-root-" + "f" * 32,
+        initialized_at=EVALUATED - timedelta(days=400),
+    )
+    dry_run = executor.dry_run_quarantine(
+        run_id,
+        execution_id=f"{run_id}-execution",
+        idempotency_key=f"{run_id}-key",
+        expires_at=EVALUATED + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+    )
+    before = _snapshot(executor.store.cleanup_root)
+
+    def revoke(hook: str) -> None:
+        if hook == "quarantine.before_effect":
+            provider.actor = provider.actor.model_copy(update={"revocation_status": "revoked"})
+
+    executor.store.fault_injector = revoke
+    result = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id=f"{run_id}-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.AUTHORITY_REVOKED
+    assert result.failure.filesystem_effect == "none"
+    assert _snapshot(executor.store.cleanup_root) == before
+    assert (orchestrator.product_store.foundation.runs_root / run_id).is_dir()
+
+
 def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -> None:
     orchestrator = _orchestrator(tmp_path)
     orchestrator.run(_case(), run_id="cleanup-fault-quarantine")
@@ -230,10 +282,12 @@ def test_quarantine_post_effect_fault_requires_manual_reconciliation(tmp_path) -
     assert result.failure is not None
     assert result.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
     assert result.failure.filesystem_effect == "source_moved"
-    assert report.classification == "reconciliation_required"
+    assert report.classification == "effect_unknown"
     assert report.observed_source == "absent"
     assert report.observed_destination == "exact"
-    assert retry.outcome_kind == "failed"
+    assert report.observed_current == "unreadable"
+    assert retry.failure is not None
+    assert retry.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
 
 
 def test_post_pointer_response_loss_reconciles_as_committed_and_replays(tmp_path) -> None:
@@ -317,6 +371,85 @@ def test_partial_delete_journal_write_rolls_back_exact_transaction_root(tmp_path
         / "transactions"
         / result.transaction_id
     ).exists()
+
+
+def test_delete_authority_revoked_after_journal_rolls_back_before_staging(
+    tmp_path,
+) -> None:
+    run_id = "cleanup-delete-revoke-after-journal"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="0",
+    )
+    before = _snapshot(executor.store.cleanup_root)
+
+    def revoke(hook: str) -> None:
+        if hook == "delete.before_staging_rename":
+            provider.actor = provider.actor.model_copy(update={"revocation_status": "revoked"})
+
+    executor.store.fault_injector = revoke
+    result = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    current = executor.store.read_current(run_id_sha256(run_id))
+
+    assert result.failure is not None
+    assert result.failure.code is CleanupFailureCode.AUTHORITY_REVOKED
+    assert result.failure.filesystem_effect == "none"
+    assert _snapshot(executor.store.cleanup_root) == before
+    assert current is not None
+    assert current[0].state == "quarantined"
+    assert (executor.store.cleanup_root / "quarantine" / run_id).is_dir()
+
+
+@pytest.mark.parametrize(
+    "hook",
+    [
+        "delete.after_staging_rename",
+        "delete.before_prepare_pointer_replace",
+    ],
+)
+def test_delete_replay_with_pending_control_state_is_effect_unknown(
+    tmp_path,
+    hook: str,
+) -> None:
+    suffix = "staged" if hook == "delete.after_staging_rename" else "prepare-temp"
+    run_id = f"cleanup-delete-replay-{suffix}"
+    executor, plan, request_id, provider = _prepare_delete_fixture(
+        tmp_path,
+        run_id=run_id,
+        root_character="4",
+    )
+    executor.store.fault_injector = _raise_at(hook)
+
+    first = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    report = executor.inspect_reconciliation(plan)
+    retry = executor.execute_delete(
+        plan,
+        approval_run_id=f"{run_id}-delete-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+
+    assert first.failure is not None
+    assert first.failure.code is CleanupFailureCode.RECONCILIATION_REQUIRED
+    assert first.failure.filesystem_effect == "delete_staging_moved"
+    assert report.observed_staging == "exact"
+    assert report.observed_current == "unreadable"
+    assert report.classification == "effect_unknown"
+    assert retry.failure is not None
+    assert retry.failure.code is CleanupFailureCode.EFFECT_UNKNOWN
+    assert retry.failure.filesystem_effect == "delete_staging_moved"
+    assert retry.failure.domain_effect == "current_may_have_advanced"
 
 
 def test_orphan_deleted_revision_is_not_replayed_past_delete_prepared(tmp_path) -> None:

@@ -28,6 +28,7 @@ from poker_deliberation.local_data_cleanup_models import (
     LegalHoldSnapshotV1,
     LifecycleEligibilityV1,
     ProductRunSourceV1,
+    QuarantineSourceV1,
     TreeInventoryEntryV1,
     TreeInventoryV1,
 )
@@ -132,6 +133,25 @@ def test_cleanup_models_are_strict_frozen_and_extra_forbid() -> None:
     limits = CleanupLimitsV1()
     with pytest.raises(ValidationError):
         limits.maximum_tree_entries = 1  # type: ignore[misc]
+
+
+def test_quarantine_source_requires_the_fixed_policy_review_window() -> None:
+    values = {
+        "run_id": "run-1",
+        "run_id_sha256": run_id_sha256("run-1"),
+        "cleanup_root_identity_sha256": "1" * 64,
+        "cleanup_revision": 1,
+        "cleanup_pointer_sha256": "2" * 64,
+        "tombstone_sha256": "3" * 64,
+        "quarantine_tree_sha256": "4" * 64,
+        "quarantine_entered_at": NOW,
+        "delete_eligible_at": NOW
+        + timedelta(days=DEFAULT_LOCAL_DATA_POLICY.quarantine_review_days),
+    }
+
+    assert QuarantineSourceV1(**values).delete_eligible_at == values["delete_eligible_at"]
+    with pytest.raises(ValidationError, match="fixed quarantine review window"):
+        QuarantineSourceV1(**(values | {"delete_eligible_at": NOW + timedelta(seconds=1)}))
 
 
 def test_canonical_bytes_are_nfc_compact_and_domain_separated() -> None:

@@ -53,6 +53,11 @@ reader は current pointer から revision 1 まで到達可能な lineage だ�
 revision は成功 replay に採用しない。standalone transaction journal は到達可能な revision 1/2 と
 canonical bytes が完全一致しなければならず、delete authority 内で作成中の1 journalだけを
 transaction-local な strict read に明示して検証する。
+delete plan の `quarantine_entered_at` は live tombstone と一致し、
+`delete_eligible_at` はその時刻に policy の固定30日を加えた値と完全一致しなければならない。
+正の待機時間であるだけの forged plan や、承認済みでも短縮された時刻は effect 前に拒否する。
+各 revision の tombstone 保持期限は、その revision 自身の receipt `committed_at + 365日` であり、
+current-to-genesis reader が全到達 lineage について再検証する。
 
 ## 承認 binding
 
@@ -97,6 +102,9 @@ partial delete の `delete_prepared` は新しい人間判断なしに自動再�
 `delete_staging_moved`、partial/absent の場合は `partial_delete`、unreadable の場合は
 `effect_unknown` と報告する。quarantine の committed 判定には destination exact に加えて
 product source absent を要求する。
+standalone journal、未公開 revision、一時 pointer、dangling current link などが control namespace に
+存在して strict current を読めない場合、current absent/no-effect とは推定せず
+`current=unreadable / effect_unknown` とする。再実行も保存済み成功へ昇格させない。
 cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink 前に確認する。journal 後
 かつ effect 前の cancellation は exact journal/scaffold だけを巻き戻し、effect 開始後は
 `reconciliation_required` として停止する。
@@ -105,8 +113,10 @@ cooperative cancellation は lock 前、journal 前、rename 直前、各 unlink
 
 - portable ID/path、NFC、case-fold alias、reserved device stem、root escape を拒否する。
 - symlink、reparse point、hardlink、Windows alternate data stream、unknown entry kind を拒否する。
-- authority/hold/cancellation/clock callback を完了した後、effect 直前に authority、current、
-  tree identity、destination absence、same-volume をローカル再検証する。
+- durable journal を公開し fault/cancellation hook を通過した後、effect 時刻で authority と hold を
+  再解決する。その外部 callback 完了後、effect 直前に authority、current、tree identity、
+  destination absence、same-volume をローカル再検証する。失効は journal を exact rollback し、
+  rename/staging/unlink に進まない。
 - journal directory 作成後から publish 完了前までの write/fsync fault は、部分 file を含む exact
   transaction root を巻き戻す。巻き戻しを確認できない場合は成功にせず reconciliation を要求する。
 - plan は1 action、tree 10,000 entries、target 100,000,000 bytes、control artifact

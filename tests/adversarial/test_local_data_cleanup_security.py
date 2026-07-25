@@ -181,6 +181,24 @@ def test_cleanup_root_product_binding_cannot_be_reused_with_another_root(
         expires_at=SECURITY_AT + timedelta(hours=1),
     )
     assert plan.plan is not None
+    forged_source = plan.plan.source.model_copy(update={"product_root_identity_sha256": "f" * 64})
+    forged_plan = plan.plan.model_copy(update={"source": forged_source})
+    forged_request, forged_provider = _approve_cleanup(
+        first,
+        forged_plan,
+        approval_run_id="security-forged-source-root-approval",
+        decision_at=SECURITY_AT,
+    )
+    forged_result = first_executor.execute_quarantine(
+        forged_plan,
+        approval_run_id="security-forged-source-root-approval",
+        approval_request_id=forged_request,
+        authority_provider=forged_provider,
+    )
+    assert forged_result.failure is not None
+    assert forged_result.failure.code is CleanupFailureCode.OWNERSHIP_UNVERIFIED
+    assert (first.product_store.foundation.runs_root / "security-run").is_dir()
+
     request_id, provider = _approve_cleanup(
         first,
         plan.plan,
@@ -301,6 +319,54 @@ def test_dangling_former_product_namespace_is_not_treated_as_detached(
         orchestrator.product_store.foundation.acquire_detached_run_authority("security-run")
 
     assert caught.value.failure.code.value == "path_confinement_failed"
+
+
+def test_dangling_cleanup_current_pointer_is_effect_unknown(tmp_path: Path) -> None:
+    orchestrator = _orchestrator(tmp_path)
+    cleanup_root = tmp_path / "cleanup"
+    executor = LocalDataCleanupExecutor(
+        cleanup_root,
+        orchestrator.product_store,
+        legal_hold_provider=NoHold(),
+        clock=lambda: SECURITY_AT,
+    )
+    executor.initialize_cleanup_root(
+        existing_run_id="security-run",
+        root_id="cleanup-root-" + "0" * 32,
+        initialized_at=NOW,
+    )
+    dry_run = executor.dry_run_quarantine(
+        "security-run",
+        execution_id="security-dangling-current-execution",
+        idempotency_key="security-dangling-current-key",
+        expires_at=SECURITY_AT + timedelta(hours=1),
+    )
+    assert dry_run.plan is not None
+    request_id, provider = _approve_cleanup(
+        orchestrator,
+        dry_run.plan,
+        approval_run_id="security-dangling-current-approval",
+        decision_at=SECURITY_AT,
+    )
+    committed = executor.execute_quarantine(
+        dry_run.plan,
+        approval_run_id="security-dangling-current-approval",
+        approval_request_id=request_id,
+        authority_provider=provider,
+    )
+    assert committed.outcome_kind == "committed"
+
+    current = cleanup_root / "runs" / run_id_sha256("security-run") / "current.json"
+    current.unlink()
+    try:
+        current.symlink_to(current.parent / "missing-current.json")
+    except OSError:
+        pytest.skip("file symlink creation is not available")
+
+    report = executor.inspect_reconciliation(dry_run.plan)
+
+    assert report.observed_current == "unreadable"
+    assert report.classification == "effect_unknown"
 
 
 def test_symlink_tree_is_rejected_without_touching_target(tmp_path: Path) -> None:

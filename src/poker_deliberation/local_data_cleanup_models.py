@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Annotated, Final, Literal, TypeAlias
 
@@ -364,8 +364,12 @@ class QuarantineSourceV1(_CleanupModel):
     def review_window_is_positive(self) -> QuarantineSourceV1:
         if self.run_id_sha256 != derive_cleanup_run_id_sha256(self.run_id):
             raise ValueError("quarantine run ID hash mismatch")
-        if self.delete_eligible_at <= self.quarantine_entered_at:
-            raise ValueError("delete eligibility must follow quarantine entry")
+        from poker_deliberation.local_data_policy import DEFAULT_LOCAL_DATA_POLICY
+
+        if self.delete_eligible_at != self.quarantine_entered_at + timedelta(
+            days=DEFAULT_LOCAL_DATA_POLICY.quarantine_review_days
+        ):
+            raise ValueError("delete eligibility must use the fixed quarantine review window")
         return self
 
 
@@ -884,6 +888,8 @@ class CleanupExecutionResultV1(_CleanupModel):
                 or self.receipt.execution_id != self.execution_id
                 or self.receipt.idempotency_key != self.idempotency_key
                 or self.receipt.plan_sha256 != self.plan_sha256
+                or self.tombstone.receipt_retain_until
+                != self.receipt.committed_at + timedelta(days=365)
             ):
                 raise ValueError("committed cleanup result evidence mismatch")
         elif self.failure is None:

@@ -407,6 +407,11 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
         authority_provider=quarantine_provider,
     )
     assert quarantined.outcome_kind == "committed"
+    assert quarantined.receipt is not None
+    assert quarantined.tombstone is not None
+    assert quarantined.tombstone.receipt_retain_until == (
+        quarantined.receipt.committed_at + timedelta(days=365)
+    )
 
     executor.clock = lambda: DELETE_AT
     before_delete_dry_run = _snapshot(tmp_path)
@@ -424,6 +429,32 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
         approval_run_id="cleanup-approval-delete",
         decision_at=DELETE_AT,
     )
+    forged_source = delete_dry_run.plan.source.model_copy(
+        update={
+            "delete_eligible_at": delete_dry_run.plan.source.quarantine_entered_at
+            + timedelta(seconds=1)
+        }
+    )
+    forged_plan = delete_dry_run.plan.model_copy(update={"source": forged_source})
+    forged_request, forged_provider = _approve_cleanup(
+        orchestrator,
+        forged_plan,
+        approval_run_id="cleanup-approval-delete-forged-window",
+        decision_at=DELETE_AT,
+    )
+    forged = executor.execute_delete(
+        forged_plan,
+        approval_run_id="cleanup-approval-delete-forged-window",
+        approval_request_id=forged_request,
+        authority_provider=forged_provider,
+    )
+    current_before_delete = executor.store.read_current(run_id_sha256("cleanup-run-delete"))
+    assert forged.failure is not None
+    assert forged.failure.code == "stale_cleanup_revision"
+    assert current_before_delete is not None
+    assert current_before_delete[0].state == "quarantined"
+    assert (cleanup_root / "quarantine" / "cleanup-run-delete").is_dir()
+
     deleted = executor.execute(
         delete_dry_run.plan,
         approval_run_id="cleanup-approval-delete",
@@ -455,6 +486,10 @@ def test_delete_requires_second_dry_run_and_approval_then_stages_and_unlinks(
     assert deleted.cleanup_revision == 3
     assert deleted.receipt is not None
     assert deleted.receipt.result_state == "deleted"
+    assert deleted.tombstone is not None
+    assert deleted.tombstone.receipt_retain_until == (
+        deleted.receipt.committed_at + timedelta(days=365)
+    )
     assert replay == deleted
     assert late_replay == deleted
     assert historical_quarantine_replay.outcome_kind == "committed"

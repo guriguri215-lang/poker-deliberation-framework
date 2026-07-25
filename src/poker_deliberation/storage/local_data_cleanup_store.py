@@ -54,6 +54,7 @@ from poker_deliberation.local_data_cleanup_models import (
     TreeInventoryV1,
     cleanup_failure,
 )
+from poker_deliberation.local_data_policy import DEFAULT_LOCAL_DATA_POLICY
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     platform_adapter,
@@ -935,6 +936,7 @@ class LocalDataCleanupStore:
             or manifest.approval_binding.authority_snapshot_sha256
             != receipt.authority_snapshot_sha256
             or tombstone.receipt_sha256 != pointer.receipt_sha256
+            or tombstone.receipt_retain_until != receipt.committed_at + timedelta(days=365)
             or manifest.transaction_id != pointer.transaction_id
             or manifest.revision != pointer.revision
             or manifest.run_id_sha256 != run_hash
@@ -1039,6 +1041,8 @@ class LocalDataCleanupStore:
                 or prior_receipt.result_state is not prior_manifest.state
                 or prior_tombstone.state is not prior_manifest.state
                 or prior_tombstone.receipt_sha256 != prior_receipt_sha
+                or prior_tombstone.receipt_retain_until
+                != prior_receipt.committed_at + timedelta(days=365)
                 or successor_manifest.previous_revision != prior_revision
                 or successor_manifest.previous_manifest_sha256 != prior_manifest_sha
                 or successor_manifest.expected_pointer_sha256
@@ -1351,8 +1355,8 @@ class LocalDataCleanupStore:
         receipt_observed: Literal["absent", "exact", "mismatch", "unreadable"] = "absent"
         tombstone_observed: Literal["absent", "exact", "mismatch", "unreadable"] = "absent"
         try:
-            current_path = self._run_control(run_hash) / "current.json"
-            if not current_path.exists():
+            control_path = self._run_control(run_hash)
+            if not os.path.lexists(control_path):
                 current_observed = "absent"
             else:
                 current = self.read_current(run_hash)
@@ -1472,7 +1476,7 @@ class LocalDataCleanupStore:
         *,
         transaction_id: str,
         clock: Callable[[], datetime],
-        authorize: Callable[[], CleanupApprovalBindingV1],
+        authorize: Callable[[datetime], CleanupApprovalBindingV1],
         cancelled: Callable[[], bool] | None = None,
     ) -> CleanupExecutionResultV1:
         """Internal quarantine transition with in-lock authorization.
@@ -1488,6 +1492,16 @@ class LocalDataCleanupStore:
         run_hash = plan.source.run_id_sha256
         plan_sha = cleanup_plan_sha256(plan)
         marker, marker_sha = self.marker()
+        if (
+            marker.product_root_identity_sha256 != plan.source.product_root_identity_sha256
+            or marker.product_ownership_marker_sha256 != plan.source.product_ownership_marker_sha256
+        ):
+            raise _fail(
+                CleanupFailureCode.OWNERSHIP_UNVERIFIED,
+                run_id_sha256=run_hash,
+                plan_sha256=plan_sha,
+                transaction_id=transaction_id,
+            )
         if (
             marker.root_id != plan.cleanup_root_id
             or marker_sha != plan.cleanup_root_marker_sha256
@@ -1578,7 +1592,7 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            approval = authorize()
+            approval = authorize(clock())
             approval_sha = cleanup_approval_binding_sha256(approval)
             journal_at = clock()
             control = self._run_control(run_hash)
@@ -1648,14 +1662,6 @@ class LocalDataCleanupStore:
             journal_published = True
             _directory_sync(transaction_root)
             _fault(self.fault_injector, "quarantine.before_effect")
-            final_approval = authorize()
-            if final_approval != approval:
-                raise _fail(
-                    CleanupFailureCode.APPROVAL_MISMATCH,
-                    run_id_sha256=run_hash,
-                    plan_sha256=plan_sha,
-                    transaction_id=transaction_id,
-                )
             _require_not_cancelled(
                 cancelled,
                 run_id_sha256=run_hash,
@@ -1663,6 +1669,14 @@ class LocalDataCleanupStore:
                 transaction_id=transaction_id,
             )
             effect_at = clock()
+            final_approval = authorize(effect_at)
+            if final_approval != approval:
+                raise _fail(
+                    CleanupFailureCode.APPROVAL_MISMATCH,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                )
             authority.revalidate()
             final_current = self.terminal_store.read_current(run_id)
             if not self._same_product_current(plan, final_current):
@@ -1753,7 +1767,7 @@ class LocalDataCleanupStore:
                 state=CleanupState.QUARANTINED,
                 receipt_sha256=receipt_sha,
                 quarantine_entered_at=effect_at,
-                receipt_retain_until=effect_at + timedelta(days=365),
+                receipt_retain_until=committed_at + timedelta(days=365),
             )
             tombstone_sha = cleanup_tombstone_sha256(tombstone)
             manifest = CleanupManifestV1(
@@ -2019,7 +2033,10 @@ class LocalDataCleanupStore:
         *,
         transaction_id: str,
         clock: Callable[[], datetime],
-        authorize: Callable[[], CleanupApprovalBindingV1],
+        authorize: Callable[
+            [datetime, CleanupTransactionV1 | None],
+            CleanupApprovalBindingV1,
+        ],
         cancelled: Callable[[], bool] | None = None,
     ) -> CleanupExecutionResultV1:
         """Internal staged delete with a durable delete-prepared checkpoint."""
@@ -2074,6 +2091,10 @@ class LocalDataCleanupStore:
                 or prior_pointer_sha != plan.source.cleanup_pointer_sha256
                 or cleanup_tombstone_sha256(prior_tombstone) != plan.source.tombstone_sha256
                 or prior_tombstone.quarantine_tree_sha256 != plan.source.quarantine_tree_sha256
+                or plan.source.quarantine_entered_at != prior_tombstone.quarantine_entered_at
+                or plan.source.delete_eligible_at
+                != prior_tombstone.quarantine_entered_at
+                + timedelta(days=DEFAULT_LOCAL_DATA_POLICY.quarantine_review_days)
                 or storage_checked_at < plan.source.delete_eligible_at
             ):
                 raise _fail(
@@ -2154,7 +2175,7 @@ class LocalDataCleanupStore:
                     plan_sha256=plan_sha,
                     transaction_id=transaction_id,
                 )
-            approval = authorize()
+            approval = authorize(clock(), None)
             approval_sha = cleanup_approval_binding_sha256(approval)
             journal_at = clock()
             control = self._run_control(run_hash)
@@ -2210,14 +2231,6 @@ class LocalDataCleanupStore:
                 plan_sha256=plan_sha,
                 transaction_id=transaction_id,
             )
-            final_approval = authorize()
-            if final_approval != approval:
-                raise _fail(
-                    CleanupFailureCode.APPROVAL_MISMATCH,
-                    run_id_sha256=run_hash,
-                    plan_sha256=plan_sha,
-                    transaction_id=transaction_id,
-                )
             transaction_root.mkdir()
             transaction_root_created = True
             _write_exclusive(
@@ -2237,6 +2250,14 @@ class LocalDataCleanupStore:
                 transaction_id=transaction_id,
             )
             effect_at = clock()
+            final_approval = authorize(effect_at, transaction_two)
+            if final_approval != approval:
+                raise _fail(
+                    CleanupFailureCode.APPROVAL_MISMATCH,
+                    run_id_sha256=run_hash,
+                    plan_sha256=plan_sha,
+                    transaction_id=transaction_id,
+                )
             authority.revalidate()
             final_current = self._read_current(
                 run_hash,
@@ -2334,7 +2355,7 @@ class LocalDataCleanupStore:
                 state=CleanupState.DELETE_PREPARED,
                 receipt_sha256=receipt_two_sha,
                 quarantine_entered_at=prior_tombstone.quarantine_entered_at,
-                receipt_retain_until=prior_tombstone.receipt_retain_until,
+                receipt_retain_until=prepared_at + timedelta(days=365),
             )
             tombstone_two_sha = cleanup_tombstone_sha256(tombstone_two)
             manifest_two = CleanupManifestV1(
@@ -2473,7 +2494,7 @@ class LocalDataCleanupStore:
                 state=CleanupState.DELETED,
                 receipt_sha256=receipt_three_sha,
                 quarantine_entered_at=prior_tombstone.quarantine_entered_at,
-                receipt_retain_until=prior_tombstone.receipt_retain_until,
+                receipt_retain_until=final_at + timedelta(days=365),
             )
             tombstone_three_sha = cleanup_tombstone_sha256(tombstone_three)
             manifest_three = CleanupManifestV1(

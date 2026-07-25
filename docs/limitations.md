@@ -141,17 +141,21 @@
 ## P2-027B の制限
 
 - 明示1 runだけを処理し、glob、ignore規則、名前推測、mtime、全root巡回によるcleanup候補発見は行わない。
-- quarantine と delete は別 plan・別 destructive approval で、固定30日待機を短縮しない。
+- quarantine と delete は別 plan・別 destructive approval で、plan source の時刻を live tombstone と
+  再照合し、固定30日待機を短縮しない。
 - delete は transaction-specific staging と `delete_prepared` を経由する。partial unlink、
   journal後、rename後、pointer replace不確実時は自動retry／resume／repairせず、人間判断を要する。
 - current reader は到達可能な revision と対応する standalone journal だけを authority とし、
   pointer 未公開の orphan revision を replay success に採用しない。`delete_prepared` replay は
   staging の exact/partial/absent/unreadable を再観測して effect を保守的に報告する。
+  pending control artifact や dangling current link があれば absent/no-effect と推定せず
+  `effect_unknown` に停止する。
 - same-volume local filesystem と cooperating process/kernel lock が前提である。cross-volume、
   distributed atomicity、network filesystem、exactly-once、process-tree cancellationを保証しない。
 - `os.replace`、file fsync、利用可能な場合のdirectory syncを用いるが、hardware cache、突然の電源断、
   Windows directory sync unavailable環境における物理媒体への残存を保証しない。
 - receipt/tombstone/hash chainはcorruptionと相関違反を検出するが、同権限writerのauthenticity、
   cryptographic erasure、raw block overwrite、復元不能性を証明しない。
+  各 tombstone の保持期限は対応 receipt の `committed_at + 365日` として lineage 全体で検証する。
 - cooperative cancellation は effect 前の mutation zero と effect 後の停止／reconciliation を
   提供するが、OS process hard-stop、undo、process-tree cancellation は提供しない。

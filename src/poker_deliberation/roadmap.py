@@ -46,6 +46,10 @@ APPROVAL_SCOPE_REVISIONS = {
         "goal-rm010-p2-010b-scope-revision-2-2026-07-24",
         "goal-rm010-p2-010b-scope-revision-3-2026-07-24",
     ): "explicit human reapproval of minimal corrected P2-010B exact scope",
+    (
+        "goal-rm012-p2-012b-2026-07-25",
+        "goal-rm012-p2-012b-scope-revision-1-2026-07-25",
+    ): "explicit human reapproval of revised P2-012B exact scope",
 }
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
 MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")

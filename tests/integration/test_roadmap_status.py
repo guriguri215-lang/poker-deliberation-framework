@@ -366,15 +366,18 @@ def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
     assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
     assert len(scope["policy_decisions"]) == 65
     assert document["milestone_approvals"]["P2-012A"] == reference
-    assert document["milestone_approvals"]["P2-012B"] == ("goal-rm012-p2-012b-2026-07-25")
+    assert document["milestone_approvals"]["P2-012B"] == (
+        "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
+    )
     assert document["milestone_progress"]["P2-012A"]["state"] == "completed"
     assert document["milestone_progress"]["P2-012B"]["state"] == "in_progress"
     assert rm_012["status"] == "in_progress"
 
 
-def test_p2_012b_scope_freeze_binds_the_exact_approved_proposal() -> None:
+def test_p2_012b_scope_revision_binds_the_exact_approved_proposal() -> None:
     document = load_roadmap()
-    reference = "goal-rm012-p2-012b-2026-07-25"
+    old_reference = "goal-rm012-p2-012b-2026-07-25"
+    reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
     record = document["approval_records"][reference]
     scope = record["scope"]
     canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
@@ -382,20 +385,58 @@ def test_p2_012b_scope_freeze_binds_the_exact_approved_proposal() -> None:
     )
 
     assert hashlib.sha256(canonical).hexdigest() == (
-        "1b6c003f9ba8d982f30f5e6c2d2b1af07da0c0461abe36760d838e3b3249976f"
+        "5f7c9aa9f860f46f8568fc29d2cf6f2959838aaba369439354d1415e40662e4f"
     )
     assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
     assert record["topics"] == scope["policy_decisions"]
-    assert len(scope["milestone_implementation_scope"]["targets"]) == 29
-    assert len(scope["milestone_implementation_scope"]["tests"]) == 69
+    assert len(scope["milestone_implementation_scope"]["targets"]) == 30
+    assert len(scope["milestone_implementation_scope"]["tests"]) == 70
     assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
     assert len(scope["policy_decisions"]) == 35
+    assert document["approval_records"][old_reference]["scope_digest"] == (
+        "1b6c003f9ba8d982f30f5e6c2d2b1af07da0c0461abe36760d838e3b3249976f"
+    )
     assert document["milestone_approvals"]["P2-012B"] == reference
     assert document["milestone_progress"]["P2-012B"] == {
         "state": "in_progress",
         "history": ["not_started", "in_progress"],
         "completion_evidence": {"commits": [], "paths": [], "tests": []},
     }
+
+
+def test_p2_012b_semantic_scope_revision_is_exact_and_append_only() -> None:
+    current = deepcopy(load_roadmap())
+    old_reference = "goal-rm012-p2-012b-2026-07-25"
+    reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
+    previous = deepcopy(current)
+    previous["approval_records"].pop(reference)
+    previous["milestone_approvals"]["P2-012B"] = old_reference
+    previous_progress = deepcopy(previous["milestone_progress"]["P2-012B"])
+
+    validate_roadmap(current)
+    validate_roadmap_update(previous, current)
+    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
+    assert current["milestone_progress"]["P2-012B"] == previous_progress
+
+    wrong_label = deepcopy(current)
+    wrong_label["approval_records"][reference]["source_label"] = "self declared"
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, wrong_label)
+
+    wrong_reference = deepcopy(current)
+    wrong_reference_value = f"{reference}-wrong"
+    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
+        "approval_records"
+    ].pop(reference)  # type: ignore[union-attr]
+    wrong_reference["milestone_approvals"]["P2-012B"] = wrong_reference_value
+    validate_roadmap(wrong_reference)
+    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
+        validate_roadmap_update(previous, wrong_reference)
+
+    changed_progress = deepcopy(current)
+    changed_progress["milestone_progress"]["P2-012B"]["completion_evidence"]["commits"] = ["d" * 40]
+    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
+        validate_roadmap_update(previous, changed_progress)
 
 
 def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:

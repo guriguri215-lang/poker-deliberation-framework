@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "3.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "4.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -185,6 +185,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-027A",
         "P2-027B",
         "P2-029A",
+        "P2-025A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -203,16 +204,37 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert all(item["status_reason"] for item in milestones.values())
 
 
-def test_p2_029a_registration_preserves_external_execution_boundaries() -> None:
+def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     items = _by_id()
     milestones = _milestones(load_roadmap())
 
-    assert items["RM-025"]["status"] == "proposed"
+    assert items["RM-025"]["status"] == "in_progress"
     assert items["RM-025"]["decision_gate"] == {
         "required": True,
         "rationale": [
-            "whether to implement a bridge or retain conformance-only separation",
+            "whether a future actual bridge candidate should be registered after the "
+            "conformance-only contract",
         ],
+    }
+    assert milestones["P2-025A"] == {
+        "id": "P2-025A",
+        "rm_id": "RM-025",
+        "status": "completed",
+        "status_reason": (
+            "The strict conformance-only contract, versioned fixtures, and verified offline Python "
+            "product projection are implemented without a runtime bridge."
+        ),
+        "dependencies": [
+            "P2-012B",
+            "P2-013B",
+            "P2-024A",
+            "P2-029A",
+        ],
+        "scope": (
+            "Versioned cross-runtime role, assignment, context, tool allowlist, approval, "
+            "result, error, execution-audit, canonical fixture, and offline projection "
+            "conformance without an execution bridge."
+        ),
     }
     assert items["RM-028"]["status"] == "proposed"
     assert milestones["P2-028A"]["status"] == "not_started"
@@ -411,15 +433,16 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "3.0.0"
+    assert summary["schema_version"] == "4.0.0"
     assert summary["total_items"] == 30
     assert summary["status_counts"] == {
         "completed": 17,
+        "in_progress": 1,
         "planned": 10,
-        "proposed": 3,
+        "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 12,
+        "completed": 13,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []

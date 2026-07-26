@@ -72,6 +72,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "Budget fields exist, but ordinary orchestration does not run parallel rounds or retries.",
     ),
     Capability(
+        "runtime_conformance_contract",
+        "implemented",
+        "P2-025A provides dedicated role inventories, canonical assignment/context/result "
+        "contracts, pure cross-runtime checks, and verified Python product projection.",
+    ),
+    Capability(
         "codex_python_runtime_bridge",
         "unavailable",
         "Codex-native agents and the Python orchestrator are separate execution surfaces; "

@@ -1,5 +1,20 @@
 # Security
 
+- P2-025A runtime conformance valuesはstrict・frozen・unknown-field拒否であり、NFC、UTC、
+  portable ID、bounded text、canonical JSON、purpose-separated SHA-256を検証する。hashは
+  corruption/correlation検出用であり、writer authenticityや署名を提供しない。
+- 単一runtime検証はrole inventory hash、role/semantic mapping、宣言済みtool/capability、
+  context expiry、approval expiry、execution audit hash、tool lineage、terminal statusを照合する。
+  runtime間比較はobjective、classification、payload/policy/budget、provenance、exact allowlist、
+  approval action digest、epistemic/strategy/evidence/error意味の変更をfail closedで検出する。
+- Codex role TOMLは追跡済みfieldだけをdataとしてparseし、instructionを実行しない。Codexのambient
+  tool catalogは推測せず`undeclared`、Python tool/capabilityは呼出側が与えた機械的snapshotだけを
+  使用する。意図的に未対応のroleを同等roleとして扱わない。
+- verified Python product projectionは既存terminal readerのbyte検証を前提にし、外部provider、
+  approval-bearing run、非terminal/失敗run、report/tool-resultのbyte差を拒否する。unavailable
+  solverはlimitationのままで、solver evidenceなしにGTO・均衡・正確なrangeへ昇格しない。
+- conformance metadataは既知credential形状とcontrol characterを拒否する。テストcanaryは
+  実行時に組み立て、追跡fixtureへcredential値を保存しない。
 - P2-027A local-data evaluation is pure and fail closed. It does not discover ownership from paths,
   ignores, globs, names, mtime, or user-controlled directories and performs no filesystem mutation.
 - `sensitive` persistence requires an encryption capability value; P2-027A implements no encryption.

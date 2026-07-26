@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_version": "1.0.0",
+  "cases": [
+    {
+      "id": "normal-assignment-context-result",
+      "mutation": "none",
+      "expected_code": null
+    },
+    {
+      "id": "unknown-runtime-role",
+      "mutation": "unknown-role",
+      "expected_code": "unknown-runtime-role"
+    },
+    {
+      "id": "unknown-capability",
+      "mutation": "unknown-capability",
+      "expected_code": "unknown-capability"
+    },
+    {
+      "id": "tool-allowlist-expansion",
+      "mutation": "allowlist-expansion",
+      "expected_code": "allowlist-semantic-mismatch"
+    },
+    {
+      "id": "classification-change",
+      "mutation": "classification-mismatch",
+      "expected_code": "context-semantic-mismatch"
+    },
+    {
+      "id": "provenance-change",
+      "mutation": "provenance-mismatch",
+      "expected_code": "context-provenance-mismatch"
+    },
+    {
+      "id": "approval-action-binding-change",
+      "mutation": "approval-digest-mismatch",
+      "expected_code": "approval-binding-mismatch"
+    },
+    {
+      "id": "execution-audit-change",
+      "mutation": "audit-hash-mismatch",
+      "expected_code": "execution-audit-hash-mismatch"
+    }
+  ]
+}

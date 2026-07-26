@@ -89,9 +89,9 @@ def _validate_committed_history(
     head_document: dict[str, Any],
     current_schema_version: str,
 ) -> None:
+    revisions = _history_revisions()
     if _schema_version(head_document, "HEAD") != current_schema_version:
         return
-    revisions = _history_revisions()
     newer = _git_document(revisions[0])
     if newer != head_document:
         raise ValueError("HEAD roadmap differs from its first-parent history")

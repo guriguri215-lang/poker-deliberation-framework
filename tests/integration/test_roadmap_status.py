@@ -537,6 +537,20 @@ def test_generator_rejects_shallow_history(
         generate_roadmap_status(["--check"])
 
 
+def test_generator_rejects_shallow_history_at_a_dirty_schema_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    head_document = load_roadmap()
+    monkeypatch.setattr(
+        roadmap_generator,
+        "_git",
+        _fake_roadmap_git({"HEAD": head_document}, ["HEAD"], shallow=True),
+    )
+
+    with pytest.raises(ValueError, match="requires a non-shallow repository"):
+        roadmap_generator._validate_committed_history(head_document, "3.0.0")
+
+
 def test_generator_help_exposes_only_public_projection_options(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

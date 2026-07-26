@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `2.0.0`
-- source SHA-256: `90f2d01482d4a8d5138b7b59353f7531739f967800ff1e78adced1557c6e1570`
+- source SHA-256: `e0c6dc2e69a8c71da42951fb60aa7509d1e67c6f81f69e02a5f7b59fef32f13b`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -42,7 +42,7 @@
 | `P2-012B` | `RM-012` | `completed` | `P2-010B`, `P2-011B`, `P2-012A` | Completion marker, verified reader/status mapping, migration, and lifecycle hooks. | Marker-last terminal publication, verified readers, legacy adapters, migration, budget settlement, and lifecycle hooks are implemented. |
 | `P2-013A` | `RM-013` | `completed` | `P2-012B` | Approval actor, authority, action digest, request/decision idempotency, and CAS transaction. | Strict approval authority, action binding, decision idempotency, CAS publication, and bounded failure audit are implemented. |
 | `P2-027B` | `RM-027` | `completed` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. | The additive authorized cleanup API implements quarantine, staged deletion, receipts, tombstones, CAS, and reconciliation. |
-| `P2-013B` | `RM-013` | `in_progress` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Approved exact-scope implementation of request reissue, pre-execution rechecks, and resume lifecycle binding is in progress. |
+| `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
 
 ## Current RM state
@@ -61,7 +61,7 @@
 | `RM-010` | Orchestrator phase services | `phase-2` | `P1` | `completed` | `RM-006`, `RM-007`, `RM-023`, `RM-024` | `P2-010B` | `required` |
 | `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-011B` | `required` |
 | `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-012B` | `required` |
-| `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `in_progress` | `RM-012`, `RM-024` | `P2-013B` | `required` |
+| `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `completed` | `RM-012`, `RM-024` | `P2-013B` | `required` |
 | `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `planned` | `RM-006`, `RM-012` | `n/a` | `required` |
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `planned` | `RM-014` | `n/a` | `required` |
 | `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `planned` | `RM-006`, `RM-014` | `n/a` | `required` |
@@ -359,8 +359,8 @@
 
 ### RM-013 — Approval and resume contract hardening
 
-- Status: `in_progress`
-- Status reason: P2-013A approval-authority contracts are implemented; P2-013B request reissue, pre-execution rechecks, and full resume lifecycle integration remain not started.
+- Status: `completed`
+- Status reason: P2-013A authoritative approval decisions and P2-013B explicit reissue, pre-execution authority rechecks, and resume lifecycle binding are implemented without enabling external effects.
 - Objective: Make approval decisions authoritative, conflict-safe, auditable, and idempotently resumable.
 - Capabilities:
   - none

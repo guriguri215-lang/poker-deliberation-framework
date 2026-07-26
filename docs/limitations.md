@@ -117,8 +117,9 @@
   cooperative threadを強制停止しない。process-tree kill、remote cancellation保証、CPU/memory/output
   isolationはP2-028Aまで未実装である。
 - P2-011B structural resumeはbudget stateだけをverified historyから再構成する。P2-012Bの通常resumeは
-  verified `approval_required` checkpointに限定され、approval actor/authority/action digest、
-  external action execution、legacy reissue、expiry/revocationはP2-013A/Bまで未実装である。
+  verified `approval_required` checkpointに限定される。P2-013A/Bは
+  approval actor/authority/action digest、明示reissue、expiry/revocation recheckを追加するが、
+  external action executionとdurable effect resumeはP2-028A以降まで未実装である。
 - P2-012Aと同様、Windows directory sync unavailable evidence、power-loss、hardware cache、
   network/distributed filesystem、same-privilege malicious writer authenticityは保証しない。
 - terminalization自体が極端に短いruntimeまたはartifact/run hard capを超える場合、ordinary callは
@@ -130,13 +131,28 @@
 ## P2-013A の制限
 
 - P2-013A の approve は exact authority record であり、外部 action を実行しない。結果は常に `external_executor_unavailable` / `failed_with_limitations` である。
-- V1 request は historical-only であり、approve、action plan 推定、authority 推定、renewal、repair、silent migration を行わない。完全な reissue は P2-013B に残る。
+- V1 request は historical-only であり、approve、action plan 推定、authority 推定、silent migration
+  を行わない。P2-013B の reissue は全 pending V1 source と完全な V2 successor plan の明示を要求する。
 - request expiry と authority revocation は decision admission と publication lock 内で検証する。P2-027B local cleanup executor は effect 直前にも再検証するが、remote effect と remote reconciliation は未実装である。
 - failure audit は bounded append-only control ledger であり、自動 truncate／delete／repair を行わない。capacity exhaustion は別途承認された lifecycle action まで fail closed となる。
 - approval V2 artifact 名は既存 P2-027A artifact-kind table を変更しないため、terminal lifecycle
   metadata 本体の対象集合ではなく、manifest inventory／hash／approval lineage により検証する。
   P2-027B は lifecycle audit 自身と approval V2 の3 control artifact を terminal published_at 起点の
   365日保持 subject として追加評価し、全 inventory の保持満了を exact cleanup plan に拘束する。
+
+## P2-013B の制限
+
+- reissue は request renewal の自動化ではない。V2 source は expiry 時刻以後、V1 source は全 pending
+  request の明示 batch に限り、完全な successor action plan を要求する。
+- `approval_reissues_v2.jsonl` は reissue を行った run だけに追加する。P2-027B の固定 cleanup
+  inventory contract は変更しないため、この新しい control artifact を含む run の cleanup は
+  P2-027B API で自動適格化せず fail closed となる。
+- pre-execution recheck は pure binding であり、external provider/solver、process、network、
+  filesystem effect を開始しない。effect receipt、remote idempotency、exactly-once、
+  cancellation、reconciliation、sandbox は提供しない。
+- authority provider が unavailable、provider/actor が変化、request/authority が expiry、
+  revocationまたはscope不一致なら mutation zero で拒否する。same-privilege malicious writerへの
+  authenticity、clock source authenticity、distributed freshness は証明しない。
 
 ## P2-027B の制限
 

@@ -13,13 +13,7 @@ from poker_deliberation.local_data_cleanup import LocalDataCleanupExecutor
 
 ROOT = Path(__file__).resolve().parents[2]
 
-EXECUTE_ONLY_SHA256 = {
-    "src/poker_deliberation/cli.py": (
-        "28dd2d734193b066c1c10275abb8ead3d55d916583083aafedee6630dd5c9cb3"
-    ),
-    "src/poker_deliberation/orchestrator.py": (
-        "8c594643cf865f2d74f14f35b0a8878efff2419effe25dd4451c4173f2270b28"
-    ),
+P2_027B_UNCHANGED_BOUNDARY_SHA256 = {
     "src/poker_deliberation/context_lifecycle.py": (
         "969d03a57af3405b0873766cd53c3f079772b09bc27222691dfa6cafaad5b111"
     ),
@@ -35,11 +29,14 @@ EXECUTE_ONLY_SHA256 = {
 }
 
 
-def test_execute_only_runtime_surfaces_remain_byte_exact() -> None:
+def test_p2_027b_unchanged_runtime_boundaries_remain_byte_exact() -> None:
+    # P2-013B explicitly adds resume/reissue wiring to orchestrator.py and cli.py.
+    # P2-027B's independent context/schema/tool/coordinator boundaries stay frozen.
     observed = {
-        path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest() for path in EXECUTE_ONLY_SHA256
+        path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+        for path in P2_027B_UNCHANGED_BOUNDARY_SHA256
     }
-    assert observed == EXECUTE_ONLY_SHA256
+    assert observed == P2_027B_UNCHANGED_BOUNDARY_SHA256
 
 
 def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:

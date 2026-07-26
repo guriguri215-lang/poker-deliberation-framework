@@ -21,6 +21,7 @@ from poker_deliberation.approval_canonical import parse_canonical_model
 from poker_deliberation.approval_models import (
     ApprovalDecisionBatch,
     ApprovalDecisionItemV2,
+    ApprovalReissueBatchV2,
     DecisionValue,
 )
 from poker_deliberation.approvals import (
@@ -38,6 +39,8 @@ from poker_deliberation.roadmap import roadmap_summary
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools import default_registry
+
+_DEFAULT_RESUME_REASON = "human decision recorded by CLI"
 
 
 def _configure_output() -> None:
@@ -192,8 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("run_id")
     resume.add_argument("--approve", action="append", default=[])
     resume.add_argument("--reject", action="append", default=[])
-    resume.add_argument("--reason", default="human decision recorded by CLI")
+    resume.add_argument("--reason")
     resume.add_argument("--decision-file")
+    resume.add_argument("--reissue-file")
     resume.add_argument("--actor-id")
     resume.add_argument("--decision-id")
     resume.add_argument("--idempotency-key")
@@ -211,6 +215,11 @@ def main(argv: list[str] | None = None) -> int:
     _configure_output()
     parser = build_parser()
     args = parser.parse_args(argv)
+    resume_reason = (
+        args.reason
+        if args.command == "resume" and args.reason is not None
+        else _DEFAULT_RESUME_REASON
+    )
     try:
         if args.command == "doctor":
             _emit(doctor(), args.format)
@@ -248,10 +257,32 @@ def main(argv: list[str] | None = None) -> int:
             _emit(descriptions, args.format)
             return 0
         decision_batch: ApprovalDecisionBatch | None = None
-        if args.command == "resume" and args.decision_file:
+        reissue_batch: ApprovalReissueBatchV2 | None = None
+        if args.command == "resume" and args.reissue_file:
+            conflicting = (
+                args.decision_file is not None
+                or args.approve
+                or args.reject
+                or args.reason is not None
+                or args.actor_id is not None
+                or args.decision_id is not None
+                or args.idempotency_key is not None
+                or args.expected_run_revision is not None
+                or args.expected_ledger_revision is not None
+                or args.decision_at is not None
+            )
+            if conflicting:
+                parser.error("--reissue-file cannot be combined with decision construction options")
+            reissue_batch = parse_canonical_model(
+                Path(args.reissue_file).read_bytes(),
+                ApprovalReissueBatchV2,
+            )
+            local_actor_id = "local-cli-user"
+        elif args.command == "resume" and args.decision_file:
             conflicting = (
                 args.approve
                 or args.reject
+                or args.reason is not None
                 or args.actor_id is not None
                 or args.decision_id is not None
                 or args.idempotency_key is not None
@@ -298,6 +329,11 @@ def main(argv: list[str] | None = None) -> int:
                         read.payload_bytes("approval_ledger_v2.json"),
                         read.payload_bytes("approval_decisions_v2.jsonl"),
                         read.payload_bytes("approval_audit_v2.jsonl"),
+                        (
+                            read.payload_bytes("approval_reissues_v2.jsonl")
+                            if "approval_reissues_v2.jsonl" in names
+                            else b""
+                        ),
                     )
                     requests = {request.request_id: request for request in state.ledger.requests}
                     decision_at = (
@@ -354,15 +390,16 @@ def main(argv: list[str] | None = None) -> int:
                             args.idempotency_key or orchestrator.terminal_id_factory("decision-key")
                         ),
                         items=tuple(items),
-                        reason=str(redact_sensitive(args.reason, enabled=True)),
+                        reason=str(redact_sensitive(resume_reason, enabled=True)),
                         decision_at=decision_at,
                     )
             report = orchestrator.resume(
                 args.run_id,
                 approve_ids=(args.approve if decision_batch is None else None),
                 reject_ids=(args.reject if decision_batch is None else None),
-                reason=args.reason,
+                reason=resume_reason,
                 decision_batch=decision_batch,
+                reissue_batch=reissue_batch,
             )
         elif args.command == "show":
             report = orchestrator.load_report(args.run_id)

@@ -17,7 +17,10 @@ from pydantic import (
     model_validator,
 )
 
-from poker_deliberation.schemas import ApprovalCategory
+from poker_deliberation.schemas import (
+    ApprovalCategory,
+    ApprovalRequest,
+)
 
 APPROVAL_SCHEMA_VERSION: Final[Literal["2.0.0"]] = "2.0.0"
 APPROVAL_CANONICALIZATION: Final[Literal["poker-approval-json-v2"]] = "poker-approval-json-v2"
@@ -120,6 +123,8 @@ class ApprovalFailureCode(StrEnum):
     AUDIT_CAPACITY_EXCEEDED = "audit_capacity_exceeded"
     AUDIT_UNCONFIRMED = "audit_unconfirmed"
     RUN_LOCKED = "run_locked"
+    REISSUE_NOT_ELIGIBLE = "reissue_not_eligible"
+    REISSUE_CONFLICT = "reissue_conflict"
 
 
 class ApprovalActor(_ApprovalModel):
@@ -311,6 +316,8 @@ class ApprovalRequestV2(_ApprovalModel):
             raise ValueError("approval request expiry mismatch")
         if self.state == "superseded" and self.supersession_reference is None:
             raise ValueError("superseded request requires a supersession reference")
+        if self.state != "superseded" and self.supersession_reference is not None:
+            raise ValueError("only a superseded request may reference a successor")
         if self.supersession_reference == self.request_id:
             raise ValueError("approval request cannot supersede itself")
         return self
@@ -716,6 +723,286 @@ class ApprovalSecurityAuditPointerV2(_ApprovalModel):
             raise ValueError("approval security audit rate actors must be unique")
         if actors != tuple(sorted(actors, key=lambda item: item.encode("ascii"))):
             raise ValueError("approval security audit rate states must be ordered")
+        return self
+
+
+class ApprovalReissueSuccessorV2(_ApprovalModel):
+    stable_proposal_id: PortableId
+    action_plan: CanonicalActionPlanV2
+    display: ApprovalDisplayV2
+    source_phase_id: PortableId
+    source_attempt_id: PortableId
+
+
+class ApprovalReissueItemV2(_ApprovalModel):
+    source_kind: Literal["historical_v1", "approval_v2"]
+    source_request_id: PortableId
+    expected_source_request_revision: int | None = Field(default=None, ge=1)
+    source_action_digest_sha256: Sha256 | None = None
+    successor: ApprovalReissueSuccessorV2
+
+    @model_validator(mode="after")
+    def closed_source_matrix(self) -> ApprovalReissueItemV2:
+        if self.source_kind == "historical_v1":
+            if (
+                self.expected_source_request_revision is not None
+                or self.source_action_digest_sha256 is not None
+            ):
+                raise ValueError("historical V1 reissue cannot claim inferred V2 fields")
+        elif (
+            self.expected_source_request_revision is None
+            or self.source_action_digest_sha256 is None
+        ):
+            raise ValueError("V2 reissue requires exact source revision and action digest")
+        return self
+
+
+class ApprovalReissueBatchV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    run_id: PortableId
+    expected_run_revision: int = Field(ge=1)
+    expected_ledger_revision: int = Field(ge=0)
+    reissue_id: PortableId
+    idempotency_key: PortableId
+    items: tuple[ApprovalReissueItemV2, ...] = Field(min_length=1, max_length=128)
+    reason: BoundedText
+    reissued_at: datetime
+
+    _reissued_utc = field_validator("reissued_at")(lambda value: _utc(value, "reissued_at"))
+
+    @field_validator("items")
+    @classmethod
+    def canonical_item_order(
+        cls, value: tuple[ApprovalReissueItemV2, ...]
+    ) -> tuple[ApprovalReissueItemV2, ...]:
+        ids = tuple(item.source_request_id for item in value)
+        if len(ids) != len(set(ids)):
+            raise ValueError("reissue source request IDs must be unique")
+        if ids != tuple(sorted(ids, key=lambda item: item.encode("utf-8"))):
+            raise ValueError("reissue items must be UTF-8 source-ID ordered")
+        return value
+
+
+class HistoricalApprovalV1SnapshotV2(_ApprovalModel):
+    request: ApprovalRequest
+    binding: HistoricalApprovalV1Binding
+
+    @model_validator(mode="after")
+    def exact_historical_binding(self) -> HistoricalApprovalV1SnapshotV2:
+        from poker_deliberation.approval_canonical import canonical_json_bytes, sha256_bytes
+
+        if (
+            self.binding.approval_id != self.request.approval_id
+            or self.binding.v1_status != self.request.status.value
+            or self.binding.v1_request_sha256 != sha256_bytes(canonical_json_bytes(self.request))
+        ):
+            raise ValueError("historical V1 snapshot binding mismatch")
+        return self
+
+
+class ApprovalReissueSourceBindingV2(_ApprovalModel):
+    source_kind: Literal["historical_v1", "approval_v2"]
+    source_request_id: PortableId
+    source_request_revision: int | None = Field(default=None, ge=1)
+    source_ledger_revision: int | None = Field(default=None, ge=1)
+    source_action_digest_sha256: Sha256 | None = None
+    source_request_sha256: Sha256
+    historical_snapshot: HistoricalApprovalV1SnapshotV2 | None = None
+
+    @model_validator(mode="after")
+    def closed_binding_matrix(self) -> ApprovalReissueSourceBindingV2:
+        if self.source_kind == "historical_v1":
+            if (
+                self.source_request_revision is not None
+                or self.source_ledger_revision is not None
+                or self.source_action_digest_sha256 is not None
+                or self.historical_snapshot is None
+                or self.historical_snapshot.request.approval_id != self.source_request_id
+                or self.historical_snapshot.binding.v1_request_sha256 != self.source_request_sha256
+            ):
+                raise ValueError("historical V1 source binding mismatch")
+        elif (
+            self.source_request_revision is None
+            or self.source_ledger_revision is None
+            or self.source_action_digest_sha256 is None
+            or self.historical_snapshot is not None
+        ):
+            raise ValueError("V2 source binding mismatch")
+        return self
+
+
+class ApprovalReissueResultV2(_ApprovalModel):
+    source: ApprovalReissueSourceBindingV2
+    successor_request_id: PortableId
+    successor_request_revision: int = Field(ge=1)
+    successor_ledger_revision: int = Field(ge=1)
+    successor_created_run_revision: int = Field(ge=2)
+    successor_action_digest_sha256: Sha256
+    successor_request_sha256: Sha256
+
+
+class ApprovalReissueOutcomeV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    outcome_kind: Literal["committed"] = "committed"
+    run_id: PortableId
+    reissue_id: PortableId
+    idempotency_key: PortableId
+    batch_sha256: Sha256
+    previous_run_revision: int = Field(ge=1)
+    current_run_revision: int = Field(ge=2)
+    previous_ledger_revision: int = Field(ge=0)
+    current_ledger_revision: int = Field(ge=1)
+    results: tuple[ApprovalReissueResultV2, ...] = Field(min_length=1, max_length=128)
+    remaining_pending_count: int = Field(ge=1, le=1024)
+    run_status: Literal["approval_required"] = "approval_required"
+    committed_at: datetime
+
+    _committed_utc = field_validator("committed_at")(lambda value: _utc(value, "committed_at"))
+
+    @field_validator("results")
+    @classmethod
+    def canonical_results(
+        cls, value: tuple[ApprovalReissueResultV2, ...]
+    ) -> tuple[ApprovalReissueResultV2, ...]:
+        ids = tuple(item.source.source_request_id for item in value)
+        if len(ids) != len(set(ids)):
+            raise ValueError("reissue outcome source IDs must be unique")
+        if ids != tuple(sorted(ids, key=lambda item: item.encode("utf-8"))):
+            raise ValueError("reissue results must be UTF-8 source-ID ordered")
+        return value
+
+    @model_validator(mode="after")
+    def exact_revision_step(self) -> ApprovalReissueOutcomeV2:
+        if (
+            self.current_run_revision != self.previous_run_revision + 1
+            or self.current_ledger_revision != self.previous_ledger_revision + len(self.results)
+        ):
+            raise ValueError("reissue outcome revision step mismatch")
+        return self
+
+
+class ApprovalReissueRecordV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    sequence: int = Field(ge=1)
+    previous_record_sha256: Sha256 | None = None
+    run_id: PortableId
+    reissue_id: PortableId
+    idempotency_key: PortableId
+    batch: ApprovalReissueBatchV2
+    batch_sha256: Sha256
+    previous_manifest_sha256: Sha256
+    previous_pointer_sha256: Sha256
+    previous_ledger_sha256: Sha256 | None = None
+    legacy_projection: tuple[HistoricalApprovalV1SnapshotV2, ...] = Field(max_length=1024)
+    outcome: ApprovalReissueOutcomeV2
+    outcome_sha256: Sha256
+    current_ledger_sha256: Sha256
+    committed_at: datetime
+    record_sha256: Sha256
+
+    _committed_utc = field_validator("committed_at")(lambda value: _utc(value, "committed_at"))
+
+    @field_validator("legacy_projection")
+    @classmethod
+    def canonical_legacy_projection(
+        cls, value: tuple[HistoricalApprovalV1SnapshotV2, ...]
+    ) -> tuple[HistoricalApprovalV1SnapshotV2, ...]:
+        ids = tuple(item.request.approval_id for item in value)
+        if len(ids) != len(set(ids)):
+            raise ValueError("legacy projection approval IDs must be unique")
+        if ids != tuple(sorted(ids, key=lambda item: item.encode("utf-8"))):
+            raise ValueError("legacy projection must be UTF-8 approval-ID ordered")
+        return value
+
+    @model_validator(mode="after")
+    def exact_record_identity(self) -> ApprovalReissueRecordV2:
+        from poker_deliberation.approval_canonical import (
+            approval_reissue_batch_sha256,
+            approval_reissue_outcome_sha256,
+            approval_reissue_record_sha256,
+        )
+
+        legacy = bool(self.legacy_projection)
+        if (
+            self.batch_sha256 != approval_reissue_batch_sha256(self.batch)
+            or self.outcome_sha256 != approval_reissue_outcome_sha256(self.outcome)
+            or self.record_sha256 != approval_reissue_record_sha256(self)
+            or self.batch.run_id != self.run_id
+            or self.batch.reissue_id != self.reissue_id
+            or self.batch.idempotency_key != self.idempotency_key
+            or self.outcome.run_id != self.run_id
+            or self.outcome.reissue_id != self.reissue_id
+            or self.outcome.idempotency_key != self.idempotency_key
+            or self.outcome.batch_sha256 != self.batch_sha256
+            or self.batch.expected_run_revision != self.outcome.previous_run_revision
+            or self.batch.expected_ledger_revision != self.outcome.previous_ledger_revision
+            or self.batch.reissued_at != self.committed_at
+            or self.outcome.committed_at != self.committed_at
+            or legacy != (self.previous_ledger_sha256 is None)
+        ):
+            raise ValueError("approval reissue record identity mismatch")
+        if (self.sequence == 1) != (self.previous_record_sha256 is None):
+            raise ValueError("approval reissue record lineage mismatch")
+        return self
+
+
+class ApprovalExecutionFailureCode(StrEnum):
+    APPROVAL_MISSING = "approval_missing"
+    APPROVAL_MISMATCH = "approval_mismatch"
+    APPROVAL_EXPIRED = "approval_expired"
+    AUTHORITY_UNAVAILABLE = "authority_unavailable"
+    ACTOR_SPOOF = "actor_spoof"
+    AUTHORITY_REVOKED = "authority_revoked"
+    UNAUTHORIZED_EXECUTION = "unauthorized_execution"
+
+
+class ApprovalExecutionFailureV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    code: ApprovalExecutionFailureCode
+    message: BoundedText
+    run_id: PortableId
+    request_id: PortableId
+    evaluated_at: datetime
+
+    _evaluated_utc = field_validator("evaluated_at")(lambda value: _utc(value, "evaluated_at"))
+
+
+class ApprovalExecutionRecheckBindingV2(_ApprovalModel):
+    schema_version: Literal["2.0.0"] = APPROVAL_SCHEMA_VERSION
+    binding_kind: Literal["approval_execution_recheck"] = "approval_execution_recheck"
+    approval_run_id: PortableId
+    approval_run_revision: int = Field(ge=1)
+    approval_pointer_sha256: Sha256
+    approval_manifest_sha256: Sha256
+    approval_ledger_sha256: Sha256
+    request_id: PortableId
+    request_revision: int = Field(ge=2)
+    action_digest_sha256: Sha256
+    execution_id: PortableId
+    decision_id: PortableId
+    decision_record_sha256: Sha256
+    decision_outcome_sha256: Sha256
+    actor_sha256: Sha256
+    authority_snapshot_sha256: Sha256
+    authority_provider_id: PortableId
+    authority_provider_version: Version
+    rechecked_at: datetime
+    valid_until: datetime
+    binding_sha256: Sha256
+
+    _rechecked_utc = field_validator("rechecked_at")(lambda value: _utc(value, "rechecked_at"))
+    _valid_until_utc = field_validator("valid_until")(lambda value: _utc(value, "valid_until"))
+
+    @model_validator(mode="after")
+    def exact_binding_hash(self) -> ApprovalExecutionRecheckBindingV2:
+        from poker_deliberation.approval_canonical import (
+            approval_execution_recheck_binding_sha256,
+        )
+
+        if self.rechecked_at >= self.valid_until:
+            raise ValueError("execution recheck binding is already expired")
+        if self.binding_sha256 != approval_execution_recheck_binding_sha256(self):
+            raise ValueError("execution recheck binding hash mismatch")
         return self
 
 

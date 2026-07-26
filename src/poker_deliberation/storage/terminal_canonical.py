@@ -18,6 +18,7 @@ from poker_deliberation.approval_models import (
     ApprovalDecisionRecordV2,
     ApprovalDomainAuditEventV2,
     ApprovalLedgerV2,
+    ApprovalReissueRecordV2,
 )
 from poker_deliberation.approvals import (
     project_v1_approvals,
@@ -81,13 +82,15 @@ LIFECYCLE_AUDIT_DOMAIN = "poker-run-lifecycle-audit-v2"
 LEGACY_SOURCE_INVENTORY_DOMAIN = "poker-run-legacy-source-inventory-v2"
 PRODUCT_LINEAGE_DOMAIN_PREFIX = "poker-product"
 APPROVAL_AUTHORITY_LINEAGE_DOMAIN = "poker-product-approval-authority-lineage-v2"
-APPROVAL_V2_ARTIFACTS = frozenset(
+APPROVAL_V2_CORE_ARTIFACTS = frozenset(
     {
         "approval_ledger_v2.json",
         "approval_decisions_v2.jsonl",
         "approval_audit_v2.jsonl",
     }
 )
+APPROVAL_REISSUE_ARTIFACT = "approval_reissues_v2.jsonl"
+APPROVAL_V2_ARTIFACTS = APPROVAL_V2_CORE_ARTIFACTS | {APPROVAL_REISSUE_ARTIFACT}
 
 _SUPPORTED_VERSION = TERMINAL_SCHEMA_VERSION
 _VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}$")
@@ -180,6 +183,8 @@ def product_payload_commitments(
     run_id: str,
     status: str,
     revision: int | None = None,
+    previous_manifest_sha256: str | None = None,
+    previous_pointer_sha256: str | None = None,
 ) -> tuple[str, str, str, str, str, str]:
     """Recompute product input, checkpoint, and scalar lineage commitments."""
 
@@ -222,13 +227,14 @@ def product_payload_commitments(
     present_approval_v2 = APPROVAL_V2_ARTIFACTS & set(payloads)
     approval_authority_head: str | None = None
     if present_approval_v2:
-        if present_approval_v2 != APPROVAL_V2_ARTIFACTS:
+        if not present_approval_v2 >= APPROVAL_V2_CORE_ARTIFACTS:
             raise CanonicalStorageError("authoritative approval artifacts must be complete")
         try:
             approval_state = read_approval_state_v2(
                 payloads["approval_ledger_v2.json"],
                 payloads["approval_decisions_v2.jsonl"],
                 payloads["approval_audit_v2.jsonl"],
+                payloads.get(APPROVAL_REISSUE_ARTIFACT, b""),
             )
             projected = project_v1_approvals(approval_state)
         except ValueError as exc:
@@ -238,33 +244,75 @@ def product_payload_commitments(
                 "V1 approval projection differs from authoritative V2 state"
             )
         if revision is not None:
-            records = approval_state.decision_records
-            checkpoint_revision = revision - len(records)
+            decisions = approval_state.decision_records
+            reissues = approval_state.reissue_records
+            checkpoint_revision = revision - len(decisions) - len(reissues)
+            successor_creation_revisions = {
+                result.successor_request_id: result.successor_created_run_revision
+                for record in reissues
+                for result in record.outcome.results
+            }
             if any(
-                request.created_run_revision != checkpoint_revision
+                request.created_run_revision
+                != successor_creation_revisions.get(request.request_id, checkpoint_revision)
                 for request in approval_state.ledger.requests
             ):
                 raise CanonicalStorageError(
                     "approval request creation is not bound to its checkpoint revision"
                 )
-            if records and (
-                records[-1].outcome.current_run_revision != revision
-                or records[0].outcome.previous_run_revision != checkpoint_revision
+            transitions = [
+                (
+                    record.outcome.previous_run_revision,
+                    record.outcome.current_run_revision,
+                )
+                for record in decisions
+            ]
+            transitions.extend(
+                (
+                    record.outcome.previous_run_revision,
+                    record.outcome.current_run_revision,
+                )
+                for record in reissues
+            )
+            transitions.sort()
+            if transitions and (
+                transitions[0][0] != checkpoint_revision or transitions[-1][1] != revision
             ):
                 raise CanonicalStorageError(
-                    "approval decision chain is not bound to the terminal revision"
+                    "approval mutation chain is not bound to the current revision"
                 )
+        current_reissue = next(
+            (
+                record
+                for record in approval_state.reissue_records
+                if revision is not None and record.outcome.current_run_revision == revision
+            ),
+            None,
+        )
+        if current_reissue is not None and (
+            current_reissue.previous_manifest_sha256 != previous_manifest_sha256
+            or current_reissue.previous_pointer_sha256 != previous_pointer_sha256
+        ):
+            raise CanonicalStorageError(
+                "approval reissue is not bound to the previous terminal lineage"
+            )
+        authority_commitment = {
+            "ledger_sha256": approval_state.ledger_sha256,
+            "decision_count": approval_state.ledger.decision_count,
+            "decision_log_head_sha256": approval_state.ledger.decision_log_head_sha256,
+            "domain_audit_count": approval_state.ledger.domain_audit_count,
+            "domain_audit_log_head_sha256": (approval_state.ledger.domain_audit_log_head_sha256),
+        }
+        if approval_state.reissue_records:
+            authority_commitment.update(
+                {
+                    "reissue_count": len(approval_state.reissue_records),
+                    "reissue_log_head_sha256": (approval_state.reissue_records[-1].record_sha256),
+                }
+            )
         approval_authority_head = canonical_domain_sha256(
             APPROVAL_AUTHORITY_LINEAGE_DOMAIN,
-            {
-                "ledger_sha256": approval_state.ledger_sha256,
-                "decision_count": approval_state.ledger.decision_count,
-                "decision_log_head_sha256": (approval_state.ledger.decision_log_head_sha256),
-                "domain_audit_count": approval_state.ledger.domain_audit_count,
-                "domain_audit_log_head_sha256": (
-                    approval_state.ledger.domain_audit_log_head_sha256
-                ),
-            },
+            authority_commitment,
         )
     execution_records = TypeAdapter(list[AgentExecutionRecord]).validate_json(
         payloads.get("agent_execution_records.json", b"[]")
@@ -490,6 +538,8 @@ def validate_payload_bytes(
             parse_approval_jsonl(data, ApprovalDecisionRecordV2)
         elif entry.logical_name == "approval_audit_v2.jsonl":
             parse_approval_jsonl(data, ApprovalDomainAuditEventV2)
+        elif entry.logical_name == APPROVAL_REISSUE_ARTIFACT:
+            parse_approval_jsonl(data, ApprovalReissueRecordV2)
         elif entry.logical_name == "evidence.jsonl":
             parse_canonical_jsonl(data, EvidenceRecord)
         else:

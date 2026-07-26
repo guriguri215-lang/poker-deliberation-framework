@@ -148,7 +148,7 @@ def test_public_projection_preserves_status_scope_and_decision_rationale() -> No
         "RM-024": "completed",
         "RM-027": "completed",
     }
-    assert items["RM-013"]["status"] == "in_progress"
+    assert items["RM-013"]["status"] == "completed"
     assert items["RM-028"]["status"] == "proposed"
     assert items["RM-018A"]["status"] == "planned"
     assert items["RM-018B"]["status"] == "planned"
@@ -179,6 +179,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-012A",
         "P2-012B",
         "P2-013A",
+        "P2-013B",
         "P2-027A",
         "P2-027B",
     }
@@ -186,7 +187,6 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         completed
     )
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
-        "P2-013B",
         "P2-028A",
     }
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
@@ -286,41 +286,22 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
 
     status_change = deepcopy(previous)
     items = _by_id(status_change)
-    items["RM-013"]["status"] = "blocked"
-    items["RM-013"]["status_reason"] = "A published decision gate is unresolved."
-    milestones = _milestones(status_change)
-    milestones["P2-013B"]["status"] = "blocked"
-    milestones["P2-013B"]["status_reason"] = "The parent item is blocked."
+    items["RM-013"]["status"] = "in_progress"
+    items["RM-013"]["status_reason"] = "A published follow-up is in progress."
     validate_roadmap_update(previous, status_change)
 
     unchanged_reason = deepcopy(previous)
-    _by_id(unchanged_reason)["RM-013"]["status"] = "blocked"
+    _by_id(unchanged_reason)["RM-013"]["status"] = "in_progress"
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, unchanged_reason)
 
     whitespace_only_reason = deepcopy(previous)
-    _by_id(whitespace_only_reason)["RM-013"]["status"] = "blocked"
+    _by_id(whitespace_only_reason)["RM-013"]["status"] = "in_progress"
     _by_id(whitespace_only_reason)["RM-013"]["status_reason"] = (
         str(_by_id(previous)["RM-013"]["status_reason"]) + " "
     )
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, whitespace_only_reason)
-
-    unchanged_milestone_reason = deepcopy(previous)
-    _by_id(unchanged_milestone_reason)["RM-013"]["status"] = "blocked"
-    _by_id(unchanged_milestone_reason)["RM-013"]["status_reason"] = (
-        "A published decision gate is unresolved."
-    )
-    _milestones(unchanged_milestone_reason)["P2-013B"]["status"] = "blocked"
-    with pytest.raises(ValueError, match="milestone transition requires a new reason"):
-        validate_roadmap_update(previous, unchanged_milestone_reason)
-
-    whitespace_milestone_reason = deepcopy(unchanged_milestone_reason)
-    _milestones(whitespace_milestone_reason)["P2-013B"]["status_reason"] = (
-        str(_milestones(previous)["P2-013B"]["status_reason"]) + " "
-    )
-    with pytest.raises(ValueError, match="milestone transition requires a new reason"):
-        validate_roadmap_update(previous, whitespace_milestone_reason)
 
     illegal = deepcopy(previous)
     _by_id(illegal)["RM-014"]["status"] = "proposed"
@@ -391,13 +372,12 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
     assert summary["schema_version"] == "2.0.0"
     assert summary["total_items"] == 29
     assert summary["status_counts"] == {
-        "completed": 15,
-        "in_progress": 1,
+        "completed": 16,
         "planned": 10,
         "proposed": 3,
     }
-    assert summary["milestone_state_counts"] == {"completed": 10, "not_started": 2}
-    assert summary["milestone_ready_ids"] == ["P2-013B"]
+    assert summary["milestone_state_counts"] == {"completed": 11, "not_started": 1}
+    assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [
         "RM-014",
         "RM-017",

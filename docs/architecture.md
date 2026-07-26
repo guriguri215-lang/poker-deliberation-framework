@@ -194,6 +194,20 @@ P2-013A では phase intake が V1 proposal と V2 proposal を version dispatch
 
 V2 artifact は product manifest と approval lineage commitment に含まれる。既存の V1 `FinalReport.approvals` は authoritative V2 state の projection であり、public schema を拡張しない。
 
+## P2-013B approval lifecycle
+
+P2-013B は既存の3 approval control artifactをcoreとして維持し、reissueがあるrunにだけ
+`approval_reissues_v2.jsonl`を追加する。strict readerはdecision、domain audit、reissueの各chainと、
+それらを統合したrun/ledger mutation timelineをlookup前に検証する。reissue recordは直前の
+manifest/pointer/ledger、historical V1 snapshotまたはexpired V2 source、明示successor、
+current ledgerをhashで結ぶ。
+
+`Orchestrator.reissue_approvals`はverified current読込、replay-first validation、V1/V2 exact source
+validation、V1 projection/report更新、RM-012 CAS publicationを1 revisionとして調整する。
+`resume(..., reissue_batch=...)`とCLI `--reissue-file`はこのcoordinatorだけを使用する。
+pure `recheck_approval_for_execution`はapproved decisionとlive authorityをeffectなしで再検証する。
+P2-027B cleanup module/inventory、external executor、P2-028A effect stateには接続しない。
+
 ## P2-027B authorized cleanup architecture
 
 `local_data_cleanup.py` は一つの明示 run を対象とする plan/execute/reconcile coordinator、

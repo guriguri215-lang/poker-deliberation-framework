@@ -17,7 +17,11 @@ from poker_deliberation.approval_models import (
     ApprovalDecisionOutcome,
     ApprovalDecisionRecordV2,
     ApprovalDomainAuditEventV2,
+    ApprovalExecutionRecheckBindingV2,
     ApprovalLedgerV2,
+    ApprovalReissueBatchV2,
+    ApprovalReissueOutcomeV2,
+    ApprovalReissueRecordV2,
     ApprovalRequestV2,
     ApprovalSecurityAuditEventV2,
     ApprovalSecurityAuditPointerV2,
@@ -40,6 +44,10 @@ SECURITY_AUDIT_POINTER_DOMAIN = "poker-approval-security-audit-pointer-v2"
 LEDGER_DOMAIN = "poker-approval-ledger-v2"
 EXTERNAL_BINDING_DOMAIN = "poker-approval-external-binding-v2"
 HISTORICAL_V1_BINDING_DOMAIN = "poker-approval-historical-v1-binding-v2"
+REISSUE_BATCH_DOMAIN = "poker-approval-reissue-batch-v2"
+REISSUE_OUTCOME_DOMAIN = "poker-approval-reissue-outcome-v2"
+REISSUE_RECORD_DOMAIN = "poker-approval-reissue-record-v2"
+EXECUTION_RECHECK_BINDING_DOMAIN = "poker-approval-execution-recheck-binding-v2"
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -279,3 +287,27 @@ def historical_approval_v1_binding_sha256(
     binding: HistoricalApprovalV1Binding,
 ) -> str:
     return canonical_domain_sha256(HISTORICAL_V1_BINDING_DOMAIN, binding)
+
+
+def approval_reissue_batch_sha256(batch: ApprovalReissueBatchV2) -> str:
+    return canonical_domain_sha256(REISSUE_BATCH_DOMAIN, batch)
+
+
+def approval_reissue_outcome_sha256(outcome: ApprovalReissueOutcomeV2) -> str:
+    return canonical_domain_sha256(REISSUE_OUTCOME_DOMAIN, outcome)
+
+
+def approval_reissue_record_sha256(record: ApprovalReissueRecordV2) -> str:
+    return canonical_domain_sha256(
+        REISSUE_RECORD_DOMAIN,
+        _without_derived_hash(record, "record_sha256"),
+    )
+
+
+def approval_execution_recheck_binding_sha256(
+    binding: ApprovalExecutionRecheckBindingV2,
+) -> str:
+    return canonical_domain_sha256(
+        EXECUTION_RECHECK_BINDING_DOMAIN,
+        _without_derived_hash(binding, "binding_sha256"),
+    )

@@ -6,6 +6,7 @@ import importlib.metadata
 import importlib.util
 import os
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.providers.base import (
     ProviderAvailability,
     ProviderControl,
@@ -29,6 +30,7 @@ class OpenAIAgentsProvider:
                 f"SDK package is {package_state}; API key is {key_state}"
             ),
             version=self._version() if package_present else None,
+            execution_class=ExecutionClass.EXTERNAL,
         )
 
     @staticmethod

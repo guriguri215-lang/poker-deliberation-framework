@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.providers.base import (
     ProviderAvailability,
     ProviderControl,
@@ -27,6 +28,7 @@ class DeterministicMockProvider:
             provider="deterministic-mock",
             reason="scripted test reports are available",
             version="1.0.0",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(

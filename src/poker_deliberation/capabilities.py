@@ -72,9 +72,42 @@ CAPABILITIES: tuple[Capability, ...] = (
         "Budget fields exist, but ordinary orchestration does not run parallel rounds or retries.",
     ),
     Capability(
+        "codex_python_runtime_bridge",
+        "unavailable",
+        "Codex-native agents and the Python orchestrator are separate execution surfaces; "
+        "no runtime bridge records Codex executions in Python run artifacts.",
+    ),
+    Capability(
+        "local_data_lifecycle_policy",
+        "implemented",
+        "P2-027A provides strict versioned local-data policy values, canonical hashes, and "
+        "pure lifecycle evaluation without filesystem mutation.",
+    ),
+    Capability(
+        "local_data_cleanup_executor",
+        "implemented",
+        "P2-027B provides bounded authorized quarantine, delayed staged deletion, immutable "
+        "receipts and tombstones, revision CAS, idempotency, and read-only reconciliation.",
+    ),
+    Capability(
+        "immutable_revision_storage_foundation",
+        "implemented",
+        "P2-012A immutable revision, manifest, transaction, lock, recovery-claim, and "
+        "revision-CAS foundation plus the P2-010B internal revision-only phase transition "
+        "authorization seam are implemented without product run integration.",
+    ),
+    Capability(
+        "product_integrated_durable_run",
+        "implemented",
+        "P2-012B marker-last terminal publication, verified product reader/status mapping, "
+        "approval-checkpoint resume, read-only flat-v1 adapter, copy-only migration, durable "
+        "budget settlement, and lifecycle metadata integration are implemented.",
+    ),
+    Capability(
         "phase_1_hardening",
-        "planned",
-        "Phase 1 contracts remain roadmap work and are not implemented by Phase 0.",
+        "implemented",
+        "Phase 1 typed tool contracts, numeric exactness, executable verification, and local "
+        "oracle/metamorphic tests are implemented.",
     ),
 )
 

@@ -1,5 +1,5 @@
 """Deterministic calculator package."""
 
-from poker_deliberation.tools.registry import ToolRegistry, default_registry
+from poker_deliberation.tools.registry import ToolByteLimitError, ToolRegistry, default_registry
 
-__all__ = ["ToolRegistry", "default_registry"]
+__all__ = ["ToolByteLimitError", "ToolRegistry", "default_registry"]

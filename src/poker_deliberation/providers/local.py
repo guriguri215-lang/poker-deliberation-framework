@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from poker_deliberation.budgets import ExecutionClass
 from poker_deliberation.providers.base import (
     ProviderAvailability,
     ProviderControl,
@@ -18,6 +19,7 @@ class LocalProvider:
             provider="local",
             reason="deterministic local validation and calculators are available",
             version="1.0.0",
+            execution_class=ExecutionClass.LOCAL_FREE,
         )
 
     def analyze(

@@ -2,12 +2,15 @@
 
 ## Assignment
 
-Each assignment contains a role, one bounded task, minimum context keys, and read-only status.
+Each assignment contains a role, one bounded task, exact allowed top-level context keys, and read-only status.
 The router selects roles by task type; it does not start every role for every run.
 The Python provider receives a typed, role-specific context allowlist. Unnormalized hand-history
 `raw_text` is sent only to intake. For strategy cases, normalized `strategy_text` is sent to the
 strategy analyst, skeptic, and adjudicator, but not the math auditor. Arbitrary metadata is not sent
-to providers; only allowlisted calculator inputs are included in the math-auditor context.
+to providers; only allowlisted calculator inputs are included in the math-auditor context. Dotted
+paths and allowlist/payload mismatches are rejected. The orchestrator validates the attempt-scoped
+context lifecycle contract and provider availability, then materializes a fresh `AgentContext` for
+the unchanged three-argument provider API. See `docs/context-lifecycle.md`.
 
 ## Report contract
 
@@ -16,6 +19,7 @@ uncertainties, objections, falsification conditions, confidence, and unresolved 
 Private chain-of-thought is neither requested nor stored.
 Provider conclusions are untrusted arguments: the final report labels them UNKNOWN, records disputes,
 and excludes them from the adjudicated conclusion until evidence or tools support them.
+The report role and task must exactly match the assignment; a mismatch is rejected before synthesis.
 
 Every Markdown tool section faithfully exposes the structured `ToolResult` fields `status`, legacy
 `exactness`, authoritative `numeric_exactness`, `contract_version`, `assumptions`, `warnings`,

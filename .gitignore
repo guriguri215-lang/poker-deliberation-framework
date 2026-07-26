@@ -29,3 +29,7 @@ Thumbs.db
 tmp/
 runs/*
 !runs/.gitkeep
+/PLAN.md
+/PROGRESS.md
+/.poker-run-revisions/
+/.poker-budget-revisions/

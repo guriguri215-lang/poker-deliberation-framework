@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-17
+- Amended: 2026-07-20 — aligned provider availability with the Phase 0 implementation and recorded
+  the still-unimplemented Codex/Python runtime bridge as a separate execution-surface boundary.
 
 ## Context
 
@@ -20,9 +22,13 @@ HITLを提供し、OpenAIモデルではResponses APIを既定で利用する。
 1. Codexネイティブ層: `.codex/config.toml`、`.codex/agents/*.toml`、
    `.agents/skills/`、ローカルCLIを提供する。
 2. Python制御層: 状態遷移、予算、承認、保存、計算、裁定入力、レポートを決定的に管理する。
-3. Providerプロトコルを定義し、ローカルMockProviderを既定とする。
-4. Agents SDK Providerは任意依存とし、SDKまたはAPIキーがなければUnavailableを返す。
+3. Providerプロトコルを定義し、非生成の`LocalProvider`を既定とする。
+   `DeterministicMockProvider`はテストで明示注入する。
+4. Agents SDK Providerは任意依存とするが、outbound `analyze`が未実装の間はSDK/APIキーの有無に
+   かかわらず`disabled`かつ`available=false`を返す。
 5. SDKを導入しても、状態機械・承認台帳・run artifactsはアプリケーション側を正とする。
+6. Codexネイティブ層とPython層は別実行面とし、相互のagent実行・context・監査記録を同期する
+   runtime bridgeは別設計・別実装とする。
 
 ## Consequences
 

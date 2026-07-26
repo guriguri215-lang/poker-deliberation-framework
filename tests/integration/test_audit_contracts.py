@@ -25,7 +25,8 @@ def test_evidence_is_validated_persisted_and_reported(tmp_path: Path) -> None:
         summary="Supports the named claim.",
         source_tier=1,
     )
-    report = Orchestrator(AppConfig(runs_dir=tmp_path / "runs")).run(
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"))
+    report = orchestrator.run(
         CaseInput(
             kind="claim",
             claims=[claim],
@@ -34,8 +35,8 @@ def test_evidence_is_validated_persisted_and_reported(tmp_path: Path) -> None:
         )
     )
     assert [item.evidence_id for item in report.evidence] == ["evidence-1"]
-    ledger = tmp_path / "runs" / report.run_id / "evidence.jsonl"
-    assert json.loads(ledger.read_text(encoding="utf-8"))["evidence_id"] == "evidence-1"
+    ledger = orchestrator.product_store.read_current(report.run_id).payload_bytes("evidence.jsonl")
+    assert json.loads(ledger)["evidence_id"] == "evidence-1"
 
 
 def test_reproduction_argv_uses_actual_nondefault_run_root(tmp_path: Path) -> None:

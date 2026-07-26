@@ -18,6 +18,10 @@ from poker_deliberation.schemas import (
     EpistemicLabel,
     EvidenceRecord,
 )
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+)
 from poker_deliberation.tools import default_registry
 from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 
@@ -82,6 +86,16 @@ class AdversarialProvider:
             ],
             confidence=ConfidenceGrade.A,
         )
+
+
+class EchoingFailureProvider(AdversarialProvider):
+    def analyze(
+        self,
+        context: AgentContext,
+        assignment: AgentAssignment,
+        control: ProviderControl,
+    ) -> AgentReport:
+        raise RuntimeError(f"provider echoed context: {context.strategy_text}")
 
 
 def _approval_payload() -> dict[str, object]:
@@ -166,6 +180,24 @@ def test_provider_context_mutation_cannot_change_case_or_tool_inputs(tmp_path: P
     assert report.tool_results[0].output["required_equity"] == 0.25
 
 
+def test_provider_exception_text_cannot_copy_context_into_audit_fields(tmp_path: Path) -> None:
+    canary = "CONTEXT-ECHO-CANARY-024A"
+    report = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=EchoingFailureProvider(),
+    ).run(
+        CaseInput(
+            kind="strategy",
+            raw_text=canary,
+            analysis_scope="retrospective",
+        )
+    )
+
+    assert report.agent_execution_records
+    assert all(canary not in (record.error or "") for record in report.agent_execution_records)
+    assert all(canary not in item for item in report.data_quality)
+
+
 def test_math_auditor_receives_only_requested_registered_tool_inputs(
     tmp_path: Path,
 ) -> None:
@@ -209,7 +241,8 @@ def test_preapproved_input_is_forced_back_to_pending(tmp_path: Path) -> None:
 
 def test_secret_canary_is_redacted_from_all_run_artifacts(tmp_path: Path) -> None:
     canary = "sk-supersecret123456789"
-    report = Orchestrator(AppConfig(runs_dir=tmp_path / "runs")).run(
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"))
+    report = orchestrator.run(
         CaseInput(
             kind="strategy",
             raw_text=f"analyze token {canary}",
@@ -217,7 +250,7 @@ def test_secret_canary_is_redacted_from_all_run_artifacts(tmp_path: Path) -> Non
             metadata={"api_key": canary},
         )
     )
-    run_dir = tmp_path / "runs" / report.run_id
+    run_dir = orchestrator.product_store.runs_root / report.run_id
     combined = "\n".join(
         path.read_text(encoding="utf-8") for path in run_dir.rglob("*") if path.is_file()
     )
@@ -450,12 +483,19 @@ def test_runtime_overrun_finishes_with_auditable_limited_report(tmp_path: Path) 
         runs_dir=tmp_path / "runs",
         budgets=BudgetConfig(max_runtime_seconds=0.001),
     )
-    report = Orchestrator(config, provider=provider).run(
+    orchestrator = Orchestrator(config, provider=provider)
+    report = orchestrator.run(
         CaseInput(kind="strategy", raw_text="slow", analysis_scope="retrospective")
     )
     assert report.run_status == "failed_with_limitations"
+    with pytest.raises(ProductRunError) as failure:
+        orchestrator.product_store.read_current(report.run_id)
+    assert failure.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
     state = json.loads(
-        (tmp_path / "runs" / report.run_id / "state.json").read_text(encoding="utf-8")
+        orchestrator.product_store.read_current(
+            report.run_id,
+            verify_budget=False,
+        ).payload_bytes("state.json")
     )
     assert state["state"] == "FAILED_WITH_LIMITATIONS"
     ticks_after_return = provider.work_ticks
@@ -484,10 +524,13 @@ def test_existing_run_id_cannot_be_overwritten(tmp_path: Path) -> None:
         analysis_scope="retrospective",
     )
     orchestrator.run(case, run_id="fixed-run")
-    original = (tmp_path / "runs" / "fixed-run" / "input.json").read_bytes()
-    with pytest.raises(FileExistsError):
+    original = orchestrator.product_store.read_current("fixed-run").payload_bytes("input.json")
+    with pytest.raises(ProductRunError) as failure:
         orchestrator.run(case, run_id="fixed-run")
-    assert (tmp_path / "runs" / "fixed-run" / "input.json").read_bytes() == original
+    assert failure.value.failure.code is ProductRunFailureCode.RUN_CONFLICT
+    assert (
+        orchestrator.product_store.read_current("fixed-run").payload_bytes("input.json") == original
+    )
 
 
 def test_environment_run_root_cannot_escape_workspace(

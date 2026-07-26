@@ -1,10 +1,13 @@
 import copy
+import json
 from pathlib import Path
 
 import pytest
 
 import poker_deliberation.orchestrator as orchestrator_module
+from poker_deliberation.agents import ROLE_CATALOG
 from poker_deliberation.config import AppConfig
+from poker_deliberation.context_lifecycle import context_payload
 from poker_deliberation.isolation import (
     IsolationError,
     build_blind_decision_context,
@@ -127,7 +130,7 @@ def test_unprovenanced_known_ranges_are_excluded_from_blind_context() -> None:
 
 def test_strategy_analyst_receives_only_blind_context(tmp_path: Path) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("intake", "strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     provider = DeterministicMockProvider(scripts)
@@ -136,9 +139,8 @@ def test_strategy_analyst_receives_only_blind_context(tmp_path: Path) -> None:
     data["analysis_scope"] = "retrospective"
     data["objective"] = "prove the winning action was right"
     data["assumptions"] = [Assumption(text="winning proves correctness", reason="user preference")]
-    Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider).run(
-        CaseInput.model_validate(data)
-    )
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider)
+    report = orchestrator.run(CaseInput.model_validate(data))
     contexts = {role: context for role, context in provider.contexts}
     blind = contexts["strategy-analyst"]
     assert blind.objective == "decision_quality_baseline"
@@ -147,13 +149,21 @@ def test_strategy_analyst_receives_only_blind_context(tmp_path: Path) -> None:
     assert blind.hand is None
     assert blind.claims == []
     assert blind.assumptions == []
+    verified = orchestrator.product_store.read_current(report.run_id)
+    assignments = json.loads(verified.payload_bytes("assignments.json"))
+    strategy_assignment = next(
+        item for item in assignments if item["agent_role"] == "strategy-analyst"
+    )
+    assert strategy_assignment["context_keys"] == sorted(context_payload(blind))
+    assert "raw_text" not in strategy_assignment["context_keys"]
+    assert "hand" not in strategy_assignment["context_keys"]
 
 
 def test_claim_mentioning_visible_long_player_id_does_not_trigger_isolation_error(
     tmp_path: Path,
 ) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("intake", "strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     provider = DeterministicMockProvider(scripts)
@@ -194,7 +204,7 @@ def test_isolation_error_becomes_structured_failed_report(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     scripts = {
-        role: AgentReport(agent_role=role, task="test")
+        role: AgentReport(agent_role=role, task=ROLE_CATALOG[role].purpose)
         for role in ("intake", "strategy-analyst", "math-auditor", "skeptic", "adjudicator")
     }
     provider = DeterministicMockProvider(scripts)
@@ -212,10 +222,9 @@ def test_isolation_error_becomes_structured_failed_report(
     orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"), provider=provider)
 
     report = orchestrator.run(CaseInput.model_validate(data))
-    run_dir = tmp_path / "runs" / report.run_id
-
     assert report.run_status == "failed_with_limitations"
     assert any("blind decision isolation failed" in item for item in report.data_quality)
     assert [role for role, _ in provider.contexts] == ["intake"]
-    assert (run_dir / "state.json").is_file()
-    assert (run_dir / "final_report.json").is_file()
+    verified = orchestrator.product_store.read_current(report.run_id)
+    assert json.loads(verified.payload_bytes("state.json"))["state"] == ("FAILED_WITH_LIMITATIONS")
+    assert verified.payload_bytes("final_report.json")

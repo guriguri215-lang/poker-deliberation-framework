@@ -247,6 +247,14 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, unchanged_reason)
 
+    whitespace_only_reason = deepcopy(previous)
+    _by_id(whitespace_only_reason)["RM-013"]["status"] = "blocked"
+    _by_id(whitespace_only_reason)["RM-013"]["status_reason"] = (
+        str(_by_id(previous)["RM-013"]["status_reason"]) + " "
+    )
+    with pytest.raises(ValueError, match="status transition requires a new reason"):
+        validate_roadmap_update(previous, whitespace_only_reason)
+
     unchanged_milestone_reason = deepcopy(previous)
     _by_id(unchanged_milestone_reason)["RM-013"]["status"] = "blocked"
     _by_id(unchanged_milestone_reason)["RM-013"]["status_reason"] = (
@@ -255,6 +263,13 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     _milestones(unchanged_milestone_reason)["P2-013B"]["status"] = "blocked"
     with pytest.raises(ValueError, match="milestone transition requires a new reason"):
         validate_roadmap_update(previous, unchanged_milestone_reason)
+
+    whitespace_milestone_reason = deepcopy(unchanged_milestone_reason)
+    _milestones(whitespace_milestone_reason)["P2-013B"]["status_reason"] = (
+        str(_milestones(previous)["P2-013B"]["status_reason"]) + " "
+    )
+    with pytest.raises(ValueError, match="milestone transition requires a new reason"):
+        validate_roadmap_update(previous, whitespace_milestone_reason)
 
     illegal = deepcopy(previous)
     _by_id(illegal)["RM-014"]["status"] = "proposed"
@@ -379,6 +394,40 @@ def test_generator_rejects_same_schema_contract_and_transition_rewrites(
         generate_roadmap_status(["--check"])
 
 
+def test_generator_compares_a_clean_committed_candidate_with_its_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = load_roadmap()
+    candidate = deepcopy(previous)
+    candidate["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
+    _by_id(candidate)["RM-014"]["status"] = "proposed"
+    source = tmp_path / ROADMAP_RESOURCE
+    source.write_text(json.dumps(candidate), encoding="utf-8")
+    documents = {
+        "HEAD": candidate,
+        "HEAD^": previous,
+    }
+
+    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
+        revision, separator, source_path = args[1].partition(":")
+        assert args[0] == "show"
+        assert separator == ":"
+        assert source_path == roadmap_generator.SOURCE_RELATIVE.as_posix()
+        return subprocess.CompletedProcess(
+            ["git", *args],
+            0,
+            stdout=json.dumps(documents[revision]),
+            stderr="",
+        )
+
+    monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
+    monkeypatch.setattr(roadmap_generator, "_git", fake_git)
+
+    with pytest.raises(ValueError, match="public top-level contract changed"):
+        generate_roadmap_status(["--check"])
+
+
 def test_generator_help_exposes_only_public_projection_options(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -407,6 +456,7 @@ def test_public_surfaces_exclude_management_ledger_markers() -> None:
         "review" + "er",
         "work" + "_ledger",
         "work" + "-ledger",
+        "work" + " ledger",
     )
     public_surfaces = (
         ROOT / "README.md",
@@ -421,12 +471,12 @@ def test_public_surfaces_exclude_management_ledger_markers() -> None:
     )
 
     for path in public_surfaces:
-        text = path.read_text(encoding="utf-8")
-        assert not {marker for marker in forbidden if marker in text}, path
+        text = path.read_text(encoding="utf-8").casefold()
+        assert not {marker for marker in forbidden if marker.casefold() in text}, path
 
     tracked = _tracked_paths()
-    management_documents = {"PLAN.md", "PROGRESS.md"}
-    assert not {path for path in tracked if Path(path).name in management_documents}
+    management_documents = {"plan.md", "progress.md"}
+    assert not {path for path in tracked if Path(path).name.casefold() in management_documents}
 
 
 def test_roadmap_capability_ids_exist_in_the_public_capability_catalog() -> None:

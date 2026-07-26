@@ -44,14 +44,21 @@ def _tracked_paths() -> set[str]:
     return {path for path in tracked_result.stdout.split("\0") if path}
 
 
-def _head_document() -> dict[str, Any]:
-    result = _git("show", f"HEAD:{SOURCE_RELATIVE.as_posix()}")
+def _git_document(revision: str) -> dict[str, Any]:
+    result = _git("show", f"{revision}:{SOURCE_RELATIVE.as_posix()}")
     if result.returncode != 0:
-        raise ValueError("HEAD roadmap source could not be read")
+        raise ValueError(f"{revision} roadmap source could not be read")
     document = json.loads(result.stdout)
     if not isinstance(document, dict):
-        raise ValueError("HEAD roadmap source must contain an object")
+        raise ValueError(f"{revision} roadmap source must contain an object")
     return document
+
+
+def _comparison_document(document: dict[str, Any]) -> dict[str, Any]:
+    head_document = _git_document("HEAD")
+    if head_document != document:
+        return head_document
+    return _git_document("HEAD^")
 
 
 def _working_tree_document(require_tracked: bool = False) -> dict[str, Any]:
@@ -59,7 +66,7 @@ def _working_tree_document(require_tracked: bool = False) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ValueError("roadmap source must contain an object")
     validate_roadmap(document)
-    previous = _head_document()
+    previous = _comparison_document(document)
     if previous.get("schema_version") == document["schema_version"]:
         validate_roadmap_update(previous, document)
     validate_repository_evidence(

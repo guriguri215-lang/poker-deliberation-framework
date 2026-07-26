@@ -469,7 +469,7 @@ def validate_roadmap_update(
                 raise ValueError(f"public item contract changed: {item_id}.{field}")
         if old_item["status"] != new_item["status"]:
             validate_transition(str(old_item["status"]), str(new_item["status"]), transitions)
-            if old_item["status_reason"] == new_item["status_reason"]:
+            if str(old_item["status_reason"]).strip() == str(new_item["status_reason"]).strip():
                 raise ValueError(f"status transition requires a new reason: {item_id}")
 
     old_milestones = {
@@ -497,7 +497,10 @@ def validate_roadmap_update(
                 str(new_milestone["status"]),
                 milestone_transitions,
             )
-            if old_milestone["status_reason"] == new_milestone["status_reason"]:
+            if (
+                str(old_milestone["status_reason"]).strip()
+                == str(new_milestone["status_reason"]).strip()
+            ):
                 raise ValueError(f"milestone transition requires a new reason: {milestone_id}")
 
 

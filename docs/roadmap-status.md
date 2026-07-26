@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `4.0.0`
-- source SHA-256: `21af02100ed98a768eb2397b433e1739f1d3bd72ec81bc27ba858ac49669acc1`
+- source SHA-256: `c52bf24115b4ef887427b7a841c34ea164863ba9930e23409b942b96db647676`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -45,7 +45,7 @@
 | `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
-| `P2-025A` | `RM-025` | `in_progress` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The approved conformance-only contract implementation is in progress; no runtime bridge is being built. |
+| `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
 
 ## Current RM state
 
@@ -685,7 +685,7 @@
 ### RM-025 — Codex and Python agent runtime conformance
 
 - Status: `in_progress`
-- Status reason: P2-025A conformance-only implementation is underway; both runtimes remain separate and the actual bridge remains unavailable.
+- Status reason: P2-025A conformance-only contracts are complete; both runtimes remain separate and the actual bridge remains unavailable and separately decision-gated.
 - Objective: Define versioned conformance fixtures for assignment, context, tool allowlist, approval, result, and execution-record semantics across separate runtimes.
 - Capabilities:
   - codex_python_runtime_bridge

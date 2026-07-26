@@ -216,8 +216,8 @@
     {
       "id": "P2-025A",
       "rm_id": "RM-025",
-      "status": "in_progress",
-      "status_reason": "The approved conformance-only contract implementation is in progress; no runtime bridge is being built.",
+      "status": "completed",
+      "status_reason": "The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge.",
       "dependencies": [
         "P2-012B",
         "P2-013B",
@@ -1320,7 +1320,7 @@
       "phase": "post-phase-2",
       "priority": "P1",
       "status": "in_progress",
-      "status_reason": "P2-025A conformance-only implementation is underway; both runtimes remain separate and the actual bridge remains unavailable.",
+      "status_reason": "P2-025A conformance-only contracts are complete; both runtimes remain separate and the actual bridge remains unavailable and separately decision-gated.",
       "dependencies": [
         "RM-012",
         "RM-013",

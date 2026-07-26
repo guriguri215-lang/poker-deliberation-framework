@@ -185,6 +185,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-027A",
         "P2-027B",
         "P2-029A",
+        "P2-025A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -192,8 +193,8 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
-        "P2-025A",
+    assert not {
+        item_id for item_id, item in milestones.items() if item["status"] == "in_progress"
     }
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
@@ -220,10 +221,10 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     assert milestones["P2-025A"] == {
         "id": "P2-025A",
         "rm_id": "RM-025",
-        "status": "in_progress",
+        "status": "completed",
         "status_reason": (
-            "The approved conformance-only contract implementation is in progress; no runtime "
-            "bridge is being built."
+            "The strict conformance-only contract, versioned fixtures, and verified offline Python "
+            "product projection are implemented without a runtime bridge."
         ),
         "dependencies": [
             "P2-012B",
@@ -443,8 +444,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 12,
-        "in_progress": 1,
+        "completed": 13,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []

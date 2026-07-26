@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import scripts.generate_roadmap_status as roadmap_generator
 from poker_deliberation.capabilities import CAPABILITIES
 from poker_deliberation.cli import doctor
 from poker_deliberation.roadmap import (
@@ -164,6 +165,29 @@ def test_unknown_projection_fields_fail_closed() -> None:
     with pytest.raises(ValueError, match="invalid milestone fields"):
         validate_roadmap(milestone_level)
 
+    item_status = deepcopy(load_roadmap())
+    item_status["status_vocabulary"]["private"] = "Undeclared extension state."  # type: ignore[index]
+    item_status["legal_transitions"]["private"] = []  # type: ignore[index]
+    _by_id(item_status)["RM-028"]["status"] = "private"
+    with pytest.raises(ValueError, match="status vocabulary mismatch"):
+        validate_roadmap(item_status)
+
+    milestone_status = deepcopy(load_roadmap())
+    milestone_status["milestone_status_vocabulary"]["private"] = (  # type: ignore[index]
+        "Undeclared extension state."
+    )
+    milestone_status["milestone_legal_transitions"]["private"] = []  # type: ignore[index]
+    _milestones(milestone_status)["P2-028A"]["status"] = "private"
+    with pytest.raises(ValueError, match="milestone status vocabulary mismatch"):
+        validate_roadmap(milestone_status)
+
+    output_path = deepcopy(load_roadmap())
+    output_path["source_policy"]["generated_document"] = (  # type: ignore[index]
+        "src/poker_deliberation/approvals.py"
+    )
+    with pytest.raises(ValueError, match="generated document must be"):
+        validate_roadmap(output_path)
+
 
 def test_item_dependency_cycle_and_active_dependency_fail_closed() -> None:
     cycle = deepcopy(load_roadmap())
@@ -218,6 +242,20 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     milestones["P2-013B"]["status_reason"] = "The parent item is blocked."
     validate_roadmap_update(previous, status_change)
 
+    unchanged_reason = deepcopy(previous)
+    _by_id(unchanged_reason)["RM-013"]["status"] = "blocked"
+    with pytest.raises(ValueError, match="status transition requires a new reason"):
+        validate_roadmap_update(previous, unchanged_reason)
+
+    unchanged_milestone_reason = deepcopy(previous)
+    _by_id(unchanged_milestone_reason)["RM-013"]["status"] = "blocked"
+    _by_id(unchanged_milestone_reason)["RM-013"]["status_reason"] = (
+        "A published decision gate is unresolved."
+    )
+    _milestones(unchanged_milestone_reason)["P2-013B"]["status"] = "blocked"
+    with pytest.raises(ValueError, match="milestone transition requires a new reason"):
+        validate_roadmap_update(previous, unchanged_milestone_reason)
+
     illegal = deepcopy(previous)
     _by_id(illegal)["RM-014"]["status"] = "proposed"
     with pytest.raises(ValueError, match="illegal status transition"):
@@ -227,6 +265,27 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     _by_id(contract_change)["RM-011"]["targets"].append("new public target")  # type: ignore[union-attr]
     with pytest.raises(ValueError, match="public item contract changed"):
         validate_roadmap_update(previous, contract_change)
+
+    transition_table_change = deepcopy(previous)
+    transition_table_change["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
+    _by_id(transition_table_change)["RM-014"]["status"] = "proposed"
+    with pytest.raises(ValueError, match="public top-level contract changed"):
+        validate_roadmap_update(previous, transition_table_change)
+
+    decision_gate_change = deepcopy(previous)
+    _by_id(decision_gate_change)["RM-010"]["decision_gate"] = {
+        "required": False,
+        "rationale": [],
+    }
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, decision_gate_change)
+
+    output_path_change = deepcopy(previous)
+    output_path_change["source_policy"]["generated_document"] = (  # type: ignore[index]
+        "src/poker_deliberation/approvals.py"
+    )
+    with pytest.raises(ValueError, match="generated document must be"):
+        validate_roadmap_update(previous, output_path_change)
 
 
 def test_transition_validator_rejects_unknown_and_illegal_targets() -> None:
@@ -293,6 +352,33 @@ def test_doctor_and_generated_document_use_the_public_projection() -> None:
     assert generate_roadmap_status(["--check", "--require-tracked"]) == 0
 
 
+def test_generator_rejects_same_schema_contract_and_transition_rewrites(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = load_roadmap()
+    current = deepcopy(previous)
+    current["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
+    _by_id(current)["RM-014"]["status"] = "proposed"
+    source = tmp_path / ROADMAP_RESOURCE
+    source.write_text(json.dumps(current), encoding="utf-8")
+
+    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
+        assert args == ("show", f"HEAD:{roadmap_generator.SOURCE_RELATIVE.as_posix()}")
+        return subprocess.CompletedProcess(
+            ["git", *args],
+            0,
+            stdout=json.dumps(previous),
+            stderr="",
+        )
+
+    monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
+    monkeypatch.setattr(roadmap_generator, "_git", fake_git)
+
+    with pytest.raises(ValueError, match="public top-level contract changed"):
+        generate_roadmap_status(["--check"])
+
+
 def test_generator_help_exposes_only_public_projection_options(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -318,10 +404,16 @@ def test_public_surfaces_exclude_management_ledger_markers() -> None:
         "scope" + "_digest",
         "completion" + "_evidence",
         "goal" + "-rm",
+        "review" + "er",
+        "work" + "_ledger",
+        "work" + "-ledger",
     )
     public_surfaces = (
         ROOT / "README.md",
+        ROOT / "docs" / "capabilities.md",
         ROOT / "docs" / "phase2-readiness-contracts.md",
+        ROOT / "docs" / "public-release-checklist.md",
+        ROOT / "docs" / "review-remediation.md",
         ROOT / "docs" / "roadmap-status.md",
         ROOT / "scripts" / "generate_roadmap_status.py",
         ROOT / "src" / "poker_deliberation" / "roadmap.py",
@@ -333,8 +425,8 @@ def test_public_surfaces_exclude_management_ledger_markers() -> None:
         assert not {marker for marker in forbidden if marker in text}, path
 
     tracked = _tracked_paths()
-    assert "PLAN.md" not in tracked
-    assert "PROGRESS.md" not in tracked
+    management_documents = {"PLAN.md", "PROGRESS.md"}
+    assert not {path for path in tracked if Path(path).name in management_documents}
 
 
 def test_roadmap_capability_ids_exist_in_the_public_capability_catalog() -> None:

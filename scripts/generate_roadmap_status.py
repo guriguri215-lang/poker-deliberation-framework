@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_PATH = ROOT / "src" / "poker_deliberation" / "roadmap_status.json"
+SOURCE_RELATIVE = Path("src") / "poker_deliberation" / "roadmap_status.json"
+SOURCE_PATH = ROOT / SOURCE_RELATIVE
 WORKTREE_SOURCE = ROOT / "src"
 if str(WORKTREE_SOURCE) not in sys.path:
     sys.path.insert(0, str(WORKTREE_SOURCE))
@@ -21,6 +22,7 @@ from poker_deliberation.roadmap import (
     render_roadmap_markdown,
     validate_repository_evidence,
     validate_roadmap,
+    validate_roadmap_update,
 )
 
 
@@ -42,11 +44,24 @@ def _tracked_paths() -> set[str]:
     return {path for path in tracked_result.stdout.split("\0") if path}
 
 
+def _head_document() -> dict[str, Any]:
+    result = _git("show", f"HEAD:{SOURCE_RELATIVE.as_posix()}")
+    if result.returncode != 0:
+        raise ValueError("HEAD roadmap source could not be read")
+    document = json.loads(result.stdout)
+    if not isinstance(document, dict):
+        raise ValueError("HEAD roadmap source must contain an object")
+    return document
+
+
 def _working_tree_document(require_tracked: bool = False) -> dict[str, Any]:
     document = json.loads(SOURCE_PATH.read_text(encoding="utf-8"))
     if not isinstance(document, dict):
         raise ValueError("roadmap source must contain an object")
     validate_roadmap(document)
+    previous = _head_document()
+    if previous.get("schema_version") == document["schema_version"]:
+        validate_roadmap_update(previous, document)
     validate_repository_evidence(
         document,
         ROOT,

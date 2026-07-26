@@ -18,8 +18,9 @@ staged delete、receipt/tombstone、read-only reconciliation を提供します�
 secure erase、automatic retry は実装しません。詳細は
 [`docs/local-data-policy.md`](docs/local-data-policy.md)と
 [`docs/local-data-cleanup.md`](docs/local-data-cleanup.md)を参照してください。
-source/editable checkoutとwheel/sdistの収載・runtime読込をcontract testとartifact smokeで検証します。
-特定release candidate全体のmatrix・license・artifact判定はRM-018Aのままです。
+source/editable checkoutはcontract test対象です。wheel/sdistの収載・runtime読込はpackage-data
+artifact smokeで候補ごとに別途検証し、その結果だけでrelease candidate判定とはしません。
+matrix・licenseを含む全体判定はRM-018Aのままです。
 人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
 
@@ -48,6 +49,8 @@ settlementを検証します。通常経路のprovider/tool実行は引き続き
 
 **FACT**: milestone/RMの公開状態と技術契約の正は、schema 2.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
+更新検証、参照path/testのtracked検証、repository gateを別途要求します。
 RM-010、RM-011、RM-012、RM-024、RM-027は`completed`、RM-013は`in_progress`で
 P2-013Bは`not_started`、RM-028は`proposed`でP2-028Aは`not_started`です。
 

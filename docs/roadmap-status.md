@@ -801,5 +801,6 @@
 ## Synchronization contract
 
 - `poker-deliberate doctor --format json`の`roadmap`はpackage resourceの公開JSONから計算します。
+- 公開projection自体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema更新検証、参照path/testのtracked検証、repository gateを別途要求します。
 - `scripts/generate_roadmap_status.py --check`とcontract testがこのprojectionのdriftを検出します。
-- wheel/sdistのpackage-data smokeは公開JSONの収載とruntime読込を検証します。release candidate全体の判定はRM-018Aのmatrix・license・artifact条件を別途要求します。
+- wheel/sdistのpackage-dataはartifact smokeで候補ごとに別途検証します。この検証だけではrelease candidate判定とせず、RM-018Aのmatrix・license・artifact条件を別途要求します。

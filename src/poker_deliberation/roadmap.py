@@ -39,6 +39,21 @@ ALLOWED_PHASES = {
     "pre-release",
     "stable-release",
 }
+ITEM_STATUS_VALUES = {
+    "proposed",
+    "planned",
+    "in_progress",
+    "blocked",
+    "completed",
+    "superseded",
+}
+MILESTONE_STATUS_VALUES = {
+    "not_started",
+    "in_progress",
+    "blocked",
+    "completed",
+}
+GENERATED_ROADMAP_DOCUMENT = "docs/roadmap-status.md"
 EXPECTED_RM_IDS = (
     {f"RM-{number:03d}" for number in range(1, 18)}
     | {"RM-018A", "RM-018B"}
@@ -85,7 +100,7 @@ ITEM_FIELDS = {
     "relations",
     "decision_gate",
 }
-IMMUTABLE_ITEM_FIELDS = ITEM_FIELDS - {"status", "status_reason", "decision_gate"}
+IMMUTABLE_ITEM_FIELDS = ITEM_FIELDS - {"status", "status_reason"}
 MILESTONE_FIELDS = {
     "id",
     "rm_id",
@@ -322,9 +337,13 @@ def validate_roadmap(document: dict[str, Any]) -> None:
     generated_path = PurePosixPath(generated_document)
     if generated_path.is_absolute() or ".." in generated_path.parts:
         raise ValueError("generated document must be repository-relative")
+    if generated_document != GENERATED_ROADMAP_DOCUMENT:
+        raise ValueError(f"generated document must be {GENERATED_ROADMAP_DOCUMENT}")
 
     vocabulary = _require_dict(document["status_vocabulary"], "status_vocabulary")
     transitions = _require_dict(document["legal_transitions"], "legal_transitions")
+    if set(vocabulary) != ITEM_STATUS_VALUES:
+        raise ValueError("status vocabulary mismatch")
     _validate_transition_table(vocabulary, transitions, "status")
     milestone_vocabulary = _require_dict(
         document["milestone_status_vocabulary"],
@@ -334,6 +353,8 @@ def validate_roadmap(document: dict[str, Any]) -> None:
         document["milestone_legal_transitions"],
         "milestone_legal_transitions",
     )
+    if set(milestone_vocabulary) != MILESTONE_STATUS_VALUES:
+        raise ValueError("milestone status vocabulary mismatch")
     _validate_transition_table(
         milestone_vocabulary,
         milestone_transitions,
@@ -432,12 +453,15 @@ def validate_roadmap_update(
     validate_roadmap(current)
     if previous["schema_version"] != current["schema_version"]:
         raise ValueError("schema change requires an explicit compatibility release")
+    for field in TOP_LEVEL_FIELDS - {"items", "implementation_milestones"}:
+        if previous[field] != current[field]:
+            raise ValueError(f"public top-level contract changed: {field}")
 
     old_items = {str(item["id"]): item for item in roadmap_items(previous)}
     new_items = {str(item["id"]): item for item in roadmap_items(current)}
     if set(old_items) != set(new_items):
         raise ValueError("roadmap item IDs cannot change within a schema version")
-    transitions = _require_dict(current["legal_transitions"], "legal_transitions")
+    transitions = _require_dict(previous["legal_transitions"], "legal_transitions")
     for item_id, old_item in old_items.items():
         new_item = new_items[item_id]
         for field in IMMUTABLE_ITEM_FIELDS:
@@ -445,6 +469,8 @@ def validate_roadmap_update(
                 raise ValueError(f"public item contract changed: {item_id}.{field}")
         if old_item["status"] != new_item["status"]:
             validate_transition(str(old_item["status"]), str(new_item["status"]), transitions)
+            if old_item["status_reason"] == new_item["status_reason"]:
+                raise ValueError(f"status transition requires a new reason: {item_id}")
 
     old_milestones = {
         str(item["id"]): _require_dict(item, "milestone")
@@ -457,7 +483,7 @@ def validate_roadmap_update(
     if set(old_milestones) != set(new_milestones):
         raise ValueError("milestone IDs cannot change within a schema version")
     milestone_transitions = _require_dict(
-        current["milestone_legal_transitions"],
+        previous["milestone_legal_transitions"],
         "milestone_legal_transitions",
     )
     for milestone_id, old_milestone in old_milestones.items():
@@ -471,6 +497,8 @@ def validate_roadmap_update(
                 str(new_milestone["status"]),
                 milestone_transitions,
             )
+            if old_milestone["status_reason"] == new_milestone["status_reason"]:
+                raise ValueError(f"milestone transition requires a new reason: {milestone_id}")
 
 
 def _repository_reference(reference: str) -> str | None:
@@ -753,13 +781,17 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
                 "から計算します。"
             ),
             (
+                "- 公開projection自体はcandidate固有のcommitやtest実行を証明しません。status更新は"
+                "同一schema更新検証、参照path/testのtracked検証、repository gateを別途要求します。"
+            ),
+            (
                 "- `scripts/generate_roadmap_status.py --check`とcontract testがこのprojectionの"
                 "driftを検出します。"
             ),
             (
-                "- wheel/sdistのpackage-data smokeは公開JSONの収載とruntime読込を検証します。"
-                "release candidate全体の判定はRM-018Aのmatrix・license・artifact条件を"
-                "別途要求します。"
+                "- wheel/sdistのpackage-dataはartifact smokeで候補ごとに別途検証します。"
+                "この検証だけではrelease candidate判定とせず、RM-018Aのmatrix・license・"
+                "artifact条件を別途要求します。"
             ),
             "",
         ]

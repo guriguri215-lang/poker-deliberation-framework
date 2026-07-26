@@ -62,6 +62,14 @@ def _schema_version(document: dict[str, Any], revision: str) -> str:
 
 
 def _history_revisions() -> list[str]:
+    shallow_result = _git("rev-parse", "--is-shallow-repository")
+    if shallow_result.returncode != 0:
+        raise ValueError("repository history completeness could not be determined")
+    shallow = shallow_result.stdout.strip()
+    if shallow not in {"true", "false"}:
+        raise ValueError("repository history completeness response is invalid")
+    if shallow == "true":
+        raise ValueError("roadmap history validation requires a non-shallow repository")
     result = _git(
         "rev-list",
         "--first-parent",

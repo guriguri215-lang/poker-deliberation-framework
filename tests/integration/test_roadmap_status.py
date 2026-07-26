@@ -61,8 +61,18 @@ def _tracked_paths() -> set[str]:
 def _fake_roadmap_git(
     documents: dict[str, dict[str, object]],
     revisions: list[str],
+    *,
+    shallow: bool = False,
 ) -> Callable[..., subprocess.CompletedProcess[str]]:
     def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
+        if args[0] == "rev-parse":
+            assert args == ("rev-parse", "--is-shallow-repository")
+            return subprocess.CompletedProcess(
+                ["git", *args],
+                0,
+                stdout=f"{str(shallow).lower()}\n",
+                stderr="",
+            )
         if args[0] == "rev-list":
             assert args == (
                 "rev-list",
@@ -505,6 +515,25 @@ def test_generator_rejects_invalid_schema_before_the_history_boundary(
     )
 
     with pytest.raises(ValueError, match="roadmap schema_version is invalid"):
+        generate_roadmap_status(["--check"])
+
+
+def test_generator_rejects_shallow_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = load_roadmap()
+    source = tmp_path / ROADMAP_RESOURCE
+    source.write_text(json.dumps(candidate), encoding="utf-8")
+
+    monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
+    monkeypatch.setattr(
+        roadmap_generator,
+        "_git",
+        _fake_roadmap_git({"HEAD": candidate}, ["HEAD"], shallow=True),
+    )
+
+    with pytest.raises(ValueError, match="requires a non-shallow repository"):
         generate_roadmap_status(["--check"])
 
 

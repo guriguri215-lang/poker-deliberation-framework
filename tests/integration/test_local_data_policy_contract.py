@@ -61,14 +61,14 @@ def test_context_use_expiry_is_separate_from_storage_retention() -> None:
     assert result.audit.proposed_disposition is LifecycleDisposition.DELETE_CANDIDATE
 
 
-def test_cleanup_candidate_is_not_promoted_before_completion_gates() -> None:
+def test_cleanup_capability_is_promoted_after_completion_gates() -> None:
     states = {item.capability_id: item.state for item in CAPABILITIES}
     doctor_states = {item["capability_id"]: item["state"] for item in doctor()["capabilities"]}
 
     assert states["local_data_lifecycle_policy"] == "implemented"
     assert doctor_states["local_data_lifecycle_policy"] == "implemented"
-    assert states["local_data_cleanup_executor"] == "unavailable"
-    assert doctor_states["local_data_cleanup_executor"] == "unavailable"
+    assert states["local_data_cleanup_executor"] == "implemented"
+    assert doctor_states["local_data_cleanup_executor"] == "implemented"
 
 
 def test_p2_027b_has_separate_exact_authorization() -> None:
@@ -76,7 +76,7 @@ def test_p2_027b_has_separate_exact_authorization() -> None:
 
     assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
     assert document["milestone_approvals"]["P2-027A"] == ("goal-rm027-p2-027a-2026-07-23")
-    assert document["milestone_progress"]["P2-027B"]["state"] == "in_progress"
+    assert document["milestone_progress"]["P2-027B"]["state"] == "completed"
     assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
 
 

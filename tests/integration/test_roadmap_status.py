@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from copy import deepcopy
 from importlib import resources
 from pathlib import Path
@@ -55,6 +56,39 @@ def _tracked_paths() -> set[str]:
         encoding="utf-8",
     )
     return set(result.stdout.splitlines())
+
+
+def _fake_roadmap_git(
+    documents: dict[str, dict[str, object]],
+    revisions: list[str],
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
+        if args[0] == "rev-list":
+            assert args == (
+                "rev-list",
+                "--first-parent",
+                "HEAD",
+                "--",
+                roadmap_generator.SOURCE_RELATIVE.as_posix(),
+            )
+            return subprocess.CompletedProcess(
+                ["git", *args],
+                0,
+                stdout="\n".join(revisions) + "\n",
+                stderr="",
+            )
+        assert args[0] == "show"
+        revision, separator, source_path = args[1].partition(":")
+        assert separator == ":"
+        assert source_path == roadmap_generator.SOURCE_RELATIVE.as_posix()
+        return subprocess.CompletedProcess(
+            ["git", *args],
+            0,
+            stdout=json.dumps(documents[revision]),
+            stderr="",
+        )
+
+    return fake_git
 
 
 def test_packaged_public_roadmap_loads_outside_repository_cwd(
@@ -187,6 +221,13 @@ def test_unknown_projection_fields_fail_closed() -> None:
     )
     with pytest.raises(ValueError, match="generated document must be"):
         validate_roadmap(output_path)
+
+    backslash_output_path = deepcopy(load_roadmap())
+    backslash_output_path["source_policy"]["generated_document"] = (  # type: ignore[index]
+        "docs\\roadmap-status.md"
+    )
+    with pytest.raises(ValueError, match="generated document must be"):
+        validate_roadmap(backslash_output_path)
 
 
 def test_item_dependency_cycle_and_active_dependency_fail_closed() -> None:
@@ -378,17 +419,12 @@ def test_generator_rejects_same_schema_contract_and_transition_rewrites(
     source = tmp_path / ROADMAP_RESOURCE
     source.write_text(json.dumps(current), encoding="utf-8")
 
-    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
-        assert args == ("show", f"HEAD:{roadmap_generator.SOURCE_RELATIVE.as_posix()}")
-        return subprocess.CompletedProcess(
-            ["git", *args],
-            0,
-            stdout=json.dumps(previous),
-            stderr="",
-        )
-
     monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
-    monkeypatch.setattr(roadmap_generator, "_git", fake_git)
+    monkeypatch.setattr(
+        roadmap_generator,
+        "_git",
+        _fake_roadmap_git({"HEAD": previous, "base": previous}, ["base"]),
+    )
 
     with pytest.raises(ValueError, match="public top-level contract changed"):
         generate_roadmap_status(["--check"])
@@ -404,27 +440,71 @@ def test_generator_compares_a_clean_committed_candidate_with_its_parent(
     _by_id(candidate)["RM-014"]["status"] = "proposed"
     source = tmp_path / ROADMAP_RESOURCE
     source.write_text(json.dumps(candidate), encoding="utf-8")
-    documents = {
+    documents: dict[str, dict[str, object]] = {
         "HEAD": candidate,
-        "HEAD^": previous,
+        "candidate": candidate,
+        "base": previous,
     }
 
-    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
-        revision, separator, source_path = args[1].partition(":")
-        assert args[0] == "show"
-        assert separator == ":"
-        assert source_path == roadmap_generator.SOURCE_RELATIVE.as_posix()
-        return subprocess.CompletedProcess(
-            ["git", *args],
-            0,
-            stdout=json.dumps(documents[revision]),
-            stderr="",
-        )
-
     monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
-    monkeypatch.setattr(roadmap_generator, "_git", fake_git)
+    monkeypatch.setattr(
+        roadmap_generator,
+        "_git",
+        _fake_roadmap_git(documents, ["candidate", "base"]),
+    )
 
     with pytest.raises(ValueError, match="public top-level contract changed"):
+        generate_roadmap_status(["--check"])
+
+
+def test_generator_audits_roadmap_changes_before_a_no_op_followup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    previous = load_roadmap()
+    illegal = deepcopy(previous)
+    illegal["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
+    _by_id(illegal)["RM-014"]["status"] = "proposed"
+    source = tmp_path / ROADMAP_RESOURCE
+    source.write_text(json.dumps(illegal), encoding="utf-8")
+    documents: dict[str, dict[str, object]] = {
+        "HEAD": illegal,
+        "illegal": illegal,
+        "base": previous,
+    }
+
+    monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
+    monkeypatch.setattr(
+        roadmap_generator,
+        "_git",
+        _fake_roadmap_git(documents, ["illegal", "base"]),
+    )
+
+    with pytest.raises(ValueError, match="public top-level contract changed"):
+        generate_roadmap_status(["--check"])
+
+
+def test_generator_rejects_invalid_schema_before_the_history_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = load_roadmap()
+    source = tmp_path / ROADMAP_RESOURCE
+    source.write_text(json.dumps(candidate), encoding="utf-8")
+    documents: dict[str, dict[str, object]] = {
+        "HEAD": candidate,
+        "candidate": candidate,
+        "invalid": {},
+    }
+
+    monkeypatch.setattr(roadmap_generator, "SOURCE_PATH", source)
+    monkeypatch.setattr(
+        roadmap_generator,
+        "_git",
+        _fake_roadmap_git(documents, ["candidate", "invalid"]),
+    )
+
+    with pytest.raises(ValueError, match="roadmap schema_version is invalid"):
         generate_roadmap_status(["--check"])
 
 

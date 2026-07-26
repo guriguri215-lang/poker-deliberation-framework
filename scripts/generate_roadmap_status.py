@@ -54,11 +54,45 @@ def _git_document(revision: str) -> dict[str, Any]:
     return document
 
 
-def _comparison_document(document: dict[str, Any]) -> dict[str, Any]:
-    head_document = _git_document("HEAD")
-    if head_document != document:
-        return head_document
-    return _git_document("HEAD^")
+def _schema_version(document: dict[str, Any], revision: str) -> str:
+    version = document.get("schema_version")
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError(f"{revision} roadmap schema_version is invalid")
+    return version
+
+
+def _history_revisions() -> list[str]:
+    result = _git(
+        "rev-list",
+        "--first-parent",
+        "HEAD",
+        "--",
+        SOURCE_RELATIVE.as_posix(),
+    )
+    if result.returncode != 0:
+        raise ValueError("roadmap first-parent history could not be read")
+    revisions = [revision for revision in result.stdout.splitlines() if revision]
+    if not revisions:
+        raise ValueError("roadmap first-parent history is empty")
+    return revisions
+
+
+def _validate_committed_history(
+    head_document: dict[str, Any],
+    current_schema_version: str,
+) -> None:
+    if _schema_version(head_document, "HEAD") != current_schema_version:
+        return
+    revisions = _history_revisions()
+    newer = _git_document(revisions[0])
+    if newer != head_document:
+        raise ValueError("HEAD roadmap differs from its first-parent history")
+    for revision in revisions[1:]:
+        older = _git_document(revision)
+        if _schema_version(older, revision) != current_schema_version:
+            break
+        validate_roadmap_update(older, newer)
+        newer = older
 
 
 def _working_tree_document(require_tracked: bool = False) -> dict[str, Any]:
@@ -66,9 +100,18 @@ def _working_tree_document(require_tracked: bool = False) -> dict[str, Any]:
     if not isinstance(document, dict):
         raise ValueError("roadmap source must contain an object")
     validate_roadmap(document)
-    previous = _comparison_document(document)
-    if previous.get("schema_version") == document["schema_version"]:
-        validate_roadmap_update(previous, document)
+    current_schema_version = _schema_version(document, "working tree")
+    head_document = _git_document("HEAD")
+    _validate_committed_history(head_document, current_schema_version)
+    if (
+        head_document != document
+        and _schema_version(
+            head_document,
+            "HEAD",
+        )
+        == current_schema_version
+    ):
+        validate_roadmap_update(head_document, document)
     validate_repository_evidence(
         document,
         ROOT,

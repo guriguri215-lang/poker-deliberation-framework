@@ -333,7 +333,7 @@ def validate_roadmap(document: dict[str, Any]) -> None:
     generated_document = _require_string(
         policy.get("generated_document"),
         "source_policy.generated_document",
-    ).replace("\\", "/")
+    )
     generated_path = PurePosixPath(generated_document)
     if generated_path.is_absolute() or ".." in generated_path.parts:
         raise ValueError("generated document must be repository-relative")

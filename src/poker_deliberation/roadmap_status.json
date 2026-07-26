@@ -179,8 +179,8 @@
     {
       "id": "P2-013B",
       "rm_id": "RM-013",
-      "status": "not_started",
-      "status_reason": "Not started.",
+      "status": "in_progress",
+      "status_reason": "Approved exact-scope implementation of request reissue, pre-execution rechecks, and resume lifecycle binding is in progress.",
       "dependencies": [
         "P2-013A",
         "P2-027B"

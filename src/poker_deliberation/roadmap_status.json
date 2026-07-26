@@ -1,5 +1,5 @@
 {
-  "schema_version": "3.0.0",
+  "schema_version": "4.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -212,6 +212,19 @@
         "P2-027B"
       ],
       "scope": "Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood."
+    },
+    {
+      "id": "P2-025A",
+      "rm_id": "RM-025",
+      "status": "not_started",
+      "status_reason": "The conformance-only scope is approved; implementation has not started.",
+      "dependencies": [
+        "P2-012B",
+        "P2-013B",
+        "P2-024A",
+        "P2-029A"
+      ],
+      "scope": "Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge."
     }
   ],
   "items": [
@@ -1306,8 +1319,8 @@
       "title": "Codex and Python agent runtime conformance",
       "phase": "post-phase-2",
       "priority": "P1",
-      "status": "proposed",
-      "status_reason": "Approved as a roadmap candidate only; both runtimes remain separate.",
+      "status": "planned",
+      "status_reason": "P2-025A conformance-only scope is approved; implementation has not started and both runtimes remain separate.",
       "dependencies": [
         "RM-012",
         "RM-013",
@@ -1319,30 +1332,36 @@
       ],
       "objective": "Define versioned conformance fixtures for assignment, context, tool allowlist, approval, result, and execution-record semantics across separate runtimes.",
       "targets": [
-        "Codex agent definitions",
-        "Python role/provider catalog",
-        "future interchange schema"
+        ".codex/agents",
+        "src/poker_deliberation/agents/roles.py",
+        "src/poker_deliberation/runtime_conformance",
+        "docs/runtime-conformance-contract.md"
       ],
       "acceptance_criteria": [
-        "Version negotiation and fixture conformance cover assignment, context, result, error, approval, and audit semantics; capability remains unavailable until an actual bridge passes the contract."
+        "A strict versioned contract and minimal tracked fixtures cover runtime-specific roles, assignment and parent lineage, context provenance/classification/expiry/budget references, exact tool/capability allowlists, approval binding and expiry, epistemic result references, structured error/timeout/cancellation, and execution audit semantics.",
+        "Unknown versions, roles, capabilities, allowlist expansion, approval weakening, missing execution evidence, context mismatch, secret-bearing public values, and unsupported solver/provider claims fail closed.",
+        "Offline Python product runs project into the contract without launching Codex, external providers, external solvers, or representing Python execution as Codex execution.",
+        "The actual Codex/Python bridge remains unavailable and existing final-report, reader, resume, migration, storage, and canonical artifact meanings remain compatible."
       ],
       "tests": [
-        "cross-runtime fixtures",
-        "version mismatch",
-        "allowlist and approval parity",
-        "missing execution record"
+        "tests/unit/test_runtime_conformance_contracts.py",
+        "tests/property/test_runtime_conformance_properties.py",
+        "tests/characterization/test_runtime_conformance_compatibility.py",
+        "tests/adversarial/test_runtime_conformance_security.py",
+        "tests/integration/test_runtime_conformance.py"
       ],
       "milestones": {
-        "entry": null,
-        "completion": null
+        "entry": "P2-025A",
+        "completion": "P2-025A"
       },
       "relations": [
-        "Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability."
+        "Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability.",
+        "A future actual bridge would require a separately approved P2-025B candidate; P2-025B is not registered or implemented by P2-025A."
       ],
       "decision_gate": {
         "required": true,
         "rationale": [
-          "whether to implement a bridge or retain conformance-only separation"
+          "whether a future actual bridge candidate should be registered after the conformance-only contract"
         ]
       }
     },
@@ -1546,7 +1565,7 @@
       },
       "relations": [
         "Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.",
-        "Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects, while preserving RM-025 proposed status and its decision gate."
+        "Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects; P2-025A is now the approved conformance-only milestone while the actual bridge remains unavailable and separately decision-gated."
       ],
       "decision_gate": {
         "required": false,

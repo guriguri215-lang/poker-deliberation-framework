@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "3.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "4.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -190,6 +190,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         completed
     )
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
+        "P2-025A",
         "P2-028A",
     }
     assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
@@ -203,16 +204,36 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert all(item["status_reason"] for item in milestones.values())
 
 
-def test_p2_029a_registration_preserves_external_execution_boundaries() -> None:
+def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     items = _by_id()
     milestones = _milestones(load_roadmap())
 
-    assert items["RM-025"]["status"] == "proposed"
+    assert items["RM-025"]["status"] == "planned"
     assert items["RM-025"]["decision_gate"] == {
         "required": True,
         "rationale": [
-            "whether to implement a bridge or retain conformance-only separation",
+            "whether a future actual bridge candidate should be registered after the "
+            "conformance-only contract",
         ],
+    }
+    assert milestones["P2-025A"] == {
+        "id": "P2-025A",
+        "rm_id": "RM-025",
+        "status": "not_started",
+        "status_reason": (
+            "The conformance-only scope is approved; implementation has not started."
+        ),
+        "dependencies": [
+            "P2-012B",
+            "P2-013B",
+            "P2-024A",
+            "P2-029A",
+        ],
+        "scope": (
+            "Versioned cross-runtime role, assignment, context, tool allowlist, approval, "
+            "result, error, execution-audit, canonical fixture, and offline projection "
+            "conformance without an execution bridge."
+        ),
     }
     assert items["RM-028"]["status"] == "proposed"
     assert milestones["P2-028A"]["status"] == "not_started"
@@ -411,23 +432,24 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "3.0.0"
+    assert summary["schema_version"] == "4.0.0"
     assert summary["total_items"] == 30
     assert summary["status_counts"] == {
         "completed": 17,
-        "planned": 10,
-        "proposed": 3,
+        "planned": 11,
+        "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
         "completed": 12,
-        "not_started": 1,
+        "not_started": 2,
     }
-    assert summary["milestone_ready_ids"] == []
+    assert summary["milestone_ready_ids"] == ["P2-025A"]
     assert summary["implementation_ready_ids"] == [
         "RM-014",
         "RM-017",
         "RM-018A",
         "RM-021",
+        "RM-025",
     ]
     assert summary["release_readiness"]["pre_release"]["candidate_evidence"] == ("not_evaluated")
     assert "dependency-only" in summary["note"]

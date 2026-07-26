@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `3.0.0`
-- source SHA-256: `ead6a85b1d5c1dbd1632eaf9fbdec55ce4ee654fcdf9be42260b049d8db910a3`
+- schema version: `4.0.0`
+- source SHA-256: `c89ddca94b7423eb5f55a80d05216b83723ba98e05fcff01cc460da9552978c5`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -45,6 +45,7 @@
 | `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
+| `P2-025A` | `RM-025` | `not_started` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The conformance-only scope is approved; implementation has not started. |
 
 ## Current RM state
 
@@ -75,7 +76,7 @@
 | `RM-022` | Small imperfect-information research | `phase-5` | `P3` | `planned` | `RM-007`, `RM-017` | `n/a` | `required` |
 | `RM-023` | Roadmap and status single source of truth | `readiness` | `P0` | `completed` | `RM-001` | `n/a` | `required` |
 | `RM-024` | Context lifecycle contract | `phase-2` | `P1` | `completed` | `RM-006`, `RM-023` | `P2-024A` | `required` |
-| `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P1` | `proposed` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `n/a` | `required` |
+| `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P1` | `planned` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `P2-025A` | `required` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `required` |
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-027B` | `required` |
 | `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
@@ -683,26 +684,32 @@
 
 ### RM-025 — Codex and Python agent runtime conformance
 
-- Status: `proposed`
-- Status reason: Approved as a roadmap candidate only; both runtimes remain separate.
+- Status: `planned`
+- Status reason: P2-025A conformance-only scope is approved; implementation has not started and both runtimes remain separate.
 - Objective: Define versioned conformance fixtures for assignment, context, tool allowlist, approval, result, and execution-record semantics across separate runtimes.
 - Capabilities:
   - codex_python_runtime_bridge
 - Targets:
-  - Codex agent definitions
-  - Python role/provider catalog
-  - future interchange schema
+  - .codex/agents
+  - src/poker_deliberation/agents/roles.py
+  - src/poker_deliberation/runtime_conformance
+  - docs/runtime-conformance-contract.md
 - Acceptance criteria:
-  - Version negotiation and fixture conformance cover assignment, context, result, error, approval, and audit semantics; capability remains unavailable until an actual bridge passes the contract.
+  - A strict versioned contract and minimal tracked fixtures cover runtime-specific roles, assignment and parent lineage, context provenance/classification/expiry/budget references, exact tool/capability allowlists, approval binding and expiry, epistemic result references, structured error/timeout/cancellation, and execution audit semantics.
+  - Unknown versions, roles, capabilities, allowlist expansion, approval weakening, missing execution evidence, context mismatch, secret-bearing public values, and unsupported solver/provider claims fail closed.
+  - Offline Python product runs project into the contract without launching Codex, external providers, external solvers, or representing Python execution as Codex execution.
+  - The actual Codex/Python bridge remains unavailable and existing final-report, reader, resume, migration, storage, and canonical artifact meanings remain compatible.
 - Tests:
-  - cross-runtime fixtures
-  - version mismatch
-  - allowlist and approval parity
-  - missing execution record
+  - tests/unit/test_runtime_conformance_contracts.py
+  - tests/property/test_runtime_conformance_properties.py
+  - tests/characterization/test_runtime_conformance_compatibility.py
+  - tests/adversarial/test_runtime_conformance_security.py
+  - tests/integration/test_runtime_conformance.py
 - Decision gate rationale:
-  - whether to implement a bridge or retain conformance-only separation
+  - whether a future actual bridge candidate should be registered after the conformance-only contract
 - Relations:
   - Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability.
+  - A future actual bridge would require a separately approved P2-025B candidate; P2-025B is not registered or implemented by P2-025A.
 
 ### RM-026 — Framework extension SPI
 
@@ -825,7 +832,7 @@
   - tests/characterization/test_product_run_compatibility.py
 - Relations:
   - Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.
-  - Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects, while preserving RM-025 proposed status and its decision gate.
+  - Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects; P2-025A is now the approved conformance-only milestone while the actual bridge remains unavailable and separately decision-gated.
 
 ## Synchronization contract
 

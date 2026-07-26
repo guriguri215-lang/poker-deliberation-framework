@@ -1,8 +1,7 @@
-# Independent review remediation
+# Correctness and security hardening
 
-Four read-only reviewers audited the repository after the first green test/static-check run.
-All high and medium findings were converted into regression tests and remediated before the final
-validation.
+This document records externally useful behavior and boundary changes. The corresponding regression
+tests are part of the repository.
 
 ## Mathematics and game theory
 
@@ -51,10 +50,10 @@ persistence, nondefault run roots with spaces, free-text normalization, and dupl
 OS-level process preemption is intentionally not claimed: local calculators are in-process and
 structurally capped; any future external executor must add process CPU/memory isolation.
 
-## 2026-07 comparative framework review
+## Comparative framework hardening
 
-Two comparative reviews against `pokerframe` were checked against both implementations. The
-following features were adopted without copying its dataclass architecture:
+A comparison with `pokerframe` informed the following behavior. The implementation is native to this
+codebase and does not copy that project's dataclass architecture:
 
 - `FocalDecision`, pre-action `DecisionSnapshot`, and `BlindDecisionContext`. The hand validator now
   records `pot_before`, requested and actual call, uncalled-excess-adjusted contestable pot,
@@ -75,6 +74,6 @@ following features were adopted without copying its dataclass architecture:
 - Exact tools were added for effective stack, SPR, MDF, declared rake, raked call EV, bluff EV,
   polarized river bluff fraction, and Bayes updates.
 
-The review's ICM shove/fold helper was not adopted as a generally exact tool: it is a single-caller
+The compared ICM shove/fold helper was not adopted as a generally exact tool: it is a single-caller
 toy model driven by supplied call frequency and called equity. Japanese grammar expansion, range
 provenance compatibility, and live-solver adapter qualification remain separate design projects.

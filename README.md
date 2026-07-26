@@ -18,10 +18,10 @@ staged delete、receipt/tombstone、read-only reconciliation を提供します�
 secure erase、automatic retry は実装しません。詳細は
 [`docs/local-data-policy.md`](docs/local-data-policy.md)と
 [`docs/local-data-cleanup.md`](docs/local-data-cleanup.md)を参照してください。
-source/editable checkoutでの読込はcontract test対象ですが、wheel/sdist同梱はRM-018Aまで`UNKNOWN`です。
+source/editable checkoutとwheel/sdistの収載・runtime読込をcontract testとartifact smokeで検証します。
+特定release candidate全体のmatrix・license・artifact判定はRM-018Aのままです。
 人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
 [`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
-`user_materials/ROADMAP.md`は承認方針・背景説明であり、runtimeやdoctorの入力ではありません。
 
 P2-010AのPython run経路は、strict versioned request/outcomeを使うpure phaseとserialな
 Analysis/ToolResearch effect境界へ分割されています。state transitionとartifact writeは引き続き
@@ -46,8 +46,10 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの現在状態とcompletion evidenceの正は、canonical SSOTである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 2.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+RM-010、RM-011、RM-012、RM-024、RM-027は`completed`、RM-013は`in_progress`で
+P2-013Bは`not_started`、RM-028は`proposed`でP2-028Aは`not_started`です。
 
 P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
 `structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで
@@ -312,7 +314,7 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Offline public release checklist](docs/public-release-checklist.md)
 - [RM status projection](docs/roadmap-status.md)
 - [Phase 2 readiness contracts](docs/phase2-readiness-contracts.md)
-- [Independent review remediation](docs/review-remediation.md)
+- [Correctness and security hardening](docs/review-remediation.md)
 
 ## ライセンス
 

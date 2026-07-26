@@ -2,16 +2,13 @@
 
 ## 文書状態
 
-- **FACT**: この文書はRM-010〜013の実装前contractであり、本体実装ではない。
-- **FACT**: 基準実装では`Orchestrator.run()`にphase処理、state transition、provider/tool実行、
-  artifact書込、裁定、synthesisが混在する。
-- **FACT**: 現在のrunには検証されるversioned manifest、artifact inventory、whole-run completion
-  marker、cross-process lock/CASがない。
+- **FACT**: この文書はRM-010〜013の技術contractと、現在実装済みのPhase 2境界を記録する。
+- **FACT**: RM-010、RM-011、RM-012は`completed`、RM-013は`in_progress`である。
+- **FACT**: P2-013Aまでのapproval authorityは実装済みだが、P2-013Bのrequest reissue、
+  pre-execution recheck、完全なresume lifecycleは`not_started`である。
 - **FACT**: 現在のprovider timeoutは協調cancelであり、無視するin-process処理を停止できない。
-- **FACT**: 現在のapprovalにはactor、authority、revision、idempotency key、action digestがない。
-- **INFERENCE**: 下記contractとacceptance testを満たすまで、RM-010〜013をimplemented/completedと表示しない。
-- **ASSUMPTION**: このdraftは記載済みhuman approval事項を条件にfreezeする。未承認事項を実装判断で
-  補完せず、承認で意味が変わる場合はcontractとcanonical statusを同じ変更で改訂する。
+- **FACT**: P2-012Bの通常runはversioned manifest、artifact inventory、marker-last terminal
+  revision、cross-process lock/CAS、verified readerを使用する。
 
 ## 共通原則
 
@@ -165,7 +162,7 @@ failureをexception textだけで保存せず、code、phase/attempt/revision、
 - failure後に`COMPLETED`を表示せず、orphan attemptを識別できる。
 - existing security、approval、context mutation、golden、tool contract testを維持する。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: P2-024A後にP2-010A（serial pure phase）を実装し、P2-012A後にP2-010B
 （durable integration）を行う。RM-010完了gateはP2-010Bである。
@@ -190,19 +187,11 @@ no-mixed-build、no-rolling access は trusted deployment assumption であり�
 検出・防止を証明しない。old build は v2 を support せず、`product_integrated_durable_run` は
 P2-012B が完了するまで planned のままである。
 
-Human approval:
+Public decision gates:
 
 - calculation assignment artifactの互換方針
 - context retention/classification
 - public phase schemaを安定APIとするか
-
-Safe commit units:
-
-1. phase schema/interfaceとcharacterization testsのみ。
-2. pure intake/normalization/routing/context phases。
-3. provider/tool effect adaptersとcorrelation checks。
-4. critique/adjudication/synthesis pure phases。
-5. orchestrator integrationとnormalized artifact parity。
 
 ---
 
@@ -336,24 +325,16 @@ Failures:
 - fake clockでphase/retry/backoff/serialization/writeのaccountingを検証する。
 - cooperative/uncooperative cancelを区別し、返却後に継続するjobを成功扱いしない。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: canonical milestone DAGのP2-010A → P2-011A → P2-012A → P2-011Bを使う。
 hard-stopはP2-028A、persistenceはP2-012A。RM-011完了gateはP2-011Bである。
 
-Human approval:
+Public decision gates:
 
 - multi-round/parallel deliberationを1より大きく有効化する製品判断
 - cost精度とprovider estimate policy
 - legacy field deprecation/support window
-
-Safe commit units:
-
-1. strict v2 budget schemaとv1 migration/characterization tests。
-2. clock、usage、reservation/settlement ledger。
-3. retry classifierとserial attempt loop。
-4. concurrency schedulerとstable reduction。
-5. cancel state、RM-028 interface、run manifest integration。
 
 ---
 
@@ -502,25 +483,17 @@ conflict。直接JSONL appendは禁止し、event segmentをimmutable fileとし
 - markerだけ、manifestだけ、terminal stateだけ、missing/corrupt/hash mismatchをcompletedにしない。
 - 2 writer/resumeのlost update、共有temp race、run byte reservation raceを再現し防止する。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: P2-010A、P2-011A、policy/schemaだけのP2-027Aを経てP2-012Aを実装する。
 P2-010B/P2-011B integration後にP2-012Bを完了gateとする。destructive cleanupのP2-027Bと
 approval lifecycleのP2-013Bを前提にしない。
 
-Human approval:
+Public decision gates:
 
 - v1 support/migration範囲、support window、in-place禁止方針
 - supported platform別durability target
 - lock wait/lease/stale policy、quarantine/retention/encryption
-
-Safe commit units:
-
-1. v2 manifest/marker/error schemaとreader（writer behaviorは未変更）。
-2. immutable revision writer、payload inventory/hash、current pointer revision CAS。
-3. revision-local completion marker last protocolとshow/load/public status mapping verification。
-4. cross-process lock/recoveryとconcurrency tests。
-5. v1 read-only migrationとRM-027 lifecycle hooks。
 
 ---
 
@@ -647,25 +620,17 @@ Postcondition:
 - concurrent resumeでlost updateやmixed winner artifactが生じない。
 - duplicate ledger、unknown ID、partial batch、terminal反対decisionをstructured failureにする。
 
-### Dependencies / human approval / safe commit units
+### Dependencies / public decision gates
 
 Dependencies: P2-012B後にP2-013A（actor/authority/digest/idempotency/CAS）を実装し、P2-013Aの
 destructive authorityを使うP2-027B後にP2-013B（resume/lifecycle）を完了gateとする。
 external executionではP2-011B、P2-024A、P2-028Aが必要。
 
-Human approval:
+Public decision gates:
 
 - actor identity/authority provider、approval expiry/revocation
 - authority scope taxonomy、audit retention
 - 将来external executorを追加するか
-
-Safe commit units:
-
-1. v2 actor/request/decision/error schemaとv1 characterization tests。
-2. strict ledger reader、all-or-nothing validation、action digest。
-3. RM-012 revision CASによるdecision transaction。
-4. resume idempotencyとCLI structured errors。
-5. external execution binding interface（executor本体なし）。
 
 ---
 
@@ -691,7 +656,9 @@ Safe commit units:
 
 ---
 
-## Cross-RM implementation order
+## Cross-RM dependency order
+
+公開milestone DAGは次の技術依存を表します。1〜9は現在`completed`、10〜11は`not_started`です。
 
 1. P2-024A: ContextEnvelope policy/schema/ownership/lineage/allowlist。
 2. P2-010A: typed pure phaseをserial・persistence非依存で分割。
@@ -704,54 +671,25 @@ Safe commit units:
 9. P2-027B: authorized cleanup executor、dry-run digest、receipt/tombstone/reconciliation。
 10. P2-013B: resume/legacy reissue/expiry/revocation/lifecycle integration。
 11. P2-028A: isolation、durable external-effect state、cancel/reconciliation。
-12. Phase 2全体のfault-injection、backward compatibility、security再監査。
 
-各stepは独立commitとし、4品質ゲート、targeted contract/fault test、独立レビューがgreenになるまで
-次へ進めない。
-
-split RMの親をcompletedにする場合、親RMの`completion_evidence`はordered
-`commits`/`paths`/`tests`を含めcompletion milestoneのevidenceと完全一致させる。
-completion milestone側は、そのmilestoneに明示承認されたexact implementation scopeのproposal順、
-tracked repository path、cited commit tree、changed path、append-only historyで検証する。親RMの抽象的な
-targets/tests labelへ実在pathをprefix-bindして代用しない。entry milestoneとcompletion milestoneが同一の
-RM、およびsplitを持たないcompleted RMの既存binding ruleは変更しない。
-
-## P2-010B bounded scoped reapproval
-
-The append-only approval history admits exactly this semantic scoped-reapproval
-chain: `goal-rm010-p2-010b-2026-07-24` to
-`goal-rm010-p2-010b-scope-revision-1-2026-07-24` to
-`goal-rm010-p2-010b-scope-revision-2-2026-07-24` to
-`goal-rm010-p2-010b-scope-revision-3-2026-07-24`. Every earlier record
-remains unchanged. Each new record must use its pair-specific exact
-explicit-human-reapproval source label, carry a digest-valid full scope,
-preserve the scope schema, RM, milestone contract, and item contract, and be
-appended with the milestone binding change. Neither binding commit can change
-P2-010B state, history, or completion evidence. No other semantic reapproval
-pair is admitted.
-
-## P2-010B internal integration boundary（完了時点の履歴境界）
+## P2-010B internal integration boundary
 
 P2-010Bの実装境界は、完全なin-memory phase traceを再検証して専用revision rootへ
 `structural_nonterminal` revisionをpublishし、その後だけsame-process authorizationで
 `FINAL_SYNTHESIS`から`COMPLETED`へのlive machine transitionを適用する内部seamである。
 通常の`run`、`resume`、`load_report`、CLI、flat-v1 layout/orderには接続しない。
-これはP2-010B完了時点の境界である。P2-011BとP2-012Bは後続の別明示承認scopeであり、
-P2-010Bのcompletion evidenceを遡及変更しない。
+通常product経路はP2-012Bの別terminal protocolを使用する。
 
-## P2-012A completion boundary（完了時点の履歴境界）
+## P2-012A foundation boundary
 
-P2-012A の完了条件は、専用 root、strict nonterminal schema/canonical bytes、typed provenance、
+P2-012Aは、専用 root、strict nonterminal schema/canonical bytes、typed provenance、
 process/kernel lock、immutable revision、serialized CAS、structural reader、orphan inspection と
-metadata-only claim、quota/fault/concurrency evidence までである。`RM-012` 全体は
-`in_progress` のまま、`P2-012B` の completion marker、terminal reader/status、product
-integration、migration/lifecycle hook は `not_started` のままにする。
+metadata-only claim、quota/fault/concurrency boundaryを提供する。
 
-P2-012A単独のcapabilityは`immutable_revision_storage_foundation`である。後続の
-`product_integrated_durable_run`昇格はP2-012Bの別approval、実装、全gate、completion evidenceを
-必要とし、P2-012Aのevidenceを遡及変更しない。
+`immutable_revision_storage_foundation`はP2-012A、通常runの
+`product_integrated_durable_run`はP2-012Bが所有し、両者のschemaと責務を混同しない。
 
-## P2-011B completion boundary（完了時点の履歴境界）
+## P2-011B durable budget boundary
 
 P2-011Bの境界は、専用revision root上のdurable policy/usage/reservation/settlement、verified
 structural resume、revision CASとexact idempotency、bounded internal executor、typed retry、
@@ -760,8 +698,8 @@ Orchestrator/CLI/flat-v1、capability state、P2-011A value/schemaを変更し�
 
 `parallel_deliberation_and_tool_retry`は通常product経路では`disabled`、
 `process_sandbox`は`unavailable`、`immutable_revision_storage_foundation`は`implemented`、
-P2-011B完了時点では`product_integrated_durable_run`は`planned`であった。この履歴境界は
-P2-013A/B、P2-027B、P2-028Aを先取りしない。
+`product_integrated_durable_run`は`implemented`である。P2-011BはP2-013BやP2-028Aを
+実装せず、通常product経路のparallel/retryを有効化しない。
 
 ## P2-012B implementation boundary
 
@@ -771,24 +709,23 @@ P2-027A lifecycle metadata、read-only flat-v1 adapter、copy-only migrationを�
 として実装する。flat-v1をcompletedへ昇格せず、migration destinationも
 `legacy_unverified`かつnon-resumableである。
 
-P2-012B completion evidenceが成立するには、通常経路がverified V2をdefaultとし、全targeted/full
-gate、4観点レビュー、append-only roadmap validationが同じfinal HEADで成功しなければならない。
-それまではcanonical capabilityをpromoteしない。P2-013A/B、P2-027B、P2-028A、external provider/
-solver、parallel execution、automatic retry、cleanup/release操作は別承認のままである。
+`product_integrated_durable_run`は`implemented`である。ただしP2-013B、P2-028A、external
+provider/solver、parallel execution、automatic retry、release操作は有効化しない。
+
 ## P2-013A 実装境界
 
 **FACT**: P2-013A は strict V2 approval schema、canonical action digest、注入された authority provider、all-or-nothing batch、decision idempotency、RM-012 current-pointer CAS、bounded failure audit を実装する。V1 report schema は変更せず、V2 ledger から projection する。
 
 **FACT**: approve を含む decision は authority を記録するだけであり、P2-013A には executor がないため `external_executor_unavailable` / `failed_with_limitations` になる。reject だけで pending がなくなれば safe no-action path を `completed` にする。
 
-**FACT**: P2-013B の request reissue、pre-execution expiry/revocation recheck、完全な resume lifecycle は未実装である。P2-027B、P2-028A、外部 provider/solver、retry/parallel scheduling も有効化しない。
+**FACT**: P2-013B の request reissue、pre-execution expiry/revocation recheck、完全な resume lifecycle は未実装である。P2-028A、外部 provider/solver、retry/parallel scheduling も有効化しない。
 
 詳細は `docs/approval-authority-contract.md` を正本とする。
 
 ## P2-027B 実装境界
 
-**FACT**: P2-027B は P2-027A policy、P2-012B verified terminal run、P2-013A immutable approval
-evidence を入力に、明示1 runの quarantine と固定30日後の別承認 staged delete を行う additive
+**FACT**: P2-027B は P2-027A policy、P2-012B verified terminal run、P2-013A immutable runtime
+approval binding を入力に、明示1 runの quarantine と固定30日後の別承認 staged delete を行う additive
 Python APIである。通常 Orchestrator、CLI、provider/solver、parallel/retry、P2-013B request
 reissue、P2-028A process isolation は変更しない。
 
@@ -797,9 +734,7 @@ cleanup revision CAS、receipt/tombstone、write-zero replay、read-only reconci
 secure erase、automatic repair/retry、broad discovery、product namespaceからのdirect deleteは
 実装しない。
 
-**FACT**: candidate implementationが存在しても、targeted/full gate、4観点の独立レビュー、
-append-only roadmap completion evidenceが同じfinal HEADで成功するまでは
-`local_data_cleanup_executor` capabilityをpromoteしない。P2-013BとP2-028Aは
-`not_started`のままとする。
+**FACT**: `local_data_cleanup_executor`は`implemented`である。P2-013BとP2-028Aは
+`not_started`のままであり、cleanup CLI、secure erase、automatic repair/retryは実装しない。
 
 詳細は `docs/local-data-cleanup.md` を正本とする。

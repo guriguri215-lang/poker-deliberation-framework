@@ -71,13 +71,22 @@ def test_cleanup_capability_is_promoted_after_completion_gates() -> None:
     assert doctor_states["local_data_cleanup_executor"] == "implemented"
 
 
-def test_p2_027b_has_separate_exact_authorization() -> None:
+def test_p2_027b_public_status_is_completed_without_management_ledger() -> None:
     document = load_roadmap()
+    milestones = {item["id"]: item for item in document["implementation_milestones"]}
 
-    assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
-    assert document["milestone_approvals"]["P2-027A"] == ("goal-rm027-p2-027a-2026-07-23")
-    assert document["milestone_progress"]["P2-027B"]["state"] == "completed"
-    assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
+    assert milestones["P2-027A"]["status"] == "completed"
+    assert milestones["P2-027B"]["status"] == "completed"
+    assert set(document) == {
+        "schema_version",
+        "source_policy",
+        "status_vocabulary",
+        "legal_transitions",
+        "milestone_status_vocabulary",
+        "milestone_legal_transitions",
+        "implementation_milestones",
+        "items",
+    }
 
 
 def test_cleanup_remains_additive_without_cli_or_runstore_integration() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import json
+import subprocess
 from copy import deepcopy
 from importlib import resources
 from pathlib import Path
@@ -11,11 +11,13 @@ import pytest
 from poker_deliberation.capabilities import CAPABILITIES
 from poker_deliberation.cli import doctor
 from poker_deliberation.roadmap import (
-    APPROVAL_SCOPE_SCHEMA_VERSION,
     EXPECTED_PHASE_2_MILESTONES,
     EXPECTED_RM_IDS,
-    IMMUTABLE_ITEM_CONTRACT_FIELDS,
+    ITEM_FIELDS,
+    MILESTONE_FIELDS,
     ROADMAP_RESOURCE,
+    ROADMAP_SCHEMA_VERSION,
+    TOP_LEVEL_FIELDS,
     load_roadmap,
     render_roadmap_markdown,
     roadmap_items,
@@ -28,1506 +30,314 @@ from poker_deliberation.roadmap import (
 from scripts.generate_roadmap_status import main as generate_roadmap_status
 
 ROOT = Path(__file__).resolve().parents[2]
-P2_013A_SCOPE_DIGEST = "c084087ee28b0c51c6907259372d82c0965e4b31f5bd3fbfc670ee5e3644b557"
-P2_027B_SCOPE_DIGEST = "e7a18073329178da8061c0dc89bf149e8fb46250f84db44e34a9fb2e8ca2b105"
-P2_012B_EVIDENCE_COMMITS = [
-    "f8f2ed5501015d9d6602434fec4f52e4d85df36a",
-    "16a12e455003eef5c8c7663f3ba925cf0c5e0c36",
-    "2b3f38e7b7d424b8265c4ff380b4538116d7c96a",
-    "7fae6c8382d46b9a111ebc3bb6379f7a83b87114",
-    "3dfea2ea725cdddcc43c21a5edccea89ab2e6fca",
-    "f05742440886c506a6f1769cb850ef51e2b29117",
-    "7c60d213ac37bc2ca41d4bb69828cc558be08961",
-    "32b21a586659049dc7f3db725203f7a979272331",
-    "ac1a28c3bc87d8c3ab120be7c2b8b78e19832935",
-    "5935d48b272fd1375fc4f09110b2b66f5a4618f5",
-    "e3270fa93321e7a252528926ad90b9937f3b97dc",
-]
-P2_027B_EVIDENCE_COMMITS = [
-    "ba269490de60a2ff00fbd1cd5e85d367802c7bec",
-    "595d9f67fbda8e914f8f3e1eeb28565f5c690cc4",
-    "e290e3a5b8bb801ca218a45e1cbcb3d871e48225",
-    "238167f5f7881b2ccc8e954f28b8b61a4d887dea",
-    "a4a732fafe2467482f9ed23b04d179cf481c762b",
-    "472b4e386887f3151d6d5be45a885bdac097a885",
-    "e1f7ae27c852d8df4d277b44f46c3aed9885c15d",
-    "3fdd7c2ed5df3ce5e323374d9c982ffafb273250",
-    "f3a48a7b0608c3facf08c3e1d2511f94a7c1541c",
-    "e5182df02e3938aef7879372afcf53ae7b730271",
-    "0b030652579292d89aac2453470161454a0baffd",
-    "c78af5618b6f1eda76d8d1ec60a024e5bdf571e2",
-    "a21cae4a3a1a60fb45297a624ec04ee5925a9e5f",
-    "009f86adbbacbcf540dc049531e1c3277184efb6",
-    "2bccc9c0b7acda593dea2571fce1ba8f15be97d0",
-    "758500a30d95c6e219601865f84d91ec5b0622a1",
-    "e8d5d6e6ef1a8915f492f8f9c67edaf878013c9d",
-    "a05873e1b5741dbb7a7f49b162e1d2f34eb051cf",
-    "892cbe0cb11533427e1476c470ae733ba3600813",
-    "8ba15cddcbcb75228ab748c3fcb1897cc4597c4f",
-    "f8ad92fb483390955276a55195b684ab63c924b4",
-    "63cffe38036c1d375c6f905e1b4ef531076497a4",
-    "11dba341e07a184dce36a771498845678b3d79ce",
-    "da5795674eba8082feb623170e625640e83e64b2",
-    "6a18fc076dcc86ad84632aee9672c0787acb8168",
-]
 
 
-def _by_id() -> dict[str, dict[str, object]]:
-    return {str(item["id"]): item for item in roadmap_items()}
+def _by_id(document: dict[str, object] | None = None) -> dict[str, dict[str, object]]:
+    raw_items = roadmap_items() if document is None else document["items"]
+    return {str(item["id"]): item for item in raw_items}  # type: ignore[union-attr]
 
 
-def _scoped_approval_record(
-    document: dict[str, object], item: dict[str, object], topics: list[str]
-) -> dict[str, object]:
-    milestone = next(
-        milestone
-        for milestone in document["implementation_milestones"]
-        if milestone["id"] == item["entry_milestone"]
-    )
-    scope = {
-        "schema_version": APPROVAL_SCOPE_SCHEMA_VERSION,
-        "rm_id": item["id"],
-        "milestone_contract": deepcopy(milestone),
-        "item_contract": {
-            field: deepcopy(item.get(field)) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
-        },
-        "milestone_implementation_scope": {
-            "targets": deepcopy(item["targets"]),
-            "tests": deepcopy(item["tests"]),
-            "acceptance_criteria": deepcopy(item["acceptance_criteria"]),
-        },
-        "policy_decisions": topics,
-    }
-    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+def _milestones(document: dict[str, object]) -> dict[str, dict[str, object]]:
     return {
-        "source_label": "test external approval",
-        "topics": topics,
-        "scope": scope,
-        "scope_digest": hashlib.sha256(canonical).hexdigest(),
+        str(item["id"]): item
+        for item in document["implementation_milestones"]  # type: ignore[union-attr]
     }
 
 
-def _scope_digest(scope: object) -> str:
-    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
+def _tracked_paths() -> set[str]:
+    result = subprocess.run(
+        ["git", "ls-files"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
-    return hashlib.sha256(canonical).hexdigest()
+    return set(result.stdout.splitlines())
 
 
-def _rewind_p2_027b(document: dict[str, object]) -> None:
-    rm_027 = next(item for item in document["items"] if item["id"] == "RM-027")
-    rm_027["status"] = "in_progress"
-    rm_027["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
-    rm_027["status_reason"] = (
-        "P2-027A pure policy/schema is completed; P2-027B exact approved scope is "
-        "in progress, so RM-027 remains in progress."
-    )
-    document["status_history"]["RM-027"] = ["proposed", "planned", "in_progress"]
-    document["milestone_progress"]["P2-027B"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-
-
-def _rewind_p2_013a(document: dict[str, object]) -> None:
-    _rewind_p2_027b(document)
-    rm_013 = next(item for item in document["items"] if item["id"] == "RM-013")
-    rm_013["status"] = "planned"
-    document["status_history"]["RM-013"] = ["proposed", "planned"]
-    document["milestone_progress"]["P2-013A"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-
-
-def _rewind_split_rm_010(document: dict[str, object]) -> None:
-    _rewind_p2_013a(document)
-    rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
-    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
-    rm_010["status"] = "in_progress"
-    rm_010["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
-    document["status_history"]["RM-010"] = ["proposed", "planned", "in_progress"]
-    rm_012["status"] = "in_progress"
-    rm_012["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
-    document["status_history"]["RM-012"] = ["proposed", "planned", "in_progress"]
-    document["milestone_progress"]["P2-010B"] = {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    document["milestone_progress"]["P2-012B"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-
-
-def _rewind_p2_011b(document: dict[str, object]) -> None:
-    _rewind_p2_013a(document)
-    rm_011 = next(item for item in document["items"] if item["id"] == "RM-011")
-    rm_011["status"] = "in_progress"
-    rm_011["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
-    document["status_history"]["RM-011"] = ["proposed", "planned", "in_progress"]
-    document["milestone_progress"]["P2-011B"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-
-
-def _rewind_p2_012b_completion(document: dict[str, object]) -> None:
-    _rewind_p2_013a(document)
-    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
-    rm_012["status"] = "in_progress"
-    rm_012["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
-    document["status_history"]["RM-012"] = ["proposed", "planned", "in_progress"]
-    document["milestone_progress"]["P2-012B"] = {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-
-
-def _complete_split_rm_010(document: dict[str, object]) -> tuple[str, list[str], list[str]]:
-    _rewind_split_rm_010(document)
-    rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
-    milestone = next(
-        item for item in document["implementation_milestones"] if item["id"] == "P2-010B"
-    )
-    targets = [
-        "src/poker_deliberation/roadmap.py",
-        "docs/phase2-readiness-contracts.md",
-    ]
-    tests = ["tests/integration/test_roadmap_status.py"]
-    topics = ["test-approved split completion scope"]
-    scope = {
-        "schema_version": APPROVAL_SCOPE_SCHEMA_VERSION,
-        "rm_id": "RM-010",
-        "milestone_contract": deepcopy(milestone),
-        "item_contract": {
-            field: deepcopy(rm_010.get(field)) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
-        },
-        "milestone_implementation_scope": {
-            "targets": targets,
-            "tests": tests,
-            "acceptance_criteria": ["split completion evidence rolls up exactly"],
-        },
-        "policy_decisions": topics,
-    }
-    reference = "test-rm010-p2-010b-split-completion"
-    document["approval_records"][reference] = {
-        "source_label": "test external approval",
-        "topics": topics,
-        "scope": scope,
-        "scope_digest": _scope_digest(scope),
-    }
-    document["milestone_approvals"]["P2-010B"] = reference
-    evidence = {
-        "commits": ["a" * 40],
-        "paths": targets,
-        "tests": tests,
-    }
-    progress = document["milestone_progress"]["P2-010B"]
-    progress["state"] = "completed"
-    progress["history"] = ["not_started", "in_progress", "completed"]
-    progress["completion_evidence"] = deepcopy(evidence)
-    rm_010["status"] = "completed"
-    document["status_history"]["RM-010"].append("completed")
-    rm_010["completion_evidence"] = deepcopy(evidence)
-    return reference, targets, tests
-
-
-def test_packaged_roadmap_loads_outside_repository_cwd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_packaged_public_roadmap_loads_outside_repository_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.chdir(tmp_path)
 
     document = load_roadmap()
 
-    assert document["schema_version"] == "1.1.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "2.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
-    assert not (tmp_path / "user_materials").exists()
+    assert not (tmp_path / "docs").exists()
 
 
-def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
+def test_public_projection_has_exact_schema_and_complete_item_sets() -> None:
+    document = load_roadmap()
+
+    assert set(document) == TOP_LEVEL_FIELDS
+    assert {str(item["id"]) for item in document["items"]} == EXPECTED_RM_IDS
+    assert all(set(item) == ITEM_FIELDS for item in document["items"])
+    assert {
+        str(item["id"]) for item in document["implementation_milestones"]
+    } == EXPECTED_PHASE_2_MILESTONES
+    assert all(set(item) == MILESTONE_FIELDS for item in document["implementation_milestones"])
+    assert document["source_policy"] == {
+        "canonical": True,
+        "projection": "public",
+        "description": (
+            "Tracked public roadmap projection for implementation status, dependencies, "
+            "capability scope, acceptance criteria, milestones, and decision rationale."
+        ),
+        "generated_document": "docs/roadmap-status.md",
+    }
+
+
+def test_public_projection_preserves_status_scope_and_decision_rationale() -> None:
     items = _by_id()
-    assert set(items) == EXPECTED_RM_IDS
 
-    completed = {rm_id for rm_id, item in items.items() if item["status"] == "completed"}
-    assert completed == {f"RM-{number:03d}" for number in range(1, 13)} | {
-        "RM-023",
-        "RM-024",
-        "RM-027",
+    assert {
+        rm_id: items[rm_id]["status"]
+        for rm_id in ("RM-010", "RM-011", "RM-012", "RM-024", "RM-027")
+    } == {
+        "RM-010": "completed",
+        "RM-011": "completed",
+        "RM-012": "completed",
+        "RM-024": "completed",
+        "RM-027": "completed",
     }
-    assert items["RM-010"]["status"] == "completed"
-    assert items["RM-011"]["status"] == "completed"
-    assert items["RM-012"]["status"] == "completed"
     assert items["RM-013"]["status"] == "in_progress"
-    assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(14, 18))
-    assert items["RM-024"]["status"] == "completed"
-    assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
-    assert items["RM-027"]["status"] == "completed"
-    assert items["RM-023"]["completion_evidence"]
-    assert items["RM-024"]["completion_evidence"]["commits"] == [
-        "fc2e41dd4fbde2962373ff7ea29019bff2999505"
-    ]
-
-
-def test_status_vocabulary_and_legal_transitions_are_explicit() -> None:
-    document = load_roadmap()
-    assert set(document["status_vocabulary"]) == {
-        "proposed",
-        "planned",
-        "in_progress",
-        "blocked",
-        "completed",
-        "superseded",
+    assert items["RM-028"]["status"] == "proposed"
+    assert items["RM-018A"]["status"] == "planned"
+    assert items["RM-018B"]["status"] == "planned"
+    assert items["RM-010"]["milestones"] == {
+        "entry": "P2-010A",
+        "completion": "P2-010B",
     }
-    assert document["legal_transitions"]["completed"] == ["in_progress", "blocked"]
-    assert document["legal_transitions"]["superseded"] == []
-    validate_transition("proposed", "planned", document["legal_transitions"])
-    with pytest.raises(ValueError, match="illegal status transition"):
-        validate_transition("proposed", "completed", document["legal_transitions"])
+    assert items["RM-010"]["decision_gate"]["required"] is True  # type: ignore[index]
+    assert items["RM-010"]["decision_gate"]["rationale"]  # type: ignore[index]
+    assert items["RM-001"]["decision_gate"] == {"required": False, "rationale": []}
+    for item in items.values():
+        assert item["objective"]
+        assert item["targets"]
+        assert item["acceptance_criteria"]
+        assert item["tests"]
+        assert item["status_reason"]
 
 
-def test_status_history_prevents_status_only_completion_counterexample() -> None:
-    counterexample = deepcopy(load_roadmap())
-    item = next(item for item in counterexample["items"] if item["id"] == "RM-024")
-    item["status"] = "completed"
-    item["completion_evidence"] = {
-        "commits": ["a" * 40],
-        "paths": ["README.md"],
-        "tests": ["tests/integration/test_roadmap_status.py"],
+def test_public_milestone_projection_keeps_only_current_state() -> None:
+    milestones = _milestones(load_roadmap())
+
+    completed = {
+        "P2-024A",
+        "P2-010A",
+        "P2-010B",
+        "P2-011A",
+        "P2-011B",
+        "P2-012A",
+        "P2-012B",
+        "P2-013A",
+        "P2-027A",
+        "P2-027B",
     }
-    item["human_approval"] = {"required": True, "state": "not_required", "topics": ["fake"]}
-
-    with pytest.raises(ValueError, match=r"not bound|required approval|status history"):
-        validate_roadmap(counterexample)
-
-
-def test_update_validation_rejects_rewritten_history_and_approval_rebinding() -> None:
-    previous = load_roadmap()
-    rewritten = deepcopy(previous)
-    rewritten["status_history"]["RM-001"] = [
-        "proposed",
-        "planned",
-        "in_progress",
-        "completed",
-    ]
-    validate_roadmap(rewritten)
-    with pytest.raises(ValueError, match="status history is not append-only"):
-        validate_roadmap_update(previous, rewritten)
-
-    weakened = deepcopy(previous)
-    item = next(item for item in weakened["items"] if item["id"] == "RM-024")
-    item["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    with pytest.raises(ValueError, match="approval was deleted or rewritten"):
-        validate_roadmap_update(previous, weakened)
-
-    rebound = deepcopy(previous)
-    rebound["approval_records"]["fake-self-declared"] = {
-        "source_label": "self declared",
-        "topics": ["tracked packaged JSON as canonical RM status"],
-        "scope_digest": "bab1b56a1cf48cd2ec67dd710119038a09ce4bdcffc036cc46a50b54aea6f976",
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
+        completed
+    )
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
+        "P2-013B",
+        "P2-028A",
     }
-    completed = next(item for item in rebound["items"] if item["id"] == "RM-023")
-    completed["human_approval"]["approval_reference"] = "fake-self-declared"
-    validate_roadmap(rebound)
-    with pytest.raises(ValueError, match="approval was deleted or rewritten"):
-        validate_roadmap_update(previous, rebound)
-    with pytest.raises(ValueError, match="approval was deleted or rewritten"):
-        validate_roadmap_update(previous, rebound, {"goal-objective-2026-07-20"})
-
-    changed_scope = deepcopy(previous)
-    changed = next(item for item in changed_scope["items"] if item["id"] == "RM-023")
-    changed["objective"] = "Broaden the completed scope without reopening it."
-    validate_roadmap(changed_scope)
-    with pytest.raises(ValueError, match="RM contract field requires a schema amendment"):
-        validate_roadmap_update(previous, changed_scope)
-
-    remapped = deepcopy(previous)
-    _rewind_split_rm_010(remapped)
-    active = next(item for item in remapped["items"] if item["id"] == "RM-010")
-    active["completion_milestone"] = "P2-010A"
-    with pytest.raises(ValueError, match="approval scope contract does not match item"):
-        validate_roadmap(remapped)
+    assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
+    assert all(item["status_reason"] for item in milestones.values())
 
 
-def test_scoped_proposed_item_can_be_frozen_exactly_once() -> None:
-    previous = load_roadmap()
-    planned = deepcopy(previous)
-    rm_028 = next(item for item in planned["items"] if item["id"] == "RM-028")
-    rm_028["status"] = "planned"
-    rm_028["targets"] = [
-        "src/poker_deliberation/isolation.py",
-        "src/poker_deliberation/providers",
-    ]
-    rm_028["tests"] = [
-        "tests/unit/test_isolation.py",
-        "tests/integration/test_provider_isolation.py",
-    ]
-    planned["status_history"]["RM-028"].append("planned")
-    topics = ["test-approved P2-028A scope"]
-    reference = "test-rm028-scope-freeze"
-    planned["approval_records"][reference] = _scoped_approval_record(planned, rm_028, topics)
-    planned["milestone_approvals"]["P2-028A"] = reference
-    rm_028["human_approval"] = {
-        "required": True,
-        "state": "approved_scope",
-        "topics": topics,
-        "approval_reference": reference,
-        "scope_digest": planned["approval_records"][reference]["scope_digest"],
-    }
+def test_unknown_projection_fields_fail_closed() -> None:
+    top_level = deepcopy(load_roadmap())
+    top_level["private_extension"] = {}
+    with pytest.raises(ValueError, match="roadmap fields mismatch"):
+        validate_roadmap(top_level)
 
-    validate_roadmap_update(previous, planned, {reference})
-    validate_roadmap_update(previous, planned)
-    validate_roadmap_update(previous, planned, {"irrelevant-compatibility-value"})
+    item_level = deepcopy(load_roadmap())
+    item_level["items"][0]["private_extension"] = {}  # type: ignore[index]
+    with pytest.raises(ValueError, match="invalid roadmap item fields"):
+        validate_roadmap(item_level)
 
-    mutated_after_freeze = deepcopy(planned)
-    mutated = next(item for item in mutated_after_freeze["items"] if item["id"] == "RM-028")
-    mutated["targets"].append("src/poker_deliberation/security.py")
-    with pytest.raises(ValueError, match="approval scope contract does not match item"):
-        validate_roadmap(mutated_after_freeze)
+    milestone_level = deepcopy(load_roadmap())
+    milestone_level["implementation_milestones"][0]["private_extension"] = {}  # type: ignore[index]
+    with pytest.raises(ValueError, match="invalid milestone fields"):
+        validate_roadmap(milestone_level)
 
 
-def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
-    document = load_roadmap()
-    reference = "goal-rm027-p2-027a-2026-07-23"
-    record = document["approval_records"][reference]
-    rm_027 = next(item for item in document["items"] if item["id"] == "RM-027")
-    scope = record["scope"]
-    decisions = "\n".join(record["topics"])
+def test_item_dependency_cycle_and_active_dependency_fail_closed() -> None:
+    cycle = deepcopy(load_roadmap())
+    cycle["items"][0]["dependencies"] = ["RM-028"]  # type: ignore[index]
+    with pytest.raises(ValueError, match="dependency cycle"):
+        validate_roadmap(cycle)
 
-    assert record["scope_digest"] == (
-        "c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d"
-    )
-    assert document["milestone_approvals"]["P2-027A"] == reference
-    assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
-    assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
-    assert document["milestone_progress"]["P2-027B"]["state"] == "completed"
-    assert rm_027["status"] == "completed"
-    assert rm_027["status_reason"] == (
-        "P2-027A pure policy/schema and P2-027B authorized cleanup execution are complete "
-        "with exact implementation, review, and gate evidence; secure erase, cleanup CLI, "
-        "automatic retry, P2-013B, and P2-028A remain outside this completed item."
-    )
-    assert rm_027["human_approval"]["topics"] == record["topics"]
-    assert scope["policy_decisions"] == record["topics"]
-    assert scope["item_contract"]["capabilities"] == [
-        "local_data_lifecycle_policy",
-        "local_data_cleanup_executor",
-    ]
-    required_terms = {
-        "public run 365",
-        "internal run 90",
-        "sensitive run 30",
-        "restricted 0",
-        "quarantine_candidate",
-        "delete_candidate",
-        "require encryption before sensitive persistence",
-        "retention_started_at",
-        "retention_expires_at",
-        "typed non-retryable lifecycle failure taxonomy",
-        "filesystem discovery, read, write, scan, move, rename, quarantine, delete",
-    }
-    assert not {term for term in required_terms if term not in decisions}
+    duplicate = deepcopy(load_roadmap())
+    duplicate["items"][1]["dependencies"] = ["RM-001", "RM-001"]  # type: ignore[index]
+    with pytest.raises(ValueError, match="contains duplicates"):
+        validate_roadmap(duplicate)
 
-
-def test_p2_027b_has_exact_digest_bound_scope_and_completion_evidence() -> None:
-    document = load_roadmap()
-    reference = "goal-rm027-p2-027b-2026-07-25"
-    record = document["approval_records"][reference]
-    canonical = json.dumps(
-        record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    rm_027 = next(item for item in document["items"] if item["id"] == "RM-027")
-
-    assert len(canonical) == 28115
-    assert hashlib.sha256(canonical).hexdigest() == P2_027B_SCOPE_DIGEST
-    assert record["scope_digest"] == P2_027B_SCOPE_DIGEST
-    assert record["topics"] == record["scope"]["policy_decisions"]
-    assert document["milestone_approvals"]["P2-027B"] == reference
-    progress = document["milestone_progress"]["P2-027B"]
-    evidence = progress["completion_evidence"]
-    assert progress["state"] == "completed"
-    assert progress["history"] == ["not_started", "in_progress", "completed"]
-    assert evidence["commits"] == P2_027B_EVIDENCE_COMMITS
-    assert evidence["paths"] == record["scope"]["milestone_implementation_scope"]["targets"]
-    assert evidence["tests"] == record["scope"]["milestone_implementation_scope"]["tests"]
-    assert rm_027["status"] == "completed"
-    assert rm_027["completion_evidence"] == evidence
-    assert rm_027["human_approval"]["approval_reference"] == ("goal-rm027-p2-027a-2026-07-23")
-    assert rm_027["human_approval"]["scope_digest"] == (
-        "c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d"
-    )
-    for milestone_id in ("P2-013B", "P2-028A"):
-        assert document["milestone_approvals"][milestone_id] is None
-        assert document["milestone_progress"][milestone_id] == {
-            "state": "not_started",
-            "history": ["not_started"],
-            "completion_evidence": {"commits": [], "paths": [], "tests": []},
-        }
-
-
-def test_p2_012a_scope_freeze_binds_the_exact_approved_proposal() -> None:
-    document = load_roadmap()
-    reference = "goal-rm012-p2-012a-2026-07-24"
-    record = document["approval_records"][reference]
-    scope = record["scope"]
-    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
-    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
-
-    assert hashlib.sha256(canonical).hexdigest() == (
-        "abb67567163a58640f693e46c8f5ad43acec24ac6bbf00f2d309a8f8a58698fa"
-    )
-    assert record["scope_digest"] == rm_012["human_approval"]["scope_digest"]
-    assert record["topics"] == scope["policy_decisions"]
-    assert record["topics"] == rm_012["human_approval"]["topics"]
-    assert len(scope["milestone_implementation_scope"]["targets"]) == 17
-    assert len(scope["milestone_implementation_scope"]["tests"]) == 41
-    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
-    assert len(scope["policy_decisions"]) == 65
-    assert document["milestone_approvals"]["P2-012A"] == reference
-    assert document["milestone_approvals"]["P2-012B"] == (
-        "goal-rm012-p2-012b-scope-revision-3-2026-07-25"
-    )
-    assert document["milestone_progress"]["P2-012A"]["state"] == "completed"
-    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
-    assert rm_012["status"] == "completed"
-
-
-def test_p2_012b_scope_revision_binds_the_exact_approved_proposal() -> None:
-    document = load_roadmap()
-    old_reference = "goal-rm012-p2-012b-2026-07-25"
-    reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
-    record = document["approval_records"][reference]
-    scope = record["scope"]
-    canonical = json.dumps(scope, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
-
-    assert hashlib.sha256(canonical).hexdigest() == (
-        "5f7c9aa9f860f46f8568fc29d2cf6f2959838aaba369439354d1415e40662e4f"
-    )
-    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
-    assert record["topics"] == scope["policy_decisions"]
-    assert len(scope["milestone_implementation_scope"]["targets"]) == 30
-    assert len(scope["milestone_implementation_scope"]["tests"]) == 70
-    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
-    assert len(scope["policy_decisions"]) == 35
-    assert document["approval_records"][old_reference]["scope_digest"] == (
-        "1b6c003f9ba8d982f30f5e6c2d2b1af07da0c0461abe36760d838e3b3249976f"
-    )
-    assert document["milestone_approvals"]["P2-012B"] == (
-        "goal-rm012-p2-012b-scope-revision-3-2026-07-25"
-    )
-    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
-
-
-def test_p2_012b_semantic_scope_revision_is_exact_and_append_only() -> None:
-    current = deepcopy(load_roadmap())
-    _rewind_p2_012b_completion(current)
-    old_reference = "goal-rm012-p2-012b-2026-07-25"
-    reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
-    current["approval_records"].pop("goal-rm012-p2-012b-scope-revision-3-2026-07-25")
-    current["approval_records"].pop("goal-rm012-p2-012b-scope-revision-2-2026-07-25")
-    current["milestone_approvals"]["P2-012B"] = reference
-    previous = deepcopy(current)
-    previous["approval_records"].pop(reference)
-    previous["milestone_approvals"]["P2-012B"] = old_reference
-    previous_progress = deepcopy(previous["milestone_progress"]["P2-012B"])
-
-    validate_roadmap(current)
-    validate_roadmap_update(previous, current)
-    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
-    assert current["milestone_progress"]["P2-012B"] == previous_progress
-
-    wrong_label = deepcopy(current)
-    wrong_label["approval_records"][reference]["source_label"] = "self declared"
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_label)
-
-    wrong_reference = deepcopy(current)
-    wrong_reference_value = f"{reference}-wrong"
-    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
-        "approval_records"
-    ].pop(reference)  # type: ignore[union-attr]
-    wrong_reference["milestone_approvals"]["P2-012B"] = wrong_reference_value
-    validate_roadmap(wrong_reference)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_reference)
-
-    changed_progress = deepcopy(current)
-    changed_progress["milestone_progress"]["P2-012B"]["completion_evidence"]["commits"] = ["d" * 40]
-    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
-        validate_roadmap_update(previous, changed_progress)
-
-
-def test_p2_012b_final_test_compatibility_scope_is_exact() -> None:
-    document = load_roadmap()
-    old_reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
-    reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
-    old_scope = document["approval_records"][old_reference]["scope"]
-    record = document["approval_records"][reference]
-    scope = record["scope"]
-    canonical = json.dumps(
-        scope,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    assert hashlib.sha256(canonical).hexdigest() == (
-        "612b6acc3f26ab1b35307f4815cf6787aa939b7a2b1c65919a22c965c3b6d4a9"
-    )
-    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
-    assert record["topics"] == scope["policy_decisions"]
-    assert len(scope["milestone_implementation_scope"]["targets"]) == 30
-    assert len(scope["milestone_implementation_scope"]["tests"]) == 70
-    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
-    assert len(scope["policy_decisions"]) == 36
-    assert scope["policy_decisions"][:-1] == old_scope["policy_decisions"]
-    assert {key: value for key, value in scope.items() if key != "policy_decisions"} == {
-        key: value for key, value in old_scope.items() if key != "policy_decisions"
-    }
-    correction = scope["policy_decisions"][-1]
-    for path in (
-        "tests/adversarial/test_blind_isolation.py",
-        "tests/adversarial/test_phase_boundaries.py",
-        "tests/adversarial/test_review_regressions.py",
-        "tests/adversarial/test_review_security_extensions.py",
-        "tests/characterization/test_run_store_baseline.py",
-        "tests/integration/test_audit_contracts.py",
-        "tests/integration/test_context_lifecycle_integration.py",
-        "tests/integration/test_phase_orchestration.py",
-        "tests/conftest.py",
-    ):
-        assert path in correction
-    assert document["milestone_approvals"]["P2-012B"] == (
-        "goal-rm012-p2-012b-scope-revision-3-2026-07-25"
-    )
-    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
-
-
-def test_p2_012b_final_capability_test_correction_is_exact() -> None:
-    document = load_roadmap()
-    old_reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
-    reference = "goal-rm012-p2-012b-scope-revision-3-2026-07-25"
-    old_scope = document["approval_records"][old_reference]["scope"]
-    record = document["approval_records"][reference]
-    scope = record["scope"]
-    canonical = json.dumps(
-        scope,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    assert hashlib.sha256(canonical).hexdigest() == (
-        "09f2413e8a9bd4ce8067fe4999e1a0f6440aba8183e304afe4719b57a93b64d9"
-    )
-    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
-    assert record["topics"] == scope["policy_decisions"]
-    assert len(scope["milestone_implementation_scope"]["targets"]) == 30
-    assert len(scope["milestone_implementation_scope"]["tests"]) == 70
-    assert len(scope["milestone_implementation_scope"]["acceptance_criteria"]) == 18
-    assert len(scope["policy_decisions"]) == 37
-    assert scope["policy_decisions"][:-1] == old_scope["policy_decisions"]
-    assert {key: value for key, value in scope.items() if key != "policy_decisions"} == {
-        key: value for key, value in old_scope.items() if key != "policy_decisions"
-    }
-    correction = scope["policy_decisions"][-1]
-    assert "tests/characterization/test_durable_budget_compatibility.py" in correction
-    assert "product_integrated_durable_run state from planned to implemented" in correction
-    assert document["milestone_approvals"]["P2-012B"] == reference
-    assert document["milestone_progress"]["P2-012B"]["state"] == "completed"
-
-
-def test_p2_012b_completion_evidence_is_exact_and_parent_bound() -> None:
-    document = load_roadmap()
-    reference = "goal-rm012-p2-012b-scope-revision-3-2026-07-25"
-    scope = document["approval_records"][reference]["scope"]
-    progress = document["milestone_progress"]["P2-012B"]
-    rm_012 = next(item for item in document["items"] if item["id"] == "RM-012")
-    evidence = progress["completion_evidence"]
-
-    assert progress["state"] == "completed"
-    assert progress["history"] == ["not_started", "in_progress", "completed"]
-    assert evidence["commits"] == P2_012B_EVIDENCE_COMMITS
-    assert evidence["paths"] == scope["milestone_implementation_scope"]["targets"]
-    assert evidence["tests"] == scope["milestone_implementation_scope"]["tests"]
-    assert rm_012["status"] == "completed"
-    assert document["status_history"]["RM-012"] == [
-        "proposed",
-        "planned",
-        "in_progress",
-        "completed",
-    ]
-    assert rm_012["completion_evidence"] == evidence
-
-
-def test_p2_012b_final_test_compatibility_scope_is_append_only() -> None:
-    current = deepcopy(load_roadmap())
-    _rewind_p2_012b_completion(current)
-    old_reference = "goal-rm012-p2-012b-scope-revision-1-2026-07-25"
-    reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
-    current["approval_records"].pop("goal-rm012-p2-012b-scope-revision-3-2026-07-25")
-    current["milestone_approvals"]["P2-012B"] = reference
-    previous = deepcopy(current)
-    previous["approval_records"].pop(reference)
-    previous["milestone_approvals"]["P2-012B"] = old_reference
-    previous_progress = deepcopy(previous["milestone_progress"]["P2-012B"])
-
-    validate_roadmap(current)
-    validate_roadmap_update(previous, current)
-    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
-    assert current["milestone_progress"]["P2-012B"] == previous_progress
-
-    wrong_label = deepcopy(current)
-    wrong_label["approval_records"][reference]["source_label"] = "self declared"
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_label)
-
-    wrong_reference = deepcopy(current)
-    wrong_reference_value = f"{reference}-wrong"
-    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
-        "approval_records"
-    ].pop(reference)  # type: ignore[union-attr]
-    wrong_reference["milestone_approvals"]["P2-012B"] = wrong_reference_value
-    validate_roadmap(wrong_reference)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_reference)
-
-    changed_progress = deepcopy(current)
-    changed_progress["milestone_progress"]["P2-012B"]["completion_evidence"]["commits"] = ["e" * 40]
-    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
-        validate_roadmap_update(previous, changed_progress)
-
-
-def test_p2_012b_final_capability_test_correction_is_append_only() -> None:
-    current = deepcopy(load_roadmap())
-    old_reference = "goal-rm012-p2-012b-scope-revision-2-2026-07-25"
-    reference = "goal-rm012-p2-012b-scope-revision-3-2026-07-25"
-    previous = deepcopy(current)
-    previous["approval_records"].pop(reference)
-    previous["milestone_approvals"]["P2-012B"] = old_reference
-    previous_progress = deepcopy(previous["milestone_progress"]["P2-012B"])
-
-    validate_roadmap(current)
-    validate_roadmap_update(previous, current)
-    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
-    assert current["milestone_progress"]["P2-012B"] == previous_progress
-
-    wrong_label = deepcopy(current)
-    wrong_label["approval_records"][reference]["source_label"] = "self declared"
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_label)
-
-    wrong_reference = deepcopy(current)
-    wrong_reference_value = f"{reference}-wrong"
-    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
-        "approval_records"
-    ].pop(reference)  # type: ignore[union-attr]
-    wrong_reference["milestone_approvals"]["P2-012B"] = wrong_reference_value
-    validate_roadmap(wrong_reference)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_reference)
-
-    changed_progress = deepcopy(current)
-    changed_progress["milestone_progress"]["P2-012B"]["completion_evidence"]["commits"] = [
-        *P2_012B_EVIDENCE_COMMITS,
-        "e" * 40,
-    ]
-    changed_progress_rm_012 = next(
-        item for item in changed_progress["items"] if item["id"] == "RM-012"
-    )
-    changed_progress_rm_012["completion_evidence"]["commits"] = [
-        *P2_012B_EVIDENCE_COMMITS,
-        "e" * 40,
-    ]
-    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
-        validate_roadmap_update(previous, changed_progress)
-
-
-def test_reopened_item_requires_reason_and_new_recompletion_evidence() -> None:
-    previous = load_roadmap()
-    reopened = deepcopy(previous)
-    rm_009 = next(item for item in reopened["items"] if item["id"] == "RM-009")
-    rm_009["status"] = "in_progress"
-    prior_evidence = json.dumps(
-        rm_009["completion_evidence"],
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    rm_009["reopen_events"] = [
-        {
-            "transition_index": 3,
-            "to_status": "in_progress",
-            "reason": "Regression investigation.",
-            "prior_evidence_sha256": hashlib.sha256(prior_evidence).hexdigest(),
-        }
-    ]
-    reopened["status_history"]["RM-009"].append("in_progress")
-    validate_roadmap_update(previous, reopened)
-
-    stripped_between_transitions = deepcopy(reopened)
-    stripped_rm_009 = next(
-        item for item in stripped_between_transitions["items"] if item["id"] == "RM-009"
-    )
-    stripped_rm_009["completion_evidence"]["commits"] = stripped_rm_009["completion_evidence"][
-        "commits"
-    ][1:]
-    with pytest.raises(ValueError, match="completed evidence was removed"):
-        validate_roadmap_update(reopened, stripped_between_transitions)
-
-    recompleted = deepcopy(reopened)
-    rm_009 = next(item for item in recompleted["items"] if item["id"] == "RM-009")
-    rm_009["status"] = "completed"
-    recompleted["status_history"]["RM-009"].append("completed")
-    with pytest.raises(ValueError, match="re-completed item requires new evidence"):
-        validate_roadmap_update(reopened, recompleted)
-
-    swapped = deepcopy(recompleted)
-    rm_009 = next(item for item in swapped["items"] if item["id"] == "RM-009")
-    rm_009["completion_evidence"]["commits"] = rm_009["completion_evidence"]["commits"][1:]
-    rm_009["completion_evidence"]["tests"].append(
-        "tests/golden/test_markdown_tool_results.py::test_exact_tool_result_metadata_golden"
-    )
-    with pytest.raises(
-        ValueError, match=r"completed evidence was removed|re-completed item removed evidence"
-    ):
-        validate_roadmap_update(reopened, swapped)
-
-
-def test_in_progress_item_requires_completed_item_dependencies() -> None:
-    counterexample = deepcopy(load_roadmap())
-    rm_015 = next(item for item in counterexample["items"] if item["id"] == "RM-015")
-    rm_015["status"] = "in_progress"
-    rm_015["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    counterexample["status_history"]["RM-015"].append("in_progress")
+    incomplete = deepcopy(load_roadmap())
+    items = _by_id(incomplete)
+    items["RM-010"]["dependencies"].append("RM-028")  # type: ignore[union-attr]
     with pytest.raises(ValueError, match="active item has incomplete dependency"):
-        validate_roadmap(counterexample)
+        validate_roadmap(incomplete)
 
 
-def test_exact_rm_and_milestone_sets_are_required() -> None:
-    missing_rm = deepcopy(load_roadmap())
-    missing_rm["items"] = [item for item in missing_rm["items"] if item["id"] != "RM-018A"]
-    missing_rm["status_history"].pop("RM-018A")
-    with pytest.raises(ValueError, match="RM set mismatch"):
-        validate_roadmap(missing_rm)
-
-    document = load_roadmap()
-    assert {item["id"] for item in document["implementation_milestones"]} == (
-        EXPECTED_PHASE_2_MILESTONES
-    )
-    cycle = deepcopy(document)
-    cycle["implementation_milestones"][0]["dependencies"] = ["P2-028A"]
+def test_milestone_cycle_owner_and_status_rules_fail_closed() -> None:
+    cycle = deepcopy(load_roadmap())
+    milestones = _milestones(cycle)
+    milestones["P2-024A"]["dependencies"] = ["P2-028A"]
     with pytest.raises(ValueError, match="implementation dependency cycle"):
         validate_roadmap(cycle)
 
-    duplicate_dependency = deepcopy(document)
-    duplicate_dependency["implementation_milestones"][0]["dependencies"] = [
-        "RM-006",
-        "RM-006",
-    ]
-    with pytest.raises(ValueError, match="duplicate milestone dependency"):
-        validate_roadmap(duplicate_dependency)
+    owner = deepcopy(load_roadmap())
+    milestones = _milestones(owner)
+    milestones["P2-024A"]["rm_id"] = "RM-010"
+    with pytest.raises(ValueError, match="milestone owner mismatch"):
+        validate_roadmap(owner)
 
-    status_on_ordering_node = deepcopy(document)
-    status_on_ordering_node["implementation_milestones"][0]["status"] = "completed"
-    with pytest.raises(ValueError, match="status-free ordering nodes"):
-        validate_roadmap(status_on_ordering_node)
-
-
-def test_p2_013a_has_exact_digest_bound_scope_and_downstream_stays_closed() -> None:
-    document = load_roadmap()
-    reference = "goal-rm013-p2-013a-2026-07-25"
-    record = document["approval_records"][reference]
-    canonical = json.dumps(
-        record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    rm_013 = next(item for item in document["items"] if item["id"] == "RM-013")
-
-    assert len(canonical) == 30132
-    assert hashlib.sha256(canonical).hexdigest() == P2_013A_SCOPE_DIGEST
-    assert record["scope_digest"] == P2_013A_SCOPE_DIGEST
-    assert record["topics"] == record["scope"]["policy_decisions"]
-    assert document["milestone_approvals"]["P2-013A"] == reference
-    progress = document["milestone_progress"]["P2-013A"]
-    evidence = progress["completion_evidence"]
-    assert progress["state"] == "completed"
-    assert progress["history"] == ["not_started", "in_progress", "completed"]
-    assert evidence["commits"] == [
-        "3a7a39b52ac4420c255a82600a0f03f1bafdbc99",
-        "68250b3f1c515418f87b912de34b000abc67d9c8",
-        "4d79b5c058a63c061efcd32e1424e383b90c9692",
-        "150e04a50ca66ba041ec0dd603ec5c74add22491",
-        "f9f508ef8f99e142c263cdfdb7e8558d3a6f0e56",
-        "cd379817b91957332cb621e62e88e207041e25c2",
-    ]
-    assert evidence["paths"] == record["scope"]["milestone_implementation_scope"]["targets"]
-    assert evidence["tests"] == record["scope"]["milestone_implementation_scope"]["tests"]
-    assert rm_013["status"] == "in_progress"
-    assert rm_013["completion_evidence"] == {"commits": [], "paths": [], "tests": []}
-    assert (
-        "P2-013B lifecycle/reissue integration is separately unapproved" in rm_013["status_reason"]
-    )
-    assert rm_013["human_approval"]["approval_reference"] == reference
-    assert rm_013["human_approval"]["scope_digest"] == P2_013A_SCOPE_DIGEST
-    assert rm_013["human_approval"]["topics"] == record["topics"]
-
-    for milestone_id in ("P2-013B", "P2-028A"):
-        assert document["milestone_approvals"][milestone_id] is None
-        assert document["milestone_progress"][milestone_id] == {
-            "state": "not_started",
-            "history": ["not_started"],
-            "completion_evidence": {"commits": [], "paths": [], "tests": []},
-        }
-    assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
-    assert document["milestone_progress"]["P2-027B"]["state"] == "completed"
+    inactive_parent = deepcopy(load_roadmap())
+    items = _by_id(inactive_parent)
+    items["RM-013"]["status"] = "planned"
+    with pytest.raises(ValueError, match="completed milestone has inactive parent"):
+        validate_roadmap(inactive_parent)
 
 
-def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
-    document = load_roadmap()
-    p2_010a_reference = "goal-rm010-p2-010a-2026-07-20"
-    original_reference = "goal-rm010-p2-010b-2026-07-24"
-    revision_1_reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
-    revision_2_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
-    p2_010b_reference = "goal-rm010-p2-010b-scope-revision-3-2026-07-24"
-    record = document["approval_records"][p2_010b_reference]
-    canonical = json.dumps(
-        record["scope"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-    assert original_reference in document["approval_records"]
-    assert revision_1_reference in document["approval_records"]
-    assert revision_2_reference in document["approval_records"]
-    assert record["scope_digest"] == hashlib.sha256(canonical).hexdigest()
-    assert record["topics"] == record["scope"]["policy_decisions"]
-    targets = record["scope"]["milestone_implementation_scope"]["targets"]
-    assert targets[-1] == "tests/unit/__init__.py"
-    assert "tests/__init__.py" not in targets
-    assert "tests/integration/__init__.py" not in targets
-    assert document["milestone_approvals"]["P2-010A"] == p2_010a_reference
-    assert document["milestone_approvals"]["P2-010B"] == p2_010b_reference
-    assert document["milestone_progress"]["P2-010B"]["state"] == "completed"
-    assert document["milestone_progress"]["P2-010B"]["history"] == [
-        "not_started",
-        "in_progress",
-        "completed",
-    ]
-    assert len(document["milestone_progress"]["P2-010B"]["completion_evidence"]["commits"]) == 22
-    assert "P2-010B" not in roadmap_summary(document)["milestone_ready_ids"]
-
-    digest_mismatch = deepcopy(document)
-    item = next(item for item in digest_mismatch["items"] if item["id"] == "RM-010")
-    item["human_approval"]["scope_digest"] = "0" * 64
-    with pytest.raises(ValueError, match="scope digest is not bound"):
-        validate_roadmap(digest_mismatch)
-
-    rebound = deepcopy(document)
-    rebound["milestone_approvals"]["P2-010B"] = p2_010a_reference
-    with pytest.raises(ValueError, match="approval scope contract does not match milestone"):
-        validate_roadmap(rebound)
-
-    activated = deepcopy(document)
-    _rewind_split_rm_010(activated)
-    activated["milestone_approvals"]["P2-010B"] = None
-    with pytest.raises(ValueError, match="active milestone lacks scoped approval"):
-        validate_roadmap(activated)
-
-
-def test_milestone_approval_binding_is_append_only() -> None:
+def test_public_update_validation_preserves_contracts_and_legal_transitions() -> None:
     previous = load_roadmap()
-    current = deepcopy(previous)
-    old_reference = current["milestone_approvals"]["P2-024A"]
-    new_reference = "test-p2-024a-reapproval"
-    current["approval_records"][new_reference] = deepcopy(
-        current["approval_records"][old_reference]
-    )
-    current["milestone_approvals"]["P2-024A"] = new_reference
+    unchanged = deepcopy(previous)
+    validate_roadmap_update(previous, unchanged)
+    validate_roadmap_update(previous, unchanged, set())
 
-    validate_roadmap(current)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, current, {new_reference})
+    status_change = deepcopy(previous)
+    items = _by_id(status_change)
+    items["RM-013"]["status"] = "blocked"
+    items["RM-013"]["status_reason"] = "A published decision gate is unresolved."
+    milestones = _milestones(status_change)
+    milestones["P2-013B"]["status"] = "blocked"
+    milestones["P2-013B"]["status_reason"] = "The parent item is blocked."
+    validate_roadmap_update(previous, status_change)
 
+    illegal = deepcopy(previous)
+    _by_id(illegal)["RM-014"]["status"] = "proposed"
+    with pytest.raises(ValueError, match="illegal status transition"):
+        validate_roadmap_update(previous, illegal)
 
-def test_bounded_semantic_scope_revision_is_strict_and_append_only() -> None:
-    current = deepcopy(load_roadmap())
-    _rewind_split_rm_010(current)
-    current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-3-2026-07-24")
-    current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-2-2026-07-24")
-    current["milestone_approvals"]["P2-010B"] = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
-    previous = deepcopy(current)
-    old_reference = "goal-rm010-p2-010b-2026-07-24"
-    reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
-    previous["approval_records"].pop(reference)
-    previous["milestone_approvals"]["P2-010B"] = old_reference
-
-    validate_roadmap(current)
-    validate_roadmap_update(previous, current)
-    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
-
-    wrong_label = deepcopy(current)
-    wrong_label["approval_records"][reference]["source_label"] = "self declared"
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_label)
-
-    wrong_reference = deepcopy(current)
-    wrong_reference_value = f"{reference}-wrong"
-    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
-        "approval_records"
-    ].pop(reference)  # type: ignore[union-attr]
-    wrong_reference["milestone_approvals"]["P2-010B"] = wrong_reference_value
-    validate_roadmap(wrong_reference)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_reference)
-
-    changed_contract = deepcopy(current)
-    changed_contract["approval_records"][reference]["scope"]["milestone_contract"]["scope"] = (
-        "changed"
-    )
-    changed_contract["approval_records"][reference]["scope_digest"] = _scope_digest(
-        changed_contract["approval_records"][reference]["scope"]
-    )
-    with pytest.raises(ValueError):
-        validate_roadmap(changed_contract)
-
-    changed_progress = deepcopy(current)
-    changed_progress["milestone_progress"]["P2-010B"]["completion_evidence"]["commits"] = ["a" * 40]
-    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
-        validate_roadmap_update(previous, changed_progress)
+    contract_change = deepcopy(previous)
+    _by_id(contract_change)["RM-011"]["targets"].append("new public target")  # type: ignore[union-attr]
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, contract_change)
 
 
-def test_second_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
-    current = deepcopy(load_roadmap())
-    _rewind_split_rm_010(current)
-    current["approval_records"].pop("goal-rm010-p2-010b-scope-revision-3-2026-07-24")
-    current["milestone_approvals"]["P2-010B"] = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
-    previous = deepcopy(current)
-    old_reference = "goal-rm010-p2-010b-scope-revision-1-2026-07-24"
-    reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
-    previous["approval_records"].pop(reference)
-    previous["milestone_approvals"]["P2-010B"] = old_reference
-
-    validate_roadmap(current)
-    validate_roadmap_update(previous, current)
-    assert current["approval_records"][old_reference] == previous["approval_records"][old_reference]
-    assert (
-        current["approval_records"]["goal-rm010-p2-010b-2026-07-24"]
-        == previous["approval_records"]["goal-rm010-p2-010b-2026-07-24"]
-    )
-
-    wrong_label = deepcopy(current)
-    wrong_label["approval_records"][reference]["source_label"] = (
-        "explicit human reapproval of revised P2-010B exact scope"
-    )
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_label)
-
-    wrong_reference = deepcopy(current)
-    wrong_reference_value = f"{reference}-wrong"
-    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
-        "approval_records"
-    ].pop(reference)  # type: ignore[union-attr]
-    wrong_reference["milestone_approvals"]["P2-010B"] = wrong_reference_value
-    validate_roadmap(wrong_reference)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_reference)
-
-    changed_contract = deepcopy(current)
-    changed_contract["approval_records"][reference]["scope"]["item_contract"]["id"] = "RM-999"
-    changed_contract["approval_records"][reference]["scope_digest"] = _scope_digest(
-        changed_contract["approval_records"][reference]["scope"]
-    )
-    with pytest.raises(ValueError):
-        validate_roadmap(changed_contract)
-
-    changed_progress = deepcopy(current)
-    changed_progress["milestone_progress"]["P2-010B"]["completion_evidence"]["commits"] = ["b" * 40]
-    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
-        validate_roadmap_update(previous, changed_progress)
+def test_transition_validator_rejects_unknown_and_illegal_targets() -> None:
+    transitions = load_roadmap()["legal_transitions"]
+    validate_transition("planned", "blocked", transitions)
+    with pytest.raises(ValueError, match="unknown transition source"):
+        validate_transition("missing", "planned", transitions)
+    with pytest.raises(ValueError, match="illegal status transition"):
+        validate_transition("planned", "proposed", transitions)
 
 
-def test_third_bounded_semantic_scope_revision_is_exact_and_append_only() -> None:
-    current = load_roadmap()
-    _rewind_split_rm_010(current)
-    previous = deepcopy(current)
-    old_reference = "goal-rm010-p2-010b-scope-revision-2-2026-07-24"
-    reference = "goal-rm010-p2-010b-scope-revision-3-2026-07-24"
-    previous["approval_records"].pop(reference)
-    previous["milestone_approvals"]["P2-010B"] = old_reference
-
-    validate_roadmap(current)
-    validate_roadmap_update(previous, current)
-    for preserved_reference in (
-        "goal-rm010-p2-010b-2026-07-24",
-        "goal-rm010-p2-010b-scope-revision-1-2026-07-24",
-        old_reference,
-    ):
-        assert (
-            current["approval_records"][preserved_reference]
-            == previous["approval_records"][preserved_reference]
-        )
-
-    wrong_label = deepcopy(current)
-    wrong_label["approval_records"][reference]["source_label"] = (
-        "explicit human reapproval of corrected P2-010B exact scope"
-    )
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_label)
-
-    wrong_reference = deepcopy(current)
-    wrong_reference_value = f"{reference}-wrong"
-    wrong_reference["approval_records"][wrong_reference_value] = wrong_reference[
-        "approval_records"
-    ].pop(reference)  # type: ignore[union-attr]
-    wrong_reference["milestone_approvals"]["P2-010B"] = wrong_reference_value
-    validate_roadmap(wrong_reference)
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, wrong_reference)
-
-    changed_contract = deepcopy(current)
-    changed_contract["approval_records"][reference]["scope"]["rm_id"] = "RM-999"
-    changed_contract["approval_records"][reference]["scope_digest"] = _scope_digest(
-        changed_contract["approval_records"][reference]["scope"]
-    )
-    with pytest.raises(ValueError):
-        validate_roadmap(changed_contract)
-
-    changed_progress = deepcopy(current)
-    changed_progress["milestone_progress"]["P2-010B"]["completion_evidence"]["commits"] = ["c" * 40]
-    with pytest.raises(ValueError, match="scope revision changed milestone progress"):
-        validate_roadmap_update(previous, changed_progress)
-
-
-def test_scoped_approval_projection_correction_is_strict_and_append_only() -> None:
-    current = deepcopy(load_roadmap())
-    _rewind_split_rm_010(current)
-    _rewind_p2_011b(current)
-    current["milestone_progress"]["P2-012A"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    current["milestone_progress"]["P2-010B"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    current_rm_012 = next(item for item in current["items"] if item["id"] == "RM-012")
-    current_rm_012["status"] = "planned"
-    current["status_history"]["RM-012"] = ["proposed", "planned"]
-    previous = deepcopy(current)
-    old_reference = "goal-rm011-p2-011a-2026-07-20"
-    new_reference = f"{old_reference}-correction-1"
-    previous["approval_records"].pop(new_reference)
-    previous["milestone_approvals"]["P2-011A"] = old_reference
-    rm_011 = next(item for item in previous["items"] if item["id"] == "RM-011")
-    rm_011["human_approval"]["approval_reference"] = old_reference
-    rm_011["human_approval"]["scope_digest"] = previous["approval_records"][old_reference][
-        "scope_digest"
-    ]
-    previous["milestone_progress"]["P2-011A"] = {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    validate_roadmap_update(previous, current)
-    validate_roadmap_update(previous, current, {"irrelevant-compatibility-value"})
-
-    changed_topics = deepcopy(current)
-    changed_topics["approval_records"][new_reference]["topics"].append("new authority")
-    changed_topics["approval_records"][new_reference]["scope"]["policy_decisions"].append(
-        "new authority"
-    )
-    changed_topics["approval_records"][new_reference]["scope_digest"] = _scope_digest(
-        changed_topics["approval_records"][new_reference]["scope"]
-    )
-    changed_topics_rm_011 = next(item for item in changed_topics["items"] if item["id"] == "RM-011")
-    changed_topics_rm_011["human_approval"]["topics"].append("new authority")
-    changed_topics_rm_011["human_approval"]["scope_digest"] = changed_topics["approval_records"][
-        new_reference
-    ]["scope_digest"]
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, changed_topics)
-
-    changed_tests = deepcopy(current)
-    changed_tests["approval_records"][new_reference]["scope"]["milestone_implementation_scope"][
-        "tests"
-    ].append("tests/new_scope.py")
-    changed_tests["milestone_progress"]["P2-011A"]["completion_evidence"]["tests"].append(
-        "tests/new_scope.py"
-    )
-    changed_tests["approval_records"][new_reference]["scope_digest"] = _scope_digest(
-        changed_tests["approval_records"][new_reference]["scope"]
-    )
-    changed_rm_011 = next(item for item in changed_tests["items"] if item["id"] == "RM-011")
-    changed_rm_011["human_approval"]["scope_digest"] = changed_tests["approval_records"][
-        new_reference
-    ]["scope_digest"]
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, changed_tests)
-
-    changed_targets = deepcopy(current)
-    changed_targets["approval_records"][new_reference]["scope"]["milestone_implementation_scope"][
-        "targets"
-    ] = ["README.md"]
-    changed_targets["milestone_progress"]["P2-011A"]["completion_evidence"]["paths"] = ["README.md"]
-    changed_targets["approval_records"][new_reference]["scope_digest"] = _scope_digest(
-        changed_targets["approval_records"][new_reference]["scope"]
-    )
-    changed_targets_rm_011 = next(
-        item for item in changed_targets["items"] if item["id"] == "RM-011"
-    )
-    changed_targets_rm_011["human_approval"]["scope_digest"] = changed_targets["approval_records"][
-        new_reference
-    ]["scope_digest"]
-    with pytest.raises(ValueError, match="milestone approval was deleted or rewritten"):
-        validate_roadmap_update(previous, changed_targets)
-
-
-def test_completed_milestone_evidence_binds_to_approved_implementation_scope() -> None:
-    counterexample = deepcopy(load_roadmap())
-    progress = counterexample["milestone_progress"]["P2-010A"]
-    progress["completion_evidence"] = {
-        "commits": ["a" * 40],
-        "paths": ["future phase service modules"],
-        "tests": ["phase unit/property tests"],
-    }
-    with pytest.raises(ValueError, match="milestone evidence does not cover approved scope"):
-        validate_roadmap(counterexample)
-
-    approved_scope = counterexample["approval_records"]["goal-rm010-p2-010a-2026-07-20"]["scope"][
-        "milestone_implementation_scope"
-    ]
-    counterexample["milestone_progress"]["P2-010A"]["completion_evidence"] = {
-        "commits": ["a" * 40],
-        "paths": approved_scope["targets"],
-        "tests": approved_scope["tests"],
-    }
-    validate_roadmap(counterexample)
-
-
-def test_split_parent_completion_evidence_rolls_up_from_exact_completion_scope() -> None:
-    document = deepcopy(load_roadmap())
-    rm_010_before = next(item for item in document["items"] if item["id"] == "RM-010")
-    item_contract_before = {
-        field: deepcopy(rm_010_before.get(field))
-        for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
-    }
-    milestone_before = deepcopy(
-        next(
-            milestone
-            for milestone in document["implementation_milestones"]
-            if milestone["id"] == "P2-010B"
-        )
-    )
-
-    _, targets, tests = _complete_split_rm_010(document)
-
-    validate_roadmap(document)
-    rm_010 = next(item for item in document["items"] if item["id"] == "RM-010")
-    assert (
-        rm_010["completion_evidence"]
-        == document["milestone_progress"]["P2-010B"]["completion_evidence"]
-    )
-    assert rm_010["completion_evidence"]["paths"] == targets
-    assert rm_010["completion_evidence"]["tests"] == tests
-    assert {
-        field: rm_010.get(field) for field in sorted(IMMUTABLE_ITEM_CONTRACT_FIELDS)
-    } == item_contract_before
-    assert (
-        next(
-            milestone
-            for milestone in document["implementation_milestones"]
-            if milestone["id"] == "P2-010B"
-        )
-        == milestone_before
-    )
-
-    reordered = deepcopy(document)
-    reordered_parent = next(item for item in reordered["items"] if item["id"] == "RM-010")
-    reordered_parent["completion_evidence"]["paths"] = list(reversed(targets))
-    with pytest.raises(ValueError, match="split RM evidence differs from completion milestone"):
-        validate_roadmap(reordered)
-
-    jointly_reordered = deepcopy(document)
-    reordered_paths = list(reversed(targets))
-    next(item for item in jointly_reordered["items"] if item["id"] == "RM-010")[
-        "completion_evidence"
-    ]["paths"] = reordered_paths
-    jointly_reordered["milestone_progress"]["P2-010B"]["completion_evidence"]["paths"] = (
-        reordered_paths
-    )
-    with pytest.raises(
-        ValueError,
-        match="split completion milestone evidence order differs from approved scope",
-    ):
-        validate_roadmap(jointly_reordered)
-
-
-def test_split_completion_repository_commit_and_changed_path_checks_remain_enforced() -> None:
-    document = deepcopy(load_roadmap())
-    _complete_split_rm_010(document)
-    commit = "a" * 40
-    tracked = (
-        {
-            reference.split("::", 1)[0]
-            for item in document["items"]
-            if item["status"] == "completed"
-            for field in ("paths", "tests")
-            for reference in item["completion_evidence"][field]
-        }
-        | {
-            reference.split("::", 1)[0]
-            for progress in document["milestone_progress"].values()
-            if progress["state"] == "completed"
-            for field in ("paths", "tests")
-            for reference in progress["completion_evidence"][field]
-        }
-        | {
-            reference
-            for record in document["approval_records"].values()
-            if isinstance(record.get("scope"), dict)
-            for implementation_scope in [record["scope"].get("milestone_implementation_scope")]
-            if isinstance(implementation_scope, dict)
-            for field in ("targets", "tests")
-            for reference in implementation_scope[field]
-        }
-    )
-    known_commits = {
-        evidence_commit
-        for item in document["items"]
-        if item["status"] == "completed"
-        for evidence_commit in item["completion_evidence"]["commits"]
-    } | {
-        evidence_commit
-        for progress in document["milestone_progress"].values()
-        if progress["state"] == "completed"
-        for evidence_commit in progress["completion_evidence"]["commits"]
-    }
-    commit_paths = {evidence_commit: set(tracked) for evidence_commit in known_commits}
-    changed_paths = {evidence_commit: set(tracked) for evidence_commit in known_commits}
-
-    validate_repository_evidence(
-        document,
-        ROOT,
-        tracked_paths=tracked,
-        known_commits=known_commits,
-        commit_paths=commit_paths,
-        changed_paths=changed_paths,
-    )
-
-    missing_commit_paths = deepcopy(commit_paths)
-    missing_commit_paths[commit] = set()
-    with pytest.raises(ValueError, match="absent from cited commits"):
-        validate_repository_evidence(
-            document,
-            ROOT,
-            tracked_paths=tracked,
-            known_commits=known_commits,
-            commit_paths=missing_commit_paths,
-            changed_paths=changed_paths,
-        )
-    missing_changed_paths = deepcopy(changed_paths)
-    missing_changed_paths[commit] = set()
-    with pytest.raises(ValueError, match="did not change cited scope"):
-        validate_repository_evidence(
-            document,
-            ROOT,
-            tracked_paths=tracked,
-            known_commits=known_commits,
-            commit_paths=commit_paths,
-            changed_paths=missing_changed_paths,
-        )
-
-
-def test_single_milestone_parent_evidence_rule_is_unchanged() -> None:
-    document = deepcopy(load_roadmap())
-    rm_024 = next(item for item in document["items"] if item["id"] == "RM-024")
-    rm_024["completion_evidence"]["commits"] = [
-        *rm_024["completion_evidence"]["commits"],
-        "b" * 40,
-    ]
-    with pytest.raises(
-        ValueError,
-        match="single-milestone RM evidence differs from completion milestone",
-    ):
-        validate_roadmap(document)
-
-
-def test_completed_milestone_requires_parent_dependency_and_evidence_consistency() -> None:
-    counterexample = deepcopy(load_roadmap())
-    parent = next(item for item in counterexample["items"] if item["id"] == "RM-028")
-    parent["status"] = "in_progress"
-    parent["human_approval"] = {"required": False, "state": "not_required", "topics": []}
-    counterexample["status_history"]["RM-028"] = ["proposed", "planned", "in_progress"]
-    progress = counterexample["milestone_progress"]["P2-028A"]
-    progress["state"] = "completed"
-    progress["history"] = ["not_started", "in_progress", "completed"]
-    progress["completion_evidence"] = {
-        "commits": ["a" * 40],
-        "paths": ["future isolated job runner"],
-        "tests": ["hung child and process tree"],
-    }
-    with pytest.raises(ValueError, match="incomplete dependency"):
-        validate_roadmap(counterexample)
-
-    pending_parent = deepcopy(load_roadmap())
-    _rewind_p2_013a(pending_parent)
-    pending_parent_rm_012 = next(item for item in pending_parent["items"] if item["id"] == "RM-012")
-    pending_parent_rm_012["status"] = "planned"
-    pending_parent["status_history"]["RM-012"] = ["proposed", "planned"]
-    with pytest.raises(ValueError, match="active milestone has inactive parent RM"):
-        validate_roadmap(pending_parent)
-
-    blocked_under_active_parent = deepcopy(load_roadmap())
-    blocked_progress = blocked_under_active_parent["milestone_progress"]["P2-011A"]
-    blocked_progress["state"] = "blocked"
-    blocked_progress["history"] = ["not_started", "blocked"]
-    blocked_progress["blockers"] = ["RM-024 incomplete"]
-    with pytest.raises(
-        ValueError, match=r"active item has incomplete dependency|blocked milestone requires"
-    ):
-        validate_roadmap(blocked_under_active_parent)
-
-    pending_item = deepcopy(load_roadmap())
-    _rewind_split_rm_010(pending_item)
-    _rewind_p2_011b(pending_item)
-    pending_item["milestone_progress"]["P2-012A"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    pending_item["milestone_progress"]["P2-010B"] = {
-        "state": "not_started",
-        "history": ["not_started"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    with pytest.raises(ValueError, match="in-progress RM lacks active milestone"):
-        validate_roadmap(pending_item)
-
-
-def test_dependency_cycle_and_completed_evidence_fail_closed() -> None:
-    cycle = deepcopy(load_roadmap())
-    cycle["items"][0]["dependencies"] = ["RM-023"]
-    with pytest.raises(ValueError, match="cycle"):
-        validate_roadmap(cycle)
-
-    no_evidence = deepcopy(load_roadmap())
-    no_evidence["items"][0]["completion_evidence"] = {
-        "commits": [],
-        "paths": [],
-        "tests": [],
-    }
-    with pytest.raises(ValueError, match="lacks path/test evidence"):
-        validate_roadmap(no_evidence)
-
-
-def test_completed_evidence_is_repository_validated_separately() -> None:
+def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
     document = load_roadmap()
-    validate_repository_evidence(document, ROOT)
+    tracked = _tracked_paths()
 
-    fake = deepcopy(document)
-    fake["items"][0]["completion_evidence"]["paths"] = [
-        "src/poker_deliberation/capabilities.py/missing"
-    ]
+    validate_repository_evidence(document, ROOT, tracked_paths=tracked)
+
+    missing = deepcopy(document)
+    _by_id(missing)["RM-001"]["targets"] = ["src/poker_deliberation/missing.py"]
     with pytest.raises(ValueError, match="does not exist"):
-        validate_repository_evidence(fake, ROOT)
+        validate_repository_evidence(missing, ROOT, tracked_paths=tracked)
 
-    all_references = (
-        {
-            reference.split("::", 1)[0]
-            for item in document["items"]
-            if item["status"] == "completed"
-            for field in ("paths", "tests")
-            for reference in item["completion_evidence"][field]
-        }
-        | {
-            reference.split("::", 1)[0]
-            for progress in document["milestone_progress"].values()
-            if progress["state"] == "completed"
-            for field in ("paths", "tests")
-            for reference in progress["completion_evidence"][field]
-        }
-        | {
-            reference
-            for approval_reference in document["milestone_approvals"].values()
-            if approval_reference is not None
-            for scope in [document["approval_records"][approval_reference].get("scope")]
-            if scope is not None and scope.get("schema_version") == APPROVAL_SCOPE_SCHEMA_VERSION
-            for field in ("targets", "tests")
-            for reference in scope["milestone_implementation_scope"][field]
-        }
-    )
-    validate_repository_evidence(document, ROOT, tracked_paths=all_references)
-    directory_prefix_paths = set(all_references)
-    directory_prefix_paths.remove("tests/fixtures/phase1")
-    directory_prefix_paths.add("tests/fixtures/phase1/solver_status.json")
-    validate_repository_evidence(document, ROOT, tracked_paths=directory_prefix_paths)
-    with pytest.raises(ValueError, match="not tracked"):
-        validate_repository_evidence(document, ROOT, tracked_paths=set())
+    untracked = deepcopy(document)
+    target = "src/poker_deliberation/capabilities.py"
+    with pytest.raises(ValueError, match="is not tracked"):
+        validate_repository_evidence(untracked, ROOT, tracked_paths=tracked - {target})
 
-    invalid_scope = deepcopy(document)
-    approval_reference = invalid_scope["milestone_approvals"]["P2-011A"]
-    approval = invalid_scope["approval_records"][approval_reference]
-    approval["scope"]["milestone_implementation_scope"]["targets"].append(
-        "src/poker_deliberation/missing-budget-scope.py"
-    )
-    invalid_scope["milestone_progress"]["P2-011A"]["completion_evidence"]["paths"].append(
-        "src/poker_deliberation/missing-budget-scope.py"
-    )
-    approval["scope_digest"] = _scope_digest(approval["scope"])
-    rm_011 = next(item for item in invalid_scope["items"] if item["id"] == "RM-011")
-    rm_011["human_approval"]["scope_digest"] = approval["scope_digest"]
-    with pytest.raises(ValueError, match="approval scope path does not exist"):
-        validate_repository_evidence(invalid_scope, ROOT)
+    escaping = deepcopy(document)
+    _by_id(escaping)["RM-001"]["targets"] = ["src/../../outside.py"]
+    with pytest.raises(ValueError, match="escapes repository"):
+        validate_repository_evidence(escaping, ROOT, tracked_paths=tracked)
 
-    known_commits = {
-        commit for item in document["items"] for commit in item["completion_evidence"]["commits"]
-    } | {
-        commit
-        for progress in document["milestone_progress"].values()
-        for commit in progress["completion_evidence"]["commits"]
+
+def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
+    summary = roadmap_summary()
+
+    assert summary["schema_version"] == "2.0.0"
+    assert summary["total_items"] == 29
+    assert summary["status_counts"] == {
+        "completed": 15,
+        "in_progress": 1,
+        "planned": 10,
+        "proposed": 3,
     }
-    validate_repository_evidence(document, ROOT, known_commits=known_commits)
-    with pytest.raises(ValueError, match="commit does not exist"):
-        validate_repository_evidence(document, ROOT, known_commits=set())
+    assert summary["milestone_state_counts"] == {"completed": 10, "not_started": 2}
+    assert summary["milestone_ready_ids"] == ["P2-013B"]
+    assert summary["implementation_ready_ids"] == [
+        "RM-014",
+        "RM-017",
+        "RM-018A",
+        "RM-021",
+    ]
+    assert summary["release_readiness"]["pre_release"]["candidate_evidence"] == ("not_evaluated")
+    assert "dependency-only" in summary["note"]
+    assert len(summary["source_sha256"]) == 64
 
-    all_commit_paths = {commit: set(all_references) for commit in known_commits}
-    validate_repository_evidence(
-        document,
-        ROOT,
-        known_commits=known_commits,
-        commit_paths=all_commit_paths,
-        changed_paths=all_commit_paths,
+
+def test_doctor_and_generated_document_use_the_public_projection() -> None:
+    document = load_roadmap()
+    generated_path = ROOT / str(document["source_policy"]["generated_document"])
+
+    assert doctor()["roadmap"] == roadmap_summary(document)
+    assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
+    assert generate_roadmap_status(["--check", "--require-tracked"]) == 0
+
+
+def test_generator_help_exposes_only_public_projection_options(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        generate_roadmap_status(["--help"])
+    output = capsys.readouterr().out
+
+    assert exc_info.value.code == 0
+    assert "--check" in output
+    assert "--require-tracked" in output
+    public_options = {
+        line.strip().split()[0] for line in output.splitlines() if line.startswith("  --")
+    }
+    assert public_options == {"--check", "--require-tracked"}
+
+
+def test_public_surfaces_exclude_management_ledger_markers() -> None:
+    forbidden = (
+        "approval" + "_records",
+        "milestone" + "_approvals",
+        "milestone" + "_progress",
+        "status" + "_history",
+        "scope" + "_digest",
+        "completion" + "_evidence",
+        "goal" + "-rm",
     )
-    with pytest.raises(ValueError, match="absent from cited commits"):
-        validate_repository_evidence(
-            document,
-            ROOT,
-            known_commits=known_commits,
-            commit_paths={commit: set() for commit in known_commits},
-        )
-    with pytest.raises(ValueError, match="did not change cited scope"):
-        validate_repository_evidence(
-            document,
-            ROOT,
-            known_commits=known_commits,
-            commit_paths=all_commit_paths,
-            changed_paths={commit: set() for commit in known_commits},
-        )
+    public_surfaces = (
+        ROOT / "README.md",
+        ROOT / "docs" / "phase2-readiness-contracts.md",
+        ROOT / "docs" / "roadmap-status.md",
+        ROOT / "scripts" / "generate_roadmap_status.py",
+        ROOT / "src" / "poker_deliberation" / "roadmap.py",
+        ROOT / "src" / "poker_deliberation" / ROADMAP_RESOURCE,
+    )
+
+    for path in public_surfaces:
+        text = path.read_text(encoding="utf-8")
+        assert not {marker for marker in forbidden if marker in text}, path
+
+    tracked = _tracked_paths()
+    assert "PLAN.md" not in tracked
+    assert "PROGRESS.md" not in tracked
 
 
-def test_capability_references_match_the_capability_catalog() -> None:
+def test_roadmap_capability_ids_exist_in_the_public_capability_catalog() -> None:
     capability_ids = {item.capability_id for item in CAPABILITIES}
     referenced = {
         capability
@@ -1535,134 +345,14 @@ def test_capability_references_match_the_capability_catalog() -> None:
         for capability in item["capabilities"]
         if isinstance(capability, str)
     }
+
     assert referenced <= capability_ids
 
 
-def test_doctor_and_generated_document_are_canonical_projections() -> None:
-    document = load_roadmap()
-    generated_path = ROOT / str(document["source_policy"]["generated_document"])
+def test_distribution_configuration_includes_only_the_public_roadmap_resource() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert doctor()["roadmap"] == roadmap_summary(document)
-    assert len(doctor()["roadmap"]["source_sha256"]) == 64
-    assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 10,
-        "not_started": 2,
-    }
-    assert doctor()["roadmap"]["milestone_ready_ids"] == []
-    assert doctor()["roadmap"]["implementation_ready_ids"] == []
-    assert doctor()["project_files_scope"] == "current_working_directory"
-    assert generated_path.read_text(encoding="utf-8") == render_roadmap_markdown(document)
-    assert generate_roadmap_status(["--check"]) == 0
-
-
-def test_readme_and_ignore_policy_reference_canonical_and_local_planning_files() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    ignore = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
-
-    assert "docs/roadmap-status.md" in readme
-    assert "/PLAN.md" in ignore
-    assert "/PROGRESS.md" in ignore
-
-
-def test_release_split_and_external_execution_dependencies_are_frozen() -> None:
-    items = _by_id()
-    pre_release = items["RM-018A"]
-    stable = items["RM-018B"]
-
-    assert pre_release["phase"] == "pre-release"
-    assert stable["phase"] == "stable-release"
-    assert {"RM-010", "RM-011", "RM-012", "RM-013", "RM-024", "RM-027"} <= set(
-        stable["dependencies"]
+    assert 'poker_deliberation = ["roadmap_status.json"]' in pyproject
+    json.loads(
+        resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).read_text(encoding="utf-8")
     )
-    assert "RM-028" in items["RM-019"]["dependencies"]
-    assert "RM-028" in items["RM-020"]["dependencies"]
-    assert roadmap_summary()["release_readiness"]["pre_release"]["candidate_evidence"] == (
-        "not_evaluated"
-    )
-
-
-def test_release_checklist_matches_machine_readable_gates() -> None:
-    checklist = (ROOT / "docs" / "public-release-checklist.md").read_text(encoding="utf-8")
-    items = _by_id()
-    for rm_id in ("RM-018A", "RM-018B"):
-        assert rm_id in checklist
-        assert items[rm_id]["status"] == "planned"
-        assert items[rm_id]["completion_evidence"] == {"commits": [], "paths": [], "tests": []}
-    assert "candidate固有" in checklist
-    assert "not_evaluated" in str(roadmap_summary()["release_readiness"])
-
-
-@pytest.mark.parametrize("rm_id", ["RM-010", "RM-011", "RM-012", "RM-013"])
-def test_phase_2_preimplementation_contract_has_every_required_dimension(rm_id: str) -> None:
-    text = (ROOT / "docs" / "phase2-readiness-contracts.md").read_text(encoding="utf-8")
-    start = text.index(f"## {rm_id}")
-    remaining = text[start + len(f"## {rm_id}") :]
-    next_section = remaining.find("\n---\n")
-    section = remaining if next_section == -1 else remaining[:next_section]
-    lowered = section.lower()
-
-    required_terms = {
-        "目的と非目標",
-        "対象",
-        "public / backward compatibility",
-        "typed",
-        "precondition",
-        "postcondition",
-        "failure",
-        "artifact",
-        "idempotency",
-        "cancellation",
-        "timeout",
-        "concurrency",
-        "migration",
-        "security",
-        "acceptance",
-        "unit",
-        "property",
-        "integration",
-        "adversarial",
-        "fault injection",
-        "dependencies",
-        "human approval",
-        "safe commit units",
-    }
-    assert not {term for term in required_terms if term not in lowered}
-
-
-def test_phase_2_cross_contracts_freeze_reviewed_counterexamples() -> None:
-    text = (ROOT / "docs" / "phase2-readiness-contracts.md").read_text(encoding="utf-8")
-    required_phrases = {
-        "P2-010A",
-        "P2-012A",
-        "P2-027A",
-        "P2-027B",
-        "immutable revision",
-        "current` pointer",
-        "idempotency key lookup",
-        "domain mutation 0",
-        "audit_sequence",
-        "effect_unknown / manual_reconciliation_required",
-        "historical_only/stale",
-        "default deny",
-        "transitive identity",
-        "authenticity証明ではない",
-        "RunReadStatus",
-    }
-    assert not {phrase for phrase in required_phrases if phrase not in text}
-
-    milestones = {item["id"]: item for item in load_roadmap()["implementation_milestones"]}
-    assert milestones["P2-012A"]["dependencies"] == [
-        "RM-023",
-        "P2-010A",
-        "P2-011A",
-        "P2-027A",
-    ]
-    assert set(milestones["P2-027B"]["dependencies"]) == {"P2-012B", "P2-013A"}
-    assert "filesystem read/write allowlists" in _by_id()["RM-028"]["acceptance_criteria"][0]
-
-
-def test_distribution_claim_stays_unknown_until_rm_018a() -> None:
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    generated = (ROOT / "docs" / "roadmap-status.md").read_text(encoding="utf-8")
-    assert "wheel/sdist同梱はRM-018Aまで`UNKNOWN`" in readme
-    assert "wheel/sdist同梱はRM-018A" in generated

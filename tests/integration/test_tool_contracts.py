@@ -9,6 +9,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from poker_deliberation.budgets import FakeMonotonicClock, canonical_json_utf8_size
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import (
     Exactness,
@@ -564,3 +565,64 @@ def test_markdown_exposes_every_v2_result_metadata_value() -> None:
     assert serialized["verification"]["method"] in rendered
     assert "- 数値区分:" in rendered
     assert "- 検証metadata:" in rendered
+
+
+def _size_test_definition(function=lambda _: {"value": 1}) -> ToolDefinition:  # type: ignore[no-untyped-def]
+    return ToolDefinition(
+        name="size-test",
+        purpose="canonical size boundary fixture",
+        exact_or_approximate="exact",
+        supported_games=("fixture",),
+        function=function,
+    )
+
+
+def test_registry_uses_canonical_json_bytes_at_exact_input_and_output_caps() -> None:
+    payload = {"wide": "あ", "value": 1}
+    output = {"value": 1}
+    input_size = canonical_json_utf8_size(payload)
+    output_size = canonical_json_utf8_size(output)
+
+    exact = ToolRegistry(max_payload_bytes=input_size, max_output_bytes=output_size)
+    exact.register(_size_test_definition())
+    assert exact.execute("size-test", payload).status is ToolStatus.SUCCESS
+
+    input_over = ToolRegistry(max_payload_bytes=input_size - 1)
+    input_over.register(_size_test_definition())
+    assert "input exceeds" in (input_over.execute("size-test", payload).error or "")
+
+    output_over = ToolRegistry(max_output_bytes=output_size - 1)
+    output_over.register(_size_test_definition())
+    assert "output exceeds" in (output_over.execute("size-test", payload).error or "")
+
+
+def test_registry_clock_rollback_returns_failed_tool_result() -> None:
+    clock = FakeMonotonicClock(current_ns=10)
+
+    def rollback(_: dict[str, object]) -> dict[str, object]:
+        clock.set_ns(9)
+        return {"value": 1}
+
+    registry = ToolRegistry(monotonic_clock=clock)
+    registry.register(_size_test_definition(rollback))
+
+    result = registry.execute("size-test", {})
+
+    assert result.status is ToolStatus.FAILED
+    assert "moved backwards" in (result.error or "")
+
+
+def test_registry_preserves_measurable_duration_for_failed_tool() -> None:
+    clock = FakeMonotonicClock()
+
+    def fail_after_work(_: dict[str, object]) -> dict[str, object]:
+        clock.advance_ns(100_000_000)
+        raise ValueError("deterministic fixture failure")
+
+    registry = ToolRegistry(monotonic_clock=clock)
+    registry.register(_size_test_definition(fail_after_work))
+
+    result = registry.execute("size-test", {})
+
+    assert result.status is ToolStatus.FAILED
+    assert result.duration_seconds == 0.1

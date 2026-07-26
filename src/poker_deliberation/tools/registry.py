@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
-import json
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Any
 
+from poker_deliberation.budgets import (
+    BudgetFailure,
+    BudgetFailureCode,
+    BudgetLimitError,
+    MonotonicClock,
+    SystemMonotonicClock,
+    canonical_json_utf8_size,
+)
 from poker_deliberation.schemas import (
     CanonicalHand,
     Exactness,
@@ -46,6 +53,16 @@ from poker_deliberation.tools.strategy_math import (
 ToolFunction = Callable[[dict[str, Any]], dict[str, Any]]
 
 
+class ToolByteLimitError(RuntimeError):
+    """Typed internal signal used by the phase boundary without changing public results."""
+
+    def __init__(self, resource: str, *, limit: int, observed: int) -> None:
+        super().__init__(f"{resource} exceeds hard limit {limit} bytes")
+        self.resource = resource
+        self.limit = limit
+        self.observed = observed
+
+
 @dataclass(frozen=True, slots=True)
 class ToolDefinition:
     name: str
@@ -65,11 +82,37 @@ class ToolRegistry:
         max_payload_bytes: int = 1_000_000,
         max_output_bytes: int = 1_000_000,
         max_duration_seconds: float = 30.0,
+        monotonic_clock: MonotonicClock | None = None,
     ) -> None:
         self._tools: dict[str, ToolDefinition] = {}
         self.max_payload_bytes = max_payload_bytes
         self.max_output_bytes = max_output_bytes
+        if isinstance(max_duration_seconds, bool) or not isinstance(
+            max_duration_seconds, (int, float)
+        ):
+            raise TypeError("max_duration_seconds must be numeric")
+        if not math.isfinite(float(max_duration_seconds)) or max_duration_seconds <= 0:
+            raise ValueError("max_duration_seconds must be finite and positive")
         self.max_duration_seconds = max_duration_seconds
+        self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
+
+    def _read_clock(self) -> int:
+        value = self.monotonic_clock.now_ns()
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("monotonic clock must return non-negative integer nanoseconds")
+        return value
+
+    def _duration_seconds(self, started_ns: int) -> float:
+        completed_ns = self._read_clock()
+        if completed_ns < started_ns:
+            raise ValueError("monotonic clock moved backwards during tool execution")
+        return (completed_ns - started_ns) / 1_000_000_000
+
+    def _failure_duration_seconds(self, started_ns: int) -> float:
+        try:
+            return self._duration_seconds(started_ns)
+        except (ValueError, TypeError):
+            return 0.0
 
     def register(self, definition: ToolDefinition) -> None:
         if definition.name in self._tools:
@@ -105,11 +148,72 @@ class ToolRegistry:
         payload: dict[str, Any],
         *,
         contract_version: str | None = None,
+        _raise_on_byte_limit: bool = False,
+        _budget_observed_at_ns: int | None = None,
+        _run_deadline_ns: int | None = None,
+        _runtime_limit_ns: int | None = None,
+        _active_runtime_ns: int | None = None,
+        _runtime_not_before_ns: int | None = None,
+        _observation_sink: list[int] | None = None,
     ) -> ToolResult:
+        runtime_values = (
+            _budget_observed_at_ns,
+            _run_deadline_ns,
+            _runtime_limit_ns,
+            _active_runtime_ns,
+            _runtime_not_before_ns,
+        )
+        if any(item is not None for item in runtime_values) and any(
+            item is None for item in runtime_values
+        ):
+            raise ValueError("tool runtime boundary values must be provided together")
+
+        def read_phase_clock(not_before_ns: int) -> int:
+            try:
+                value = self._read_clock()
+            except Exception as exc:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.USAGE_MALFORMED,
+                        resource="clock",
+                        message=f"monotonic clock read failed: {type(exc).__name__}",
+                    )
+                ) from exc
+            if _observation_sink is not None:
+                _observation_sink.append(value)
+            if value < not_before_ns:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.CLOCK_ROLLBACK,
+                        resource="active_runtime_ns",
+                        message="monotonic clock moved backwards before or during tool execution",
+                        observed=not_before_ns - value,
+                    )
+                )
+            if _run_deadline_ns is not None and value >= _run_deadline_ns:
+                raise BudgetLimitError(
+                    BudgetFailure(
+                        code=BudgetFailureCode.RUNTIME_EXCEEDED,
+                        resource="active_runtime_ns",
+                        message="active runtime expired before or during tool execution",
+                        limit=_runtime_limit_ns,
+                        observed=(
+                            (_active_runtime_ns or 0) + value - (_budget_observed_at_ns or 0)
+                        ),
+                    )
+                )
+            return value
+
         known_definition = self._tools.get(name)
         known_contract = known_definition.contract if known_definition is not None else None
-        payload_size = len(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8"))
+        payload_size = canonical_json_utf8_size(payload)
         if payload_size > self.max_payload_bytes:
+            if _raise_on_byte_limit:
+                raise ToolByteLimitError(
+                    "tool_input_bytes",
+                    limit=self.max_payload_bytes,
+                    observed=payload_size,
+                )
             return ToolResult(
                 tool_name=name,
                 input={},
@@ -130,8 +234,13 @@ class ToolRegistry:
                 reproduce_command=None,
             )
         definition = known_definition
-        started = perf_counter()
+        started = 0
         try:
+            started = (
+                read_phase_clock(_runtime_not_before_ns or 0)
+                if _run_deadline_ns is not None
+                else self._read_clock()
+            )
             contract = definition.contract
             if (
                 contract is not None
@@ -142,18 +251,33 @@ class ToolRegistry:
                     f"contract version mismatch: requested {contract_version}, "
                     f"supported {contract.contract_version}"
                 )
+
             normalized_payload = payload
             if contract is not None:
                 validated_input = contract.input_model.model_validate(payload)
                 normalized_payload = validated_input.model_dump(mode="python", exclude_unset=True)
+            effect_started_ns = (
+                read_phase_clock(max(started, _runtime_not_before_ns or 0))
+                if _run_deadline_ns is not None
+                else started
+            )
             output = definition.function(normalized_payload)
             if contract is not None:
                 contract.output_model.model_validate(output)
-            duration = perf_counter() - started
-            output_size = len(
-                json.dumps(output, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            )
+            if _run_deadline_ns is not None:
+                effect_completed_ns = read_phase_clock(effect_started_ns)
+                duration = (effect_completed_ns - started) / 1_000_000_000
+            else:
+                effect_completed_ns = started
+                duration = self._duration_seconds(started)
+            output_size = canonical_json_utf8_size(output)
             if output_size > self.max_output_bytes:
+                if _raise_on_byte_limit:
+                    raise ToolByteLimitError(
+                        "tool_output_bytes",
+                        limit=self.max_output_bytes,
+                        observed=output_size,
+                    )
                 return ToolResult(
                     tool_name=name,
                     input=payload,
@@ -200,7 +324,11 @@ class ToolRegistry:
                 normalized_payload,
                 output,
             )
-            duration = perf_counter() - started
+            if _run_deadline_ns is not None:
+                verified_ns = read_phase_clock(effect_completed_ns)
+                duration = (verified_ns - started) / 1_000_000_000
+            else:
+                duration = self._duration_seconds(started)
             if duration > self.max_duration_seconds:
                 return ToolResult(
                     tool_name=name,
@@ -270,13 +398,41 @@ class ToolRegistry:
                 ),
                 assumptions=list(definition.assumptions),
                 version=definition.version,
-                duration_seconds=perf_counter() - started,
+                duration_seconds=self._failure_duration_seconds(started),
                 error=f"{type(exc).__name__}: {exc}",
                 reproduce_command=(
                     f"poker-deliberate calculate {name} --analysis-scope retrospective "
                     "--input <input.json>"
                 ),
             )
+
+    def execute_for_phase(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+        budget_observed_at_ns: int | None = None,
+        run_deadline_ns: int | None = None,
+        runtime_limit_ns: int | None = None,
+        active_runtime_ns: int | None = None,
+        runtime_not_before_ns: int | None = None,
+        observation_sink: list[int] | None = None,
+    ) -> ToolResult:
+        """Execute with typed byte-limit signaling for the orchestrated phase boundary."""
+
+        return self.execute(
+            name,
+            payload,
+            contract_version=contract_version,
+            _raise_on_byte_limit=True,
+            _budget_observed_at_ns=budget_observed_at_ns,
+            _run_deadline_ns=run_deadline_ns,
+            _runtime_limit_ns=runtime_limit_ns,
+            _active_runtime_ns=active_runtime_ns,
+            _runtime_not_before_ns=runtime_not_before_ns,
+            _observation_sink=observation_sink,
+        )
 
 
 def _extract_warnings(output: dict[str, Any]) -> list[str]:
@@ -408,11 +564,13 @@ def default_registry(
     max_payload_bytes: int = 1_000_000,
     max_output_bytes: int = 1_000_000,
     max_duration_seconds: float = 30.0,
+    monotonic_clock: MonotonicClock | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry(
         max_payload_bytes=max_payload_bytes,
         max_output_bytes=max_output_bytes,
         max_duration_seconds=max_duration_seconds,
+        monotonic_clock=monotonic_clock,
     )
     definitions = [
         ToolDefinition(

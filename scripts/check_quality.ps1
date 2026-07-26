@@ -20,6 +20,9 @@ try {
 
     & $python -m mypy src
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+    & $python scripts\generate_roadmap_status.py --check --require-tracked
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally {
     Pop-Location

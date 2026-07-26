@@ -5,6 +5,62 @@
 ローカル計算、承認台帳、run artifactsを組み合わせます。既定の`LocalProvider`は文章的な
 専門分析やモデル推論を生成しません。
 
+Codexネイティブ層とPythonオーケストレーター層は別実行面です。Python CLIがCodexのsub-agentを
+起動したり、Codexでの実行をPythonのrun artifactsへ自動記録したりする統合bridgeはありません。
+
+RM実装状態の正はpackage resourceとして設定したtracked JSON
+[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+
+P2-027A は versioned local-data classification/retention/expiry policy と pure disposition
+evaluation を提供します。P2-027B の additive Python API は、明示1 run・verified ownership・
+exact destructive approval・CAS を条件に、same-volume quarantine と30日後の別承認による
+staged delete、receipt/tombstone、read-only reconciliation を提供します。cleanup CLI、
+secure erase、automatic retry は実装しません。詳細は
+[`docs/local-data-policy.md`](docs/local-data-policy.md)と
+[`docs/local-data-cleanup.md`](docs/local-data-cleanup.md)を参照してください。
+source/editable checkoutはcontract test対象です。wheel/sdistの収載・runtime読込はpackage-data
+artifact smokeで候補ごとに別途検証し、その結果だけでrelease candidate判定とはしません。
+matrix・licenseを含む全体判定はRM-018Aのままです。
+人間向け一覧は[`docs/roadmap-status.md`](docs/roadmap-status.md)、Phase 2実装前contractは
+[`docs/phase2-readiness-contracts.md`](docs/phase2-readiness-contracts.md)を参照してください。
+
+P2-010AのPython run経路は、strict versioned request/outcomeを使うpure phaseとserialな
+Analysis/ToolResearch effect境界へ分割されています。state transitionとartifact writeは引き続き
+Orchestratorだけが所有します。内部contractと非目標は
+[`docs/phase-services.md`](docs/phase-services.md)を参照してください。
+
+Python providerへのrole別contextは、P2-024Aの
+[`Context lifecycle contract`](docs/context-lifecycle.md)に従い、試行ごとのstrict immutable envelopeで
+allowlist、UTC期限、classification、integrity、run/assignment/attempt/runtime系譜を検証してからfresh
+`AgentContext`として渡します。envelope/payloadの新規永続化、retention期間、削除、cleanup、外部送信、
+Codex/Python bridgeは追加していません。
+
+P2-011Aでは、strictなbudget schema、明示的v1 migration、注入可能なmonotonic clock、serial usage
+accounting、retry classification、typed deadline/cancellationを追加しています。external cost cap 0でも
+free local providerと決定論calculatorは利用でき、parallel実行とautomatic retryは行いません。詳細は
+[`docs/budget-execution-contract.md`](docs/budget-execution-contract.md)を参照してください。
+
+P2-011Bでは、P2-012Aのimmutable revision/CASを利用する専用rootに、strictな
+`budget_state.json`、resource reservation、settlement、resume検査、bounded concurrency、
+typed retry、cooperative cancellation、RM-028 evidence interfaceを追加しています。これは
+`poker_deliberation.budgets.durable_*`の内部APIです。P2-012Bの通常product経路は、この専用budget
+rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
+settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
+
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 2.0のpublic projectionである
+[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
+更新検証、参照path/testのtracked検証、repository gateを別途要求します。
+RM-010、RM-011、RM-012、RM-024、RM-027は`completed`、RM-013は`in_progress`で
+P2-013Bは`not_started`、RM-028は`proposed`でP2-028Aは`not_started`です。
+
+P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
+`structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで
+`FINAL_SYNTHESIS`から`COMPLETED`へのin-memory transitionを適用する内部opt-in seamである。
+このP2-010B seam自体は通常経路へ接続しません。通常の`run`、`resume`、`show`、`load_report`、
+`report_path`はP2-012Bの別terminal protocolを使用します。cleanup、external provider/solver、
+GTO・均衡・正確なrangeの主張は追加しません。
+
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
 小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
 動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。
@@ -142,41 +198,66 @@ FACT / CALCULATED / INFERENCE / ESTIMATE / ASSUMPTION / USER_CLAIM / UNKNOWNを�
 | `report-writer` | `report-writer` | レポート生成 |
 | `calculator-builder` | なし | 開発時だけ使うコード変更役 |
 
+この表は役割名の対応であり、同一ランタイムの証明ではありません。Codex側はCodexのagent機構で、
+Python側は`AgentProvider`境界でそれぞれ実行されます。現在のPython既定経路は`LocalProvider`です。
+
 Python MVPは常に`LocalProvider`を使い、モデルへ外部送信せず、文章的な専門分析を生成しません。
 `POKER_DELIBERATION_PROVIDER`は`local`だけを許可し、モデル名・推論強度の環境設定は未対応として
 エラーにします。外部providerは、承認と統合テスト後に`Orchestrator(provider=...)`へ明示注入します。
-成果物の保存先だけは`POKER_DELIBERATION_RUNS_DIR`でワークスペース内に変更できます。
+`from_env()`ではlegacy、product revision、durable budgetの保存先をそれぞれ
+`POKER_DELIBERATION_RUNS_DIR`、`POKER_DELIBERATION_REVISION_RUNS_DIR`、
+`POKER_DELIBERATION_DURABLE_BUDGET_RUNS_DIR`で変更できます。3 rootはすべてワークスペース内かつ
+相互に非重複でなければなりません。
 
 ## 状態と成果物
 
-状態はINTAKEからCOMPLETEDまたはFAILED_WITH_LIMITATIONSまで明示的に遷移します。実行時間と
-artifact/output sizeの上限は通常経路で強制します。討論round、tool retry、concurrencyのbudget
-fieldは存在しますが、通常のorchestrator経路には未接続で`disabled`です。
+状態はINTAKEからCOMPLETEDまたはFAILED_WITH_LIMITATIONSまで明示的に遷移します。strict v2
+budgetはactive runtime、external micro-USD、provider/tool/artifact/runのbyte上限、analysis batch、
+serial peak concurrencyを通常経路で検証します。tool retry数は分類上の候補上限であり、通常経路は
+automatic retryを実行しません。
 
-各runには次を保存します。
+通常の新規runは、flat-v1 rootではなく専用terminal revision rootへ保存します。
 
 ```text
-runs/<run_id>/
-  input.json
-  normalized_case.json
-  assumptions.json
-  assignments.json
-  agent_reports/
-  agent_execution_records.json
-  security_events.json
-  tool_results/
-  evidence.jsonl
-  disputes.json
-  approvals.json
-  state.json
-  final_report.md
-  final_report.json
+.poker-run-revisions/
+  ownership.json
+  runs/<run_id>/.terminal-store/
+    current.json
+    transactions/
+    revisions/r<revision>-<transaction_id>/
+      transaction.json
+      manifest.json
+      completion.json
+      payload/
+        input.json
+        state.json
+        final_report.json
+        final_report.md
+        ...
 ```
+
+`completion.json`はterminal revision内の最後のdata artifactであり、全payload・manifest・markerを
+再検証してから`current.json`をCAS更新します。`succeeded`だけがpublic
+`run_status=completed`になります。`approval_required` checkpointだけがresume可能です。
+`failed`、`cancelled`、`cancel_unconfirmed`もmarker付きterminal revisionとして保存しますが、
+public successにはなりません。
+
+既存の`runs/<run_id>/`はread-only flat-v1 namespaceです。exact `b"v1\n"` sentinelと現行schemaを
+検証できた場合も`legacy_unverified`であり、completedやresumableへ昇格しません。
+`Orchestrator.migrate_legacy_run`は明示的quiescence確認の下で別run IDへexact byte copyを作りますが、
+copy先もmissing guaranteesを保持した`legacy_unverified`です。元runは変更しません。
+
+`agent_execution_records.json`の既存`context_sha256`は従来の完全な`AgentContext` hash計算を維持します。
+P2-024Aはcontext/attemptとsparse payload/source/policy/integrity/runtime/expiryの監査metadataを
+任意fieldとして追加し、旧artifactの読込・hash値互換性を維持します。
 
 既定では共通の秘密キーとAPI-key/token形式をredactします。任意の個人情報まで完全検出する
 ものではないため、入力へ秘密情報を含めないでください。
 
 ## 品質チェック
+
+次のbare commandは開発用venvを有効化してから実行します。venvを有効化しない場合は、READMEの
+セットアップ例と同様に`.\.venv\Scripts\python.exe`等の明示パスを使用してください。
 
 ```text
 python -m pytest
@@ -232,7 +313,10 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Source policy](docs/source-policy.md)
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
+- [Budget execution contract](docs/budget-execution-contract.md)
 - [Offline public release checklist](docs/public-release-checklist.md)
+- [RM status projection](docs/roadmap-status.md)
+- [Phase 2 readiness contracts](docs/phase2-readiness-contracts.md)
 - [Correctness and security hardening](docs/review-remediation.md)
 
 ## ライセンス

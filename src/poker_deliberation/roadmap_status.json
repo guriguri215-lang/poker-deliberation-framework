@@ -216,8 +216,8 @@
     {
       "id": "P2-025A",
       "rm_id": "RM-025",
-      "status": "not_started",
-      "status_reason": "The conformance-only scope is approved; implementation has not started.",
+      "status": "in_progress",
+      "status_reason": "The approved conformance-only contract implementation is in progress; no runtime bridge is being built.",
       "dependencies": [
         "P2-012B",
         "P2-013B",
@@ -1319,8 +1319,8 @@
       "title": "Codex and Python agent runtime conformance",
       "phase": "post-phase-2",
       "priority": "P1",
-      "status": "planned",
-      "status_reason": "P2-025A conformance-only scope is approved; implementation has not started and both runtimes remain separate.",
+      "status": "in_progress",
+      "status_reason": "P2-025A conformance-only implementation is underway; both runtimes remain separate and the actual bridge remains unavailable.",
       "dependencies": [
         "RM-012",
         "RM-013",

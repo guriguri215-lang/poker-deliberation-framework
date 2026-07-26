@@ -190,10 +190,11 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         completed
     )
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
-        "P2-025A",
         "P2-028A",
     }
-    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
+        "P2-025A",
+    }
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -208,7 +209,7 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     items = _by_id()
     milestones = _milestones(load_roadmap())
 
-    assert items["RM-025"]["status"] == "planned"
+    assert items["RM-025"]["status"] == "in_progress"
     assert items["RM-025"]["decision_gate"] == {
         "required": True,
         "rationale": [
@@ -219,9 +220,10 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     assert milestones["P2-025A"] == {
         "id": "P2-025A",
         "rm_id": "RM-025",
-        "status": "not_started",
+        "status": "in_progress",
         "status_reason": (
-            "The conformance-only scope is approved; implementation has not started."
+            "The approved conformance-only contract implementation is in progress; no runtime "
+            "bridge is being built."
         ),
         "dependencies": [
             "P2-012B",
@@ -436,20 +438,21 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
     assert summary["total_items"] == 30
     assert summary["status_counts"] == {
         "completed": 17,
-        "planned": 11,
+        "in_progress": 1,
+        "planned": 10,
         "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
         "completed": 12,
-        "not_started": 2,
+        "in_progress": 1,
+        "not_started": 1,
     }
-    assert summary["milestone_ready_ids"] == ["P2-025A"]
+    assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [
         "RM-014",
         "RM-017",
         "RM-018A",
         "RM-021",
-        "RM-025",
     ]
     assert summary["release_readiness"]["pre_release"]["candidate_evidence"] == ("not_evaluated")
     assert "dependency-only" in summary["note"]

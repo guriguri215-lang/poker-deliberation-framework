@@ -1,5 +1,19 @@
 # Architecture
 
+## P2-025A runtime conformance boundary
+
+`runtime_conformance/`はCodexネイティブ層とPythonオーケストレーター層を同一実行面に見せず、
+役割inventory、明示的なsemantic mapping、assignment、context provenance、budget reference、
+tool/capability allowlist、approval binding、structured result/error、execution auditを専用schema
+`1.0.0`で比較する加算的な境界である。canonicalizationとhash domainは既存artifact/storage
+familyから分離し、既存`FinalReport`、terminal manifest、reader、orchestratorの意味を変更しない。
+
+Python product projectorは、P2-012Bの`VerifiedRunReadV2`とbyte一致する`FinalReport`だけを読み、
+verified input/tool result/manifest/pointer/inventory hashから新しいconformance valueを返すpure
+projectionである。product artifactを書かず、providerやsolverを起動せず、外部provider結果や
+承認付き作用を取り込まない。`runtime_bridge_used`は常に`false`であり、
+`codex_python_runtime_bridge`は引き続き`unavailable`である。
+
 ## P2-027A local-data policy boundary
 
 `local_data_policy.py` は strict versioned values、canonical hash、分類、retention、expiry、
@@ -30,6 +44,8 @@ Python `AgentExecutionRecord` entries or run artifacts.
 - `tools/`: deterministic calculators and an honest solver adapter.
 - `providers/`: local non-generative provider and optional Agents SDK boundary.
 - `reporting/`: renders only the structured FinalReport.
+- `runtime_conformance/`: inventories and compares separate runtime semantics without executing a
+  bridge or changing persisted product artifacts.
 
 ## State machine
 

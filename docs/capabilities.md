@@ -32,6 +32,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
+| `runtime_conformance_contract` | **implemented** | P2-025Aの役割inventory、assignment/context/resultのversioned contract、pure比較、verified Python product projectionを提供する。実行bridgeではない。 |
 | `codex_python_runtime_bridge` | **unavailable** | Codexネイティブ層とPythonオーケストレーター層は別実行面であり、Codex実行をPython runへ記録するbridgeはない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
 | `local_data_cleanup_executor` | **implemented** | P2-027BのPython APIは、承認済み1 runに対するbounded quarantine、遅延staged delete、immutable receipt/tombstone、revision CAS、idempotency、read-only reconciliationを実装する。cleanup CLI、automatic retry、secure eraseは実装しない。 |
@@ -51,6 +52,9 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
   明示的に注入する`DeterministicMockProvider`はテスト用であり、外部モデル能力ではない。
 - **FACT**: 名前の対応表はありますが、Pythonは`.codex/agents/*.toml`を起動しません。Codex側の
   sub-agent実行も`AgentExecutionRecord`やPython run artifactsへ自動的には取り込まれません。
+- **FACT**: P2-025Aは両実行面の意味を別schemaで比較できるが、片方を起動したり、他方の監査記録を
+  捏造したりしない。Codex側のtool catalogが宣言されていない場合は、空の権限を含め
+  `undeclared`として保持する。
 
 この数は品質指標ではありません。contract testは実装から件数を再計算し、文書との差を検出します。
 

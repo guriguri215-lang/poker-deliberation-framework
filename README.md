@@ -7,6 +7,9 @@
 
 Codexネイティブ層とPythonオーケストレーター層は別実行面です。Python CLIがCodexのsub-agentを
 起動したり、Codexでの実行をPythonのrun artifactsへ自動記録したりする統合bridgeはありません。
+P2-025Aは、この分離を維持したまま役割inventory、assignment/context/result、許可、承認、
+execution auditをversioned schemaで比較し、検証済みPython productを加算的にprojectionします。
+詳細は[`docs/runtime-conformance-contract.md`](docs/runtime-conformance-contract.md)を参照してください。
 
 RM実装状態の正はpackage resourceとして設定したtracked JSON
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。

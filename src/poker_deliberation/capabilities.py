@@ -85,9 +85,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "local_data_cleanup_executor",
-        "unavailable",
-        "A P2-027B candidate Python API implements bounded quarantine, staged deletion, receipts, "
-        "tombstones, and read-only reconciliation; capability promotion remains gated.",
+        "implemented",
+        "P2-027B provides bounded authorized quarantine, delayed staged deletion, immutable "
+        "receipts and tombstones, revision CAS, idempotency, and read-only reconciliation.",
     ),
     Capability(
         "immutable_revision_storage_foundation",

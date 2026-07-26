@@ -43,6 +43,31 @@ P2_012B_EVIDENCE_COMMITS = [
     "5935d48b272fd1375fc4f09110b2b66f5a4618f5",
     "e3270fa93321e7a252528926ad90b9937f3b97dc",
 ]
+P2_027B_EVIDENCE_COMMITS = [
+    "ba269490de60a2ff00fbd1cd5e85d367802c7bec",
+    "595d9f67fbda8e914f8f3e1eeb28565f5c690cc4",
+    "e290e3a5b8bb801ca218a45e1cbcb3d871e48225",
+    "238167f5f7881b2ccc8e954f28b8b61a4d887dea",
+    "a4a732fafe2467482f9ed23b04d179cf481c762b",
+    "472b4e386887f3151d6d5be45a885bdac097a885",
+    "e1f7ae27c852d8df4d277b44f46c3aed9885c15d",
+    "3fdd7c2ed5df3ce5e323374d9c982ffafb273250",
+    "f3a48a7b0608c3facf08c3e1d2511f94a7c1541c",
+    "e5182df02e3938aef7879372afcf53ae7b730271",
+    "0b030652579292d89aac2453470161454a0baffd",
+    "c78af5618b6f1eda76d8d1ec60a024e5bdf571e2",
+    "a21cae4a3a1a60fb45297a624ec04ee5925a9e5f",
+    "009f86adbbacbcf540dc049531e1c3277184efb6",
+    "2bccc9c0b7acda593dea2571fce1ba8f15be97d0",
+    "758500a30d95c6e219601865f84d91ec5b0622a1",
+    "e8d5d6e6ef1a8915f492f8f9c67edaf878013c9d",
+    "a05873e1b5741dbb7a7f49b162e1d2f34eb051cf",
+    "892cbe0cb11533427e1476c470ae733ba3600813",
+    "8ba15cddcbcb75228ab748c3fcb1897cc4597c4f",
+    "f8ad92fb483390955276a55195b684ab63c924b4",
+    "63cffe38036c1d375c6f905e1b4ef531076497a4",
+    "11dba341e07a184dce36a771498845678b3d79ce",
+]
 
 
 def _by_id() -> dict[str, dict[str, object]]:
@@ -90,6 +115,14 @@ def _scope_digest(scope: object) -> str:
 
 
 def _rewind_p2_027b(document: dict[str, object]) -> None:
+    rm_027 = next(item for item in document["items"] if item["id"] == "RM-027")
+    rm_027["status"] = "in_progress"
+    rm_027["completion_evidence"] = {"commits": [], "paths": [], "tests": []}
+    rm_027["status_reason"] = (
+        "P2-027A pure policy/schema is completed; P2-027B exact approved scope is "
+        "in progress, so RM-027 remains in progress."
+    )
+    document["status_history"]["RM-027"] = ["proposed", "planned", "in_progress"]
     document["milestone_progress"]["P2-027B"] = {
         "state": "not_started",
         "history": ["not_started"],
@@ -226,6 +259,7 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert completed == {f"RM-{number:03d}" for number in range(1, 13)} | {
         "RM-023",
         "RM-024",
+        "RM-027",
     }
     assert items["RM-010"]["status"] == "completed"
     assert items["RM-011"]["status"] == "completed"
@@ -234,7 +268,7 @@ def test_rm_ids_statuses_dependencies_and_evidence_are_canonical() -> None:
     assert all(items[f"RM-{number:03d}"]["status"] == "planned" for number in range(14, 18))
     assert items["RM-024"]["status"] == "completed"
     assert all(items[f"RM-{number:03d}"]["status"] == "proposed" for number in (25, 26, 28))
-    assert items["RM-027"]["status"] == "in_progress"
+    assert items["RM-027"]["status"] == "completed"
     assert items["RM-023"]["completion_evidence"]
     assert items["RM-024"]["completion_evidence"]["commits"] == [
         "fc2e41dd4fbde2962373ff7ea29019bff2999505"
@@ -372,11 +406,12 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
     assert document["milestone_approvals"]["P2-027A"] == reference
     assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
     assert document["milestone_progress"]["P2-027A"]["state"] == "completed"
-    assert document["milestone_progress"]["P2-027B"]["state"] == "in_progress"
-    assert rm_027["status"] == "in_progress"
+    assert document["milestone_progress"]["P2-027B"]["state"] == "completed"
+    assert rm_027["status"] == "completed"
     assert rm_027["status_reason"] == (
-        "P2-027A pure policy/schema is completed; P2-027B exact approved scope is "
-        "in progress, so RM-027 remains in progress."
+        "P2-027A pure policy/schema and P2-027B authorized cleanup execution are complete "
+        "with exact implementation, review, and gate evidence; secure erase, cleanup CLI, "
+        "automatic retry, P2-013B, and P2-028A remain outside this completed item."
     )
     assert rm_027["human_approval"]["topics"] == record["topics"]
     assert scope["policy_decisions"] == record["topics"]
@@ -400,7 +435,7 @@ def test_p2_027a_scope_freeze_binds_every_approved_policy_dimension() -> None:
     assert not {term for term in required_terms if term not in decisions}
 
 
-def test_p2_027b_has_exact_digest_bound_scope_and_is_in_progress() -> None:
+def test_p2_027b_has_exact_digest_bound_scope_and_completion_evidence() -> None:
     document = load_roadmap()
     reference = "goal-rm027-p2-027b-2026-07-25"
     record = document["approval_records"][reference]
@@ -414,13 +449,15 @@ def test_p2_027b_has_exact_digest_bound_scope_and_is_in_progress() -> None:
     assert record["scope_digest"] == P2_027B_SCOPE_DIGEST
     assert record["topics"] == record["scope"]["policy_decisions"]
     assert document["milestone_approvals"]["P2-027B"] == reference
-    assert document["milestone_progress"]["P2-027B"] == {
-        "state": "in_progress",
-        "history": ["not_started", "in_progress"],
-        "completion_evidence": {"commits": [], "paths": [], "tests": []},
-    }
-    assert rm_027["status"] == "in_progress"
-    assert rm_027["completion_evidence"] == {"commits": [], "paths": [], "tests": []}
+    progress = document["milestone_progress"]["P2-027B"]
+    evidence = progress["completion_evidence"]
+    assert progress["state"] == "completed"
+    assert progress["history"] == ["not_started", "in_progress", "completed"]
+    assert evidence["commits"] == P2_027B_EVIDENCE_COMMITS
+    assert evidence["paths"] == record["scope"]["milestone_implementation_scope"]["targets"]
+    assert evidence["tests"] == record["scope"]["milestone_implementation_scope"]["tests"]
+    assert rm_027["status"] == "completed"
+    assert rm_027["completion_evidence"] == evidence
     assert rm_027["human_approval"]["approval_reference"] == ("goal-rm027-p2-027a-2026-07-23")
     assert rm_027["human_approval"]["scope_digest"] == (
         "c5636cff29547bf40ce800e63776a7de77b234ee3acb68b17b4647f5d5b5e96d"
@@ -852,7 +889,7 @@ def test_p2_013a_has_exact_digest_bound_scope_and_downstream_stays_closed() -> N
             "completion_evidence": {"commits": [], "paths": [], "tests": []},
         }
     assert document["milestone_approvals"]["P2-027B"] == ("goal-rm027-p2-027b-2026-07-25")
-    assert document["milestone_progress"]["P2-027B"]["state"] == "in_progress"
+    assert document["milestone_progress"]["P2-027B"]["state"] == "completed"
 
 
 def test_p2_010b_has_a_separate_digest_bound_scope_approval() -> None:
@@ -1506,8 +1543,7 @@ def test_doctor_and_generated_document_are_canonical_projections() -> None:
     assert doctor()["roadmap"] == roadmap_summary(document)
     assert len(doctor()["roadmap"]["source_sha256"]) == 64
     assert doctor()["roadmap"]["milestone_state_counts"] == {
-        "completed": 9,
-        "in_progress": 1,
+        "completed": 10,
         "not_started": 2,
     }
     assert doctor()["roadmap"]["milestone_ready_ids"] == []

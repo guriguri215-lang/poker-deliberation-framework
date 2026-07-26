@@ -34,7 +34,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `codex_python_runtime_bridge` | **unavailable** | Codexネイティブ層とPythonオーケストレーター層は別実行面であり、Codex実行をPython runへ記録するbridgeはない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
-| `local_data_cleanup_executor` | **unavailable** | P2-027B候補Python APIはbounded quarantine、staged delete、receipt、tombstone、read-only reconciliationを実装済み。完了gateとレビューが終わるまで昇格しない。secure eraseは実装しない。 |
+| `local_data_cleanup_executor` | **implemented** | P2-027BのPython APIは、承認済み1 runに対するbounded quarantine、遅延staged delete、immutable receipt/tombstone、revision CAS、idempotency、read-only reconciliationを実装する。cleanup CLI、automatic retry、secure eraseは実装しない。 |
 | `immutable_revision_storage_foundation` | **implemented** | P2-012Aのimmutable revision、manifest、transaction、lock、recovery claim、revision CAS基盤と、P2-010Bの内部revision-only phase transition authorization seamを実装済み。通常のproduct runには未接続。 |
 | `product_integrated_durable_run` | **implemented** | P2-012Bのmarker-last terminal publication、verified product reader/status、approval-checkpoint resume、read-only flat-v1 adapter、copy-only migration、durable budget settlement、lifecycle metadata integrationを実装済み。 |
 | `phase_1_hardening` | **implemented** | typed tool contract、contract v2の数値区分、実行時verification、ローカルoracle/metamorphic testを実装済み。 |

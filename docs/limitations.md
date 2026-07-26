@@ -4,8 +4,8 @@
   authorized, one-run-at-a-time Python API for bounded ownership verification, same-volume
   quarantine, delayed staged deletion, immutable receipts/tombstones, CAS, and read-only
   reconciliation. It adds no cleanup CLI, encryption/key management, secure erase, automatic
-  retry, repair, or broad discovery. `local_data_cleanup_executor` remains unavailable until its
-  completion gates and independent reviews finish.
+  retry, repair, or broad discovery. `local_data_cleanup_executor` is implemented only for this
+  bounded, approval-bound API; it does not imply a general-purpose or secure-erasure facility.
 - `OpenAIAgentsProvider` outbound analyze is not implemented. It reports `disabled` and `available=false`
   whether the optional SDK/API key is absent or present; the probes never imply outbound capability.
 - Codex-native agents/Skills and the Python role/provider catalog are separate execution surfaces.

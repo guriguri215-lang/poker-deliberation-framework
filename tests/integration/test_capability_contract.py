@@ -54,6 +54,7 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["codex_python_runtime_bridge"] == "unavailable"
     assert states["immutable_revision_storage_foundation"] == "implemented"
     assert states["product_integrated_durable_run"] == "implemented"
+    assert states["local_data_cleanup_executor"] == "implemented"
 
 
 def test_codex_and_python_are_documented_as_separate_execution_surfaces() -> None:

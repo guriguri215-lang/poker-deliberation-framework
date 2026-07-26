@@ -1,3 +1,4 @@
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -18,6 +19,7 @@ from poker_deliberation.schemas import (
     EpistemicLabel,
     EvidenceRecord,
 )
+from poker_deliberation.security import redact_sensitive
 from poker_deliberation.storage.terminal_models import (
     ProductRunError,
     ProductRunFailureCode,
@@ -256,6 +258,49 @@ def test_secret_canary_is_redacted_from_all_run_artifacts(tmp_path: Path) -> Non
     )
     assert canary not in combined
     assert "[REDACTED]" in combined
+
+
+def test_redaction_preserves_deterministic_nested_mapping_collisions_without_digest() -> None:
+    first_secret = "sk-collision111111"
+    second_secret = "sk-collision222222"
+    first_digest = hashlib.sha256(first_secret.encode("utf-8")).hexdigest()
+    second_digest = hashlib.sha256(second_secret.encode("utf-8")).hexdigest()
+    payload = {
+        first_secret: "first",
+        second_secret: "second",
+        "[REDACTED]": "literal",
+        "nested": {
+            f"prefix-{first_secret}": {"value": 1},
+            f"prefix-{second_secret}": {"value": 2},
+            "prefix-[REDACTED] [collision 2]": {"value": 3},
+        },
+    }
+
+    first = redact_sensitive(payload)
+    second = redact_sensitive(payload)
+    serialized = json.dumps(first, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+    assert first == second
+    assert list(first) == [
+        "[REDACTED]",
+        "[REDACTED] [collision 2]",
+        "[REDACTED] [collision 3]",
+        "nested",
+    ]
+    assert sorted(first[key] for key in list(first)[:3]) == ["first", "literal", "second"]
+    nested = first["nested"]
+    assert isinstance(nested, dict)
+    assert len(nested) == 3
+    assert sorted(item["value"] for item in nested.values()) == [1, 2, 3]
+    for forbidden in (
+        first_secret,
+        second_secret,
+        first_digest,
+        second_digest,
+        first_digest[:12],
+        second_digest[:12],
+    ):
+        assert forbidden not in serialized
 
 
 def test_hand_claim_and_evidence_canaries_cross_final_redaction_boundary(

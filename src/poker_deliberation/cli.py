@@ -34,13 +34,14 @@ from poker_deliberation.config import AppConfig
 from poker_deliberation.normalization import normalize_hand_text
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
-from poker_deliberation.reporting import render_markdown
+from poker_deliberation.reporting import render_markdown, render_summary
 from poker_deliberation.roadmap import roadmap_summary
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools import default_registry
 
 _DEFAULT_RESUME_REASON = "human decision recorded by CLI"
+_REPORT_FORMATS = ("json", "markdown", "summary")
 
 
 def _configure_output() -> None:
@@ -170,11 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("review-hand", "review-strategy"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--file", required=True)
-        subparser.add_argument("--format", choices=["json", "markdown"], default="markdown")
+        subparser.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
 
     audit = subparsers.add_parser("audit-claim")
     audit.add_argument("claim")
-    audit.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    audit.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
 
     calculate = subparsers.add_parser("calculate")
     calculate.add_argument("tool")
@@ -204,10 +205,10 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--expected-run-revision", type=int)
     resume.add_argument("--expected-ledger-revision", type=int)
     resume.add_argument("--decision-at")
-    resume.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    resume.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
     show = subparsers.add_parser("show")
     show.add_argument("run_id")
-    show.add_argument("--format", choices=["json", "markdown"], default="markdown")
+    show.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
     return parser
 
 
@@ -406,7 +407,14 @@ def main(argv: list[str] | None = None) -> int:
         else:  # pragma: no cover - argparse guarantees the command
             parser.error("unknown command")
             return 2
-        _emit(report if args.format == "json" else render_markdown(report), args.format)
+        rendered_report: object
+        if args.format == "json":
+            rendered_report = report
+        elif args.format == "summary":
+            rendered_report = render_summary(report)
+        else:
+            rendered_report = render_markdown(report)
+        _emit(rendered_report, args.format)
         if report.run_status == "approval_required":
             return 3
         return 2 if report.run_status == "failed_with_limitations" else 0

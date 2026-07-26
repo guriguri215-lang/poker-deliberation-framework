@@ -22,6 +22,9 @@
 - Run IDs and artifact paths are validated and resolved under the configured run root.
 - `.env` is ignored and only `.env.example` exists. With `record_sensitive_data=false`, structured
   secret keys plus common API-key/Bearer/token shapes are redacted from artifacts and CLI reports.
+  If multiple source mapping keys project to the same redacted key, a deterministic ordinal
+  collision suffix preserves every entry without exposing a source-secret digest; nested mappings
+  use the same rule.
   Redaction is defense in depth, so users must still avoid placing arbitrary secrets in poker input.
 - Shell execution is outside the model-facing runtime. Inputs are JSON, not interpolated commands.
 - Web, GitHub, README, issue, and hand-history instructions are treated as untrusted data.
@@ -70,6 +73,11 @@
   direct `calculate` CLI calls require `--analysis-scope retrospective`. Explicit live scope and
   recognized live-decision language, private-card acquisition, collusion, automated play, and
   detection-evasion requests are refused before provider or requested calculator execution.
+  Each blocked rule has user-facing guidance; unspecified scope explicitly requests
+  `analysis_scope="retrospective"`. Bounded Japanese negation forms such as
+  `今プレイ中ではありません` and `今プレイ中ではなく` are treated as retrospective context,
+  while questions, double negation, separate live clauses, and separate live instructions remain
+  fail closed.
   Free-text language detection is best-effort defense in depth, so callers must not mislabel live
   input as retrospective. Direct `ToolRegistry.execute` is a trusted internal primitive, not a
   policy boundary. Typed `SecurityEvent` artifacts record the rule and input hash, not a copied

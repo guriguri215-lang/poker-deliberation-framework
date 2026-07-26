@@ -998,7 +998,12 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             (NumericalExactness.FLOATING_VERIFIED,),
             ("ICM independence assumption; no future-game, skill, bounty, or risk model.",),
             ("at least one positive stack", "payouts non-increasing and within active places"),
-            {"listed_players": 100, "active_players": 12, "time_complexity": "O(n * 2^n)"},
+            {
+                "listed_players": 100,
+                "active_players": 12,
+                "cached_non_base_states": "sum(C(n,k), k=0..p-1)",
+                "floating_operation_upper_bound": ("(2*L+4)*sum((n-k)*C(n,k), k=0..p-1)+L+p+1"),
+            },
             {"stacks/equities/payouts": "one caller-declared prize unit"},
             COMMON_FAILURES,
             ("prize conservation", "player symmetry", "zero-stack boundary", "finite recursion"),
@@ -1006,13 +1011,17 @@ def tool_contracts() -> tuple[ToolContract, ...]:
                 "equities",
                 "equity_sum",
                 "sum_error",
-                ulps=64,
+                ulps=1,
                 formula=(
-                    "Conservation bound scales with active-player recursion and payable prize "
-                    "magnitude."
+                    "Runtime M=(2*L+4)*sum((n-k)*C(n,k),k=0..p-1)+L+p+1 over "
+                    "cached non-base subset states; gamma=M*2^-53/(1-M*2^-53); "
+                    "ulps=max(1,ceil(4*gamma*max(1,abs(payable_prize_sum))/"
+                    "ulp(max(1,abs(payable_prize_sum))))). The manifest ulps value is the "
+                    "minimum before per-result materialization."
                 ),
                 rationale=(
-                    "ICM is mathematically model-conditional but implemented by binary64 recursion."
+                    "Four gamma-M envelopes cover the non-cancelling DP, payable/output sums, "
+                    "and final subtraction; ICM remains model-conditional binary64 arithmetic."
                 ),
             ),
             model_qualifier="Independent Chip Model",

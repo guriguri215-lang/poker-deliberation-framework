@@ -1,5 +1,5 @@
 {
-  "schema_version": "2.0.0",
+  "schema_version": "3.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -199,6 +199,19 @@
         "P2-027B"
       ],
       "scope": "Approved isolation boundary, durable external-effect state, cancellation, and reconciliation."
+    },
+    {
+      "id": "P2-029A",
+      "rm_id": "RM-029",
+      "status": "completed",
+      "status_reason": "The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution.",
+      "dependencies": [
+        "P2-012B",
+        "P2-013B",
+        "P2-024A",
+        "P2-027B"
+      ],
+      "scope": "Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood."
     }
   ],
   "items": [
@@ -1292,7 +1305,7 @@
       "id": "RM-025",
       "title": "Codex and Python agent runtime conformance",
       "phase": "post-phase-2",
-      "priority": "P2",
+      "priority": "P1",
       "status": "proposed",
       "status_reason": "Approved as a roadmap candidate only; both runtimes remain separate.",
       "dependencies": [
@@ -1489,6 +1502,55 @@
           "resource limits",
           "external executables and licenses"
         ]
+      }
+    },
+    {
+      "id": "RM-029",
+      "title": "Offline Python product path safety and usability completion",
+      "phase": "phase-2",
+      "priority": "P1",
+      "status": "completed",
+      "status_reason": "Retrospective input safety, lossless redaction, derived ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood are implemented and verified; external providers and solvers remain disabled or unavailable.",
+      "dependencies": [
+        "RM-012",
+        "RM-013",
+        "RM-024",
+        "RM-027"
+      ],
+      "capabilities": [
+        "phase_1_hardening",
+        "product_integrated_durable_run"
+      ],
+      "objective": "Complete one auditable offline Python product path spanning retrospective input safety, lossless redaction, verified numeric tolerance, concise adjudicated reporting, and ordinary-run dogfood before any external provider or solver execution.",
+      "targets": [
+        "src/poker_deliberation/security.py",
+        "src/poker_deliberation/tools/icm.py",
+        "src/poker_deliberation/reporting/summary.py",
+        "docs/offline-product-path.md"
+      ],
+      "acceptance_criteria": [
+        "Japanese retrospective negation is accepted without weakening fail-closed live-assistance detection; redaction preserves every nested mapping entry under deterministic non-secret collision keys; unspecified analysis scope gives rule-specific retrospective guidance before provider or tool execution; the cached-subset-DP ICM implementation, verification metadata, and manifest share a conservative floating-point error bound; an opt-in concise Japanese projection uses only adjudicated FinalReport content and verified tool results while existing stored report artifacts, canonical bytes, readers, resume, and migration retain their meanings; ordinary product storage dogfood verifies pot-odds correction, structured hand validation, and an honest unsupported-strategy limitation."
+      ],
+      "tests": [
+        "tests/adversarial/test_review_security_extensions.py",
+        "tests/adversarial/test_review_regressions.py",
+        "tests/unit/test_icm.py",
+        "tests/property/test_phase1_math_oracles.py",
+        "tests/unit/test_report_summary.py",
+        "tests/integration/test_offline_product_path.py",
+        "tests/characterization/test_product_run_compatibility.py"
+      ],
+      "milestones": {
+        "entry": "P2-029A",
+        "completion": "P2-029A"
+      },
+      "relations": [
+        "Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.",
+        "Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects, while preserving RM-025 proposed status and its decision gate."
+      ],
+      "decision_gate": {
+        "required": false,
+        "rationale": []
       }
     }
   ]

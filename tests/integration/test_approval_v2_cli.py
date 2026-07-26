@@ -8,6 +8,9 @@ from poker_deliberation.approval_canonical import canonical_json_bytes
 from poker_deliberation.approval_models import (
     ApprovalDecisionBatch,
     ApprovalDecisionItemV2,
+    ApprovalReissueBatchV2,
+    ApprovalReissueItemV2,
+    ApprovalReissueSuccessorV2,
 )
 from poker_deliberation.approvals import LocalCliAuthorityProvider, read_approval_state_v2
 from poker_deliberation.cli import main
@@ -175,3 +178,79 @@ def test_cli_decision_file_is_versioned_and_local_approve_fails_structured(
     assert payload["code"] == "unauthorized_decision"
     assert payload["audit_confirmed"] is True
     assert Orchestrator(config).product_store.read_current(report.run_id).revision == 1
+
+
+def test_cli_reissue_file_publishes_explicit_expired_successor(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:  # type: ignore[no-untyped-def]
+    config = _set_roots(monkeypatch, tmp_path)
+    report, read, state = _checkpoint(config, "run-approval-cli-reissue")
+    request = state.ledger.requests[0]
+    reissued_at = request.expires_at
+    batch = ApprovalReissueBatchV2(
+        run_id=report.run_id,
+        expected_run_revision=read.revision,
+        expected_ledger_revision=state.ledger.ledger_revision,
+        reissue_id="reissue-cli",
+        idempotency_key="reissue-key-cli",
+        items=(
+            ApprovalReissueItemV2(
+                source_kind="approval_v2",
+                source_request_id=request.request_id,
+                expected_source_request_revision=request.request_revision,
+                source_action_digest_sha256=request.action_digest_sha256,
+                successor=ApprovalReissueSuccessorV2(
+                    stable_proposal_id="proposal-cli-successor",
+                    action_plan=request.action_plan.model_copy(
+                        update={
+                            "execution_id": "execution-cli-successor",
+                            "remote_idempotency_key": "remote-cli-successor",
+                            "expires_at": reissued_at + timedelta(days=1),
+                        }
+                    ),
+                    display=request.display,
+                    source_phase_id="resume",
+                    source_attempt_id="attempt-cli-reissue",
+                ),
+            ),
+        ),
+        reason="Replace the exact expired request.",
+        reissued_at=reissued_at,
+    )
+    reissue_file = tmp_path / "reissue.json"
+    reissue_file.write_bytes(canonical_json_bytes(batch))
+    monkeypatch.setattr(
+        "poker_deliberation.cli.Orchestrator",
+        lambda *args, **kwargs: Orchestrator(
+            *args,
+            terminal_clock=lambda: reissued_at,
+            **kwargs,
+        ),
+    )
+
+    exit_code = main(
+        [
+            "resume",
+            report.run_id,
+            "--reissue-file",
+            str(reissue_file),
+            "--format",
+            "json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    current = Orchestrator(config).product_store.read_current(report.run_id)
+    committed = read_approval_state_v2(
+        current.payload_bytes("approval_ledger_v2.json"),
+        current.payload_bytes("approval_decisions_v2.jsonl"),
+        current.payload_bytes("approval_audit_v2.jsonl"),
+        current.payload_bytes("approval_reissues_v2.jsonl"),
+    )
+
+    assert exit_code == 3
+    assert payload["run_status"] == "approval_required"
+    assert current.revision == 2
+    assert len(committed.reissue_records) == 1
+    assert sum(request.state == "pending" for request in committed.ledger.requests) == 1

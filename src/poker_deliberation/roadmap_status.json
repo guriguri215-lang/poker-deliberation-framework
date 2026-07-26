@@ -179,8 +179,8 @@
     {
       "id": "P2-013B",
       "rm_id": "RM-013",
-      "status": "not_started",
-      "status_reason": "Not started.",
+      "status": "completed",
+      "status_reason": "Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented.",
       "dependencies": [
         "P2-013A",
         "P2-027B"
@@ -708,8 +708,8 @@
       "title": "Approval and resume contract hardening",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "in_progress",
-      "status_reason": "P2-013A approval-authority contracts are implemented; P2-013B request reissue, pre-execution rechecks, and full resume lifecycle integration remain not started.",
+      "status": "completed",
+      "status_reason": "P2-013A authoritative approval decisions and P2-013B explicit reissue, pre-execution authority rechecks, and resume lifecycle binding are implemented without enabling external effects.",
       "dependencies": [
         "RM-012",
         "RM-024"

@@ -13,6 +13,7 @@ from poker_deliberation.agents import select_roles
 from poker_deliberation.approval_canonical import (
     approval_actor_sha256,
     approval_decision_batch_sha256,
+    approval_reissue_batch_sha256,
     historical_approval_v1_binding_sha256,
 )
 from poker_deliberation.approval_models import (
@@ -20,8 +21,13 @@ from poker_deliberation.approval_models import (
     ApprovalDecisionFailureV2,
     ApprovalDecisionItemV2,
     ApprovalDecisionOutcome,
+    ApprovalDecisionRecordV2,
+    ApprovalDomainAuditEventV2,
     ApprovalFailureCode,
     ApprovalLedgerV2,
+    ApprovalReissueBatchV2,
+    ApprovalReissueOutcomeV2,
+    ApprovalReissueRecordV2,
     DecisionValue,
     HistoricalApprovalV1Binding,
 )
@@ -31,18 +37,23 @@ from poker_deliberation.approvals import (
     ApprovalLedger,
     DecisionAuthorityProvider,
     LocalCliAuthorityProvider,
+    VerifiedApprovalStateV2,
     add_approval_request_v2,
     approval_failure_v2,
     approval_reference_sha256,
+    approval_reissue_transaction_id,
     approval_transaction_id,
     build_approval_decision_update,
+    build_approval_reissue_update,
     build_approval_request_v2,
     empty_approval_ledger_v2,
+    encode_approval_reissue_log_v2,
     encode_approval_state_v2,
     project_v1_approvals,
     read_approval_state_v2,
     reverify_approval_authority,
     validate_approval_decision,
+    validate_approval_reissue,
 )
 from poker_deliberation.budgets import (
     BudgetLimitError,
@@ -228,7 +239,7 @@ def _append_observed_budget_failure(
 
 
 class Orchestrator:
-    _APPROVAL_V2_SCHEMAS: ClassVar[dict[str, tuple[str, str, str]]] = {
+    _APPROVAL_V2_CORE_SCHEMAS: ClassVar[dict[str, tuple[str, str, str]]] = {
         "approval_ledger_v2.json": (
             "application/json",
             "poker-run-storage-json-v1",
@@ -243,6 +254,15 @@ class Orchestrator:
             "application/x-ndjson",
             "poker-run-storage-jsonl-v1",
             "poker-approval-domain-audit-log-artifact-v2",
+        ),
+    }
+    _APPROVAL_REISSUE_ARTIFACT: ClassVar[str] = "approval_reissues_v2.jsonl"
+    _APPROVAL_V2_SCHEMAS: ClassVar[dict[str, tuple[str, str, str]]] = {
+        **_APPROVAL_V2_CORE_SCHEMAS,
+        _APPROVAL_REISSUE_ARTIFACT: (
+            "application/x-ndjson",
+            "poker-run-storage-jsonl-v1",
+            "poker-approval-reissue-log-artifact-v2",
         ),
     }
 
@@ -601,6 +621,40 @@ class Orchestrator:
             )
         return tuple(sorted(values, key=lambda item: item.tool_name.encode("utf-8")))
 
+    def _read_approval_state(
+        self,
+        read: VerifiedRunReadV2,
+    ) -> VerifiedApprovalStateV2:
+        payloads = {
+            payload.inventory.logical_name: payload.exact_bytes
+            for payload in read.payloads
+            if payload.inventory.logical_name in self._APPROVAL_V2_SCHEMAS
+        }
+        return read_approval_state_v2(
+            payloads["approval_ledger_v2.json"],
+            payloads["approval_decisions_v2.jsonl"],
+            payloads["approval_audit_v2.jsonl"],
+            payloads.get(self._APPROVAL_REISSUE_ARTIFACT, b""),
+        )
+
+    def _approval_payload_map(
+        self,
+        ledger: ApprovalLedgerV2,
+        decisions: tuple[ApprovalDecisionRecordV2, ...],
+        events: tuple[ApprovalDomainAuditEventV2, ...],
+        reissues: tuple[ApprovalReissueRecordV2, ...] = (),
+    ) -> dict[str, bytes]:
+        payloads = dict(
+            zip(
+                self._APPROVAL_V2_CORE_SCHEMAS,
+                encode_approval_state_v2(ledger, decisions, events),
+                strict=True,
+            )
+        )
+        if reissues:
+            payloads[self._APPROVAL_REISSUE_ARTIFACT] = encode_approval_reissue_log_v2(reissues)
+        return payloads
+
     def _terminal_payloads(
         self,
         run_id: str,
@@ -668,7 +722,9 @@ class Orchestrator:
             if payload.inventory.logical_name in self._APPROVAL_V2_SCHEMAS
         }
         if approval_payloads:
-            if set(approval_payloads) != set(self._APPROVAL_V2_SCHEMAS):
+            if not set(self._APPROVAL_V2_CORE_SCHEMAS) <= set(approval_payloads) or not set(
+                approval_payloads
+            ) <= set(self._APPROVAL_V2_SCHEMAS):
                 raise self._product_error(
                     read.run_id,
                     ProductRunFailureCode.RUN_CORRUPT,
@@ -761,6 +817,8 @@ class Orchestrator:
             run_id=run_id,
             status=status,
             revision=revision,
+            previous_manifest_sha256=(None if previous is None else previous.manifest_sha256),
+            previous_pointer_sha256=(None if previous is None else previous.current_pointer_sha256),
         )
         created_at = published_at if previous is None else previous.manifest.created_at
         request = TerminalPublishRequest(
@@ -1078,7 +1136,7 @@ class Orchestrator:
             for request in project_v1_approvals(approval_state):
                 approvals.add(request)
             self._approval_v2_payloads[actual_run_id] = dict(
-                zip(self._APPROVAL_V2_SCHEMAS, approval_bytes, strict=True)
+                zip(self._APPROVAL_V2_CORE_SCHEMAS, approval_bytes, strict=True)
             )
 
         machine.transition(RunState.NORMALIZE, "input parsed into CaseInput")
@@ -2379,6 +2437,292 @@ class Orchestrator:
             observed_ledger_revision=batch.expected_ledger_revision,
         )
 
+    def _raise_audited_reissue_failure(
+        self,
+        batch: ApprovalReissueBatchV2,
+        failure: ApprovalDecisionFailureV2,
+    ) -> NoReturn:
+        batch_sha256 = approval_reissue_batch_sha256(batch)
+        request = ApprovalFailureAuditRequest(
+            run_id=batch.run_id,
+            actor_sha256=canonical_domain_sha256(
+                "poker-approval-reissue-requester-v2",
+                {
+                    "run_id": batch.run_id,
+                    "batch_sha256": batch_sha256,
+                },
+            ),
+            decision_id_sha256=approval_reference_sha256(
+                "decision_id",
+                batch.reissue_id,
+            ),
+            idempotency_key_sha256=approval_reference_sha256(
+                "idempotency_key",
+                batch.idempotency_key,
+            ),
+            batch_sha256=(
+                None
+                if failure.code is ApprovalFailureCode.APPROVAL_LEDGER_CORRUPT
+                else batch_sha256
+            ),
+            failure_code=failure.code,
+            observed_run_revision=failure.observed_run_revision,
+            observed_ledger_revision=failure.observed_ledger_revision,
+            occurred_at=self.terminal_clock(),
+        )
+        try:
+            self.product_store.append_approval_failure_audit(request)
+        except ApprovalFailureAuditError as exc:
+            raise ApprovalDecisionValidationError(exc.failure) from exc
+        raise ApprovalDecisionValidationError(failure.model_copy(update={"audit_confirmed": True}))
+
+    def _reissue_failure_from_product_error(
+        self,
+        batch: ApprovalReissueBatchV2,
+        error: ProductRunError,
+    ) -> ApprovalDecisionFailureV2:
+        if error.failure.code is ProductRunFailureCode.RUN_LOCKED:
+            code = ApprovalFailureCode.RUN_LOCKED
+            message = "Approval reissue authority is currently locked."
+        elif error.failure.code in {
+            ProductRunFailureCode.RUN_CONFLICT,
+            ProductRunFailureCode.IDEMPOTENCY_CONFLICT,
+        }:
+            code = ApprovalFailureCode.STALE_DECISION
+            message = "Approval reissue lost the exact current-revision CAS."
+        else:
+            code = ApprovalFailureCode.RESUME_TRANSACTION_FAILED
+            message = "Approval reissue transaction failed without an external effect."
+        return approval_failure_v2(
+            code,
+            message,
+            run_id=batch.run_id,
+            decision_id=batch.reissue_id,
+            idempotency_key=batch.idempotency_key,
+            observed_run_revision=error.failure.observed_revision,
+            observed_ledger_revision=batch.expected_ledger_revision,
+        )
+
+    def reissue_approvals(
+        self,
+        batch: ApprovalReissueBatchV2,
+    ) -> ApprovalReissueOutcomeV2:
+        """Publish one explicit historical or expired-request successor checkpoint."""
+
+        try:
+            read = self._read_product(batch.run_id)
+            names = {payload.inventory.logical_name for payload in read.payloads}
+            state: VerifiedApprovalStateV2 | None
+            legacy_requests: tuple[ApprovalRequest, ...]
+            if "approval_ledger_v2.json" in names:
+                try:
+                    state = self._read_approval_state(read)
+                except ValueError as exc:
+                    failure = approval_failure_v2(
+                        ApprovalFailureCode.APPROVAL_LEDGER_CORRUPT,
+                        "Authoritative approval artifacts are corrupt.",
+                        run_id=batch.run_id,
+                        decision_id=batch.reissue_id,
+                        idempotency_key=batch.idempotency_key,
+                        observed_run_revision=read.revision,
+                        observed_ledger_revision=None,
+                    )
+                    self._raise_audited_reissue_failure(batch, failure)
+                    raise AssertionError("unreachable") from exc
+                legacy_requests = ()
+            else:
+                state = None
+                legacy_report = FinalReport.model_validate_json(
+                    read.payload_bytes("final_report.json")
+                )
+                legacy_requests = tuple(legacy_report.approvals)
+            admission = validate_approval_reissue(
+                state,
+                legacy_requests,
+                batch,
+                observed_run_revision=read.revision,
+                previous_manifest_sha256=read.manifest_sha256,
+                previous_pointer_sha256=read.current_pointer_sha256,
+            )
+            if admission.kind == "replay":
+                if admission.replay_outcome is None:
+                    raise RuntimeError("approval reissue replay outcome is absent")
+                return admission.replay_outcome
+            observed_at = self.terminal_clock()
+            if batch.reissued_at > observed_at:
+                failure = approval_failure_v2(
+                    ApprovalFailureCode.RESUME_CONFLICT,
+                    "Reissue time is ahead of the trusted run clock.",
+                    run_id=batch.run_id,
+                    decision_id=batch.reissue_id,
+                    idempotency_key=batch.idempotency_key,
+                    observed_run_revision=read.revision,
+                    observed_ledger_revision=(
+                        None if state is None else state.ledger.ledger_revision
+                    ),
+                )
+                self._raise_audited_reissue_failure(batch, failure)
+            if not read.resume_eligible:
+                failure = approval_failure_v2(
+                    ApprovalFailureCode.RESUME_CONFLICT,
+                    "Run is not at a resumable approval checkpoint.",
+                    run_id=batch.run_id,
+                    decision_id=batch.reissue_id,
+                    idempotency_key=batch.idempotency_key,
+                    observed_run_revision=read.revision,
+                    observed_ledger_revision=(
+                        None if state is None else state.ledger.ledger_revision
+                    ),
+                )
+                self._raise_audited_reissue_failure(batch, failure)
+            if redact_sensitive(batch, enabled=True) != batch.model_dump(mode="json"):
+                failure = approval_failure_v2(
+                    ApprovalFailureCode.RESUME_CONFLICT,
+                    "Reissue batch must already be redacted.",
+                    run_id=batch.run_id,
+                    decision_id=batch.reissue_id,
+                    idempotency_key=batch.idempotency_key,
+                    observed_run_revision=read.revision,
+                    observed_ledger_revision=(
+                        None if state is None else state.ledger.ledger_revision
+                    ),
+                )
+                self._raise_audited_reissue_failure(batch, failure)
+            update = build_approval_reissue_update(admission)
+            self._load_verified_buffer(read)
+            self._approval_v2_payloads[batch.run_id] = self._approval_payload_map(
+                update.ledger,
+                update.decision_records,
+                update.domain_audit_events,
+                update.reissue_records,
+            )
+            snapshot = self.store.read_json(batch.run_id, "state.json")
+            machine = WorkflowStateMachine.from_snapshot(
+                self.budget_policy,
+                snapshot,
+                clock=self.monotonic_clock,
+            )
+            self._run_machines[batch.run_id] = machine
+            if machine.state is not RunState.HUMAN_REVIEW_REQUIRED:
+                failure = approval_failure_v2(
+                    ApprovalFailureCode.RESUME_CONFLICT,
+                    "Run is not at an approval checkpoint.",
+                    run_id=batch.run_id,
+                    decision_id=batch.reissue_id,
+                    idempotency_key=batch.idempotency_key,
+                    observed_run_revision=read.revision,
+                    observed_ledger_revision=update.ledger.ledger_revision,
+                )
+                self._raise_audited_reissue_failure(batch, failure)
+            next_state = read_approval_state_v2(
+                *encode_approval_state_v2(
+                    update.ledger,
+                    update.decision_records,
+                    update.domain_audit_events,
+                ),
+                encode_approval_reissue_log_v2(update.reissue_records),
+            )
+            report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+            report.approvals = project_v1_approvals(next_state)
+            report.generated_at = batch.reissued_at
+            report.run_status = "approval_required"
+            self.store.write_json(batch.run_id, "state.json", machine.snapshot())
+            self.store.write_json(batch.run_id, "approvals.json", report.approvals)
+            self.store.write_json(batch.run_id, "final_report.json", report)
+            self.store.write_text(
+                batch.run_id,
+                "final_report.md",
+                render_markdown(report),
+            )
+            try:
+                published = self._publish_buffer(
+                    batch.run_id,
+                    report,
+                    previous_read=read,
+                    transaction_id_override=approval_reissue_transaction_id(
+                        batch.run_id,
+                        batch.idempotency_key,
+                        approval_reissue_batch_sha256(batch),
+                    ),
+                )
+            except ProductRunError as exc:
+                try:
+                    winner = self.product_store.read_current(batch.run_id)
+                    winner_names = {payload.inventory.logical_name for payload in winner.payloads}
+                    winner_state = (
+                        self._read_approval_state(winner)
+                        if "approval_ledger_v2.json" in winner_names
+                        else None
+                    )
+                    winner_legacy = (
+                        ()
+                        if winner_state is not None
+                        else tuple(
+                            FinalReport.model_validate_json(
+                                winner.payload_bytes("final_report.json")
+                            ).approvals
+                        )
+                    )
+                    replay = validate_approval_reissue(
+                        winner_state,
+                        winner_legacy,
+                        batch,
+                        observed_run_revision=winner.revision,
+                        previous_manifest_sha256=winner.manifest_sha256,
+                        previous_pointer_sha256=winner.current_pointer_sha256,
+                    )
+                    if replay.kind == "replay" and replay.replay_outcome is not None:
+                        return replay.replay_outcome
+                except ApprovalDecisionValidationError as replay_error:
+                    self._raise_audited_reissue_failure(batch, replay_error.failure)
+                except (ProductRunError, ValueError):
+                    pass
+                self._raise_audited_reissue_failure(
+                    batch,
+                    self._reissue_failure_from_product_error(batch, exc),
+                )
+            committed_state = self._read_approval_state(published)
+            committed = next(
+                (
+                    record.outcome
+                    for record in committed_state.reissue_records
+                    if record.idempotency_key == batch.idempotency_key
+                ),
+                None,
+            )
+            if committed != update.outcome:
+                failure = approval_failure_v2(
+                    ApprovalFailureCode.RESUME_TRANSACTION_FAILED,
+                    "Published reissue outcome could not be verified.",
+                    run_id=batch.run_id,
+                    decision_id=batch.reissue_id,
+                    idempotency_key=batch.idempotency_key,
+                    observed_run_revision=published.revision,
+                    observed_ledger_revision=committed_state.ledger.ledger_revision,
+                )
+                self._raise_audited_reissue_failure(batch, failure)
+            return update.outcome
+        except ProductRunError as exc:
+            self._raise_audited_reissue_failure(
+                batch,
+                self._reissue_failure_from_product_error(batch, exc),
+            )
+        except ApprovalDecisionValidationError as exc:
+            if exc.failure.audit_confirmed:
+                raise
+            self._raise_audited_reissue_failure(batch, exc.failure)
+        except ValueError:
+            failure = approval_failure_v2(
+                ApprovalFailureCode.RESUME_TRANSACTION_FAILED,
+                "Approval reissue construction failed without an external effect.",
+                run_id=batch.run_id,
+                decision_id=batch.reissue_id,
+                idempotency_key=batch.idempotency_key,
+                observed_run_revision=batch.expected_run_revision,
+                observed_ledger_revision=batch.expected_ledger_revision,
+            )
+            self._raise_audited_reissue_failure(batch, failure)
+
     def decide_approvals(
         self,
         batch: ApprovalDecisionBatch,
@@ -2388,11 +2732,7 @@ class Orchestrator:
         try:
             read = self._read_product(batch.run_id)
             try:
-                state = read_approval_state_v2(
-                    read.payload_bytes("approval_ledger_v2.json"),
-                    read.payload_bytes("approval_decisions_v2.jsonl"),
-                    read.payload_bytes("approval_audit_v2.jsonl"),
-                )
+                state = self._read_approval_state(read)
             except (FileNotFoundError, ValueError) as exc:
                 code = (
                     ApprovalFailureCode.LEGACY_APPROVAL_HISTORICAL_ONLY
@@ -2439,16 +2779,11 @@ class Orchestrator:
                 self._raise_audited_approval_failure(batch, failure)
             update = build_approval_decision_update(admission)
             self._load_verified_buffer(read)
-            self._approval_v2_payloads[batch.run_id] = dict(
-                zip(
-                    self._APPROVAL_V2_SCHEMAS,
-                    encode_approval_state_v2(
-                        update.ledger,
-                        update.decision_records,
-                        update.domain_audit_events,
-                    ),
-                    strict=True,
-                )
+            self._approval_v2_payloads[batch.run_id] = self._approval_payload_map(
+                update.ledger,
+                update.decision_records,
+                update.domain_audit_events,
+                state.reissue_records,
             )
             snapshot = self.store.read_json(batch.run_id, "state.json")
             machine = WorkflowStateMachine.from_snapshot(
@@ -2469,12 +2804,17 @@ class Orchestrator:
                 )
                 self._raise_audited_approval_failure(batch, failure)
             report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+            next_payloads = self._approval_payload_map(
+                update.ledger,
+                update.decision_records,
+                update.domain_audit_events,
+                state.reissue_records,
+            )
             next_state = read_approval_state_v2(
-                *encode_approval_state_v2(
-                    update.ledger,
-                    update.decision_records,
-                    update.domain_audit_events,
-                )
+                next_payloads["approval_ledger_v2.json"],
+                next_payloads["approval_decisions_v2.jsonl"],
+                next_payloads["approval_audit_v2.jsonl"],
+                next_payloads.get(self._APPROVAL_REISSUE_ARTIFACT, b""),
             )
             report.approvals = project_v1_approvals(next_state)
             report.generated_at = batch.decision_at
@@ -2537,11 +2877,7 @@ class Orchestrator:
             except ProductRunError as exc:
                 try:
                     winner = self.product_store.read_current(batch.run_id)
-                    winner_state = read_approval_state_v2(
-                        winner.payload_bytes("approval_ledger_v2.json"),
-                        winner.payload_bytes("approval_decisions_v2.jsonl"),
-                        winner.payload_bytes("approval_audit_v2.jsonl"),
-                    )
+                    winner_state = self._read_approval_state(winner)
                     replay = validate_approval_decision(
                         winner_state,
                         batch,
@@ -2562,11 +2898,7 @@ class Orchestrator:
                     batch,
                     self._approval_failure_from_product_error(batch, exc),
                 )
-            committed_state = read_approval_state_v2(
-                published.payload_bytes("approval_ledger_v2.json"),
-                published.payload_bytes("approval_decisions_v2.jsonl"),
-                published.payload_bytes("approval_audit_v2.jsonl"),
-            )
+            committed_state = self._read_approval_state(published)
             committed = next(
                 (
                     record.outcome
@@ -2605,7 +2937,17 @@ class Orchestrator:
         reject_ids: list[str] | None = None,
         reason: str = "human decision recorded by CLI",
         decision_batch: ApprovalDecisionBatch | None = None,
+        reissue_batch: ApprovalReissueBatchV2 | None = None,
     ) -> FinalReport:
+        if decision_batch is not None and reissue_batch is not None:
+            raise ValueError("decision_batch cannot be combined with reissue_batch")
+        if reissue_batch is not None:
+            if approve_ids or reject_ids:
+                raise ValueError("reissue_batch cannot be combined with approve_ids/reject_ids")
+            if reissue_batch.run_id != run_id:
+                raise ValueError("reissue_batch run_id mismatch")
+            self.reissue_approvals(reissue_batch)
+            return self.load_report(run_id)
         read = self._read_product(run_id)
         if not read.resume_eligible:
             return self.load_report(run_id)
@@ -2620,11 +2962,7 @@ class Orchestrator:
         if "approval_ledger_v2.json" in approval_names:
             if not approve_ids and not reject_ids:
                 return self.load_report(run_id)
-            state = read_approval_state_v2(
-                read.payload_bytes("approval_ledger_v2.json"),
-                read.payload_bytes("approval_decisions_v2.jsonl"),
-                read.payload_bytes("approval_audit_v2.jsonl"),
-            )
+            state = self._read_approval_state(read)
             requests = {request.request_id: request for request in state.ledger.requests}
             decision_at = self.terminal_clock()
             actor = self.decision_authority_provider.resolve_actor(

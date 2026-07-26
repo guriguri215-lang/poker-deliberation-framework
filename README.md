@@ -51,8 +51,8 @@ settlementを検証します。通常経路のprovider/tool実行は引き続き
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
-RM-010、RM-011、RM-012、RM-024、RM-027は`completed`、RM-013は`in_progress`で
-P2-013Bは`not_started`、RM-028は`proposed`でP2-028Aは`not_started`です。
+RM-010、RM-011、RM-012、RM-013、RM-024、RM-027とP2-013Bは`completed`です。
+RM-028は`proposed`、P2-028Aは`not_started`です。
 
 P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
 `structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで
@@ -241,6 +241,18 @@ automatic retryを実行しません。
 `run_status=completed`になります。`approval_required` checkpointだけがresume可能です。
 `failed`、`cancelled`、`cancel_unconfirmed`もmarker付きterminal revisionとして保存しますが、
 public successにはなりません。
+
+P2-013B は expired V2 request または historical V1 pending request に対する明示的な
+`ApprovalReissueBatchV2` を受け付け、元 request を superseded/reissued projection、
+完全な successor を pending とする新しい `approval_required` revision を CAS 公開します。
+`poker-deliberate resume RUN_ID --reissue-file REISSUE.json` は decision construction option と
+併用できません。reissue がある run だけ `approval_reissues_v2.jsonl` を追加し、reissue がない
+既存 V2 checkpoint の3 control artifact byte contractは維持します。
+
+`recheck_approval_for_execution` は approval run revision/pointer/manifest、exact approved action、
+decision record、live provider/actor/scope/expiry/revocationを effect なしで再検証し、短命の immutable
+bindingを返します。external action、provider/solver、process isolation、durable effect lifecycle は
+実装しません。
 
 既存の`runs/<run_id>/`はread-only flat-v1 namespaceです。exact `b"v1\n"` sentinelと現行schemaを
 検証できた場合も`legacy_unverified`であり、completedやresumableへ昇格しません。

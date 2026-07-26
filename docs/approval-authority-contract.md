@@ -1,11 +1,13 @@
-# 承認主体・権限契約（P2-013A）
+# 承認主体・権限・再発行契約（P2-013A / P2-013B）
 
 ## 状態と範囲
 
 - **FACT**: P2-013A は RM-013 の入口マイルストーンであり、承認主体、検証済み権限、正規 action digest、request/decision idempotency、全件一括検証、RM-012 CAS 公開、失敗監査を実装する。
-- **FACT**: P2-013B（再発行・完全な lifecycle）と P2-028A（process isolation）は別承認である。
-  P2-027B cleanup executor は P2-013A の immutable approval outcome を承認証拠として利用するが、
-  P2-013A 自身の decision semantics は変更しない。
+- **FACT**: P2-013B は、P2-013A の decision semantics を変更せず、request reissue、
+  resume/lifecycle binding、汎用の effect-free pre-execution recheck を追加する。
+  P2-027B cleanup executor の既存 inventory と独立した effect 直前 recheck は変更しない。
+- **FACT**: P2-028A の process isolation、durable external-effect state、executor 起動、
+  cancellation、reconciliation は P2-013B の範囲外である。
 - **FACT**: P2-013A は外部 executor、provider、solver を起動しない。承認は実行・正しさ・収束・GTO・均衡・exploitability・正確な range の証拠ではない。
 
 ## 信頼境界
@@ -33,9 +35,14 @@ request idempotency key は run ID、phase ID、stable proposal ID、category、
 - `approval_ledger_v2.json`
 - `approval_decisions_v2.jsonl`
 - `approval_audit_v2.jsonl`
+- reissue を1回以上行った run に限り `approval_reissues_v2.jsonl`
 - V1 compatibility projection の `approvals.json`
 
-V2 ledger と 2 本の hash chain を先に完全検証し、run/ledger revision の decision 間連続性、最後の decision revision と terminal manifest revision の端点一致、V1 projection の一致を要求する。不一致なら run は corrupt とする。`FinalReport.approvals` と `approvals.json` に V2 field は追加しない。
+V2 ledger、decision/domain-audit chain、任意の reissue chain を lookup より先に完全検証する。
+decision と reissue を合わせた run/ledger mutation timeline、source/successor projection、
+terminal manifest revision の端点、V1 projection の一致を要求する。不一致なら run は corrupt とする。
+reissue がない既存 run の3 control artifact byte contract は変えず、`FinalReport.approvals` と
+`approvals.json` に V2 field は追加しない。
 
 ## 固定検証順序
 
@@ -72,16 +79,51 @@ domain decision に失敗した試行は domain current を変更せず、同じ
 
 監査には actor、decision、idempotency、batch の hash、failure code、観測 revision だけを残す。raw reason、action content、credential、traceback は残さない。監査の durable reread を確認できなければ `audit_unconfirmed` とし、decision revision を進めない。
 
-## V1 compatibility
+## request reissue と V1 compatibility
 
-V1 `ApprovalRequest` は厳密に読み取り可能だが historical-only であり、action plan や authority を推定して V2 approve に昇格させない。local actor の V1 approve は `legacy_approval_historical_only`。safe reject は prior V1 canonical bytes の `HistoricalApprovalV1Binding` hash を decision reason に結び、前 revision を不変のまま successor を作る。完全な reissue／expiry repair は P2-013B に残る。
+V1 `ApprovalRequest` は historical-only であり、action plan、authority、expiry を推定して V2 approve
+へ昇格させない。local actor の V1 approve は引き続き `legacy_approval_historical_only` である。
+P2-013B reissue は pending V1 request 全件を同じ batch へ明示し、各 successor の完全な
+`CanonicalActionPlanV2` と表示情報を caller が与えた場合だけ受理する。元 V1 canonical snapshot と
+hash を record に保存し、元 request は compatibility projection 上で reissued/rejected、
+successor は pending となる。silent migration と一部だけの V1 repair は拒否する。
+
+V2 reissue は exact pending source の expiry 時刻以後だけ受理する。source request revision と
+action digest が一致し、新しい action expiry が reissue 時刻より後でなければならない。
+1 transaction で source を `superseded`、明示 successor を `pending` にし、previous
+manifest/pointer/ledger hash、run/ledger revision、source/successor request hash を immutable
+reissue record へ拘束する。idempotency replay は stale check より前に解決して write zero、
+異なる payload、live request、部分 batch、CAS loser は structured failure となる。
+
+## pre-execution recheck
+
+`recheck_approval_for_execution` は effect を開始しない pure admission seam である。strict reader を
+通過した approval state と、approval run revision/pointer/manifest、exact action plan、
+injected authority provider、評価 UTC を入力とする。
+
+- request が exact action digest を持つ approved state であること
+- 唯一の immutable approve decision/result と record/outcome hash が一致すること
+- approval decision revision が指定した approval run revision と一致すること
+- request expiry 前であること
+- provider ID/version と canonical actor が保存 snapshot と一致すること
+- live actor が verified、not revoked、未失効で exact scope を持つこと
+
+全条件を満たした場合だけ、ledger、decision、actor/authority、execution ID、valid-until を含む
+hashed `ApprovalExecutionRecheckBindingV2` を返す。失敗は mutation zero の
+`ApprovalExecutionValidationError` であり、binding は実行権限の再利用 token でも effect receipt
+でもない。executor は effect 直前にこの条件を評価し、binding expiry 後に使用してはならない。
 
 ## API と CLI
 
-- `Orchestrator.resume(run_id, *, approve_ids, reject_ids, reason, decision_batch=None)` は既存引数を保つ。
+- `Orchestrator.resume(run_id, *, approve_ids, reject_ids, reason, decision_batch=None,
+  reissue_batch=None)` は既存引数を保ち、reissue を keyword-only で追加する。
 - `Orchestrator.decide_approvals(batch)` は committed outcome を返し、失敗は redacted `ApprovalDecisionValidationError.failure` として返す。
+- `Orchestrator.reissue_approvals(batch)` は committed reissue outcome を返し、同じ bounded failure
+  audit と RM-012 CAS を使用する。
 - CLI は既存 `resume --approve/--reject/--reason` と exit 0/2/3 を保ち、`--decision-file`、`--actor-id`、`--decision-id`、`--idempotency-key`、`--expected-run-revision`、`--expected-ledger-revision`、`--decision-at` を追加する。
 - `--decision-file` は canonical V2 JSON だけを受け付け、legacy construction option と併用できない。
+- `--reissue-file` は canonical `ApprovalReissueBatchV2` JSON だけを受け付け、decision file／construction
+  option と併用できない。
 - CLI は verified flag や任意 authority scope を受け付けない。
 
 ## セキュリティ上の非主張

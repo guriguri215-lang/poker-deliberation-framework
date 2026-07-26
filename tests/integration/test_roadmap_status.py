@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "2.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "3.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -150,6 +150,8 @@ def test_public_projection_preserves_status_scope_and_decision_rationale() -> No
     }
     assert items["RM-013"]["status"] == "completed"
     assert items["RM-028"]["status"] == "proposed"
+    assert items["RM-029"]["status"] == "in_progress"
+    assert items["RM-025"]["priority"] == "P1"
     assert items["RM-018A"]["status"] == "planned"
     assert items["RM-018B"]["status"] == "planned"
     assert items["RM-010"]["milestones"] == {
@@ -189,8 +191,49 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
+        "P2-029A",
+    }
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
+    assert milestones["P2-029A"]["dependencies"] == [
+        "P2-012B",
+        "P2-013B",
+        "P2-024A",
+        "P2-027B",
+    ]
     assert all(item["status_reason"] for item in milestones.values())
+
+
+def test_p2_029a_registration_preserves_external_execution_boundaries() -> None:
+    items = _by_id()
+    milestones = _milestones(load_roadmap())
+
+    assert items["RM-025"]["status"] == "proposed"
+    assert items["RM-025"]["decision_gate"] == {
+        "required": True,
+        "rationale": [
+            "whether to implement a bridge or retain conformance-only separation",
+        ],
+    }
+    assert items["RM-028"]["status"] == "proposed"
+    assert milestones["P2-028A"]["status"] == "not_started"
+    assert items["RM-019"]["dependencies"] == [
+        "RM-010",
+        "RM-011",
+        "RM-012",
+        "RM-013",
+        "RM-024",
+        "RM-028",
+    ]
+    assert items["RM-020"]["dependencies"] == [
+        "RM-011",
+        "RM-012",
+        "RM-013",
+        "RM-017",
+        "RM-028",
+    ]
+    assert items["RM-019"]["status"] == "planned"
+    assert items["RM-020"]["status"] == "planned"
 
 
 def test_unknown_projection_fields_fail_closed() -> None:
@@ -286,19 +329,19 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
 
     status_change = deepcopy(previous)
     items = _by_id(status_change)
-    items["RM-013"]["status"] = "in_progress"
-    items["RM-013"]["status_reason"] = "A published follow-up is in progress."
+    items["RM-002"]["status"] = "in_progress"
+    items["RM-002"]["status_reason"] = "A published follow-up is in progress."
     validate_roadmap_update(previous, status_change)
 
     unchanged_reason = deepcopy(previous)
-    _by_id(unchanged_reason)["RM-013"]["status"] = "in_progress"
+    _by_id(unchanged_reason)["RM-002"]["status"] = "in_progress"
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, unchanged_reason)
 
     whitespace_only_reason = deepcopy(previous)
-    _by_id(whitespace_only_reason)["RM-013"]["status"] = "in_progress"
-    _by_id(whitespace_only_reason)["RM-013"]["status_reason"] = (
-        str(_by_id(previous)["RM-013"]["status_reason"]) + " "
+    _by_id(whitespace_only_reason)["RM-002"]["status"] = "in_progress"
+    _by_id(whitespace_only_reason)["RM-002"]["status_reason"] = (
+        str(_by_id(previous)["RM-002"]["status_reason"]) + " "
     )
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, whitespace_only_reason)
@@ -369,14 +412,19 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "2.0.0"
-    assert summary["total_items"] == 29
+    assert summary["schema_version"] == "3.0.0"
+    assert summary["total_items"] == 30
     assert summary["status_counts"] == {
         "completed": 16,
+        "in_progress": 1,
         "planned": 10,
         "proposed": 3,
     }
-    assert summary["milestone_state_counts"] == {"completed": 11, "not_started": 1}
+    assert summary["milestone_state_counts"] == {
+        "completed": 11,
+        "in_progress": 1,
+        "not_started": 1,
+    }
     assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [
         "RM-014",

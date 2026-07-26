@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
-ROADMAP_SCHEMA_VERSION = "2.0.0"
+ROADMAP_SCHEMA_VERSION = "3.0.0"
 __all__ = [
     "ROADMAP_RESOURCE",
     "ROADMAP_SCHEMA_VERSION",
@@ -57,7 +57,7 @@ GENERATED_ROADMAP_DOCUMENT = "docs/roadmap-status.md"
 EXPECTED_RM_IDS = (
     {f"RM-{number:03d}" for number in range(1, 18)}
     | {"RM-018A", "RM-018B"}
-    | {f"RM-{number:03d}" for number in range(19, 29)}
+    | {f"RM-{number:03d}" for number in range(19, 30)}
 )
 EXPECTED_PHASE_2_MILESTONES = {
     "P2-024A",
@@ -72,6 +72,7 @@ EXPECTED_PHASE_2_MILESTONES = {
     "P2-027B",
     "P2-013B",
     "P2-028A",
+    "P2-029A",
 }
 TOP_LEVEL_FIELDS = {
     "schema_version",

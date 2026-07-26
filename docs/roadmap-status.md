@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `2.0.0`
-- source SHA-256: `e0c6dc2e69a8c71da42951fb60aa7509d1e67c6f81f69e02a5f7b59fef32f13b`
+- schema version: `3.0.0`
+- source SHA-256: `3778f1cdda70c401f64a3cd1936a002161d1e54315f630a839edc93ad9a46252`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -44,6 +44,7 @@
 | `P2-027B` | `RM-027` | `completed` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. | The additive authorized cleanup API implements quarantine, staged deletion, receipts, tombstones, CAS, and reconciliation. |
 | `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
+| `P2-029A` | `RM-029` | `in_progress` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | Approved implementation is in progress on the offline Python product path; no external provider or solver execution is authorized. |
 
 ## Current RM state
 
@@ -74,10 +75,11 @@
 | `RM-022` | Small imperfect-information research | `phase-5` | `P3` | `planned` | `RM-007`, `RM-017` | `n/a` | `required` |
 | `RM-023` | Roadmap and status single source of truth | `readiness` | `P0` | `completed` | `RM-001` | `n/a` | `required` |
 | `RM-024` | Context lifecycle contract | `phase-2` | `P1` | `completed` | `RM-006`, `RM-023` | `P2-024A` | `required` |
-| `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P2` | `proposed` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `n/a` | `required` |
+| `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P1` | `proposed` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `n/a` | `required` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `required` |
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-027B` | `required` |
 | `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
+| `RM-029` | Offline Python product path safety and usability completion | `phase-2` | `P1` | `in_progress` | `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-029A` | `none` |
 
 ## Public item contracts
 
@@ -797,6 +799,33 @@
   - external executables and licenses
 - Relations:
   - Hard dependency for any RM-019/RM-020 execution that claims timeout or cancellation guarantees.
+
+### RM-029 — Offline Python product path safety and usability completion
+
+- Status: `in_progress`
+- Status reason: Approved implementation is in progress; external providers and solvers remain disabled or unavailable.
+- Objective: Complete one auditable offline Python product path spanning retrospective input safety, lossless redaction, verified numeric tolerance, concise adjudicated reporting, and ordinary-run dogfood before any external provider or solver execution.
+- Capabilities:
+  - phase_1_hardening
+  - product_integrated_durable_run
+- Targets:
+  - src/poker_deliberation/security.py
+  - src/poker_deliberation/tools/icm.py
+  - src/poker_deliberation/reporting/summary.py
+  - docs/offline-product-path.md
+- Acceptance criteria:
+  - Japanese retrospective negation is accepted without weakening fail-closed live-assistance detection; redaction preserves every nested mapping entry under deterministic non-secret collision keys; unspecified analysis scope gives rule-specific retrospective guidance before provider or tool execution; the cached-subset-DP ICM implementation, verification metadata, and manifest share a conservative floating-point error bound; an opt-in concise Japanese projection uses only adjudicated FinalReport content and verified tool results while existing stored report artifacts, canonical bytes, readers, resume, and migration retain their meanings; ordinary product storage dogfood verifies pot-odds correction, structured hand validation, and an honest unsupported-strategy limitation.
+- Tests:
+  - tests/adversarial/test_review_security_extensions.py
+  - tests/adversarial/test_review_regressions.py
+  - tests/unit/test_icm.py
+  - tests/property/test_phase1_math_oracles.py
+  - tests/unit/test_report_summary.py
+  - tests/integration/test_offline_product_path.py
+  - tests/characterization/test_product_run_compatibility.py
+- Relations:
+  - Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.
+  - Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects, while preserving RM-025 proposed status and its decision gate.
 
 ## Synchronization contract
 

@@ -47,12 +47,15 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 2.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 3.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
 RM-010、RM-011、RM-012、RM-013、RM-024、RM-027とP2-013Bは`completed`です。
-RM-028は`proposed`、P2-028Aは`not_started`です。
+RM-029/P2-029Aはoffline Python product pathの安全性・数値検証・利用者向けsummary・dogfoodを
+対象として`in_progress`です。RM-025は外部作用前のruntime意味整合を優先するためP1ですが、
+`proposed`とdecision gateを維持します。RM-028は`proposed`、P2-028Aは`not_started`であり、
+RM-019/RM-020の外部provider/solver実行は開始していません。
 
 P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
 `structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで

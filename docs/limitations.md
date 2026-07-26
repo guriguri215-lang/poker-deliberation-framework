@@ -27,6 +27,9 @@
 - Matrix support enumeration may use approximate fictitious play for degenerate/large unsupported
   cases; such output is never labeled exact.
 - ICM has no future-game simulation, skill edge, risk preference, bounty equity model, or deal model.
+  Its conservation tolerance is a binary64 forward-error envelope derived from the current cached
+  subset-DP loops and non-negative arithmetic. It is not a proof for a different implementation,
+  non-finite aggregate, external solver, GTO strategy, or equilibrium.
 - Human approval decisions persist and resume; approved external actions are not auto-executed.
 - Evidence records are validated, claim-linked, stored in `evidence.jsonl`, and included in reports.
   Case-specific web retrieval itself still requires a connected agent and explicit recording.
@@ -61,6 +64,12 @@
   retry loop, backoff, durable retry state, or parallel execution; peak concurrency is fixed at one.
 - Redaction covers common structured keys and token forms, not arbitrary personal information or
   every possible secret encoding.
+- Japanese retrospective-negation handling is bounded lexical defense in depth. It preserves
+  recognized negative spans while leaving explicit questions, double negation, and independent
+  live context for blocking, but it is not full semantic language understanding.
+- The concise `summary` format is an additive projection of a verified `FinalReport`, not a new
+  stored artifact or replacement for the complete JSON/Markdown report. It deliberately omits full
+  input, verification observations, execution audit, and unverified agent prose.
 - `audit-claim` without structured calculation inputs preserves a USER_CLAIM as unverified rather
   than guessing its truth.
 - The offline public preflight uses bounded pattern matching and package metadata; it is not proof that

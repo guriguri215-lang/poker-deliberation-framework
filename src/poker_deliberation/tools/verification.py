@@ -10,6 +10,7 @@ from typing import Any
 from poker_deliberation.schemas import CanonicalHand, TolerancePolicy
 from poker_deliberation.tools.combinations import parse_weighted_range
 from poker_deliberation.tools.hand_validator import validate_hand
+from poker_deliberation.tools.icm import icm_floating_error_bound
 from poker_deliberation.tools.numeric import effective_matrix_tolerance, ulp_bound
 from poker_deliberation.tools.sensitivity import analyze_scenarios
 
@@ -54,6 +55,8 @@ def _comparison_bound(
         if policy.ulps is None:
             raise ValueError("applied ULP tolerance has no bound")
         bound = ulp_bound(actual, expected, ulps=policy.ulps)
+        if policy.absolute is not None:
+            bound = max(bound, float(policy.absolute))
     else:
         if policy.absolute is None:
             raise ValueError("applied caller-supplied tolerance has no resolved absolute bound")
@@ -137,11 +140,17 @@ def _materialize_policy(
     if name == "icm":
         active_count = sum(float(stack) > 0 for stack in payload["stacks"])
         payout_count = min(active_count, len(payload["payouts"]))
-        operation_bound = max(1, math.factorial(active_count) * max(1, payout_count))
+        payable = sum(map(float, payload["payouts"][:active_count]))
+        error_bound = icm_floating_error_bound(
+            active_count,
+            len(payload["stacks"]),
+            payout_count,
+            payable,
+        )
         return declared.model_copy(
             update={
-                "ulps": 64 * operation_bound,
-                "absolute": float(output["verification_tolerance"]),
+                "ulps": error_bound.ulps,
+                "absolute": error_bound.absolute,
             }
         )
     return declared
@@ -418,7 +427,18 @@ def _verify_icm(
     active_count = sum(stack > 0 for stack in stacks)
     payable = sum(payouts[:active_count])
     equity_sum = sum(equities)
+    error_bound = icm_floating_error_bound(
+        active_count,
+        len(stacks),
+        min(active_count, len(payouts)),
+        payable,
+    )
     _expect(len(equities) == len(stacks), "ICM equity vector length")
+    _expect(
+        float(output["verification_tolerance"]) == error_bound.absolute,
+        "ICM derived verification tolerance",
+    )
+    _expect(output["conservation_verified"] is True, "ICM conservation metadata")
     _expect_close(observations, "equity_sum", output["equity_sum"], equity_sum, policy)
     _expect_close(observations, "payable_prize_sum", output["payable_prize_sum"], payable, policy)
     _expect_close(observations, "sum_error", output["sum_error"], equity_sum - payable, policy)
@@ -438,7 +458,12 @@ def _verify_icm(
     for index in expected_zero:
         _expect_close(observations, f"zero_stack_equity[{index}]", equities[index], 0.0, policy)
     _expect(all(math.isfinite(value) for value in equities), "finite ICM recursion output")
-    return (*observations, "finite recursion: passed")
+    return (
+        *observations,
+        f"cached-subset binary64 operation upper bound: {error_bound.operation_upper_bound}",
+        f"derived conservation ULP count: {error_bound.ulps}",
+        "finite recursion: passed",
+    )
 
 
 def _verify_matrix(

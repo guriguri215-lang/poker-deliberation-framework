@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `3.0.0`
-- source SHA-256: `3778f1cdda70c401f64a3cd1936a002161d1e54315f630a839edc93ad9a46252`
+- source SHA-256: `ead6a85b1d5c1dbd1632eaf9fbdec55ce4ee654fcdf9be42260b049d8db910a3`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -44,7 +44,7 @@
 | `P2-027B` | `RM-027` | `completed` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. | The additive authorized cleanup API implements quarantine, staged deletion, receipts, tombstones, CAS, and reconciliation. |
 | `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
-| `P2-029A` | `RM-029` | `in_progress` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | Approved implementation is in progress on the offline Python product path; no external provider or solver execution is authorized. |
+| `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 
 ## Current RM state
 
@@ -79,7 +79,7 @@
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `required` |
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-027B` | `required` |
 | `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
-| `RM-029` | Offline Python product path safety and usability completion | `phase-2` | `P1` | `in_progress` | `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-029A` | `none` |
+| `RM-029` | Offline Python product path safety and usability completion | `phase-2` | `P1` | `completed` | `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-029A` | `none` |
 
 ## Public item contracts
 
@@ -802,8 +802,8 @@
 
 ### RM-029 — Offline Python product path safety and usability completion
 
-- Status: `in_progress`
-- Status reason: Approved implementation is in progress; external providers and solvers remain disabled or unavailable.
+- Status: `completed`
+- Status reason: Retrospective input safety, lossless redaction, derived ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood are implemented and verified; external providers and solvers remain disabled or unavailable.
 - Objective: Complete one auditable offline Python product path spanning retrospective input safety, lossless redaction, verified numeric tolerance, concise adjudicated reporting, and ordinary-run dogfood before any external provider or solver execution.
 - Capabilities:
   - phase_1_hardening

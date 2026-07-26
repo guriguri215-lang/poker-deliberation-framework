@@ -165,7 +165,11 @@ from poker_deliberation.schemas import (
     ToolRequest,
     ToolResult,
 )
-from poker_deliberation.security import redact_sensitive, screen_case
+from poker_deliberation.security import (
+    blocked_security_guidance,
+    redact_sensitive,
+    screen_case,
+)
 from poker_deliberation.state_machine import RunState, StateEvent, WorkflowStateMachine
 from poker_deliberation.storage.legacy_migration import (
     LegacyRunAdapter,
@@ -1175,10 +1179,7 @@ class Orchestrator:
                 "プロンプトインジェクションらしき文字列を無害な入力として記録しました。"
             )
         if any(event.blocked for event in security_events):
-            data_quality.append(
-                "事後検討専用の範囲外です。リアルタイム支援、非公開カード取得、共謀、"
-                "自動プレイ、検出回避には対応しません。"
-            )
+            data_quality.extend(blocked_security_guidance(security_events))
             machine.transition(RunState.FAILED_WITH_LIMITATIONS, "prohibited use refused")
             return self._synthesize(
                 actual_run_id,

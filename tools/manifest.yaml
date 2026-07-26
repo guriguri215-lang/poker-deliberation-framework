@@ -1952,7 +1952,8 @@ tools:
   limits:
     listed_players: 100
     active_players: 12
-    time_complexity: O(n * 2^n)
+    cached_non_base_states: sum(C(n,k), k=0..p-1)
+    floating_operation_upper_bound: (2*L+4)*sum((n-k)*C(n,k), k=0..p-1)+L+p+1
   units:
     stacks/equities/payouts: one caller-declared prize unit
   failure_modes:
@@ -1973,10 +1974,13 @@ tools:
     kind: ulp
     absolute: null
     relative: null
-    ulps: 64
-    formula: Conservation bound scales with active-player recursion and payable prize magnitude.
+    ulps: 1
+    formula: Runtime M=(2*L+4)*sum((n-k)*C(n,k),k=0..p-1)+L+p+1 over cached non-base subset states; gamma=M*2^-53/(1-M*2^-53);
+      ulps=max(1,ceil(4*gamma*max(1,abs(payable_prize_sum))/ulp(max(1,abs(payable_prize_sum))))). The
+      manifest ulps value is the minimum before per-result materialization.
     unit: output field unit
-    rationale: ICM is mathematically model-conditional but implemented by binary64 recursion.
+    rationale: Four gamma-M envelopes cover the non-cancelling DP, payable/output sums, and final subtraction;
+      ICM remains model-conditional binary64 arithmetic.
   model_qualifier: Independent Chip Model
   version: 1.0.0
   contract_version: 2.0.0

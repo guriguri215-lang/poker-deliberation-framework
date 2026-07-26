@@ -156,6 +156,14 @@ def test_review_hand_and_show_cli(tmp_path: Path, monkeypatch, capsys) -> None: 
     assert shown["run_id"] == run_id
     assert shown["agent_execution_records"] == report["agent_execution_records"]
 
+    assert main(["show", run_id, "--format", "summary"]) == 0
+    summary = capsys.readouterr().out
+    assert summary.startswith("# ポーカー検討サマリー\n")
+    assert f"- Run ID: `{run_id}`" in summary
+    assert "**CALCULATED** `hand_validator`" in summary
+    assert '"valid":true' in summary
+    assert "context_sha256" not in summary
+
 
 def test_review_hand_normalizes_documented_free_text(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.chdir(tmp_path)

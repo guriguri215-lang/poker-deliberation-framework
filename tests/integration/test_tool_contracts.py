@@ -21,6 +21,7 @@ from poker_deliberation.schemas import (
 )
 from poker_deliberation.tools import default_registry
 from poker_deliberation.tools.contracts import contract_by_name, tool_contracts
+from poker_deliberation.tools.icm import calculate_icm
 from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 from poker_deliberation.tools.verification import within_tolerance
 from scripts.generate_tool_contracts import manifest_document, render_docs
@@ -188,6 +189,44 @@ def test_floating_verifier_rejects_schema_valid_but_wrong_output() -> None:
     assert result.numeric_exactness is NumericalExactness.UNAVAILABLE
     assert result.verification is None
     assert "verification failed for pot_after_opponent_bet" in (result.error or "")
+
+
+def test_icm_verifier_rejects_schema_valid_error_beyond_derived_bound() -> None:
+    contract = contract_by_name()["icm"]
+
+    def injected_icm(_payload: dict[str, object]) -> dict[str, object]:
+        output = calculate_icm([5.0, 3.0, 2.0], [9.0, 4.0, 1.0])
+        equities = list(map(float, output["equities"]))
+        tolerance = float(output["verification_tolerance"])
+        equities[0] += 2 * tolerance
+        equity_sum = sum(equities)
+        payable = float(output["payable_prize_sum"])
+        return {
+            **output,
+            "equities": equities,
+            "equity_sum": equity_sum,
+            "sum_error": equity_sum - payable,
+            "conservation_verified": True,
+        }
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name=contract.name,
+            purpose=contract.purpose,
+            exact_or_approximate="floating-verified",
+            supported_games=contract.supported_games,
+            function=injected_icm,
+            contract=contract,
+        )
+    )
+
+    result = registry.execute("icm", {"stacks": [5, 3, 2], "payouts": [9, 4, 1]})
+
+    assert result.status is ToolStatus.FAILED
+    assert result.numeric_exactness is NumericalExactness.UNAVAILABLE
+    assert result.verification is None
+    assert "verification failed for prize_conservation" in (result.error or "")
 
 
 def test_floating_verifier_is_executable_not_declaration_only() -> None:

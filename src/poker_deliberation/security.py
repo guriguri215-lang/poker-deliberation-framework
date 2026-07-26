@@ -46,9 +46,30 @@ _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"in\s+(?:an?\s+)?(?:online\s+)?(?:poker\s+|cash\s+)?game|"
     r"seated\s+at\s+(?:a|the)\s+(?:poker|tournament)\s+table)\s+"
     r"(?:right\s+)?now\b|"
-    r"今(?:まさに)?プレイ中(?:では|じゃ)?ない)",
+    r"今(?:まさに)?プレイ中"
+    r"(?:ではありません|じゃありません|ではない|じゃない|ではなくて?|じゃなくて?)"
+    r"(?!\s*(?:です)?(?:[か\uFF1F?]|わけでは?ない)|\s*は?ない))",
     re.IGNORECASE,
 )
+
+_BLOCKED_RULE_GUIDANCE = {
+    "scope-field-unspecified": (
+        '`analysis_scope="unspecified"`は安全側で拒否しました。'
+        '事後検討であることを明示して`analysis_scope="retrospective"`を指定してください。'
+    ),
+    "scope-field-real-time": (
+        '`analysis_scope="real_time"`は対応範囲外です。プレイ終了後の記録を使い、'
+        '`analysis_scope="retrospective"`として依頼してください。'
+    ),
+    "scope-real-time": (
+        "入力から現在進行中のプレイ支援を検出しました。プレイ終了後の事後検討として"
+        "依頼し直してください。"
+    ),
+    "private-cards": "相手の非公開カードの取得・推測支援には対応しません。",
+    "collusion": "共謀やホールカード共有を伴う依頼には対応しません。",
+    "automated-play": "自動プレイや意思決定ボットの運用支援には対応しません。",
+    "detection-evasion": "検出・アンチチート回避の支援には対応しません。",
+}
 
 _BLOCKING_RULES: tuple[tuple[str, str, re.Pattern[str]], ...] = (
     (
@@ -122,6 +143,17 @@ def _redact_text(value: str) -> str:
     return redacted
 
 
+def _collision_free_key(candidate: str, occupied: dict[str, Any]) -> str:
+    if candidate not in occupied:
+        return candidate
+    ordinal = 2
+    while True:
+        alternative = f"{candidate} [collision {ordinal}]"
+        if alternative not in occupied:
+            return alternative
+        ordinal += 1
+
+
 def redact_sensitive(value: Any, *, enabled: bool = True) -> Any:
     """Return a JSON-compatible copy with common secret shapes removed."""
 
@@ -135,7 +167,7 @@ def redact_sensitive(value: Any, *, enabled: bool = True) -> Any:
         redacted_mapping: dict[str, Any] = {}
         for key, item in value.items():
             raw_key = str(key)
-            safe_key = _redact_text(raw_key)
+            safe_key = _collision_free_key(_redact_text(raw_key), redacted_mapping)
             redacted_mapping[safe_key] = (
                 "[REDACTED]"
                 if _SENSITIVE_KEY.search(raw_key)
@@ -195,6 +227,24 @@ def _contains_real_time_assistance(value: Any) -> bool:
         _REAL_TIME_ASSISTANCE.search(_NEGATED_REAL_TIME_CONTEXT.sub("", text))
         for text in _walk_strings(value)
     )
+
+
+def blocked_security_guidance(events: list[SecurityEvent]) -> list[str]:
+    """Return deterministic user guidance for each distinct blocked security rule."""
+
+    guidance: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        if not event.blocked or event.rule_id in seen:
+            continue
+        seen.add(event.rule_id)
+        guidance.append(
+            _BLOCKED_RULE_GUIDANCE.get(
+                event.rule_id,
+                f"安全規則`{event.rule_id}`により事後検討を開始できませんでした。",
+            )
+        )
+    return guidance
 
 
 def screen_case(case: CaseInput) -> list[SecurityEvent]:

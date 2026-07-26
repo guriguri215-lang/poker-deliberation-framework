@@ -150,7 +150,7 @@ def test_public_projection_preserves_status_scope_and_decision_rationale() -> No
     }
     assert items["RM-013"]["status"] == "completed"
     assert items["RM-028"]["status"] == "proposed"
-    assert items["RM-029"]["status"] == "in_progress"
+    assert items["RM-029"]["status"] == "completed"
     assert items["RM-025"]["priority"] == "P1"
     assert items["RM-018A"]["status"] == "planned"
     assert items["RM-018B"]["status"] == "planned"
@@ -184,6 +184,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-013B",
         "P2-027A",
         "P2-027B",
+        "P2-029A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -191,9 +192,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
-        "P2-029A",
-    }
+    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -415,14 +414,12 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
     assert summary["schema_version"] == "3.0.0"
     assert summary["total_items"] == 30
     assert summary["status_counts"] == {
-        "completed": 16,
-        "in_progress": 1,
+        "completed": 17,
         "planned": 10,
         "proposed": 3,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 11,
-        "in_progress": 1,
+        "completed": 12,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []

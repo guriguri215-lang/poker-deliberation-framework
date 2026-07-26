@@ -203,8 +203,8 @@
     {
       "id": "P2-029A",
       "rm_id": "RM-029",
-      "status": "in_progress",
-      "status_reason": "Approved implementation is in progress on the offline Python product path; no external provider or solver execution is authorized.",
+      "status": "completed",
+      "status_reason": "The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution.",
       "dependencies": [
         "P2-012B",
         "P2-013B",
@@ -1509,8 +1509,8 @@
       "title": "Offline Python product path safety and usability completion",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "in_progress",
-      "status_reason": "Approved implementation is in progress; external providers and solvers remain disabled or unavailable.",
+      "status": "completed",
+      "status_reason": "Retrospective input safety, lossless redaction, derived ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood are implemented and verified; external providers and solvers remain disabled or unavailable.",
       "dependencies": [
         "RM-012",
         "RM-013",

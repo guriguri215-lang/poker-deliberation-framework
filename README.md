@@ -53,9 +53,11 @@ settlementを検証します。通常経路のprovider/tool実行は引き続き
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
 RM-010、RM-011、RM-012、RM-013、RM-024、RM-027とP2-013Bは`completed`です。
 RM-029/P2-029Aはoffline Python product pathの安全性・数値検証・利用者向けsummary・dogfoodを
-対象として`in_progress`です。RM-025は外部作用前のruntime意味整合を優先するためP1ですが、
+完了し、`completed`です。RM-025は外部作用前のruntime意味整合を優先するためP1ですが、
 `proposed`とdecision gateを維持します。RM-028は`proposed`、P2-028Aは`not_started`であり、
 RM-019/RM-020の外部provider/solver実行は開始していません。
+P2-029Aの詳細contractは
+[`docs/offline-product-path.md`](docs/offline-product-path.md)を参照してください。
 
 P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision rootへ
 `structural_nonterminal` revisionをpublishしてから、同一processの非直列化authorizationで
@@ -114,10 +116,13 @@ poker-deliberate calculate pot_odds --analysis-scope retrospective --input examp
 poker-deliberate calculate icm --analysis-scope retrospective --input examples\icm_input.json
 poker-deliberate calculate fixed_strategy_best_response --analysis-scope retrospective --input examples\best_response_input.json
 poker-deliberate show RUN_ID
+poker-deliberate show RUN_ID --format summary
 poker-deliberate resume RUN_ID --reject APPROVAL_ID --reason "外部実行を許可しない"
 ```
 
-各コマンドは `--format json` または `--format markdown` を受け付けます。計算入力と完全な
+各コマンドは `--format json` または `--format markdown` を受け付けます。
+`review-hand`、`review-strategy`、`audit-claim`、`show`、`resume`では、保存artifactを増やさない
+追加projectionとして`--format summary`も選択できます。計算入力と完全な
 ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンドがレポートに入ります。
 新しいcontract version 2では、旧3値`exactness`を互換用に残し、`numeric_exactness`で
 `exact` / `exact-under-model` / `floating-verified` / `approximate` / `unavailable`を区別します。

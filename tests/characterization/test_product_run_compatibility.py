@@ -43,6 +43,16 @@ def test_public_orchestrator_signatures_preserve_existing_parameters() -> None:
     assert tuple(report_path.parameters) == ("self", "run_id", "format_name")
 
 
+def test_summary_projection_does_not_add_a_stored_report_artifact() -> None:
+    source = Path("src/poker_deliberation/storage/revision_canonical.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"final_report.json"' in source
+    assert '"final_report.md"' in source
+    assert '"final_report.summary' not in source
+
+
 def test_flat_v1_writer_uses_the_exact_portable_lf_sentinel(tmp_path: Path) -> None:
     run = RunStore(tmp_path / "legacy").create_run("run-v1-sentinel")
 

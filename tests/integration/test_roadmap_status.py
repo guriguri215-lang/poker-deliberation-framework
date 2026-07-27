@@ -186,6 +186,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-027B",
         "P2-029A",
         "P2-025A",
+        "P3-014A",
         "P3-017A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
@@ -194,9 +195,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
-        "P3-014A",
-    }
+    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -246,12 +245,12 @@ def test_p3_014a_registration_is_versioned_bounded_and_site_independent() -> Non
     items = _by_id()
     milestones = _milestones(load_roadmap())
 
-    assert items["RM-014"]["status"] == "in_progress"
+    assert items["RM-014"]["status"] == "completed"
     assert items["RM-014"]["milestones"] == {
         "entry": "P3-014A",
         "completion": "P3-014A",
     }
-    assert milestones["P3-014A"]["status"] == "in_progress"
+    assert milestones["P3-014A"]["status"] == "completed"
     assert milestones["P3-014A"]["dependencies"] == ["RM-006", "RM-012"]
     assert "supported site none" in milestones["P3-014A"]["scope"]
     assert items["RM-015"]["status"] == "planned"
@@ -490,18 +489,19 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
     assert summary["schema_version"] == "6.0.0"
     assert summary["total_items"] == 30
     assert summary["status_counts"] == {
-        "completed": 17,
-        "in_progress": 3,
+        "completed": 18,
+        "in_progress": 2,
         "planned": 8,
         "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 14,
-        "in_progress": 1,
+        "completed": 15,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [
+        "RM-015",
+        "RM-016",
         "RM-018A",
         "RM-021",
     ]

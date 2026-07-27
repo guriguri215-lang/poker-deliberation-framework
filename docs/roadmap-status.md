@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `6.0.0`
-- source SHA-256: `86a7af519b3b1bee5f546ae5a791a6577e72b136feee007cd43baec2507e75f1`
+- source SHA-256: `104de25c3918b62f6f4eb71a7d26c1a8f55774f3cd159a33265e6dcbc2c607f5`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -46,7 +46,7 @@
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
-| `P3-014A` | `RM-014` | `in_progress` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The decision gate is approved and implementation of the strict versioned normalization vertical slice is underway. |
+| `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 
 ## Current RM state
@@ -66,7 +66,7 @@
 | `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-011B` | `required` |
 | `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-012B` | `required` |
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `completed` | `RM-012`, `RM-024` | `P2-013B` | `required` |
-| `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-012` | `P3-014A` | `required` |
+| `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `completed` | `RM-006`, `RM-012` | `P3-014A` | `required` |
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `planned` | `RM-014` | `n/a` | `required` |
 | `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `planned` | `RM-006`, `RM-014` | `n/a` | `required` |
 | `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
@@ -396,8 +396,8 @@
 
 ### RM-014 — Versioned normalization grammar
 
-- Status: `in_progress`
-- Status reason: The P3-014A grammar and supported-site decision gate is approved; implementation and completion gates are in progress.
+- Status: `completed`
+- Status reason: P3-014A is complete with the approved generic grammar version 1, supported site none, typed provenance, verified persistence, compatibility coverage, and passing completion gates.
 - Objective: Version the supported conservative grammar and preserve parser provenance in run artifacts.
 - Capabilities:
   - documented_hand_parser

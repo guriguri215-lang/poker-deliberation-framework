@@ -111,8 +111,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "offline_evaluation_harness",
-        "planned",
-        "P3-017A is registered to add strict offline datasets, deterministic scoring, "
+        "implemented",
+        "P3-017A provides strict offline datasets, deterministic exact-evidence scoring, "
         "provenance binding, and reproducible result artifacts without external execution.",
     ),
     Capability(

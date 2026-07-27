@@ -38,7 +38,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `local_data_cleanup_executor` | **implemented** | P2-027BのPython APIは、承認済み1 runに対するbounded quarantine、遅延staged delete、immutable receipt/tombstone、revision CAS、idempotency、read-only reconciliationを実装する。cleanup CLI、automatic retry、secure eraseは実装しない。 |
 | `immutable_revision_storage_foundation` | **implemented** | P2-012Aのimmutable revision、manifest、transaction、lock、recovery claim、revision CAS基盤と、P2-010Bの内部revision-only phase transition authorization seamを実装済み。通常のproduct runには未接続。 |
 | `product_integrated_durable_run` | **implemented** | P2-012Bのmarker-last terminal publication、verified product reader/status、approval-checkpoint resume、read-only flat-v1 adapter、copy-only migration、durable budget settlement、lifecycle metadata integrationを実装済み。 |
-| `offline_evaluation_harness` | **planned** | P3-017Aとして、外部実行を行わないstrictなoffline dataset、決定的scorer、provenance binding、再現可能なresult artifactを登録済み。 |
+| `offline_evaluation_harness` | **implemented** | P3-017Aのstrictなoffline dataset、決定的exact-evidence scorer、provenance binding、再現可能なresult artifactを、外部実行なしで提供する。 |
 | `phase_1_hardening` | **implemented** | typed tool contract、contract v2の数値区分、実行時verification、ローカルoracle/metamorphic testを実装済み。 |
 
 ## 20 tools、Codex 9役、Python 7役

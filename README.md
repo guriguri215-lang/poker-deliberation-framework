@@ -11,6 +11,11 @@ P2-025Aは、この分離を維持したまま役割inventory、assignment/conte
 execution auditをversioned schemaで比較し、検証済みPython productを加算的にprojectionします。
 詳細は[`docs/runtime-conformance-contract.md`](docs/runtime-conformance-contract.md)を参照してください。
 
+P3-017Aはrepository-owned MIT synthetic fixture、strict canonical dataset/scorer/result、
+deterministic exact-evidence scoringを使うoffline integrated evaluation harnessです。
+network、provider、external solver、runtime bridge、product run storageを起動・変更しません。
+詳細は[`docs/evaluation-contract.md`](docs/evaluation-contract.md)を参照してください。
+
 RM実装状態の正はpackage resourceとして設定したtracked JSON
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 
@@ -50,7 +55,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 4.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 5.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
@@ -136,6 +141,19 @@ ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンド
 `action: street, actor, action, amount[, to_amount]` の保守的な形式だけを正規化します。
 承認待ちのCLIはレポートを出力して終了コード3を返します。
 正常完了は0、入力・計算失敗および`failed_with_limitations`は2です。
+
+P3-017A offline evaluationは、固定したcommit/tree IDとignored `tmp/` outputを明示して実行します。
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_offline_evaluation_fixtures.py --check
+.\.venv\Scripts\python.exe scripts\run_offline_evaluation.py `
+  --source-commit COMMIT_SHA `
+  --source-tree TREE_SHA `
+  --output tmp/goals/P3-017A/evaluation-runs/result.json
+```
+
+score `1.0` / threshold `1.0`は宣言済み10 caseのexact evidence一致だけを意味し、未実装の
+主観的戦略metricやGTO・均衡品質を評価しません。
 
 ## 主張の数値検証
 
@@ -338,6 +356,7 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)
 - [Budget execution contract](docs/budget-execution-contract.md)
+- [Offline evaluation contract](docs/evaluation-contract.md)
 - [Offline public release checklist](docs/public-release-checklist.md)
 - [RM status projection](docs/roadmap-status.md)
 - [Phase 2 readiness contracts](docs/phase2-readiness-contracts.md)

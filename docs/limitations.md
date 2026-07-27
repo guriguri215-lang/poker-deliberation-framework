@@ -1,5 +1,11 @@
 # Current limitations
 
+- P3-017A は repository-owned MIT synthetic fixture の 10 declared case と
+  `exact-evidence-match` scorer だけを実装する。threshold `1.0` の pass は宣言済みevidenceの
+  完全一致を意味するだけで、戦略品質、GTO、均衡、正確なrange、release readinessを意味しない。
+  主観的metric、人間rubric、外部dataset/baseline、provider、external solver、runtime bridge、
+  process sandbox、latency/cost計測は未実装である。structured timeoutはsynthetic bound checkで
+  実processの強制停止ではない。
 - P2-027A itself defines and evaluates local-data policy values only. P2-027B adds an explicitly
   authorized, one-run-at-a-time Python API for bounded ownership verification, same-volume
   quarantine, delayed staged deletion, immutable receipts/tombstones, CAS, and read-only

@@ -1,5 +1,16 @@
 # Security
 
+- P3-017A evaluation valuesはstrict・frozen・unknown-field拒否で、NFC、portable ID、bounded
+  text、canonical JSON、purpose-separated SHA-256を検証する。suite/manifest/dataset/scorer/
+  licenseのhashとcase countが不一致ならcase実行前にfail closedとなる。
+- fixtureはrepository-owned MIT synthetic dataだけで、network/provider/external solver/
+  runtime bridgeを起動しない。solver availability caseは既存のhonest unavailable adapterだけを
+  実行し、solver evidenceなしの均衡claimを拒否する。
+- evaluation metadataは既知credential形状を拒否し、Pydantic errorからinput valueを隠す。
+  synthetic canaryは実行時に分割片から組み立て、fixture/resultへ値を保存しない。prompt-likeな
+  extra fieldはstrict schemaで拒否する。
+- result outputはrepository-relative `tmp/` JSONへ限定する。hashはcorruption/correlation検出用で
+  writer authenticity、署名、秘密性を提供せず、synthetic timeoutはOS process isolationではない。
 - P2-025A runtime conformance valuesはstrict・frozen・unknown-field拒否であり、NFC、UTC、
   portable ID、bounded text、canonical JSON、purpose-separated SHA-256を検証する。hashは
   corruption/correlation検出用であり、writer authenticityや署名を提供しない。

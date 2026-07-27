@@ -112,6 +112,19 @@ CaseMutation: TypeAlias = Literal[
     "exceed-declared-timeout",
 ]
 
+_MUTATION_BY_SCENARIO: Final[dict[CaseKind, CaseMutation]] = {
+    "normal": "none",
+    "context-provenance-mismatch": "change-context-source",
+    "role-allowlist-mismatch": "expand-tool-allowlist",
+    "calculator-oracle-mismatch": "change-oracle",
+    "missing-denominator": "remove-denominator-policy",
+    "missing-scorer": "remove-scorer-path",
+    "missing-version": "remove-schema-version",
+    "unsupported-solver-claim": "claim-equilibrium-without-evidence",
+    "synthetic-secret-metadata": "insert-synthetic-secret-shape",
+    "structured-timeout": "exceed-declared-timeout",
+}
+
 
 class _EvaluationModel(BaseModel):
     model_config = ConfigDict(
@@ -146,6 +159,8 @@ class EvaluationCaseInputV1(_EvaluationModel):
 
     @model_validator(mode="after")
     def scenario_has_exact_input_shape(self) -> EvaluationCaseInputV1:
+        if self.mutation != _MUTATION_BY_SCENARIO[self.scenario]:
+            raise ValueError("case scenario/mutation mismatch")
         calculator_fields = (
             self.pot_before_bet,
             self.opponent_bet,
@@ -306,6 +321,7 @@ class ToolEvidenceV1(_EvaluationModel):
 class CaseOutcomeV1(_EvaluationModel):
     case_id: PortableId
     case_kind: CaseKind
+    input_sha256: Sha256
     observed_status: Literal["rejected", "succeeded", "timed-out"]
     expected_evidence: tuple[EvidenceToken, ...] = Field(min_length=1, max_length=64)
     actual_evidence: tuple[EvidenceToken, ...] = Field(min_length=1, max_length=64)

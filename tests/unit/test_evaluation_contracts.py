@@ -15,6 +15,7 @@ from poker_deliberation.evaluation.canonical import (
     parse_canonical_model,
 )
 from poker_deliberation.evaluation.models import (
+    EvaluationCaseInputV1,
     EvaluationDatasetV1,
     EvaluationSummaryV1,
     ExpectedEvidenceV1,
@@ -82,6 +83,17 @@ def test_evidence_tokens_are_unique_and_utf8_sorted() -> None:
         ExpectedEvidenceV1(tokens=("b:second", "a:first"))
     with pytest.raises(ValidationError, match="unique"):
         ExpectedEvidenceV1(tokens=("a:first", "a:first"))
+
+
+def test_case_scenario_and_mutation_are_exactly_bound() -> None:
+    loaded = load_evaluation_suite(ROOT, SUITE)
+
+    for case in loaded.dataset.cases:
+        mismatched_mutation = "change-oracle" if case.input.mutation == "none" else "none"
+        raw = case.input.model_dump(mode="python")
+        raw["mutation"] = mismatched_mutation
+        with pytest.raises(ValidationError, match="scenario/mutation mismatch"):
+            EvaluationCaseInputV1.model_validate(raw, strict=True)
 
 
 def test_exact_summary_threshold_boundary_and_count_failures() -> None:

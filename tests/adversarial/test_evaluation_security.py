@@ -77,4 +77,5 @@ def test_result_does_not_echo_synthetic_secret_or_enable_external_execution() ->
     solver = next(item for item in result.outcomes if item.case_kind == "unsupported-solver-claim")
     assert solver.tool_evidence is not None
     assert solver.tool_evidence.status == "unavailable"
+    assert "epistemic-label:unknown" in solver.actual_evidence
     assert "solver-claim:rejected" in solver.actual_evidence

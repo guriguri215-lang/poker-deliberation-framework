@@ -62,9 +62,10 @@ synthetic bound check であり、OS sandbox の実装を意味しない。
 ## Result and reproduction
 
 result は source Git commit/tree ID、suite/manifest/dataset/scorer hash、全 tool contract hash と
-version、Codex/Python runtime inventory hash、各 case outcome、structured failure、summary を
-含む。動的な calculator timestamp/result ID は score evidence に使わず、同じ source binding と
-suite から同一 canonical result bytes を得る。
+version、Codex/Python runtime inventory hash、各 case の input SHA-256 と outcome、structured
+failure、summary を含む。unsupported solver case は epistemic label `UNKNOWN` を明示したうえで
+solver evidence のない equilibrium claim を拒否する。動的な calculator timestamp/result ID は
+score evidence に使わず、同じ source binding と suite から同一 canonical result bytes を得る。
 
 output は repository-relative の ignored `tmp/` 配下に限定する。
 

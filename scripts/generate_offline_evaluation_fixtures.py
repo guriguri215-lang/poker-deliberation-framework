@@ -135,7 +135,11 @@ def fixture_documents() -> tuple[
                 "case-08-unsupported-solver",
                 "unsupported-solver-claim",
                 "claim-equilibrium-without-evidence",
-                ("solver-claim:rejected", "solver-status:unavailable"),
+                (
+                    "epistemic-label:unknown",
+                    "solver-claim:rejected",
+                    "solver-status:unavailable",
+                ),
                 tool_name="solver_status",
             ),
             _case(

@@ -70,6 +70,10 @@ def test_offline_integrated_suite_passes_exactly_and_binds_runtime_and_tools() -
     assert len(result.source.tool_contract_versions) == 20
     assert len(result.source.codex_runtime_inventory_sha256) == 64
     assert len(result.source.python_runtime_inventory_sha256) == 64
+    loaded = load_evaluation_suite(ROOT, SUITE)
+    assert {item.case_id: item.input_sha256 for item in result.outcomes} == {
+        item.case_id: item.input_sha256 for item in loaded.dataset.cases
+    }
 
 
 def test_negative_cases_are_expected_structured_failures_not_missing_denominator() -> None:
@@ -193,3 +197,12 @@ def test_suite_loader_rejects_count_hash_and_metric_drift(tmp_path: Path) -> Non
     with pytest.raises(EvaluationLoadError) as metric_error:
         load_evaluation_suite(metric_root, SUITE)
     assert metric_error.value.code == "metric-not-registered"
+
+    metric_type_root = _copy_fixture_repository(tmp_path / "metric-type")
+    metrics_path = metric_type_root / "evals" / "metrics.json"
+    metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    metrics["metrics"] = "reproducibility"
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    with pytest.raises(EvaluationLoadError) as metric_type_error:
+        load_evaluation_suite(metric_type_root, SUITE)
+    assert metric_type_error.value.code == "metric-not-registered"

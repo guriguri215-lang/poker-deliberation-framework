@@ -235,7 +235,12 @@ def load_evaluation_suite(repository_root: Path, suite_relative: str) -> LoadedE
             "metric_id",
             "metric registry could not be read",
         ) from exc
-    if not isinstance(metrics_raw, dict) or scorer.metric_id not in metrics_raw.get("metrics", []):
+    metrics = metrics_raw.get("metrics") if isinstance(metrics_raw, dict) else None
+    if (
+        not isinstance(metrics, list)
+        or not all(isinstance(item, str) for item in metrics)
+        or scorer.metric_id not in metrics
+    ):
         raise EvaluationLoadError(
             "metric-not-registered",
             "metric_id",
@@ -466,6 +471,7 @@ def _outcome(
     return CaseOutcomeV1(
         case_id=case.case_id,
         case_kind=case.case_kind,
+        input_sha256=case.input_sha256,
         observed_status=observed_status,  # type: ignore[arg-type]
         expected_evidence=expected,
         actual_evidence=ordered,
@@ -714,6 +720,12 @@ def _contract_probe_case(
 def _unsupported_solver_case(case: EvaluationCaseV1) -> CaseOutcomeV1:
     result = default_registry().execute("solver_status", {})
     evidence = _tool_evidence(result)
+    limited_result = ResultV1(
+        result_id="unsupported-solver-status",
+        status=ResultStatus.LIMITED,
+        summary="No qualified solver evidence is available.",
+        epistemic_label=EpistemicLabel.UNKNOWN,
+    )
     rejected = False
     try:
         ResultV1(
@@ -726,10 +738,18 @@ def _unsupported_solver_case(case: EvaluationCaseV1) -> CaseOutcomeV1:
         )
     except ValidationError:
         rejected = True
-    if result.status is ToolStatus.UNAVAILABLE and rejected:
+    if (
+        result.status is ToolStatus.UNAVAILABLE
+        and limited_result.epistemic_label is EpistemicLabel.UNKNOWN
+        and rejected
+    ):
         return _outcome(
             case,
-            ("solver-claim:rejected", "solver-status:unavailable"),
+            (
+                "epistemic-label:unknown",
+                "solver-claim:rejected",
+                "solver-status:unavailable",
+            ),
             observed_status="rejected",
             failure=_failure(
                 "unsupported-solver-claim",

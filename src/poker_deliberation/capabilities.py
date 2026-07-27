@@ -110,6 +110,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "budget settlement, and lifecycle metadata integration are implemented.",
     ),
     Capability(
+        "offline_evaluation_harness",
+        "planned",
+        "P3-017A is registered to add strict offline datasets, deterministic scoring, "
+        "provenance binding, and reproducible result artifacts without external execution.",
+    ),
+    Capability(
         "phase_1_hardening",
         "implemented",
         "Phase 1 typed tool contracts, numeric exactness, executable verification, and local "

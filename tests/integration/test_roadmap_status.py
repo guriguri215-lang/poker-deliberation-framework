@@ -13,7 +13,7 @@ import scripts.generate_roadmap_status as roadmap_generator
 from poker_deliberation.capabilities import CAPABILITIES
 from poker_deliberation.cli import doctor
 from poker_deliberation.roadmap import (
-    EXPECTED_PHASE_2_MILESTONES,
+    EXPECTED_IMPLEMENTATION_MILESTONES,
     EXPECTED_RM_IDS,
     ITEM_FIELDS,
     MILESTONE_FIELDS,
@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "4.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "5.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -122,7 +122,7 @@ def test_public_projection_has_exact_schema_and_complete_item_sets() -> None:
     assert all(set(item) == ITEM_FIELDS for item in document["items"])
     assert {
         str(item["id"]) for item in document["implementation_milestones"]
-    } == EXPECTED_PHASE_2_MILESTONES
+    } == EXPECTED_IMPLEMENTATION_MILESTONES
     assert all(set(item) == MILESTONE_FIELDS for item in document["implementation_milestones"])
     assert document["source_policy"] == {
         "canonical": True,
@@ -193,7 +193,9 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
-    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
+        "P3-017A",
+    }
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -202,6 +204,41 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-027B",
     ]
     assert all(item["status_reason"] for item in milestones.values())
+
+
+def test_p3_017a_registration_is_offline_and_bounded() -> None:
+    items = _by_id()
+    milestones = _milestones(load_roadmap())
+
+    assert items["RM-017"]["status"] == "in_progress"
+    assert items["RM-017"]["capabilities"] == ["offline_evaluation_harness"]
+    assert items["RM-017"]["milestones"] == {
+        "entry": "P3-017A",
+        "completion": None,
+    }
+    assert milestones["P3-017A"] == {
+        "id": "P3-017A",
+        "rm_id": "RM-017",
+        "status": "in_progress",
+        "status_reason": (
+            "The approved offline integrated evaluation milestone is registered; "
+            "implementation and fixed-commit evidence are in progress."
+        ),
+        "dependencies": [
+            "RM-006",
+            "RM-007",
+            "RM-012",
+            "P2-025A",
+        ],
+        "scope": (
+            "Strict versioned offline dataset, scorer, provenance, runtime-inventory, "
+            "per-case outcome, structured-failure, and summary contracts with a "
+            "repository-owned synthetic MIT fixture and deterministic exact-evidence "
+            "scoring; no provider, solver, bridge, or external dataset execution."
+        ),
+    }
+    assert items["RM-017"]["decision_gate"]["required"] is True  # type: ignore[index]
+    assert "subjective strategy metrics" in items["RM-017"]["decision_gate"]["rationale"][-1]  # type: ignore[index]
 
 
 def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
@@ -433,22 +470,22 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "4.0.0"
+    assert summary["schema_version"] == "5.0.0"
     assert summary["total_items"] == 30
     assert summary["status_counts"] == {
         "completed": 17,
-        "in_progress": 1,
-        "planned": 10,
+        "in_progress": 2,
+        "planned": 9,
         "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
         "completed": 13,
+        "in_progress": 1,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [
         "RM-014",
-        "RM-017",
         "RM-018A",
         "RM-021",
     ]

@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0.0",
+  "schema_version": "5.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -225,6 +225,19 @@
         "P2-029A"
       ],
       "scope": "Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge."
+    },
+    {
+      "id": "P3-017A",
+      "rm_id": "RM-017",
+      "status": "in_progress",
+      "status_reason": "The approved offline integrated evaluation milestone is registered; implementation and fixed-commit evidence are in progress.",
+      "dependencies": [
+        "RM-006",
+        "RM-007",
+        "RM-012",
+        "P2-025A"
+      ],
+      "scope": "Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution."
     }
   ],
   "items": [
@@ -891,40 +904,45 @@
       "title": "Executable evaluation harness",
       "phase": "phase-3",
       "priority": "P1",
-      "status": "planned",
-      "status_reason": "evals/metrics.json names metrics but has no executable runner or baseline.",
+      "status": "in_progress",
+      "status_reason": "P3-017A is approved and registered for a deterministic offline integrated harness; the broader subjective metric set remains unimplemented.",
       "dependencies": [
         "RM-006",
         "RM-007",
         "RM-012"
       ],
-      "capabilities": [],
+      "capabilities": [
+        "offline_evaluation_harness"
+      ],
       "objective": "Turn evaluation metric names into versioned datasets, scorers, thresholds or review protocols, and reproducible result artifacts.",
       "targets": [
         "evals",
-        "future evaluation runner"
+        "src/poker_deliberation/evaluation",
+        "scripts/run_offline_evaluation.py"
       ],
       "acceptance_criteria": [
-        "Every metric records dataset/license/hash, scorer/version, direction, aggregation, denominator policy, threshold or human rubric, commit/config hashes, and per-case outcomes."
+        "Every implemented metric records dataset/license/content hash, scorer/version, direction, aggregation, denominator policy, threshold or human rubric, source commit/tree/config/tool-contract/runtime-inventory bindings, per-case outcomes, structured failures, and a summary.",
+        "P3-017A implements only deterministic exact-evidence matching with micro-mean aggregation, all declared cases in the denominator, fail-closed invalid or missing counts, and an approved threshold of 1.0.",
+        "The synthetic fixture is repository-owned and MIT-licensed; subjective strategy metrics, external datasets, providers, solvers, runtime bridges, and equilibrium claims remain outside this milestone."
       ],
       "tests": [
-        "deterministic scorer",
-        "threshold boundaries",
-        "corrupt/missing metric",
-        "baseline drift",
-        "unsupported-equilibrium and false-precision fixtures"
+        "tests/unit/test_evaluation_contracts.py",
+        "tests/property/test_evaluation_properties.py",
+        "tests/integration/test_offline_evaluation.py",
+        "tests/adversarial/test_evaluation_security.py",
+        "tests/characterization/test_evaluation_compatibility.py"
       ],
       "milestones": {
-        "entry": null,
+        "entry": "P3-017A",
         "completion": null
       },
       "relations": [],
       "decision_gate": {
         "required": true,
         "rationale": [
-          "dataset rights",
-          "metric thresholds",
-          "human review rubric"
+          "rights for future non-synthetic datasets beyond the approved repository-owned MIT fixture",
+          "thresholds for future metrics beyond the approved exact-evidence threshold",
+          "human review rubrics for subjective strategy metrics"
         ]
       }
     },

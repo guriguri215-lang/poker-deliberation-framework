@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `4.0.0`
-- source SHA-256: `c52bf24115b4ef887427b7a841c34ea164863ba9930e23409b942b96db647676`
+- schema version: `5.0.0`
+- source SHA-256: `c91bbcc157a52774a2d6c5ce164a4f4433859a2289d20f3e7265a58c59c67f40`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -28,7 +28,7 @@
 | `blocked` | Milestone implementation cannot proceed for the recorded reason. | `not_started`, `in_progress` |
 | `completed` | The current tree satisfies the milestone scope. | terminal |
 
-## Phase 2 implementation milestones
+## Implementation milestones
 
 | milestone | RM | status | dependencies | scope | status reason |
 |---|---|---|---|---|---|
@@ -46,6 +46,7 @@
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
+| `P3-017A` | `RM-017` | `in_progress` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The approved offline integrated evaluation milestone is registered; implementation and fixed-commit evidence are in progress. |
 
 ## Current RM state
 
@@ -67,7 +68,7 @@
 | `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `planned` | `RM-006`, `RM-012` | `n/a` | `required` |
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `planned` | `RM-014` | `n/a` | `required` |
 | `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `planned` | `RM-006`, `RM-014` | `n/a` | `required` |
-| `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `planned` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
+| `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
 | `RM-018A` | Pre-release readiness | `pre-release` | `P1` | `planned` | `RM-001`, `RM-002`, `RM-003`, `RM-004`, `RM-005`, `RM-006`, `RM-007`, `RM-008`, `RM-009`, `RM-023` | `n/a` | `required` |
 | `RM-018B` | Stable release gate | `stable-release` | `P1` | `planned` | `RM-018A`, `RM-010`, `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `n/a` | `required` |
 | `RM-019` | Decision-gated OpenAI provider | `phase-4` | `P2` | `planned` | `RM-010`, `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-028` | `n/a` | `required` |
@@ -446,26 +447,29 @@
 
 ### RM-017 — Executable evaluation harness
 
-- Status: `planned`
-- Status reason: evals/metrics.json names metrics but has no executable runner or baseline.
+- Status: `in_progress`
+- Status reason: P3-017A is approved and registered for a deterministic offline integrated harness; the broader subjective metric set remains unimplemented.
 - Objective: Turn evaluation metric names into versioned datasets, scorers, thresholds or review protocols, and reproducible result artifacts.
 - Capabilities:
-  - none
+  - offline_evaluation_harness
 - Targets:
   - evals
-  - future evaluation runner
+  - src/poker_deliberation/evaluation
+  - scripts/run_offline_evaluation.py
 - Acceptance criteria:
-  - Every metric records dataset/license/hash, scorer/version, direction, aggregation, denominator policy, threshold or human rubric, commit/config hashes, and per-case outcomes.
+  - Every implemented metric records dataset/license/content hash, scorer/version, direction, aggregation, denominator policy, threshold or human rubric, source commit/tree/config/tool-contract/runtime-inventory bindings, per-case outcomes, structured failures, and a summary.
+  - P3-017A implements only deterministic exact-evidence matching with micro-mean aggregation, all declared cases in the denominator, fail-closed invalid or missing counts, and an approved threshold of 1.0.
+  - The synthetic fixture is repository-owned and MIT-licensed; subjective strategy metrics, external datasets, providers, solvers, runtime bridges, and equilibrium claims remain outside this milestone.
 - Tests:
-  - deterministic scorer
-  - threshold boundaries
-  - corrupt/missing metric
-  - baseline drift
-  - unsupported-equilibrium and false-precision fixtures
+  - tests/unit/test_evaluation_contracts.py
+  - tests/property/test_evaluation_properties.py
+  - tests/integration/test_offline_evaluation.py
+  - tests/adversarial/test_evaluation_security.py
+  - tests/characterization/test_evaluation_compatibility.py
 - Decision gate rationale:
-  - dataset rights
-  - metric thresholds
-  - human review rubric
+  - rights for future non-synthetic datasets beyond the approved repository-owned MIT fixture
+  - thresholds for future metrics beyond the approved exact-evidence threshold
+  - human review rubrics for subjective strategy metrics
 
 ### RM-018A — Pre-release readiness
 

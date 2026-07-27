@@ -229,8 +229,8 @@
     {
       "id": "P3-017A",
       "rm_id": "RM-017",
-      "status": "in_progress",
-      "status_reason": "The approved offline integrated evaluation milestone is registered; implementation and fixed-commit evidence are in progress.",
+      "status": "completed",
+      "status_reason": "The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented.",
       "dependencies": [
         "RM-006",
         "RM-007",
@@ -905,7 +905,7 @@
       "phase": "phase-3",
       "priority": "P1",
       "status": "in_progress",
-      "status_reason": "P3-017A is approved and registered for a deterministic offline integrated harness; the broader subjective metric set remains unimplemented.",
+      "status_reason": "P3-017A is implemented for deterministic offline exact-evidence scoring; the broader subjective metric set, external datasets, and human rubrics remain unimplemented.",
       "dependencies": [
         "RM-006",
         "RM-007",

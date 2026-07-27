@@ -186,6 +186,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-027B",
         "P2-029A",
         "P2-025A",
+        "P3-017A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -193,9 +194,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
-        "P3-017A",
-    }
+    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -219,10 +218,10 @@ def test_p3_017a_registration_is_offline_and_bounded() -> None:
     assert milestones["P3-017A"] == {
         "id": "P3-017A",
         "rm_id": "RM-017",
-        "status": "in_progress",
+        "status": "completed",
         "status_reason": (
-            "The approved offline integrated evaluation milestone is registered; "
-            "implementation and fixed-commit evidence are in progress."
+            "The canonical synthetic fixture, deterministic runner and scorer, "
+            "provenance-bound result, documentation, and declared tests are implemented."
         ),
         "dependencies": [
             "RM-006",
@@ -479,8 +478,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 13,
-        "in_progress": 1,
+        "completed": 14,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []

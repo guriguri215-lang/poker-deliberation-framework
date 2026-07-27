@@ -148,6 +148,11 @@ def _limitations(report: FinalReport) -> list[str]:
         if result.status in {ToolStatus.FAILED, ToolStatus.UNAVAILABLE}:
             detail = result.error or "結果は利用できません。"
             limitations.append(f"{result.tool_name}は`{result.status.value}`です: {detail}")
+        elif result.status is ToolStatus.SUCCESS and _calculation_label(result) is None:
+            limitations.append(
+                f"{result.tool_name}は`success`ですが検証済み要約分類を満たさないため、"
+                "計算結果を要約から除外しました。完全JSONを参照してください。"
+            )
     if report.analysis_sections:
         limitations.append(
             f"未検証のagent文章{len(report.analysis_sections)}節は結論へ昇格せず、"

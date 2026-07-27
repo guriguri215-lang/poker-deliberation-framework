@@ -5,7 +5,11 @@ from poker_deliberation.schemas import (
     Claim,
     ConfidenceGrade,
     EpistemicLabel,
+    Exactness,
     FinalReport,
+    NumericalExactness,
+    ToolResult,
+    ToolStatus,
 )
 from poker_deliberation.tools import default_registry
 
@@ -89,3 +93,27 @@ def test_summary_keeps_unavailable_solver_as_limitation_not_calculation() -> Non
     assert "solver_statusは`unavailable`" in summary
     assert "no equilibrium or strategy result was generated" in summary
     assert "**CALCULATED** `solver_status`" not in summary
+
+
+def test_summary_discloses_legacy_success_that_cannot_be_safely_classified() -> None:
+    legacy = ToolResult(
+        tool_name="legacy_approximation",
+        input={},
+        output={"value": "private-output-canary"},
+        status=ToolStatus.SUCCESS,
+        exactness=Exactness.APPROXIMATE,
+        numeric_exactness=NumericalExactness.APPROXIMATE,
+        contract_version="1.0.0",
+    )
+    report = FinalReport(
+        run_id="summary-unclassified-success",
+        conclusion="互換artifactの要約境界を確認します。",
+        tool_results=[legacy],
+    )
+
+    summary = render_summary(report)
+
+    assert "利用可能な検証済み計算結果はありません" in summary
+    assert "legacy_approximationは`success`ですが検証済み要約分類を満たさない" in summary
+    assert "完全JSONを参照してください" in summary
+    assert "private-output-canary" not in summary

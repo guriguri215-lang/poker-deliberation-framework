@@ -87,6 +87,9 @@ future-game simulation, risk preference, bounty modeling, a poker solver, GTO, o
 - Major input/tool assumptions and limitations are shown explicitly.
 - Failed or unavailable tools remain limitations. `solver_status=unavailable` never becomes a
   strategy result.
+- A legacy-compatible `success` result that does not satisfy a verified summary classification is
+  omitted from calculations but surfaced as a limitation with a pointer to the complete JSON; its
+  unclassified output is never copied into the summary.
 - Agent prose is not copied into the summary or promoted to a verified conclusion. The summary only
   reports that unverified sections remain in the complete JSON.
 

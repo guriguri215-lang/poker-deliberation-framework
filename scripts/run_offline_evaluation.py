@@ -38,8 +38,16 @@ def _output_path(relative: str) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--suite", default=DEFAULT_SUITE)
-    parser.add_argument("--source-commit", required=True)
-    parser.add_argument("--source-tree", required=True)
+    parser.add_argument(
+        "--source-commit",
+        required=True,
+        help="caller-declared Git commit ID; the runner does not invoke Git or verify it",
+    )
+    parser.add_argument(
+        "--source-tree",
+        required=True,
+        help="caller-declared Git tree ID; the runner does not invoke Git or verify it",
+    )
     parser.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:

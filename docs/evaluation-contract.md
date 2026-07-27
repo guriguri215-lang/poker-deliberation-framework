@@ -67,6 +67,14 @@ failure、summary を含む。unsupported solver case は epistemic label `UNKNO
 solver evidence のない equilibrium claim を拒否する。動的な calculator timestamp/result ID は
 score evidence に使わず、同じ source binding と suite から同一 canonical result bytes を得る。
 
+`source_commit_id` と `source_tree_id` は **USER_CLAIM（caller-declared）** である。runnerは
+値のGit object ID形式を検証するが、Gitを起動せず、objectの存在、commitとtreeの対応、
+作業treeのclean状態、実行コードとの一致を検証しない。したがってresult単体からsource
+provenanceやbuild attestationが証明されたとは扱わず、一致は **UNKNOWN** のままである。
+固定候補を評価するoperatorは実行直前に`git rev-parse HEAD`、
+`git rev-parse "HEAD^{tree}"`、`git status --porcelain`を別途確認し、その証跡とresultを
+同じ監査記録へ束縛する。
+
 output は repository-relative の ignored `tmp/` 配下に限定する。
 
 ```powershell

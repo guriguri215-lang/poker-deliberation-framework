@@ -159,6 +159,10 @@ P3-017A offline evaluationは、固定したcommit/tree IDとignored `tmp/` outp
 
 score `1.0` / threshold `1.0`は宣言済み10 caseのexact evidence一致だけを意味し、未実装の
 主観的戦略metricやGTO・均衡品質を評価しません。
+`--source-commit` / `--source-tree`はcaller-declared値であり、runnerはGit objectの存在、
+commit/tree対応、clean worktree、実行コードとの一致を検証しません。source provenanceや
+build attestationではないため、固定候補では別途`git rev-parse`と`git status --porcelain`の
+証跡を保存してください。
 
 ## 主張の数値検証
 

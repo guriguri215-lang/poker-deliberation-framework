@@ -30,6 +30,13 @@ from poker_deliberation.local_data_policy import (
     ClassificationSource,
     LifecycleAuditMetadata,
 )
+from poker_deliberation.normalization import (
+    NORMALIZATION_CONTRACT_VERSION,
+    NORMALIZATION_RESULT_VERSION,
+    NormalizationResultV1,
+    normalization_result_json_bytes,
+    verify_normalization_binding,
+)
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
@@ -191,7 +198,16 @@ def product_payload_commitments(
     required = {"input.json", "state.json", "final_report.json"}
     if not required <= set(payloads):
         raise CanonicalStorageError("product publication lacks a required core payload")
-    parse_canonical_model(payloads["input.json"], CaseInput)
+    input_case = parse_canonical_model(payloads["input.json"], CaseInput)
+    if "normalization.json" in payloads:
+        if "normalized_case.json" not in payloads:
+            raise CanonicalStorageError("normalization payload lacks the normalized case artifact")
+        normalization = _parse_normalization_result(payloads["normalization.json"])
+        normalized_case = parse_canonical_model(payloads["normalized_case.json"], CaseInput)
+        try:
+            verify_normalization_binding(input_case, normalized_case, normalization)
+        except ValueError as exc:
+            raise CanonicalStorageError("normalization payload binding mismatch") from exc
     report = _parse_json_model(payloads["final_report.json"], FinalReport)
     state = parse_canonical_json(payloads["state.json"])
     if not isinstance(state, dict):
@@ -486,6 +502,21 @@ def _validate_json_model(data: bytes, model: type[BaseModel]) -> None:
     _parse_json_model(data, model)
 
 
+def _parse_normalization_result(data: bytes) -> NormalizationResultV1:
+    value = parse_canonical_json(data)
+    if not isinstance(value, dict):
+        raise CanonicalStorageError("normalization payload must be an object")
+    if (
+        value.get("result_version") != NORMALIZATION_RESULT_VERSION
+        or value.get("contract_version") != NORMALIZATION_CONTRACT_VERSION
+    ):
+        raise UnsupportedTerminalVersion("unsupported normalization payload version")
+    result = _parse_json_model(data, NormalizationResultV1)
+    if normalization_result_json_bytes(result) != data:
+        raise CanonicalStorageError("normalization payload canonical bytes mismatch")
+    return result
+
+
 def _validate_json_value(logical_name: str, data: bytes) -> None:
     single_models: dict[str, type[BaseModel]] = {
         "input.json": CaseInput,
@@ -504,6 +535,9 @@ def _validate_json_value(logical_name: str, data: bytes) -> None:
     model = single_models.get(logical_name)
     if model is not None:
         _validate_json_model(data, model)
+        return
+    if logical_name == "normalization.json":
+        _parse_normalization_result(data)
         return
     if logical_name == "approval_ledger_v2.json":
         parse_approval_model(data, ApprovalLedgerV2)

@@ -1,5 +1,11 @@
 # Security
 
+- P3-014A normalization accepts exact bytes only through a strict/frozen version `1.0.0` request.
+  BOM、invalid UTF-8、mixed/bare-CR newline、non-NFC、control/format character、secret shape、
+  unknown key、duplicate scalar、ambiguous numeric syntax、resource overflowをfail closedにする。
+  diagnosticsはclosed code/field/lineだけを保存し、raw value、secret、CSV/Pydantic errorをecho
+  しない。`normalization.json`はsource byte hashとcanonical hand hashを持ち、terminal readerが
+  `input.json`/`normalized_case.json`と再相関する。SHA-256は署名やwriter authenticityではない。
 - P3-017A evaluation valuesはstrict・frozen・unknown-field拒否で、NFC、portable ID、bounded
   text、canonical JSON、purpose-separated SHA-256を検証する。suite/manifest/dataset/scorer/
   licenseのhashとcase countが不一致ならcase実行前にfail closedとなる。

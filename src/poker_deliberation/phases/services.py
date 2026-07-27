@@ -13,6 +13,11 @@ from poker_deliberation.context_lifecycle import (
     context_payload,
 )
 from poker_deliberation.isolation import build_blind_decision_context
+from poker_deliberation.normalization import (
+    NormalizationResultV1,
+    normalization_diagnostic_text,
+    verify_normalization_binding,
+)
 from poker_deliberation.phases.contracts import (
     ArtifactIntent,
     ArtifactKind,
@@ -202,10 +207,26 @@ class NormalizationService(PurePhaseService[NormalizationInput, NormalizationOut
     def run(self, request: PhaseRequest[NormalizationInput]) -> PhaseOutcome[NormalizationOutput]:
         isolated = self.isolate(request)
         value = isolated.input
+        normalized_case = CaseInput.model_validate(value.safe_case.model_dump(mode="python"))
+        normalization = (
+            None
+            if value.normalization is None
+            else NormalizationResultV1.model_validate(
+                value.normalization.model_dump(mode="python"),
+                strict=True,
+            )
+        )
+        warnings = list(value.warnings)
+        if normalization is not None:
+            verify_normalization_binding(normalized_case, normalized_case, normalization)
+            warnings.extend(
+                normalization_diagnostic_text(item) for item in normalization.diagnostics
+            )
         output = NormalizationOutput(
-            normalized_case=CaseInput.model_validate(value.safe_case.model_dump(mode="python")),
+            normalized_case=normalized_case,
+            normalization=normalization,
             assumptions=tuple(dict(item) for item in value.assumptions),
-            warnings=tuple(value.warnings),
+            warnings=tuple(warnings),
         )
         return successful_outcome(isolated, output, warnings=output.warnings)
 

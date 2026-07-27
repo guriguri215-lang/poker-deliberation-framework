@@ -15,6 +15,7 @@ from poker_deliberation.local_data_policy import (
     ClassificationEvidence,
     ClassificationSource,
 )
+from poker_deliberation.normalization import NormalizationResultV1
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
@@ -90,6 +91,7 @@ _LIST_MODELS: dict[str, type[BaseModel]] = {
 }
 _SINGLE_MODELS: dict[str, type[BaseModel]] = {
     "input.json": CaseInput,
+    "normalization.json": NormalizationResultV1,
     "normalized_case.json": CaseInput,
     "final_report.json": FinalReport,
 }

@@ -103,6 +103,11 @@ product run rootと別であり、P2-027Aのretention evaluatorやP2-027Bのclea
 
 product terminal revisionは全admitted payloadのclassification/evidenceを再検証し、
 `lifecycle_audit.json`をrequired payloadとしてcompletion markerより前に保存する。
+P3-014A の documented key-value hand inputでは、typed `normalization.json` も固定
+run payloadとして `internal` 以上に分類される。source本文は同artifactへ保存せず、
+exact source byte length/SHA-256、parser identity/version、sanitized diagnosticと、
+成功時のcanonical normalized-hand length/SHA-256だけを保存する。structured JSON入力と
+provenanceを持たないlegacy copyでは、このartifactを新規作成しない。
 `retention_started_at`はexact `CompletionMarkerV2.published_at`、verification basisは
 `verified_terminal`である。provider contextのuse-expiryやfilesystem mtimeをretention anchorへ
 流用しない。

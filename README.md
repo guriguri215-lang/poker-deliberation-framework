@@ -140,7 +140,10 @@ ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンド
 20 toolのstrict input/output schema、前提、上限、単位、toleranceは
 [生成済みtool contracts](docs/tool-contracts.md)を参照してください。
 自由文ハンドは `key: value`、`player: id, position, stack`、
-`action: street, actor, action, amount[, to_amount]` の保守的な形式だけを正規化します。
+`action: street, actor, action, amount[, to_amount]` のversion 1保守形式だけを正規化します。
+exact source bytesとcanonical handのSHA-256、parser ID/version、安定診断コードは
+[`normalization.json` contract](docs/normalization-contract.md)に従います。対応siteは`none`で、
+自然言語およびsite-specific hand historyは解析しません。
 承認待ちのCLIはレポートを出力して終了コード3を返します。
 正常完了は0、入力・計算失敗および`failed_with_limitations`は2です。
 

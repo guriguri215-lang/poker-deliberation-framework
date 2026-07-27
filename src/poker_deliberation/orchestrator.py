@@ -74,6 +74,11 @@ from poker_deliberation.context_lifecycle import (
     new_context_id,
 )
 from poker_deliberation.isolation import IsolationError, build_blind_decision_context
+from poker_deliberation.normalization import (
+    NormalizationResultV1,
+    extract_normalization_result,
+    verify_normalization_binding,
+)
 from poker_deliberation.phases import (
     AdjudicationService,
     AnalysisExecutor,
@@ -996,9 +1001,14 @@ class Orchestrator:
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
+        case, normalization = extract_normalization_result(case)
         actual_run_id = run_id or new_run_id()
         try:
-            return self._run(case, actual_run_id)
+            return self._run(
+                case,
+                actual_run_id,
+                normalization=normalization,
+            )
         except BudgetLimitError as exc:
             machine = self._run_machines.get(actual_run_id)
             if machine is not None and machine.state is not RunState.FAILED_WITH_LIMITATIONS:
@@ -1024,7 +1034,13 @@ class Orchestrator:
                 confidence=ConfidenceGrade.D,
             )
 
-    def _run(self, case: CaseInput, actual_run_id: str) -> FinalReport:
+    def _run(
+        self,
+        case: CaseInput,
+        actual_run_id: str,
+        *,
+        normalization: NormalizationResultV1 | None,
+    ) -> FinalReport:
         try:
             validate_run_id(actual_run_id)
         except CanonicalStorageError as exc:
@@ -1151,6 +1167,7 @@ class Orchestrator:
             policy_snapshot_hash=self.phase_policy_snapshot_hash,
             input_value=NormalizationInput(
                 safe_case=safe_case,
+                normalization=normalization,
                 assumptions=tuple(
                     assumption.model_dump(mode="json") for assumption in case.assumptions
                 ),
@@ -1164,7 +1181,18 @@ class Orchestrator:
         if normalization_outcome.output is None:
             raise PhaseContractError("normalization returned no output")
         normalized = normalization_outcome.output.normalized_case
+        normalization = normalization_outcome.output.normalization
+        data_quality.extend(normalization_outcome.output.warnings)
+        if normalization is not None:
+            verify_normalization_binding(case, normalized, normalization)
+            self.store.write_json(actual_run_id, "normalization.json", normalization)
         self.store.write_json(actual_run_id, "normalized_case.json", normalized)
+        case = CaseInput.model_validate(
+            {
+                **case.model_dump(mode="python"),
+                "hand": normalized.hand,
+            }
+        )
         self.store.write_json(
             actual_run_id,
             "assumptions.json",

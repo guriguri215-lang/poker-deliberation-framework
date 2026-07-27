@@ -29,6 +29,10 @@ from poker_deliberation.local_data_policy import (
     LifecyclePolicyError,
     classify_artifact,
 )
+from poker_deliberation.normalization import (
+    NormalizationResultV1,
+    verify_normalization_binding,
+)
 from poker_deliberation.phases.contracts import canonical_sha256 as phase_canonical_sha256
 from poker_deliberation.phases.models import ToolExecutionBinding
 from poker_deliberation.reporting import render_markdown
@@ -117,6 +121,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         "poker-case-input-artifact-v1",
         "case_input",
     ),
+    "normalization.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-normalization-result-artifact-v1",
+        "normalization_record",
+    ),
     "normalized_case.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -187,6 +197,7 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
 
 _PAYLOAD_ORDER_PREFIX = (
     "input.json",
+    "normalization.json",
     "normalized_case.json",
     "assumptions.json",
     "evidence.jsonl",
@@ -717,6 +728,8 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
     data = artifact.exact_bytes
     if logical_name in {"input.json", "normalized_case.json"}:
         return parse_canonical_model(data, CaseInput)
+    if logical_name == "normalization.json":
+        return parse_canonical_model(data, NormalizationResultV1)
     if logical_name == "assumptions.json":
         return parse_canonical_model_list(data, Assumption)
     if logical_name == "evidence.jsonl":
@@ -932,7 +945,12 @@ def _validate_source_graph(
                 raise CanonicalStorageError("tool binding run identity mismatch")
 
     fixed_dependencies = {
-        "normalized_case.json": {"input.json"},
+        "normalization.json": {"input.json"},
+        "normalized_case.json": (
+            {"input.json", "normalization.json"}
+            if "normalization.json" in by_name
+            else {"input.json"}
+        ),
         "assumptions.json": {"input.json"},
         "evidence.jsonl": {"input.json"},
         "approvals.json": {"input.json"},
@@ -943,6 +961,19 @@ def _validate_source_graph(
     for logical_name, dependencies in fixed_dependencies.items():
         if logical_name in by_name:
             require_payload_sources(logical_name, dependencies)
+    if "normalization.json" in by_name:
+        if "input.json" not in parsed or "normalized_case.json" not in parsed:
+            raise CanonicalStorageError(
+                "normalization artifact requires input and normalized case artifacts"
+            )
+        try:
+            verify_normalization_binding(
+                cast(CaseInput, parsed["input.json"]),
+                cast(CaseInput, parsed["normalized_case.json"]),
+                cast(NormalizationResultV1, parsed["normalization.json"]),
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError("normalization artifact binding mismatch") from exc
 
     report_names = sorted(
         (name for name in by_name if _VARIABLE_AGENT_REPORT.fullmatch(name)),

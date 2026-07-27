@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
-ROADMAP_SCHEMA_VERSION = "4.0.0"
+ROADMAP_SCHEMA_VERSION = "5.0.0"
 __all__ = [
     "ROADMAP_RESOURCE",
     "ROADMAP_SCHEMA_VERSION",
@@ -25,7 +25,7 @@ __all__ = [
     "validate_transition",
 ]
 RM_ID_PATTERN = re.compile(r"^RM-[0-9]{3}[AB]?$")
-MILESTONE_ID_PATTERN = re.compile(r"^P2-[0-9]{3}[AB]$")
+MILESTONE_ID_PATTERN = re.compile(r"^P[2-5]-[0-9]{3}[A-Z]$")
 ALLOWED_PRIORITIES = {"P0", "P1", "P2", "P3"}
 ALLOWED_PHASES = {
     "readiness",
@@ -59,7 +59,7 @@ EXPECTED_RM_IDS = (
     | {"RM-018A", "RM-018B"}
     | {f"RM-{number:03d}" for number in range(19, 30)}
 )
-EXPECTED_PHASE_2_MILESTONES = {
+EXPECTED_IMPLEMENTATION_MILESTONES = {
     "P2-024A",
     "P2-010A",
     "P2-011A",
@@ -74,7 +74,10 @@ EXPECTED_PHASE_2_MILESTONES = {
     "P2-028A",
     "P2-029A",
     "P2-025A",
+    "P3-017A",
 }
+# Compatibility alias for callers that imported the schema 4.x name.
+EXPECTED_PHASE_2_MILESTONES = EXPECTED_IMPLEMENTATION_MILESTONES
 TOP_LEVEL_FIELDS = {
     "schema_version",
     "source_policy",
@@ -245,9 +248,9 @@ def _validate_milestones(
         _require_string_list(milestone.get("dependencies"), f"{milestone_id}.dependencies")
         milestones[milestone_id] = milestone
 
-    if set(milestones) != EXPECTED_PHASE_2_MILESTONES:
-        missing = sorted(EXPECTED_PHASE_2_MILESTONES - set(milestones))
-        extra = sorted(set(milestones) - EXPECTED_PHASE_2_MILESTONES)
+    if set(milestones) != EXPECTED_IMPLEMENTATION_MILESTONES:
+        missing = sorted(EXPECTED_IMPLEMENTATION_MILESTONES - set(milestones))
+        extra = sorted(set(milestones) - EXPECTED_IMPLEMENTATION_MILESTONES)
         raise ValueError(f"implementation milestone set mismatch; missing={missing}, extra={extra}")
 
     nodes = set(items) | set(milestones)
@@ -716,7 +719,7 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
     lines.extend(
         [
             "",
-            "## Phase 2 implementation milestones",
+            "## Implementation milestones",
             "",
             "| milestone | RM | status | dependencies | scope | status reason |",
             "|---|---|---|---|---|---|",

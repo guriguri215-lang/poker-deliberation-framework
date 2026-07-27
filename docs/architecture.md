@@ -1,5 +1,18 @@
 # Architecture
 
+## P3-017A offline evaluation boundary
+
+`evaluation/`は、repository-owned synthetic fixture、deterministic exact-evidence scorer、
+source/config/tool-contract/runtime-inventory binding、per-case outcome、structured failure、
+summaryを専用schema `1.0.0`で扱う加算的なoffline境界である。canonicalization
+`poker-offline-evaluation-json-v1`とhash domainはproduct storage、approval、runtime
+conformanceから分離する。
+
+runnerは既存runtime conformanceのpure validationと登録済みlocal calculatorを同じcase outcomeへ
+束縛するが、`FinalReport`、`VerifiedRunReadV2`、terminal manifest、orchestrator、product run rootを
+変更しない。network/provider/external solver/runtime bridgeを起動せず、result writeはCLIが指定する
+ignored `tmp/`配下だけに限定する。詳細は`docs/evaluation-contract.md`を参照する。
+
 ## P2-025A runtime conformance boundary
 
 `runtime_conformance/`はCodexネイティブ層とPythonオーケストレーター層を同一実行面に見せず、
@@ -46,6 +59,8 @@ Python `AgentExecutionRecord` entries or run artifacts.
 - `reporting/`: renders only the structured FinalReport.
 - `runtime_conformance/`: inventories and compares separate runtime semantics without executing a
   bridge or changing persisted product artifacts.
+- `evaluation/`: loads canonical offline fixtures, executes bounded local checks, applies exact
+  evidence scoring, and returns a provenance-bound result without product artifact mutation.
 
 ## State machine
 

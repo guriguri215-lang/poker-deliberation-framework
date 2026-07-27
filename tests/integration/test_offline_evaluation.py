@@ -61,6 +61,7 @@ def test_offline_integrated_suite_passes_exactly_and_binds_runtime_and_tools() -
     assert normal.tool_evidence.numeric_exactness == "floating-verified"
     assert normal.tool_evidence.verification_passed is True
     assert "context:semantics-preserved" in normal.actual_evidence
+    assert "epistemic-label:calculated" in normal.actual_evidence
     assert "routing:python-orchestrator" in normal.actual_evidence
     assert "runtime-bridge:false" in normal.actual_evidence
     assert result.source.source_commit_id == COMMIT_ID
@@ -161,6 +162,20 @@ def test_suite_loader_rejects_count_hash_and_metric_drift(tmp_path: Path) -> Non
     with pytest.raises(EvaluationLoadError) as count_error:
         load_evaluation_suite(count_root, SUITE)
     assert count_error.value.code == "dataset-case-count-mismatch"
+
+    input_root = _copy_fixture_repository(tmp_path / "input")
+    input_loaded = load_evaluation_suite(input_root, SUITE)
+    changed_input = input_loaded.dataset.cases[0].input.model_copy(update={"call_cost": 51})
+    changed_case = input_loaded.dataset.cases[0].model_copy(update={"input": changed_input})
+    changed_dataset = input_loaded.dataset.model_copy(
+        update={"cases": (changed_case, *input_loaded.dataset.cases[1:])}
+    )
+    (input_root / input_loaded.manifest.cases_path).write_bytes(
+        canonical_json_bytes(changed_dataset)
+    )
+    with pytest.raises(EvaluationLoadError) as input_error:
+        load_evaluation_suite(input_root, SUITE)
+    assert input_error.value.code == "case-input-hash-mismatch"
 
     hash_root = _copy_fixture_repository(tmp_path / "hash")
     hash_loaded = load_evaluation_suite(hash_root, SUITE)

@@ -26,7 +26,8 @@ product run storage を起動または変更しない。solver evidence がな�
 
 `evals/datasets/p3_017a/v1/manifest.json` は dataset ID/version、repository ownership、
 SPDX license、license path/hash、case path/count、domain-separated content hash を記録する。
-`cases.json` の各 case は ID、kind、strict input、expected evidence を持つ。
+`cases.json` の各 case は ID、kind、strict input、専用domainのinput SHA-256、expected evidenceを
+持ち、loaderはcase実行前にinputの意味とhash bindingを再検証する。
 
 `evals/scorers/exact_evidence_match_v1.json` は scorer/version、metric、direction、aggregation、
 denominator、invalid/missing count policy、threshold、human-rubric absence を記録する。

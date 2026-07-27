@@ -15,11 +15,13 @@ from poker_deliberation.evaluation.models import (
     EVALUATION_SCHEMA_VERSION,
 )
 
+CASE_INPUT_DOMAIN = "poker-offline-evaluation-case-input-v1"
 DATASET_CONTENT_DOMAIN = "poker-offline-evaluation-dataset-content-v1"
 EVALUATION_RESULT_DOMAIN = "poker-offline-evaluation-result-v1"
 SCORER_CONFIG_DOMAIN = "poker-offline-evaluation-scorer-config-v1"
 SOURCE_CONFIG_DOMAIN = "poker-offline-evaluation-source-config-v1"
 TOOL_CONTRACT_DOMAIN = "poker-offline-evaluation-tool-contract-v1"
+TOOL_EVIDENCE_DOMAIN = "poker-offline-evaluation-tool-evidence-v1"
 TOOL_INPUT_DOMAIN = "poker-offline-evaluation-tool-input-v1"
 TOOL_OUTPUT_DOMAIN = "poker-offline-evaluation-tool-output-v1"
 
@@ -151,11 +153,13 @@ def canonical_domain_sha256(domain: str, value: Any) -> str:
 
 
 __all__ = [
+    "CASE_INPUT_DOMAIN",
     "DATASET_CONTENT_DOMAIN",
     "EVALUATION_RESULT_DOMAIN",
     "SCORER_CONFIG_DOMAIN",
     "SOURCE_CONFIG_DOMAIN",
     "TOOL_CONTRACT_DOMAIN",
+    "TOOL_EVIDENCE_DOMAIN",
     "TOOL_INPUT_DOMAIN",
     "TOOL_OUTPUT_DOMAIN",
     "CanonicalEvaluationError",

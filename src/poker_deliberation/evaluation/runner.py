@@ -13,9 +13,11 @@ from pydantic import ValidationError
 
 from poker_deliberation.capabilities import CAPABILITIES
 from poker_deliberation.evaluation.canonical import (
+    CASE_INPUT_DOMAIN,
     DATASET_CONTENT_DOMAIN,
     SOURCE_CONFIG_DOMAIN,
     TOOL_CONTRACT_DOMAIN,
+    TOOL_EVIDENCE_DOMAIN,
     TOOL_INPUT_DOMAIN,
     TOOL_OUTPUT_DOMAIN,
     canonical_domain_sha256,
@@ -55,6 +57,7 @@ from poker_deliberation.runtime_conformance import (
     RuntimeInventoryV1,
     SemanticRole,
     ToolCapabilityAllowlistV1,
+    ToolResultReferenceV1,
     build_runtime_inventories,
     compare_records,
     runtime_inventory_sha256,
@@ -201,6 +204,13 @@ def load_evaluation_suite(repository_root: Path, suite_relative: str) -> LoadedE
             "case_count",
             "declared and observed dataset case counts differ",
         )
+    for case in dataset.cases:
+        if canonical_domain_sha256(CASE_INPUT_DOMAIN, case.input) != case.input_sha256:
+            raise EvaluationLoadError(
+                "case-input-hash-mismatch",
+                "input_sha256",
+                "evaluation case input differs from its declared binding",
+            )
     if canonical_domain_sha256(DATASET_CONTENT_DOMAIN, dataset) != manifest.content_sha256:
         raise EvaluationLoadError(
             "dataset-content-hash-mismatch",
@@ -511,6 +521,21 @@ def _pot_odds_case(case: EvaluationCaseV1, context: _ExecutionContext) -> CaseOu
     declared_oracle = Fraction(oracle_numerator, oracle_denominator)  # type: ignore[arg-type]
     actual_oracle = Fraction(str(result.output["required_equity"]))
     if case.case_kind == "normal" and actual_oracle == independent_oracle == declared_oracle:
+        tool_reference = ToolResultReferenceV1(
+            result_id="offline-evaluation-pot-odds",
+            tool_name=result.tool_name,
+            contract_version=result.contract_version,
+            status="success",
+            exactness=result.numeric_exactness.value,
+            result_sha256=canonical_domain_sha256(TOOL_EVIDENCE_DOMAIN, evidence),
+        )
+        epistemic_result = ResultV1(
+            result_id="offline-evaluation-calculated-result",
+            status=ResultStatus.SUCCEEDED,
+            summary="The verified pot-odds output supports a CALCULATED result.",
+            epistemic_label=EpistemicLabel.CALCULATED,
+            tool_results=(tool_reference,),
+        )
         source, target = _record_pair(context)
         check = compare_records(
             source,
@@ -519,11 +544,15 @@ def _pot_odds_case(case: EvaluationCaseV1, context: _ExecutionContext) -> CaseOu
             context.python_inventory,
             now=context.now,
         )
-        if check.status == "conformant":
+        if (
+            check.status == "conformant"
+            and epistemic_result.epistemic_label is EpistemicLabel.CALCULATED
+        ):
             actual: tuple[str, ...] = (
                 "calculator:oracle-match",
                 "calculator:pot_odds:floating-verified",
                 "context:semantics-preserved",
+                "epistemic-label:calculated",
                 "external-effect:false",
                 "routing:python-orchestrator",
                 "runtime-bridge:false",

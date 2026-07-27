@@ -14,6 +14,7 @@ if str(SOURCE_ROOT) not in sys.path:
     sys.path.insert(0, str(SOURCE_ROOT))
 
 from poker_deliberation.evaluation.canonical import (
+    CASE_INPUT_DOMAIN,
     DATASET_CONTENT_DOMAIN,
     canonical_domain_sha256,
     canonical_json_bytes,
@@ -42,14 +43,16 @@ def _case(
     evidence: tuple[str, ...],
     **inputs: object,
 ) -> EvaluationCaseV1:
+    case_input = EvaluationCaseInputV1(
+        scenario=case_kind,  # type: ignore[arg-type]
+        mutation=mutation,  # type: ignore[arg-type]
+        **inputs,
+    )
     return EvaluationCaseV1(
         case_id=case_id,
         case_kind=case_kind,  # type: ignore[arg-type]
-        input=EvaluationCaseInputV1(
-            scenario=case_kind,  # type: ignore[arg-type]
-            mutation=mutation,  # type: ignore[arg-type]
-            **inputs,
-        ),
+        input=case_input,
+        input_sha256=canonical_domain_sha256(CASE_INPUT_DOMAIN, case_input),
         expected_evidence=ExpectedEvidenceV1(tokens=evidence),
     )
 
@@ -72,6 +75,7 @@ def fixture_documents() -> tuple[
                     "calculator:oracle-match",
                     "calculator:pot_odds:floating-verified",
                     "context:semantics-preserved",
+                    "epistemic-label:calculated",
                     "external-effect:false",
                     "routing:python-orchestrator",
                     "runtime-bridge:false",

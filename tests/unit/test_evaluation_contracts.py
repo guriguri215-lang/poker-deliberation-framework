@@ -7,6 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from poker_deliberation.evaluation.canonical import (
+    CASE_INPUT_DOMAIN,
     DATASET_CONTENT_DOMAIN,
     CanonicalEvaluationError,
     canonical_domain_sha256,
@@ -39,6 +40,10 @@ def test_repository_owned_fixture_has_strict_license_hashes_and_counts() -> None
     assert loaded.scorer.invalid_or_missing_count_policy == "fail-closed"
     assert loaded.scorer.threshold == "1.0"
     assert loaded.scorer.human_review_rubric is None
+    assert all(
+        case.input_sha256 == canonical_domain_sha256(CASE_INPUT_DOMAIN, case.input)
+        for case in loaded.dataset.cases
+    )
 
 
 def test_canonical_dataset_round_trip_is_byte_exact_and_versioned() -> None:

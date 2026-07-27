@@ -189,6 +189,7 @@ class EvaluationCaseV1(_EvaluationModel):
     case_id: PortableId
     case_kind: CaseKind
     input: EvaluationCaseInputV1
+    input_sha256: Sha256
     expected_evidence: ExpectedEvidenceV1
 
     @model_validator(mode="after")

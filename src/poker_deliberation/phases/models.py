@@ -26,6 +26,7 @@ from poker_deliberation.context_lifecycle import (
     assignment_sha256,
     context_payload,
 )
+from poker_deliberation.normalization import NormalizationResultV1
 from poker_deliberation.phases.contracts import canonical_sha256
 from poker_deliberation.providers.base import ProviderAvailability
 from poker_deliberation.schemas import (
@@ -94,12 +95,14 @@ class IntakeValidationOutput(PhasePayload):
 
 class NormalizationInput(PhasePayload):
     safe_case: CaseInput
+    normalization: NormalizationResultV1 | None = None
     assumptions: tuple[dict[str, Any], ...] = ()
     warnings: tuple[str, ...] = ()
 
 
 class NormalizationOutput(PhasePayload):
     normalized_case: CaseInput
+    normalization: NormalizationResultV1 | None = None
     assumptions: tuple[dict[str, Any], ...] = ()
     warnings: tuple[str, ...] = ()
 

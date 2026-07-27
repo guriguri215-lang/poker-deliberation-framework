@@ -51,7 +51,9 @@ Python `AgentExecutionRecord` entries or run artifacts.
 - `phases/`: strict internal phase contracts, deterministic pure services, and serial Analysis /
   ToolResearch effect adapters. See `docs/phase-services.md`.
 - `context_lifecycle.py`: attempt-scoped policy, immutable envelope, integrity, expiry, and lineage.
-- `normalization.py`: conservative documented free-text hand format to canonical schema.
+- `normalization.py`: strict versioned byte grammar, bounded diagnostics, exact source/hand
+  provenance, and the legacy free-text compatibility projection. See
+  `docs/normalization-contract.md`.
 - `approvals.py`: explicit pending/approved/rejected ledger.
 - `storage/`: run-root confinement and atomic JSON/text writes.
 - `tools/`: deterministic calculators and an honest solver adapter.

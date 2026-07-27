@@ -101,6 +101,11 @@ The ordinary `Orchestrator.run` path continues to publish the P2-012B marker-las
 existing signatures and meanings. `final_report.json` and `final_report.md` retain their artifact
 schema, canonicalization, and reader checks. The summary is rendered after a verified report read.
 
+P3-014A adds `normalization.json` only when the input came from the documented version-1 byte
+grammar. The terminal reader recomputes its source and normalized-hand bindings before returning a
+verified run. Structured JSON and pre-P3-014A runs omit the artifact; readers and copy-only legacy
+migration do not invent it.
+
 The separate approval, revision-storage, terminal, cleanup, phase, budget, and local-data canonical
 JSON families are not consolidated by P2-029A. Their domains, versions, supported types, datetime
 rules, NFC rules, parsers, and consumers are inventoried only in the ignored goal evidence. Any

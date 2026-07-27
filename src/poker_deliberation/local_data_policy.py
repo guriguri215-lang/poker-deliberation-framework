@@ -920,6 +920,7 @@ def _failure(
 _FIXED_RUN_PAYLOAD_ARTIFACTS = frozenset(
     {
         "input.json",
+        "normalization.json",
         "normalized_case.json",
         "assumptions.json",
         "evidence.jsonl",

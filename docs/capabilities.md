@@ -28,7 +28,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `full_nlhe_equilibrium` | **unavailable** | full NLHE game tree、CFR、node locking、検証済み均衡計算はない。 |
 | `heads_up_nlhe_equity` | **implemented** | heads-up NLHEに限り、上限付きexact enumerationまたはseed付きMonte Carloを実行する。 |
 | `multiway_or_plo_equity` | **unavailable** | multiway equityとPLO equityは未対応。 |
-| `documented_hand_parser` | **implemented** | 文書化したkey-value/player/action形式だけを保守的に正規化する。 |
+| `documented_hand_parser` | **implemented** | version 1のstrictかつprovenance-boundなkey-value/player/action形式だけを保守的に正規化する。対応siteは`none`。 |
 | `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |

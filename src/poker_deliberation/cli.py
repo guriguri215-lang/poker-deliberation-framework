@@ -31,7 +31,12 @@ from poker_deliberation.approvals import (
 )
 from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.config import AppConfig
-from poker_deliberation.normalization import normalize_hand_text
+from poker_deliberation.normalization import (
+    MAX_SOURCE_BYTES,
+    NormalizationDiagnosticCode,
+    normalization_transport,
+    normalize_hand_bytes,
+)
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
 from poker_deliberation.reporting import render_markdown, render_summary
@@ -130,14 +135,34 @@ def _case_from_hand_file(path: str) -> CaseInput:
             hand=CanonicalHand.model_validate(data),
             analysis_scope="retrospective",
         )
-    raw_text = source.read_text(encoding="utf-8")
-    normalized = normalize_hand_text(raw_text)
+    if source.stat().st_size > MAX_SOURCE_BYTES:
+        raise ValueError(NormalizationDiagnosticCode.SOURCE_TOO_LARGE.value)
+    with source.open("rb") as stream:
+        source_bytes = stream.read(MAX_SOURCE_BYTES + 1)
+    if len(source_bytes) > MAX_SOURCE_BYTES:
+        raise ValueError(NormalizationDiagnosticCode.SOURCE_TOO_LARGE.value)
+    normalized = normalize_hand_bytes(source_bytes)
+    fatal_without_safe_text = {
+        NormalizationDiagnosticCode.UTF8,
+        NormalizationDiagnosticCode.SECRET_SHAPE,
+    }
+    fatal = next(
+        (
+            diagnostic
+            for diagnostic in normalized.diagnostics
+            if diagnostic.code in fatal_without_safe_text
+        ),
+        None,
+    )
+    if fatal is not None:
+        raise ValueError(fatal.code.value)
+    raw_text = source_bytes.decode("utf-8", errors="strict")
     return CaseInput(
         kind="hand",
         raw_text=raw_text,
         hand=normalized.hand,
         analysis_scope="retrospective",
-        metadata={"normalization_warnings": list(normalized.warnings)},
+        metadata=normalization_transport(normalized),
     )
 
 

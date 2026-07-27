@@ -8,7 +8,11 @@ import pytest
 from poker_deliberation.agents import ROLE_CATALOG
 from poker_deliberation.capabilities import CAPABILITIES, capability_snapshot
 from poker_deliberation.cli import doctor
-from poker_deliberation.normalization import normalize_hand_text
+from poker_deliberation.normalization import (
+    NORMALIZATION_PARSER_VERSION,
+    NORMALIZATION_SUPPORTED_SITE,
+    normalize_hand_text,
+)
 from poker_deliberation.providers import (
     LocalProvider,
     OpenAIAgentsProvider,
@@ -189,5 +193,7 @@ def test_parser_contract_accepts_documented_grammar_but_not_site_history() -> No
 
     assert documented.hand is not None
     assert documented.hand.game_type == "NLHE"
+    assert NORMALIZATION_PARSER_VERSION == "1.0.0"
+    assert NORMALIZATION_SUPPORTED_SITE == "none"
     assert site_history.hand is None
-    assert any("ignored unrecognized free text" in item for item in site_history.warnings)
+    assert any("NRM_E_MALFORMED_LINE" in item for item in site_history.warnings)

@@ -133,6 +133,7 @@ def test_budget_state_is_an_internal_run_audit_artifact() -> None:
         ("input.json", SubjectKind.RUN_PAYLOAD),
         ("agent_reports/analyst.json", SubjectKind.RUN_PAYLOAD),
         ("tool_results/equity.input.json", SubjectKind.RUN_PAYLOAD),
+        ("normalization.json", SubjectKind.RUN_PAYLOAD),
         ("normalized_case.json", SubjectKind.RUN_PAYLOAD),
         ("assumptions.json", SubjectKind.RUN_PAYLOAD),
         ("evidence.jsonl", SubjectKind.RUN_PAYLOAD),

@@ -27,8 +27,10 @@
   exclusions, and solver-native range formats are not implemented.
 - Hand validation does not fully model straddles, returned uncalled bets, site-specific rake timing,
   side pots, or every jurisdictional minimum-raise rule.
-- Free-text normalization supports the documented key-value/player/action format. It is not a
-  natural-language or site-specific parser; unrecognized lines are preserved as warnings, not facts.
+- Free-text normalization supports only
+  `poker-deliberation.generic-key-value-hand` version `1.0.0`, with `supported_site=none`.
+  It is not a natural-language or site-specific parser. Unknown/malformed/duplicate/ambiguous input
+  fails closed with stable bounded diagnostic codes; it is neither ignored nor converted into facts.
 - Best response uses pure-policy enumeration and is limited to small, finite, acyclic games.
 - Matrix support enumeration may use approximate fictitious play for degenerate/large unsupported
   cases; such output is never labeled exact.

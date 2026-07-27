@@ -1,5 +1,5 @@
 {
-  "schema_version": "5.0.0",
+  "schema_version": "6.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -225,6 +225,17 @@
         "P2-029A"
       ],
       "scope": "Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge."
+    },
+    {
+      "id": "P3-014A",
+      "rm_id": "RM-014",
+      "status": "in_progress",
+      "status_reason": "The decision gate is approved and implementation of the strict versioned normalization vertical slice is underway.",
+      "dependencies": [
+        "RM-006",
+        "RM-012"
+      ],
+      "scope": "Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser."
     },
     {
       "id": "P3-017A",
@@ -797,8 +808,8 @@
       "title": "Versioned normalization grammar",
       "phase": "phase-3",
       "priority": "P1",
-      "status": "planned",
-      "status_reason": "Accepted roadmap scope; not implemented.",
+      "status": "in_progress",
+      "status_reason": "The P3-014A grammar and supported-site decision gate is approved; implementation and completion gates are in progress.",
       "dependencies": [
         "RM-006",
         "RM-012"
@@ -810,23 +821,42 @@
       "objective": "Version the supported conservative grammar and preserve parser provenance in run artifacts.",
       "targets": [
         "src/poker_deliberation/normalization.py",
-        "input schema documentation"
+        "src/poker_deliberation/cli.py",
+        "src/poker_deliberation/orchestrator.py",
+        "src/poker_deliberation/phases/models.py",
+        "src/poker_deliberation/phases/services.py",
+        "src/poker_deliberation/storage/terminal_canonical.py",
+        "docs/normalization-contract.md",
+        "scripts/generate_normalization_fixtures.py"
       ],
       "acceptance_criteria": [
-        "Supported and unsupported syntax, locale, warnings, and parser version are explicit and round-trip tested."
+        "Strict frozen version-1 request, result, diagnostic, and provenance contracts define supported syntax, UTF-8, BOM, newline, NFC, invariant numeric, duplicate, unknown-key, malformed, and resource-boundary behavior.",
+        "Exact source-byte and canonical normalized-hand SHA-256 values persist in a typed artifact and are recomputed by the verified product reader without trusting untyped metadata.",
+        "The legacy normalize_hand_text shape, structured JSON and legacy runs, role context allowlists, approval/runtime boundaries, and unavailable natural-language/site parser claims remain compatible and truthful.",
+        "The documented free-text CLI path persists and reads the typed record and executes hand_validator without external provider, solver, site adapter, or runtime bridge execution.",
+        "Canonical fixtures and unit, property, integration, adversarial, characterization, roadmap, doctor, evaluation, and quality gates pass."
       ],
       "tests": [
-        "round-trip, malformed, Unicode, unknown-key, and resource-boundary tests"
+        "tests/unit/test_normalization_contracts.py",
+        "tests/property/test_normalization_properties.py",
+        "tests/integration/test_normalization_product_path.py",
+        "tests/integration/test_normalization_fixtures.py",
+        "tests/adversarial/test_normalization_security.py",
+        "tests/integration/test_capability_contract.py",
+        "tests/integration/test_roadmap_status.py"
       ],
       "milestones": {
-        "entry": null,
-        "completion": null
+        "entry": "P3-014A",
+        "completion": "P3-014A"
       },
-      "relations": [],
+      "relations": [
+        "P3-014A supports no poker site and does not start RM-015 hand-rule profiles or RM-016 range grammar work."
+      ],
       "decision_gate": {
         "required": true,
         "rationale": [
-          "supported sites and grammar profiles"
+          "approved repository-owned generic key-value grammar version 1",
+          "supported site none and continued natural-language/site-parser unavailability"
         ]
       }
     },

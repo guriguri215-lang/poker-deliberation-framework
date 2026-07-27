@@ -34,7 +34,9 @@ machine, provider, tool registry, filesystem paths, ambient clock, UUID/random/s
 global registry.
 
 - Intake validates evidence links and approval proposals as values and produces the redacted case.
-- Normalization returns the isolated canonical case, assumptions, and warnings.
+- Normalization strictly revalidates an optional P3-014A `NormalizationResultV1`, checks its
+  source/hand binding against the isolated case, and returns the canonical case, typed record,
+  assumptions, and bounded stable diagnostics. It does not trust metadata or parse a second time.
 - Routing validates the canonical role order. Calculation retains `math-auditor` and the assigned
   but unexecuted `report-writer`, both with empty `context_keys`.
 - ContextBuild produces a fresh P2-024A `ContextEnvelope` from injected UTC time and IDs and preserves
@@ -82,8 +84,9 @@ tool calls in the batch and returns correlated failed results; it cannot write o
 
 `Orchestrator` constructor's original four positional parameters, `run`, `resume`, `load_report`,
 `report_path`, CLI commands/exit codes, `CaseInput`, `FinalReport`, public `ToolRequest`/`ToolResult`,
-artifact names, normalized order, provider/tool call order, and P2-024A context enforcement remain
-compatible. Phase requests/outcomes are not new run artifacts.
+provider/tool call order, and P2-024A context enforcement remain compatible. P3-014A additively
+persists `normalization.json` only for documented free-text hand input; structured and legacy runs
+retain their previous inventory. Phase requests/outcomes are not themselves run artifacts.
 
 P2-011A usage values are schema `2.0.0` internal fields and preserve the phase contract's `1.0.0`
 outer request/outcome version. No durable usage artifact is added. See

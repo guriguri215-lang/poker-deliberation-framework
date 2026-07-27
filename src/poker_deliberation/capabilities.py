@@ -54,7 +54,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "documented_hand_parser",
         "implemented",
-        "The conservative key-value/player/action grammar is supported.",
+        "Version 1 of the strict provenance-bound key-value/player/action grammar is supported; "
+        "supported site: none.",
     ),
     Capability(
         "natural_language_or_site_parser",

@@ -109,6 +109,9 @@ def test_copy_migration_preserves_exact_bytes_and_replays_idempotently(
     assert {
         payload.inventory.logical_name: payload.exact_bytes for payload in migrated.payloads
     } == {name: data for name, data in before.items() if name != ".poker-deliberation-run"}
+    assert "normalization.json" not in {
+        payload.inventory.logical_name for payload in migrated.payloads
+    }
     assert _bytes(source) == before
     projection = Orchestrator(config).load_report("run-legacy-copy")
     assert projection.run_status == "failed_with_limitations"

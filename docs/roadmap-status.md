@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `5.0.0`
-- source SHA-256: `196d2c3f577ddf50b21afa63e4ba65a077cb3eca866f8063a99f39f60b233c9d`
+- schema version: `6.0.0`
+- source SHA-256: `86a7af519b3b1bee5f546ae5a791a6577e72b136feee007cd43baec2507e75f1`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -46,6 +46,7 @@
 | `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
+| `P3-014A` | `RM-014` | `in_progress` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The decision gate is approved and implementation of the strict versioned normalization vertical slice is underway. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 
 ## Current RM state
@@ -65,7 +66,7 @@
 | `RM-011` | Budget, retry, timeout, cancellation, and concurrency semantics | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-011B` | `required` |
 | `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-012B` | `required` |
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `completed` | `RM-012`, `RM-024` | `P2-013B` | `required` |
-| `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `planned` | `RM-006`, `RM-012` | `n/a` | `required` |
+| `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-012` | `P3-014A` | `required` |
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `planned` | `RM-014` | `n/a` | `required` |
 | `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `planned` | `RM-006`, `RM-014` | `n/a` | `required` |
 | `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
@@ -395,21 +396,40 @@
 
 ### RM-014 — Versioned normalization grammar
 
-- Status: `planned`
-- Status reason: Accepted roadmap scope; not implemented.
+- Status: `in_progress`
+- Status reason: The P3-014A grammar and supported-site decision gate is approved; implementation and completion gates are in progress.
 - Objective: Version the supported conservative grammar and preserve parser provenance in run artifacts.
 - Capabilities:
   - documented_hand_parser
   - natural_language_or_site_parser
 - Targets:
   - src/poker_deliberation/normalization.py
-  - input schema documentation
+  - src/poker_deliberation/cli.py
+  - src/poker_deliberation/orchestrator.py
+  - src/poker_deliberation/phases/models.py
+  - src/poker_deliberation/phases/services.py
+  - src/poker_deliberation/storage/terminal_canonical.py
+  - docs/normalization-contract.md
+  - scripts/generate_normalization_fixtures.py
 - Acceptance criteria:
-  - Supported and unsupported syntax, locale, warnings, and parser version are explicit and round-trip tested.
+  - Strict frozen version-1 request, result, diagnostic, and provenance contracts define supported syntax, UTF-8, BOM, newline, NFC, invariant numeric, duplicate, unknown-key, malformed, and resource-boundary behavior.
+  - Exact source-byte and canonical normalized-hand SHA-256 values persist in a typed artifact and are recomputed by the verified product reader without trusting untyped metadata.
+  - The legacy normalize_hand_text shape, structured JSON and legacy runs, role context allowlists, approval/runtime boundaries, and unavailable natural-language/site parser claims remain compatible and truthful.
+  - The documented free-text CLI path persists and reads the typed record and executes hand_validator without external provider, solver, site adapter, or runtime bridge execution.
+  - Canonical fixtures and unit, property, integration, adversarial, characterization, roadmap, doctor, evaluation, and quality gates pass.
 - Tests:
-  - round-trip, malformed, Unicode, unknown-key, and resource-boundary tests
+  - tests/unit/test_normalization_contracts.py
+  - tests/property/test_normalization_properties.py
+  - tests/integration/test_normalization_product_path.py
+  - tests/integration/test_normalization_fixtures.py
+  - tests/adversarial/test_normalization_security.py
+  - tests/integration/test_capability_contract.py
+  - tests/integration/test_roadmap_status.py
 - Decision gate rationale:
-  - supported sites and grammar profiles
+  - approved repository-owned generic key-value grammar version 1
+  - supported site none and continued natural-language/site-parser unavailability
+- Relations:
+  - P3-014A supports no poker site and does not start RM-015 hand-rule profiles or RM-016 range grammar work.
 
 ### RM-015 — Hand rule profiles and side-pot accounting
 

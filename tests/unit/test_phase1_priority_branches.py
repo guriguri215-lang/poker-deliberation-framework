@@ -152,12 +152,10 @@ def test_normalization_reports_every_warning_class_without_guessing() -> None:
         )
     )
     assert result.hand is None
-    assert any("ignored unrecognized free text" in item for item in result.warnings)
-    assert any("ignored unknown key" in item for item in result.warnings)
-    assert any("invalid literal" in item for item in result.warnings)
-    assert any("player requires" in item for item in result.warnings)
-    assert any("action requires" in item for item in result.warnings)
-    assert any("canonical validation failed" in item for item in result.warnings)
+    assert any("NRM_E_MALFORMED_LINE" in item for item in result.warnings)
+    assert any("NRM_E_UNKNOWN_KEY" in item for item in result.warnings)
+    assert any("NRM_E_NUMERIC_LEXEME" in item for item in result.warnings)
+    assert sum("NRM_E_FIELD_COUNT" in item for item in result.warnings) == 2
 
 
 def test_normalization_parses_optional_action_to_amount() -> None:

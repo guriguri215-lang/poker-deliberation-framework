@@ -52,7 +52,7 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     descriptions = default_registry().describe()
 
     assert states["phase_1_hardening"] == "implemented"
-    assert len(descriptions) == 20
+    assert len(descriptions) == 21
     assert {item["contract_version"] for item in descriptions} == {"2.0.0"}
     assert all(item["input_schema"] and item["output_schema"] for item in descriptions)
     assert states["runtime_conformance_contract"] == "implemented"
@@ -79,7 +79,7 @@ def test_documented_tool_and_role_counts_are_computed_contracts() -> None:
     codex_role_count = len(list((ROOT / ".codex" / "agents").glob("*.toml")))
     python_role_count = len(ROLE_CATALOG)
 
-    assert (tool_count, codex_role_count, python_role_count) == (20, 9, 7)
+    assert (tool_count, codex_role_count, python_role_count) == (21, 9, 7)
     assert f"`{tool_count}`個のtool名" in capability_text
     assert f"`{codex_role_count}`定義" in capability_text
     assert f"`{python_role_count}`役" in capability_text

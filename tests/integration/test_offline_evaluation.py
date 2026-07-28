@@ -67,7 +67,7 @@ def test_offline_integrated_suite_passes_exactly_and_binds_runtime_and_tools() -
     assert result.source.source_commit_id == COMMIT_ID
     assert result.source.source_tree_id == TREE_ID
     assert len(result.source.config_sha256) == 64
-    assert len(result.source.tool_contract_versions) == 20
+    assert len(result.source.tool_contract_versions) == 21
     assert len(result.source.codex_runtime_inventory_sha256) == 64
     assert len(result.source.python_runtime_inventory_sha256) == 64
     loaded = load_evaluation_suite(ROOT, SUITE)

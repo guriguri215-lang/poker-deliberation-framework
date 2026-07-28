@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `7.0.0`
-- source SHA-256: `992a7ec942e32915dc38dcb7903881f8d15adf9c4135e9314b0690141a1cba2e`
+- source SHA-256: `4a72dc720c3171ef393f2848858af3452447eb8d4ce28c031ded44c8324590b5`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -175,7 +175,7 @@
 ### RM-006 — Single source for typed tool contracts
 
 - Status: `completed`
-- Status reason: All 20 tools expose contract version 2.0.0 with typed schemas.
+- Status reason: All 21 tools expose contract version 2.0.0 with typed schemas.
 - Objective: Keep all registered tool input, output, assumptions, limits, and versions in one typed definition set.
 - Capabilities:
   - local_calculators

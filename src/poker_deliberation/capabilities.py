@@ -59,9 +59,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability(
         "profiled_nlhe_side_pot_ledger",
-        "planned",
-        "P3-015A is registered and implementation is underway; no runtime ledger capability "
-        "is claimed yet.",
+        "implemented",
+        "generic_nlhe_cash_no_rake_v1 provides an integer contribution, uncalled-return, "
+        "side-pot, and eligibility ledger with an independent oracle.",
     ),
     Capability(
         "natural_language_or_site_parser",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from typing import Any
@@ -116,9 +117,30 @@ def render_docs() -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def main() -> int:
-    MANIFEST_PATH.write_text(render_manifest(), encoding="utf-8", newline="\n")
-    DOC_PATH.write_text(render_docs(), encoding="utf-8", newline="\n")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if the tracked projections differ from the canonical contracts",
+    )
+    args = parser.parse_args(argv)
+    expected_manifest = render_manifest()
+    expected_docs = render_docs()
+    if args.check:
+        stale = [
+            str(path)
+            for path, expected in (
+                (MANIFEST_PATH, expected_manifest),
+                (DOC_PATH, expected_docs),
+            )
+            if not path.is_file() or path.read_text(encoding="utf-8") != expected
+        ]
+        if stale:
+            raise SystemExit(f"generated tool contract projection is stale: {', '.join(stale)}")
+        return 0
+    MANIFEST_PATH.write_text(expected_manifest, encoding="utf-8", newline="\n")
+    DOC_PATH.write_text(expected_docs, encoding="utf-8", newline="\n")
     return 0
 
 

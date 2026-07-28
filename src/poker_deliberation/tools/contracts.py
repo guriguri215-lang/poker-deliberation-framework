@@ -32,6 +32,14 @@ from poker_deliberation.tools.equity import (
 )
 from poker_deliberation.tools.ev_tree import HARD_MAX_DEPTH as EV_TREE_MAX_DEPTH
 from poker_deliberation.tools.ev_tree import HARD_MAX_NODES as EV_TREE_MAX_NODES
+from poker_deliberation.tools.hand_pot_ledger import (
+    MAX_ACTIONS as HAND_POT_LEDGER_MAX_ACTIONS,
+)
+from poker_deliberation.tools.hand_pot_ledger import (
+    MAX_LEDGER_UNITS,
+    HandPotLedgerInputV1,
+    HandPotLedgerOutputV1,
+)
 from poker_deliberation.tools.matrix_game import (
     HARD_MAX_DIMENSION,
     HARD_MAX_FALLBACK_ITERATIONS,
@@ -673,7 +681,7 @@ def _matrix_exactness(output: dict[str, Any]) -> NumericalExactness:
 
 
 def tool_contracts() -> tuple[ToolContract, ...]:
-    """Return the stable 20-tool canonical inventory in registry order."""
+    """Return the stable 21-tool canonical inventory in registry order."""
 
     contracts = (
         ToolContract(
@@ -1142,6 +1150,51 @@ def tool_contracts() -> tuple[ToolContract, ...]:
             model_qualifier="declared canonical hand rules profile",
         ),
         ToolContract(
+            "hand_pot_ledger",
+            "Exact integer contribution, uncalled-return, side-pot, and eligibility ledger "
+            "for one explicit repository-owned no-rake NLHE cash profile.",
+            ("NLHE cash",),
+            HandPotLedgerInputV1,
+            HandPotLedgerOutputV1,
+            (NumericalExactness.EXACT_UNDER_MODEL,),
+            (
+                "Action amounts use the caller-declared canonical decimal chip unit.",
+                "Only generic_nlhe_cash_no_rake_v1 version 1.0.0 and supported site none apply.",
+                "No winner assignment, payout split, rake, or hand-strength evaluation is made.",
+            ),
+            (
+                "explicit supported profile and version",
+                "explicit zero rake",
+                "complete legal betting rounds",
+                "every monetary value is an exact bounded integer number of chip units",
+            ),
+            {
+                "players": 10,
+                "actions": HAND_POT_LEDGER_MAX_ACTIONS,
+                "ledger_units": MAX_LEDGER_UNITS,
+                "supported_profiles": 1,
+                "external_execution": "not performed",
+            },
+            {
+                "all ledger, stack, return, and pot values": "input.rule_profile.chip_unit",
+            },
+            (
+                *COMMON_FAILURES,
+                "unsupported profile, version, site, game, format, rake, straddle, or ante shape",
+                "illegal or incomplete betting sequence",
+                "ambiguous uncalled return",
+                "non-integral or overflowing chip-unit conversion",
+                "conservation or independent-oracle mismatch",
+            ),
+            (
+                "integer stack and pot conservation",
+                "gross contribution equals final pot plus uncalled returns",
+                "pot layers sum to final pot",
+                "independent Fraction/integer oracle agreement",
+            ),
+            model_qualifier="generic_nlhe_cash_no_rake_v1 version 1.0.0",
+        ),
+        ToolContract(
             "sensitivity",
             "Bounds and influence ranking over a supplied scenario grid.",
             ("generic",),
@@ -1182,8 +1235,8 @@ def tool_contracts() -> tuple[ToolContract, ...]:
         ),
     )
     names = [contract.name for contract in contracts]
-    if len(contracts) != 20 or len(names) != len(set(names)):
-        raise RuntimeError("canonical tool inventory must contain exactly 20 unique tools")
+    if len(contracts) != 21 or len(names) != len(set(names)):
+        raise RuntimeError("canonical tool inventory must contain exactly 21 unique tools")
     return contracts
 
 

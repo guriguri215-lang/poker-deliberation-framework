@@ -1,5 +1,18 @@
 # Architecture
 
+## P3-015A profiled hand ledger boundary
+
+`tools/hand_pot_ledger.py`はlegacy `CanonicalHand`とnormalization v1を変更せず、別のstrict/frozen
+inputで`generic_nlhe_cash_no_rake_v1` version `1.0.0`を明示選択する加算的calculatorである。
+caller-declared decimal `chip_unit`をbounded integerへ変換し、action legality、full-raise/short
+all-in reopening、uncalled return、contribution layer、fold eligibility、chip conservationを
+再構成する。成功前に別の`Fraction`/integer oracleがreturn、layer、conservationを再計算する。
+
+orchestratorはrequested `hand_pot_ledger` inputへcanonical `CaseInput.hand`を束縛し、metadata内の
+別handへの置換を拒否する。結果は既存`ToolResult`、paired terminal input/result、
+summary allowlistを使い、新しいartifact kind、provider context key、external executionは追加しない。
+対応profileと非対応範囲は`docs/hand-rule-profile.md`を参照する。
+
 ## P3-017A offline evaluation boundary
 
 `evaluation/`は、repository-owned synthetic fixture、deterministic exact-evidence scorer、

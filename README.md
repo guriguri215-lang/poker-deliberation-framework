@@ -16,6 +16,12 @@ deterministic exact-evidence scoringを使うoffline integrated evaluation harne
 network、provider、external solver、runtime bridge、product run storageを起動・変更しません。
 詳細は[`docs/evaluation-contract.md`](docs/evaluation-contract.md)を参照してください。
 
+P3-015Aの`hand_pot_ledger`は、明示した`generic_nlhe_cash_no_rake_v1`だけを対象に、
+caller-declared chip unitの整数ledger、uncalled return、side pot、fold eligibility、
+full-raise reopeningを独立`Fraction` oracle付きで計算します。rake、straddle、site profile、
+tournament、PLO、run-it-twiceはfail closedです。詳細は
+[`docs/hand-rule-profile.md`](docs/hand-rule-profile.md)を参照してください。
+
 RM実装状態の正はpackage resourceとして設定したtracked JSON
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 
@@ -55,7 +61,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 5.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 7.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
@@ -78,8 +84,9 @@ P2-010Bは、すでに計算済みのphase traceを再検証し、専用revision
 GTO・均衡・正確なrangeの主張は追加しません。
 
 APIキーなしで、doctor、スキーマ検証、ポットオッズ、ポット再構成、コンボ、heads-up equity、EV tree、ICM、
-小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、感度分析、品質テストが
-動きます。外部ソルバーがなければ、偽の均衡結果ではなく明示的なUnavailableを返します。
+小規模ゼロ和行列ゲーム、固定相手戦略へのbest response、ハンド検証、profiled side-pot
+ledger、感度分析、品質テストが動きます。外部ソルバーがなければ、偽の均衡結果ではなく
+明示的なUnavailableを返します。
 effective stack、SPR、MDF、レーキ、レーキ込みcall EV、bluff EV、polar river bluff fraction、
 Bayes更新も、仮定をToolResultへ明記する決定論ツールとして利用できます。
 
@@ -137,7 +144,7 @@ poker-deliberate resume RUN_ID --reject APPROVAL_ID --reason "外部実行を許
 ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンドがレポートに入ります。
 新しいcontract version 2では、旧3値`exactness`を互換用に残し、`numeric_exactness`で
 `exact` / `exact-under-model` / `floating-verified` / `approximate` / `unavailable`を区別します。
-20 toolのstrict input/output schema、前提、上限、単位、toleranceは
+21 toolのstrict input/output schema、前提、上限、単位、toleranceは
 [生成済みtool contracts](docs/tool-contracts.md)を参照してください。
 自由文ハンドは `key: value`、`player: id, position, stack`、
 `action: street, actor, action, amount[, to_amount]` のversion 1保守形式だけを正規化します。

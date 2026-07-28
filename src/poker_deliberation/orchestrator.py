@@ -1777,6 +1777,16 @@ class Orchestrator:
             payload = tool_inputs.get(tool_name, {})
             if not isinstance(payload, dict):
                 payload = {}
+            if tool_name == "hand_pot_ledger" and case.hand is not None:
+                canonical_hand = case.hand.model_dump(mode="json")
+                supplied_hand = payload.get("hand")
+                if supplied_hand is not None and supplied_hand != canonical_hand:
+                    data_quality.append(
+                        "hand_pot_ledger input hand does not match the canonical case hand"
+                    )
+                    payload = {}
+                else:
+                    payload = {**payload, "hand": canonical_hand}
             requested_tool_calls.append(
                 ToolRequest(
                     request_id=_new_internal_id("tool-request"),

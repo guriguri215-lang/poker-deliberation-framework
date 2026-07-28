@@ -55,6 +55,16 @@ _IMPORTANT_OUTPUT_FIELDS: dict[str, tuple[str, ...]] = {
         "equilibrium_claim",
     ),
     "hand_validator": ("valid", "final_pot", "errors", "warnings"),
+    "hand_pot_ledger": (
+        "profile_id",
+        "profile_version",
+        "chip_unit",
+        "final_pot_units",
+        "pot_layers",
+        "uncalled_returns",
+        "conservation_verified",
+        "oracle_verified",
+    ),
     "sensitivity": ("lower_bound", "upper_bound", "scenario_count", "warning"),
 }
 

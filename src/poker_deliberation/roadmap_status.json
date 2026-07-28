@@ -444,7 +444,7 @@
       "phase": "phase-1",
       "priority": "P1",
       "status": "completed",
-      "status_reason": "All 20 tools expose contract version 2.0.0 with typed schemas.",
+      "status_reason": "All 21 tools expose contract version 2.0.0 with typed schemas.",
       "dependencies": [
         "RM-005"
       ],

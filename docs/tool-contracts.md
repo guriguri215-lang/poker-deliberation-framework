@@ -12,7 +12,7 @@ Version 2 results add `numeric_exactness`, `contract_version`, model/method fiel
 
 `approximate` success requires method, stochastic flag, seed when stochastic, positive samples or iterations, an interval or error metadata, and a stopping condition. `failed` and `unavailable` cannot carry successful numeric exactness.
 
-Registered tool count: `20`.
+Registered tool count: `21`.
 
 ## `pot_odds`
 
@@ -373,6 +373,26 @@ Canonical card, action, stack, and pot validation for declared rules.
 - Verification checks: ["card uniqueness","stack/pot reconstruction","action legality","limitation disclosure"]
 - Tolerance: {"absolute":null,"fields":["pot and stack comparisons"],"formula":"default applied ULP count is max(32, 4*(actions+players)); caller override is recorded as an absolute bound","kind":"ulp","rationale":"Chip comparison precision must scale with the supplied hand rather than a global epsilon.","relative":null,"ulps":32,"unit":"caller chip unit"}
 - Model qualifier: "declared canonical hand rules profile"
+
+## `hand_pot_ledger`
+
+Exact integer contribution, uncalled-return, side-pot, and eligibility ledger for one explicit repository-owned no-rake NLHE cash profile.
+
+- Tool version: `1.0.0`
+- Contract version: `2.0.0`
+- Numeric exactness: `exact-under-model`
+- Input model: `HandPotLedgerInputV1`
+- Input fields: `schema_version` (required), `rule_profile` (required), `hand` (required)
+- Output model: `HandPotLedgerOutputV1`
+- Output fields: `schema_version`, `profile_id` (required), `profile_version` (required), `supported_site` (required), `chip_unit` (required), `ledger_actions` (required), `uncalled_returns` (required), `pot_layers` (required), `player_eligibility` (required), `gross_contributions_units` (required), `net_contributions_units` (required), `remaining_stacks_units` (required), `gross_committed_units` (required), `total_returned_units` (required), `final_pot_units` (required), `starting_chips_units` (required), `conservation_verified` (required), `oracle_verified` (required), `limitations` (required)
+- Assumptions: ["Action amounts use the caller-declared canonical decimal chip unit.","Only generic_nlhe_cash_no_rake_v1 version 1.0.0 and supported site none apply.","No winner assignment, payout split, rake, or hand-strength evaluation is made."]
+- Preconditions: ["explicit supported profile and version","explicit zero rake","complete legal betting rounds","every monetary value is an exact bounded integer number of chip units"]
+- Limits: {"actions":512,"external_execution":"not performed","ledger_units":9223372036854775807,"players":10,"supported_profiles":1}
+- Units: {"all ledger, stack, return, and pot values":"input.rule_profile.chip_unit"}
+- Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure","unsupported profile, version, site, game, format, rake, straddle, or ante shape","illegal or incomplete betting sequence","ambiguous uncalled return","non-integral or overflowing chip-unit conversion","conservation or independent-oracle mismatch"]
+- Verification checks: ["integer stack and pot conservation","gross contribution equals final pot plus uncalled returns","pot layers sum to final pot","independent Fraction/integer oracle agreement"]
+- Tolerance: null
+- Model qualifier: "generic_nlhe_cash_no_rake_v1 version 1.0.0"
 
 ## `sensitivity`
 

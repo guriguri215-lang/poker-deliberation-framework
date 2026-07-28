@@ -799,6 +799,12 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "site-specific parser",
             "OS-level",
         ],
+        "docs/range-grammar.md": [
+            "poker-deliberation.nlhe-range",
+            "RNG_E_PROVENANCE",
+            "millionths",
+            "自然言語",
+        ],
     }
     missing: list[str] = []
     for relative, markers in required.items():
@@ -814,6 +820,58 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "FACT",
         "Tracked capability statements were checked for required implementation-boundary markers.",
         {"missing_markers": missing},
+    )
+
+
+def _range_grammar_artifacts_check(repo: Path) -> CheckResult:
+    fixture_path = repo / "tests/fixtures/range/v1/cases.json"
+    evaluation_path = repo / "evals/datasets/p3_016a/v1/cases.json"
+    manifest_path = repo / "tools/manifest.yaml"
+    failures: list[str] = []
+    fixture: dict[str, object] = {}
+    evaluation: dict[str, object] = {}
+    for label, path in (("fixture", fixture_path), ("evaluation", evaluation_path)):
+        if not path.is_file():
+            failures.append(f"{label}:missing")
+            continue
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            failures.append(f"{label}:invalid_json")
+            continue
+        if not isinstance(value, dict):
+            failures.append(f"{label}:not_object")
+            continue
+        if label == "fixture":
+            fixture = value
+        else:
+            evaluation = value
+    expected_identity = ("poker-deliberation.nlhe-range", "1.0.0")
+    for label, document in (("fixture", fixture), ("evaluation", evaluation)):
+        if (
+            document
+            and (
+                document.get("grammar_id"),
+                document.get("grammar_version"),
+            )
+            != expected_identity
+        ):
+            failures.append(f"{label}:grammar_identity")
+        if document and document.get("license") != "MIT":
+            failures.append(f"{label}:license")
+    if fixture and evaluation and fixture.get("cases") != evaluation.get("cases"):
+        failures.append("fixture_evaluation_case_drift")
+    if not manifest_path.is_file() or "name: range_validate" not in manifest_path.read_text(
+        encoding="utf-8"
+    ):
+        failures.append("tool_manifest:range_validate")
+    return CheckResult(
+        "versioned_range_grammar_artifacts",
+        "pass" if not failures else "fail",
+        "FACT",
+        "The bounded range grammar fixture, conformance dataset, license, and tool manifest "
+        "identity were checked offline.",
+        {"failures": failures},
     )
 
 
@@ -1048,6 +1106,7 @@ def run_preflight(repo: Path) -> dict[str, object]:
             {"tracked_paths": tracked_runs, "probe_ignored": runs_ok},
         ),
         _capability_docs_check(repo),
+        _range_grammar_artifacts_check(repo),
         CheckResult(
             "tracked_release_candidates",
             "pass" if not tracked_ignored_artifacts and pytest_ignored else "fail",

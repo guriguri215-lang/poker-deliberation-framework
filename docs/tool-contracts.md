@@ -12,7 +12,7 @@ Version 2 results add `numeric_exactness`, `contract_version`, model/method fiel
 
 `approximate` success requires method, stochastic flag, seed when stochastic, positive samples or iterations, an interval or error metadata, and a stopping condition. `failed` and `unavailable` cannot carry successful numeric exactness.
 
-Registered tool count: `21`.
+Registered tool count: `22`.
 
 ## `pot_odds`
 
@@ -233,6 +233,26 @@ Pot reconstruction from incremental contributions.
 - Verification checks: ["running-pot length and ordering","final-pot sum invariant"]
 - Tolerance: {"absolute":null,"fields":["pots_after_each_contribution","final_pot"],"formula":"ULP bound is applied per addition and checked by exact Decimal oracle tests.","kind":"ulp","rationale":"Accumulated binary64 additions; error grows with contribution count.","relative":null,"ulps":16,"unit":"output field unit"}
 - Model qualifier: null
+
+## `range_validate`
+
+Validate, bind, expand, and canonicalize one provenance-qualified NLHE range.
+
+- Tool version: `1.0.0`
+- Contract version: `2.0.0`
+- Numeric exactness: `exact`
+- Input model: `RangeValidateInput`
+- Input fields: `schema_version`, `hand` (required), `range_definition` (required)
+- Output model: `RangeValidationResultV1`
+- Output fields: `schema_version`, `result_version`, `grammar_id`, `grammar_version`, `hash_algorithm`, `status` (required), `range_id` (required), `target_player_id` (required), `source` (required), `game_conditions` (required), `source_notation_sha256` (required), `condition_binding_sha256`, `blockers`, `diagnostics`, `canonical_notation`, `canonical_combo_sha256`, `combos`, `combo_count` (required), `total_weight_millionths` (required)
+- Assumptions: ["Exactly one versioned range is bound to one non-hero target player.","Source content is USER_CLAIM or ASSUMPTION, never solver-inferred.","Only approved local-analysis or repository-owned source rights are accepted."]
+- Preconditions: ["grammar and schema version 1.0.0","exact hand, target, action-prefix, street, position, and stack binding","source content hash matches notation bytes"]
+- Limits: {"action_prefix":512,"blockers":52,"diagnostics":64,"expanded_combos":1326,"external_execution":"not performed","notation_bytes":16384,"tokens":1326}
+- Units: {"combo_count":"count","stack_bounds":"integer big-blind thousandths","weight_millionths":"integer millionths in (0, 1000000]"}
+- Failure modes: ["strict input schema rejection (including extra or missing fields)","documented precondition violation","hard resource limit violation","strict output schema or invariant failure","unsupported grammar syntax or version","overlapping combo expansion","source provenance or license mismatch","hand, target, or game-condition binding mismatch","all expanded combos removed by blockers"]
+- Verification checks: ["source notation SHA-256","canonical action-prefix and condition-binding SHA-256","pre-blocker overlap detection","canonical combo SHA-256 and integer weight sum"]
+- Tolerance: null
+- Model qualifier: "poker-deliberation.nlhe-range version 1.0.0"
 
 ## `combos`
 

@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "7.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "8.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -188,6 +188,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-025A",
         "P3-014A",
         "P3-015A",
+        "P3-016A",
         "P3-017A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
@@ -255,7 +256,7 @@ def test_p3_014a_registration_is_versioned_bounded_and_site_independent() -> Non
     assert milestones["P3-014A"]["dependencies"] == ["RM-006", "RM-012"]
     assert "supported site none" in milestones["P3-014A"]["scope"]
     assert items["RM-015"]["status"] == "in_progress"
-    assert items["RM-016"]["status"] == "planned"
+    assert items["RM-016"]["status"] == "in_progress"
 
 
 def test_p3_015a_registration_is_profiled_exact_and_bounded() -> None:
@@ -274,6 +275,26 @@ def test_p3_015a_registration_is_profiled_exact_and_bounded() -> None:
     assert "supported site none" in milestones["P3-015A"]["scope"]
     assert "independent oracle" in milestones["P3-015A"]["scope"]
     assert items["RM-015"]["decision_gate"]["required"] is True  # type: ignore[index]
+
+
+def test_p3_016a_registration_is_versioned_provenance_bound_and_additive() -> None:
+    items = _by_id()
+    milestones = _milestones(load_roadmap())
+
+    assert items["RM-016"]["status"] == "in_progress"
+    assert items["RM-016"]["capabilities"] == ["versioned_nlhe_range_grammar"]
+    assert items["RM-016"]["milestones"] == {
+        "entry": "P3-016A",
+        "completion": None,
+    }
+    assert milestones["P3-016A"]["status"] == "completed"
+    assert milestones["P3-016A"]["dependencies"] == ["RM-006", "P3-014A"]
+    assert "poker-deliberation.nlhe-range grammar version 1.0.0" in (milestones["P3-016A"]["scope"])
+    assert "no plus, intervals, exclusions" in milestones["P3-016A"]["scope"]
+    assert items["RM-016"]["decision_gate"]["required"] is True  # type: ignore[index]
+    assert items["RM-030"]["status"] == "proposed"
+    assert items["RM-030"]["dependencies"] == ["RM-014", "RM-016", "RM-017"]
+    assert "natural-language" in str(items["RM-030"]["objective"])
 
 
 def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
@@ -440,7 +461,7 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
         validate_roadmap_update(previous, whitespace_only_reason)
 
     illegal = deepcopy(previous)
-    _by_id(illegal)["RM-016"]["status"] = "proposed"
+    _by_id(illegal)["RM-018A"]["status"] = "proposed"
     with pytest.raises(ValueError, match="illegal status transition"):
         validate_roadmap_update(previous, illegal)
 
@@ -451,7 +472,7 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
 
     transition_table_change = deepcopy(previous)
     transition_table_change["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
-    _by_id(transition_table_change)["RM-016"]["status"] = "proposed"
+    _by_id(transition_table_change)["RM-018A"]["status"] = "proposed"
     with pytest.raises(ValueError, match="public top-level contract changed"):
         validate_roadmap_update(previous, transition_table_change)
 
@@ -505,21 +526,20 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "7.0.0"
-    assert summary["total_items"] == 30
+    assert summary["schema_version"] == "8.0.0"
+    assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
-        "in_progress": 3,
-        "planned": 7,
-        "proposed": 2,
+        "in_progress": 4,
+        "planned": 6,
+        "proposed": 3,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 16,
+        "completed": 17,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [
-        "RM-016",
         "RM-018A",
         "RM-021",
     ]
@@ -544,7 +564,7 @@ def test_generator_rejects_same_schema_contract_and_transition_rewrites(
     previous = load_roadmap()
     current = deepcopy(previous)
     current["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
-    _by_id(current)["RM-016"]["status"] = "proposed"
+    _by_id(current)["RM-018A"]["status"] = "proposed"
     source = tmp_path / ROADMAP_RESOURCE
     source.write_text(json.dumps(current), encoding="utf-8")
 
@@ -566,7 +586,7 @@ def test_generator_compares_a_clean_committed_candidate_with_its_parent(
     previous = load_roadmap()
     candidate = deepcopy(previous)
     candidate["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
-    _by_id(candidate)["RM-016"]["status"] = "proposed"
+    _by_id(candidate)["RM-018A"]["status"] = "proposed"
     source = tmp_path / ROADMAP_RESOURCE
     source.write_text(json.dumps(candidate), encoding="utf-8")
     documents: dict[str, dict[str, object]] = {
@@ -593,7 +613,7 @@ def test_generator_audits_roadmap_changes_before_a_no_op_followup(
     previous = load_roadmap()
     illegal = deepcopy(previous)
     illegal["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
-    _by_id(illegal)["RM-016"]["status"] = "proposed"
+    _by_id(illegal)["RM-018A"]["status"] = "proposed"
     source = tmp_path / ROADMAP_RESOURCE
     source.write_text(json.dumps(illegal), encoding="utf-8")
     documents: dict[str, dict[str, object]] = {

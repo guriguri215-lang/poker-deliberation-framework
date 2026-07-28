@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `7.0.0`
-- source SHA-256: `a3acc431231bdda0d9cfb32852cfbf683ef4818e9a98c8c1c5aa27086484d123`
+- schema version: `8.0.0`
+- source SHA-256: `8824195f714e81b55125d2c4b0321bd694db3cfc7cea5dd2cf0cf1490b5cfad9`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -48,6 +48,7 @@
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
 | `P3-015A` | `RM-015` | `completed` | `P3-014A` | Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none. | The approved generic no-rake NLHE cash profile, exact side-pot ledger, independent oracle, product integration, documentation, and declared tests are implemented. |
+| `P3-016A` | `RM-016` | `completed` | `RM-006`, `P3-014A` | poker-deliberation.nlhe-range grammar version 1.0.0 for one provenance-qualified opponent range using explicit combos, pairs, canonical descending suited or offsuit classes, optional decimal @ weights represented as integer millionths, pre-blocker overlap rejection, exact hand and action-prefix binding, automatic range_validate then combos execution, and immutable/terminal semantic replay; no plus, intervals, exclusions, natural-language inference, external source import, equity integration, solver, or GTO claim. | The approved bounded grammar, provenance and game-condition binding, exact validation tool, canonical combo product slice, reader replay, documentation, fixtures, and declared tests are implemented. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 
 ## Current RM state
@@ -69,7 +70,7 @@
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `completed` | `RM-012`, `RM-024` | `P2-013B` | `required` |
 | `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `completed` | `RM-006`, `RM-012` | `P3-014A` | `required` |
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `in_progress` | `RM-014` | `n/a` | `required` |
-| `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `planned` | `RM-006`, `RM-014` | `n/a` | `required` |
+| `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `in_progress` | `RM-006`, `RM-014` | `n/a` | `required` |
 | `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
 | `RM-018A` | Pre-release readiness | `pre-release` | `P1` | `planned` | `RM-001`, `RM-002`, `RM-003`, `RM-004`, `RM-005`, `RM-006`, `RM-007`, `RM-008`, `RM-009`, `RM-023` | `n/a` | `required` |
 | `RM-018B` | Stable release gate | `stable-release` | `P1` | `planned` | `RM-018A`, `RM-010`, `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `n/a` | `required` |
@@ -84,6 +85,7 @@
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-027B` | `required` |
 | `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
 | `RM-029` | Offline Python product path safety and usability completion | `phase-2` | `P1` | `completed` | `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-029A` | `none` |
+| `RM-030` | Natural-language canonical intake and adjudicated report integration | `phase-4` | `P2` | `proposed` | `RM-014`, `RM-016`, `RM-017` | `n/a` | `required` |
 
 ## Public item contracts
 
@@ -175,7 +177,7 @@
 ### RM-006 — Single source for typed tool contracts
 
 - Status: `completed`
-- Status reason: All 21 tools expose contract version 2.0.0 with typed schemas.
+- Status reason: All 22 tools expose contract version 2.0.0 with typed schemas.
 - Objective: Keep all registered tool input, output, assumptions, limits, and versions in one typed definition set.
 - Capabilities:
   - local_calculators
@@ -463,20 +465,39 @@
 
 ### RM-016 — Range grammar and provenance
 
-- Status: `planned`
-- Status reason: Accepted roadmap scope; not implemented.
-- Objective: Add only approved range syntax with source and game-condition provenance.
+- Status: `in_progress`
+- Status reason: P3-016A implements the approved bounded version 1 grammar and provenance-bound combos product slice; additional syntax, multiple ranges, equity integration, imports, and natural-language inference remain unimplemented.
+- Objective: Provide a bounded versioned NLHE range grammar with explicit source rights, exact game-condition provenance, deterministic canonical combos, and reader-verifiable product artifacts.
 - Capabilities:
-  - none
+  - versioned_nlhe_range_grammar
 - Targets:
-  - src/poker_deliberation/tools/combinations.py
-  - range schemas and documentation
+  - src/poker_deliberation/range_models.py
+  - src/poker_deliberation/range_grammar.py
+  - src/poker_deliberation/tools/contracts.py
+  - src/poker_deliberation/orchestrator.py
+  - scripts/generate_range_fixtures.py
+  - tests/fixtures/range/v1/cases.json
+  - evals/datasets/p3_016a/v1/cases.json
+  - docs/range-grammar.md
 - Acceptance criteria:
-  - Ambiguity, overlap, blocker, weight, and provenance mismatches fail explicitly.
+  - Grammar and result version 1.0.0 accept only explicit combos, pairs, canonical descending suited or offsuit classes, comma separators with ASCII horizontal whitespace, and optional @ decimal weights of at most six places.
+  - Weights use exact integer millionths; plus, intervals, exclusions, colon weights, signs, exponent notation, leading decimal points, non-ASCII notation, overlap, limits, empty post-blocker ranges, and ambiguous or unsupported syntax fail with stable diagnostics.
+  - One non-hero target range is bound to declared source/license/usage/content status, notation SHA-256, NLHE format/table/position/street/stack, as-of action-prefix SHA-256, and hero plus visible-board blockers.
+  - The product path runs exact range_validate before canonical weighted combos, refuses conflicting manual inputs, and immutable and terminal readers deterministically replay both artifacts.
+  - Legacy RangeDefinition, legacy parse_weighted_range, and existing equity behavior remain unchanged; multiple versioned ranges, equity integration, imports, natural-language inference, external solvers, and GTO claims remain outside P3-016A.
 - Tests:
-  - range parser, normalization, blocker, ambiguity, and provenance isolation tests
+  - tests/unit/test_range_grammar.py
+  - tests/property/test_range_grammar_properties.py
+  - tests/integration/test_range_product_path.py
+  - tests/integration/test_range_fixtures.py
+  - tests/adversarial/test_range_grammar_adversarial.py
+  - tests/characterization/test_range_grammar_compatibility.py
+  - tests/integration/test_tool_contracts.py
 - Decision gate rationale:
-  - range formats and source licenses
+  - future range syntax, multiple-range semantics, external source/license classes, import formats, and equity integration require a separate approved decision
+- Relations:
+  - P3-016A is additive to the legacy RangeDefinition and parser and does not change existing equity semantics.
+  - Natural-language hand or range intake and end-to-end report integration are deferred to RM-030.
 
 ### RM-017 — Executable evaluation harness
 
@@ -870,6 +891,32 @@
 - Relations:
   - Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.
   - Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects; P2-025A is now the approved conformance-only milestone while the actual bridge remains unavailable and separately decision-gated.
+
+### RM-030 — Natural-language canonical intake and adjudicated report integration
+
+- Status: `proposed`
+- Status reason: Registered as a future integration gap only; no natural-language hand or range inference, external model execution, or new report path is implemented.
+- Objective: Define a separately approved flow from natural-language hand and range material through canonical hand/range artifacts, deterministic calculators, adjudication, and a provenance-bound report.
+- Capabilities:
+  - natural_language_or_site_parser
+  - versioned_nlhe_range_grammar
+- Targets:
+  - future natural-language intake contract
+  - future canonical hand and range binding
+  - future adjudicated report integration
+- Acceptance criteria:
+  - A future milestone must specify parser/model identity, source rights, ambiguity handling, user confirmation, canonical hand/range provenance, calculator inputs, adjudication evidence, report claims, privacy, security, budgets, and reproducible evaluation before implementation.
+- Tests:
+  - future ambiguity and confirmation fixtures
+  - future provenance and privacy isolation tests
+  - future end-to-end canonical artifact replay
+- Decision gate rationale:
+  - natural-language parser or model selection
+  - user confirmation and ambiguity policy
+  - source rights, privacy, outbound execution, evaluation threshold, and report-claim policy
+- Relations:
+  - Consumes P3-014A and P3-016A artifacts without weakening their strict grammars or inventing missing poker facts.
+  - Does not imply an OpenAI provider, runtime bridge, site parser, external solver, or GTO capability.
 
 ## Synchronization contract
 

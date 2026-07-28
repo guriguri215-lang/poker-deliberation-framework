@@ -10,6 +10,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from poker_deliberation.range_models import VersionedRangeDefinitionV1
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -136,7 +138,7 @@ class CanonicalHand(StrictModel):
     board: list[str] = Field(default_factory=list, max_length=5)
     actions: list[HandAction] = Field(default_factory=list)
     tournament: TournamentContext | None = None
-    known_ranges: list[RangeDefinition] = Field(default_factory=list)
+    known_ranges: list[RangeDefinition | VersionedRangeDefinitionV1] = Field(default_factory=list)
     opponent_observations: list[str] = Field(default_factory=list)
     analysis_objective: str = "strategy_review"
 

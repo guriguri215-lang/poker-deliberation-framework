@@ -13,6 +13,15 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from poker_deliberation.range_models import (
+    MAX_EXPANDED_COMBOS,
+    MAX_RANGE_ACTION_PREFIX,
+    MAX_RANGE_DIAGNOSTICS,
+    MAX_RANGE_NOTATION_BYTES,
+    MAX_RANGE_TOKENS,
+    RangeValidationResultV1,
+    VersionedRangeDefinitionV1,
+)
 from poker_deliberation.schemas import (
     CanonicalHand,
     NumericalExactness,
@@ -227,6 +236,12 @@ class PotReconstructionOutput(StrictModel):
     starting_pot: NonNegativeFloat
     pots_after_each_contribution: list[NonNegativeFloat]
     final_pot: NonNegativeFloat
+
+
+class RangeValidateInput(StrictModel):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    hand: CanonicalHand
+    range_definition: VersionedRangeDefinitionV1
 
 
 class CombosInput(StrictModel):
@@ -681,7 +696,7 @@ def _matrix_exactness(output: dict[str, Any]) -> NumericalExactness:
 
 
 def tool_contracts() -> tuple[ToolContract, ...]:
-    """Return the stable 21-tool canonical inventory in registry order."""
+    """Return the stable 22-tool canonical inventory in registry order."""
 
     contracts = (
         ToolContract(
@@ -915,6 +930,53 @@ def tool_contracts() -> tuple[ToolContract, ...]:
                 ),
                 rationale="Accumulated binary64 additions; error grows with contribution count.",
             ),
+        ),
+        ToolContract(
+            "range_validate",
+            "Validate, bind, expand, and canonicalize one provenance-qualified NLHE range.",
+            ("NLHE",),
+            RangeValidateInput,
+            RangeValidationResultV1,
+            (NumericalExactness.EXACT,),
+            (
+                "Exactly one versioned range is bound to one non-hero target player.",
+                "Source content is USER_CLAIM or ASSUMPTION, never solver-inferred.",
+                "Only approved local-analysis or repository-owned source rights are accepted.",
+            ),
+            (
+                "grammar and schema version 1.0.0",
+                "exact hand, target, action-prefix, street, position, and stack binding",
+                "source content hash matches notation bytes",
+            ),
+            {
+                "notation_bytes": MAX_RANGE_NOTATION_BYTES,
+                "tokens": MAX_RANGE_TOKENS,
+                "expanded_combos": MAX_EXPANDED_COMBOS,
+                "action_prefix": MAX_RANGE_ACTION_PREFIX,
+                "diagnostics": MAX_RANGE_DIAGNOSTICS,
+                "blockers": 52,
+                "external_execution": "not performed",
+            },
+            {
+                "weight_millionths": "integer millionths in (0, 1000000]",
+                "stack_bounds": "integer big-blind thousandths",
+                "combo_count": "count",
+            },
+            (
+                *COMMON_FAILURES,
+                "unsupported grammar syntax or version",
+                "overlapping combo expansion",
+                "source provenance or license mismatch",
+                "hand, target, or game-condition binding mismatch",
+                "all expanded combos removed by blockers",
+            ),
+            (
+                "source notation SHA-256",
+                "canonical action-prefix and condition-binding SHA-256",
+                "pre-blocker overlap detection",
+                "canonical combo SHA-256 and integer weight sum",
+            ),
+            model_qualifier="poker-deliberation.nlhe-range version 1.0.0",
         ),
         ToolContract(
             "combos",
@@ -1235,8 +1297,8 @@ def tool_contracts() -> tuple[ToolContract, ...]:
         ),
     )
     names = [contract.name for contract in contracts]
-    if len(contracts) != 21 or len(names) != len(set(names)):
-        raise RuntimeError("canonical tool inventory must contain exactly 21 unique tools")
+    if len(contracts) != 22 or len(names) != len(set(names)):
+        raise RuntimeError("canonical tool inventory must contain exactly 22 unique tools")
     return contracts
 
 

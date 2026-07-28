@@ -33,7 +33,7 @@ The mapping is explicit in the generated manifest and never promotes `failed` or
 successful numerical claim. Old version-1 artifacts remain loadable; new registry executions emit
 contract version `2.0.0`.
 
-The canonical 21-tool input/output definitions live in
+The canonical 22-tool input/output definitions live in
 `poker_deliberation.tools.contracts.tool_contracts`. The complete JSON Schemas are generated into
 `tools/manifest.yaml`; [Tool contracts](tool-contracts.md) is generated from the same definitions.
 Strict models reject missing required fields and unknown extra fields before calculator execution,

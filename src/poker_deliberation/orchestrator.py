@@ -153,6 +153,8 @@ from poker_deliberation.phases.revision_coordinator import (
     _issue_transition_plan,
 )
 from poker_deliberation.providers import AgentProvider, LocalProvider
+from poker_deliberation.range_grammar import validate_versioned_range
+from poker_deliberation.range_models import RangeValidationResultV1, VersionedRangeDefinitionV1
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.research import EvidenceLedger
 from poker_deliberation.schemas import (
@@ -169,6 +171,7 @@ from poker_deliberation.schemas import (
     SecurityEvent,
     ToolRequest,
     ToolResult,
+    ToolStatus,
 )
 from poker_deliberation.security import (
     blocked_security_guidance,
@@ -629,6 +632,47 @@ class Orchestrator:
                 )
             )
         return tuple(sorted(values, key=lambda item: item.tool_name.encode("utf-8")))
+
+    def _execute_tool_requests(
+        self,
+        *,
+        run_id: str,
+        requests: tuple[ToolRequest, ...],
+        existing_results: list[ToolResult],
+        machine: WorkflowStateMachine,
+    ) -> ToolResearchOutput:
+        tool_usage, tool_observed_at_ns, tool_deadline_ns = machine.runtime_window()
+        phase_request = make_phase_request(
+            run_id=run_id,
+            phase_id=PhaseId.TOOL_RESEARCH,
+            attempt_id=_new_phase_attempt_id(PhaseId.TOOL_RESEARCH),
+            policy_snapshot_hash=self.phase_policy_snapshot_hash,
+            input_value=ToolResearchInput(
+                requests=requests,
+                start_ordinal=len(existing_results),
+                existing_result_ids=tuple(result.result_id for result in existing_results),
+                fallback_result_ids=tuple(_new_internal_id("tool-result") for _ in requests),
+                budget_policy=self.budget_policy,
+                budget_snapshot=tool_usage,
+                budget_observed_at_ns=tool_observed_at_ns,
+                run_deadline_ns=tool_deadline_ns,
+            ),
+        )
+        outcome = revalidate_outcome(
+            phase_request,
+            self.tool_research_executor.run(phase_request),
+            output_type=ToolResearchOutput,
+        )
+        if outcome.output is None:
+            raise PhaseContractError("tool research returned no output")
+        validate_tool_research_output(phase_request, outcome.output)
+        if outcome.output.usage_observed_at_ns is None:
+            raise PhaseContractError("budgeted tool research returned no usage observation")
+        machine.apply_usage_at(
+            outcome.output.usage_delta,
+            observed_at_ns=outcome.output.usage_observed_at_ns,
+        )
+        return outcome.output
 
     def _read_approval_state(
         self,
@@ -1771,8 +1815,191 @@ class Orchestrator:
             tool_inputs = {}
         already_run = {result.tool_name for result in tool_results}
         requested_tool_calls: list[ToolRequest] = []
+        versioned_ranges = (
+            [
+                item
+                for item in case.hand.known_ranges
+                if isinstance(item, VersionedRangeDefinitionV1)
+            ]
+            if case.hand is not None
+            else []
+        )
+        auto_range_validation: RangeValidationResultV1 | None = None
+        auto_range_payload: dict[str, object] | None = None
+        auto_range_request: ToolRequest | None = None
+        auto_combo_payload: dict[str, object] | None = None
+        skip_versioned_combos = False
+        if case.hand is not None and "combos" in case.requested_tools and versioned_ranges:
+            if len(versioned_ranges) != 1:
+                data_quality.append(
+                    "RNG_E_TARGET: versioned range product execution requires exactly one range"
+                )
+                skip_versioned_combos = True
+            else:
+                range_definition = versioned_ranges[0]
+                auto_range_payload = {
+                    "schema_version": "1.0.0",
+                    "hand": case.hand.model_dump(mode="json"),
+                    "range_definition": range_definition.model_dump(mode="json"),
+                }
+                supplied_validation = tool_inputs.get("range_validate")
+                if supplied_validation not in (None, {}, auto_range_payload):
+                    data_quality.append(
+                        "RNG_E_PROVENANCE: conflicting range_validate input was refused"
+                    )
+                    skip_versioned_combos = True
+                auto_range_request = ToolRequest(
+                    request_id=_new_internal_id("tool-request"),
+                    tool_name="range_validate",
+                    input=auto_range_payload,
+                    contract_version=self.tool_contract_versions.get("range_validate"),
+                )
+                auto_range_validation = validate_versioned_range(
+                    case.hand,
+                    range_definition,
+                )
+                if auto_range_validation.status == "failed":
+                    codes = ",".join(
+                        diagnostic.code.value for diagnostic in auto_range_validation.diagnostics
+                    )
+                    data_quality.append(f"versioned range validation failed closed: {codes}")
+                    skip_versioned_combos = True
+        if auto_range_request is not None:
+            if not machine.enforce_runtime():
+                data_quality.append("strict runtime refused before versioned range validation")
+                _append_observed_budget_failure(data_quality, machine)
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            try:
+                range_output = self._execute_tool_requests(
+                    run_id=actual_run_id,
+                    requests=(auto_range_request,),
+                    existing_results=tool_results,
+                    machine=machine,
+                )
+            except BudgetLimitError as exc:
+                data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range validation usage settlement failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            data_quality.extend(range_output.data_quality)
+            validation = range_output.bindings[0].result
+            tool_results.append(validation)
+            self.store.write_json(
+                actual_run_id,
+                f"tool_results/{validation.result_id}.json",
+                validation,
+            )
+            self.store.write_json(
+                actual_run_id,
+                f"tool_results/{validation.result_id}.input.json",
+                validation.input,
+            )
+            if range_output.budget_failure is not None:
+                data_quality.append(f"strict budget failure: {range_output.budget_failure.code}")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range validation budget refused",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            if validation.status is not ToolStatus.SUCCESS:
+                data_quality.append("versioned range validation tool failed closed")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range validation tool failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            if auto_range_validation is None:
+                raise PhaseContractError("versioned range deterministic preflight is missing")
+            if validation.output != auto_range_validation.model_dump(mode="json"):
+                raise PhaseContractError(
+                    "versioned range validation differs from deterministic preflight"
+                )
         for tool_name in case.requested_tools:
             if tool_name in already_run and tool_name == "hand_validator":
+                continue
+            if tool_name == "range_validate" and auto_range_payload is not None:
+                continue
+            if tool_name == "combos" and auto_range_validation is not None:
+                if skip_versioned_combos:
+                    continue
+                auto_combo_payload = {
+                    "range": auto_range_validation.canonical_notation,
+                    "dead_cards": [],
+                }
+                supplied_payload = tool_inputs.get(tool_name)
+                if supplied_payload not in (None, {}, auto_combo_payload):
+                    data_quality.append("RNG_E_PROVENANCE: conflicting combos input was refused")
+                    skip_versioned_combos = True
+                    auto_combo_payload = None
+                    continue
+                requested_tool_calls.append(
+                    ToolRequest(
+                        request_id=_new_internal_id("tool-request"),
+                        tool_name=tool_name,
+                        input=auto_combo_payload,
+                        contract_version=self.tool_contract_versions.get(tool_name),
+                    )
+                )
+                continue
+            if tool_name == "combos" and versioned_ranges and skip_versioned_combos:
                 continue
             payload = tool_inputs.get(tool_name, {})
             if not isinstance(payload, dict):
@@ -1813,39 +2040,12 @@ class Orchestrator:
                 completed=False,
                 machine=machine,
             )
-        tool_usage, tool_observed_at_ns, tool_deadline_ns = machine.runtime_window()
-        requested_tools_request = make_phase_request(
-            run_id=actual_run_id,
-            phase_id=PhaseId.TOOL_RESEARCH,
-            attempt_id=_new_phase_attempt_id(PhaseId.TOOL_RESEARCH),
-            policy_snapshot_hash=self.phase_policy_snapshot_hash,
-            input_value=ToolResearchInput(
-                requests=tuple(requested_tool_calls),
-                start_ordinal=len(tool_results),
-                existing_result_ids=tuple(result.result_id for result in tool_results),
-                fallback_result_ids=tuple(
-                    _new_internal_id("tool-result") for _ in requested_tool_calls
-                ),
-                budget_policy=self.budget_policy,
-                budget_snapshot=tool_usage,
-                budget_observed_at_ns=tool_observed_at_ns,
-                run_deadline_ns=tool_deadline_ns,
-            ),
-        )
-        requested_tools_outcome = revalidate_outcome(
-            requested_tools_request,
-            self.tool_research_executor.run(requested_tools_request),
-            output_type=ToolResearchOutput,
-        )
-        if requested_tools_outcome.output is None:
-            raise PhaseContractError("tool research returned no output")
-        validate_tool_research_output(requested_tools_request, requested_tools_outcome.output)
         try:
-            if requested_tools_outcome.output.usage_observed_at_ns is None:
-                raise PhaseContractError("budgeted tool research returned no usage observation")
-            machine.apply_usage_at(
-                requested_tools_outcome.output.usage_delta,
-                observed_at_ns=requested_tools_outcome.output.usage_observed_at_ns,
+            requested_tools_output = self._execute_tool_requests(
+                run_id=actual_run_id,
+                requests=tuple(requested_tool_calls),
+                existing_results=tool_results,
+                machine=machine,
             )
         except BudgetLimitError as exc:
             data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
@@ -1868,16 +2068,16 @@ class Orchestrator:
                 completed=False,
                 machine=machine,
             )
-        data_quality.extend(requested_tools_outcome.output.data_quality)
-        tool_results.extend(binding.result for binding in requested_tools_outcome.output.bindings)
+        data_quality.extend(requested_tools_output.data_quality)
+        tool_results.extend(binding.result for binding in requested_tools_output.bindings)
         for result in tool_results:
             self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
             self.store.write_json(
                 actual_run_id, f"tool_results/{result.result_id}.input.json", result.input
             )
-        if requested_tools_outcome.output.budget_failure is not None:
+        if requested_tools_output.budget_failure is not None:
             data_quality.append(
-                f"strict budget failure: {requested_tools_outcome.output.budget_failure.code}"
+                f"strict budget failure: {requested_tools_output.budget_failure.code}"
             )
             machine.transition(
                 RunState.FAILED_WITH_LIMITATIONS,
@@ -1898,6 +2098,36 @@ class Orchestrator:
                 completed=False,
                 machine=machine,
             )
+        if auto_combo_payload is not None:
+            auto_combo_results = [
+                binding.result
+                for binding in requested_tools_output.bindings
+                if binding.result.tool_name == "combos"
+                and binding.result.input == auto_combo_payload
+            ]
+            if len(auto_combo_results) != 1:
+                raise PhaseContractError("versioned range product requires one bound combos result")
+            if auto_combo_results[0].status is not ToolStatus.SUCCESS:
+                data_quality.append("versioned range combos tool failed closed")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range combos tool failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
         if not machine.enforce_runtime():
             data_quality.append("maximum runtime exceeded after tool execution")
             _append_observed_budget_failure(data_quality, machine)

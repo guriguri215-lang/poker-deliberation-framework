@@ -1,5 +1,5 @@
 {
-  "schema_version": "7.0.0",
+  "schema_version": "8.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -248,6 +248,17 @@
       "scope": "Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none."
     },
     {
+      "id": "P3-016A",
+      "rm_id": "RM-016",
+      "status": "completed",
+      "status_reason": "The approved bounded grammar, provenance and game-condition binding, exact validation tool, canonical combo product slice, reader replay, documentation, fixtures, and declared tests are implemented.",
+      "dependencies": [
+        "RM-006",
+        "P3-014A"
+      ],
+      "scope": "poker-deliberation.nlhe-range grammar version 1.0.0 for one provenance-qualified opponent range using explicit combos, pairs, canonical descending suited or offsuit classes, optional decimal @ weights represented as integer millionths, pre-blocker overlap rejection, exact hand and action-prefix binding, automatic range_validate then combos execution, and immutable/terminal semantic replay; no plus, intervals, exclusions, natural-language inference, external source import, equity integration, solver, or GTO claim."
+    },
+    {
       "id": "P3-017A",
       "rm_id": "RM-017",
       "status": "completed",
@@ -444,7 +455,7 @@
       "phase": "phase-1",
       "priority": "P1",
       "status": "completed",
-      "status_reason": "All 21 tools expose contract version 2.0.0 with typed schemas.",
+      "status_reason": "All 22 tools expose contract version 2.0.0 with typed schemas.",
       "dependencies": [
         "RM-005"
       ],
@@ -923,33 +934,54 @@
       "title": "Range grammar and provenance",
       "phase": "phase-3",
       "priority": "P2",
-      "status": "planned",
-      "status_reason": "Accepted roadmap scope; not implemented.",
+      "status": "in_progress",
+      "status_reason": "P3-016A implements the approved bounded version 1 grammar and provenance-bound combos product slice; additional syntax, multiple ranges, equity integration, imports, and natural-language inference remain unimplemented.",
       "dependencies": [
         "RM-006",
         "RM-014"
       ],
-      "capabilities": [],
-      "objective": "Add only approved range syntax with source and game-condition provenance.",
+      "capabilities": [
+        "versioned_nlhe_range_grammar"
+      ],
+      "objective": "Provide a bounded versioned NLHE range grammar with explicit source rights, exact game-condition provenance, deterministic canonical combos, and reader-verifiable product artifacts.",
       "targets": [
-        "src/poker_deliberation/tools/combinations.py",
-        "range schemas and documentation"
+        "src/poker_deliberation/range_models.py",
+        "src/poker_deliberation/range_grammar.py",
+        "src/poker_deliberation/tools/contracts.py",
+        "src/poker_deliberation/orchestrator.py",
+        "scripts/generate_range_fixtures.py",
+        "tests/fixtures/range/v1/cases.json",
+        "evals/datasets/p3_016a/v1/cases.json",
+        "docs/range-grammar.md"
       ],
       "acceptance_criteria": [
-        "Ambiguity, overlap, blocker, weight, and provenance mismatches fail explicitly."
+        "Grammar and result version 1.0.0 accept only explicit combos, pairs, canonical descending suited or offsuit classes, comma separators with ASCII horizontal whitespace, and optional @ decimal weights of at most six places.",
+        "Weights use exact integer millionths; plus, intervals, exclusions, colon weights, signs, exponent notation, leading decimal points, non-ASCII notation, overlap, limits, empty post-blocker ranges, and ambiguous or unsupported syntax fail with stable diagnostics.",
+        "One non-hero target range is bound to declared source/license/usage/content status, notation SHA-256, NLHE format/table/position/street/stack, as-of action-prefix SHA-256, and hero plus visible-board blockers.",
+        "The product path runs exact range_validate before canonical weighted combos, refuses conflicting manual inputs, and immutable and terminal readers deterministically replay both artifacts.",
+        "Legacy RangeDefinition, legacy parse_weighted_range, and existing equity behavior remain unchanged; multiple versioned ranges, equity integration, imports, natural-language inference, external solvers, and GTO claims remain outside P3-016A."
       ],
       "tests": [
-        "range parser, normalization, blocker, ambiguity, and provenance isolation tests"
+        "tests/unit/test_range_grammar.py",
+        "tests/property/test_range_grammar_properties.py",
+        "tests/integration/test_range_product_path.py",
+        "tests/integration/test_range_fixtures.py",
+        "tests/adversarial/test_range_grammar_adversarial.py",
+        "tests/characterization/test_range_grammar_compatibility.py",
+        "tests/integration/test_tool_contracts.py"
       ],
       "milestones": {
-        "entry": null,
+        "entry": "P3-016A",
         "completion": null
       },
-      "relations": [],
+      "relations": [
+        "P3-016A is additive to the legacy RangeDefinition and parser and does not change existing equity semantics.",
+        "Natural-language hand or range intake and end-to-end report integration are deferred to RM-030."
+      ],
       "decision_gate": {
         "required": true,
         "rationale": [
-          "range formats and source licenses"
+          "future range syntax, multiple-range semantics, external source/license classes, import formats, and equity integration require a separate approved decision"
         ]
       }
     },
@@ -1642,6 +1674,53 @@
       "decision_gate": {
         "required": false,
         "rationale": []
+      }
+    },
+    {
+      "id": "RM-030",
+      "title": "Natural-language canonical intake and adjudicated report integration",
+      "phase": "phase-4",
+      "priority": "P2",
+      "status": "proposed",
+      "status_reason": "Registered as a future integration gap only; no natural-language hand or range inference, external model execution, or new report path is implemented.",
+      "dependencies": [
+        "RM-014",
+        "RM-016",
+        "RM-017"
+      ],
+      "capabilities": [
+        "natural_language_or_site_parser",
+        "versioned_nlhe_range_grammar"
+      ],
+      "objective": "Define a separately approved flow from natural-language hand and range material through canonical hand/range artifacts, deterministic calculators, adjudication, and a provenance-bound report.",
+      "targets": [
+        "future natural-language intake contract",
+        "future canonical hand and range binding",
+        "future adjudicated report integration"
+      ],
+      "acceptance_criteria": [
+        "A future milestone must specify parser/model identity, source rights, ambiguity handling, user confirmation, canonical hand/range provenance, calculator inputs, adjudication evidence, report claims, privacy, security, budgets, and reproducible evaluation before implementation."
+      ],
+      "tests": [
+        "future ambiguity and confirmation fixtures",
+        "future provenance and privacy isolation tests",
+        "future end-to-end canonical artifact replay"
+      ],
+      "milestones": {
+        "entry": null,
+        "completion": null
+      },
+      "relations": [
+        "Consumes P3-014A and P3-016A artifacts without weakening their strict grammars or inventing missing poker facts.",
+        "Does not imply an OpenAI provider, runtime bridge, site parser, external solver, or GTO capability."
+      ],
+      "decision_gate": {
+        "required": true,
+        "rationale": [
+          "natural-language parser or model selection",
+          "user confirmation and ambiguity policy",
+          "source rights, privacy, outbound execution, evaluation threshold, and report-claim policy"
+        ]
       }
     }
   ]

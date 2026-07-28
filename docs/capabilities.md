@@ -29,6 +29,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `heads_up_nlhe_equity` | **implemented** | heads-up NLHEに限り、上限付きexact enumerationまたはseed付きMonte Carloを実行する。 |
 | `multiway_or_plo_equity` | **unavailable** | multiway equityとPLO equityは未対応。 |
 | `documented_hand_parser` | **implemented** | version 1のstrictかつprovenance-boundなkey-value/player/action形式だけを保守的に正規化する。対応siteは`none`。 |
+| `profiled_nlhe_side_pot_ledger` | **planned** | P3-015Aを実装中として登録済み。runtime ledger能力はまだ主張しない。 |
 | `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |

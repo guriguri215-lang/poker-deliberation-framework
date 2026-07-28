@@ -58,6 +58,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "supported site: none.",
     ),
     Capability(
+        "profiled_nlhe_side_pot_ledger",
+        "planned",
+        "P3-015A is registered and implementation is underway; no runtime ledger capability "
+        "is claimed yet.",
+    ),
+    Capability(
         "natural_language_or_site_parser",
         "unavailable",
         "Natural-language and site-specific hand histories are not parsed.",

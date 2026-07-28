@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `6.0.0`
-- source SHA-256: `104de25c3918b62f6f4eb71a7d26c1a8f55774f3cd159a33265e6dcbc2c607f5`
+- schema version: `7.0.0`
+- source SHA-256: `992a7ec942e32915dc38dcb7903881f8d15adf9c4135e9314b0690141a1cba2e`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -47,6 +47,7 @@
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
+| `P3-015A` | `RM-015` | `in_progress` | `P3-014A` | Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none. | The approved generic no-rake NLHE cash profile and exact side-pot ledger vertical slice are being implemented. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 
 ## Current RM state
@@ -67,7 +68,7 @@
 | `RM-012` | Versioned run manifest and failure atomicity | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-012B` | `required` |
 | `RM-013` | Approval and resume contract hardening | `phase-2` | `P1` | `completed` | `RM-012`, `RM-024` | `P2-013B` | `required` |
 | `RM-014` | Versioned normalization grammar | `phase-3` | `P1` | `completed` | `RM-006`, `RM-012` | `P3-014A` | `required` |
-| `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `planned` | `RM-014` | `n/a` | `required` |
+| `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `in_progress` | `RM-014` | `n/a` | `required` |
 | `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `planned` | `RM-006`, `RM-014` | `n/a` | `required` |
 | `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
 | `RM-018A` | Pre-release readiness | `pre-release` | `P1` | `planned` | `RM-001`, `RM-002`, `RM-003`, `RM-004`, `RM-005`, `RM-006`, `RM-007`, `RM-008`, `RM-009`, `RM-023` | `n/a` | `required` |
@@ -433,20 +434,32 @@
 
 ### RM-015 — Hand rule profiles and side-pot accounting
 
-- Status: `planned`
-- Status reason: Accepted roadmap scope; not implemented.
-- Objective: Define selected rule profiles for raises, all-ins, uncalled bets, side pots, and rake timing.
+- Status: `in_progress`
+- Status reason: The approved P3-015A generic no-rake NLHE cash vertical slice is in implementation; raked and site-specific profiles remain future RM-015 work.
+- Objective: Implement the approved repository-owned generic no-rake NLHE cash profile for raises, all-ins, uncalled returns, eligibility, and exact side-pot accounting while retaining fail-closed boundaries for all other profiles.
 - Capabilities:
-  - none
+  - profiled_nlhe_side_pot_ledger
 - Targets:
-  - src/poker_deliberation/schemas.py
-  - src/poker_deliberation/tools/hand_validator.py
+  - src/poker_deliberation/tools/hand_pot_ledger.py
+  - src/poker_deliberation/tools/contracts.py
+  - src/poker_deliberation/tools/registry.py
+  - docs/hand-rule-profile.md
 - Acceptance criteria:
-  - Supported rule profiles and unsupported cases match schema, documentation, and golden ledgers.
+  - Only generic_nlhe_cash_no_rake_v1 version 1.0.0 with supported site none and explicit zero rake is accepted.
+  - Caller-declared canonical chip units produce bounded integer ledgers, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and independently verified oracle evidence.
+  - CanonicalHand and normalization grammar version 1 remain unchanged while rake, straddle, run-it-twice, PLO, tournament, bounty, site-specific, split-pot, and unknown-version inputs fail closed.
 - Tests:
-  - multiway side-pot, short-call, folded-contribution, and rule-profile golden tests
+  - tests/unit/test_hand_pot_ledger.py
+  - tests/property/test_hand_pot_ledger_properties.py
+  - tests/integration/test_hand_pot_ledger_product_path.py
+  - tests/adversarial/test_hand_pot_ledger_security.py
+  - tests/characterization/test_hand_pot_ledger_compatibility.py
 - Decision gate rationale:
-  - site, jurisdiction, and game rule profiles
+  - future site, jurisdiction, rake, and game rule profiles require a separate approved decision
+- Relations:
+  - P3-015A is limited to the repository-owned generic no-rake NLHE cash profile with supported site none.
+  - Raked and site-specific rule profiles remain future RM-015 work.
+  - P3-015A does not implement RM-016, RM-019, RM-020, RM-025 bridge work, or P2-028A external execution.
 
 ### RM-016 — Range grammar and provenance
 

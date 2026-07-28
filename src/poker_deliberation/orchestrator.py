@@ -153,6 +153,8 @@ from poker_deliberation.phases.revision_coordinator import (
     _issue_transition_plan,
 )
 from poker_deliberation.providers import AgentProvider, LocalProvider
+from poker_deliberation.range_grammar import validate_versioned_range
+from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.research import EvidenceLedger
 from poker_deliberation.schemas import (
@@ -1771,8 +1773,82 @@ class Orchestrator:
             tool_inputs = {}
         already_run = {result.tool_name for result in tool_results}
         requested_tool_calls: list[ToolRequest] = []
+        versioned_ranges = (
+            [
+                item
+                for item in case.hand.known_ranges
+                if isinstance(item, VersionedRangeDefinitionV1)
+            ]
+            if case.hand is not None
+            else []
+        )
+        auto_range_validation = None
+        auto_range_payload: dict[str, object] | None = None
+        skip_versioned_combos = False
+        if case.hand is not None and "combos" in case.requested_tools and versioned_ranges:
+            if len(versioned_ranges) != 1:
+                data_quality.append(
+                    "RNG_E_TARGET: versioned range product execution requires exactly one range"
+                )
+                skip_versioned_combos = True
+            else:
+                range_definition = versioned_ranges[0]
+                auto_range_payload = {
+                    "schema_version": "1.0.0",
+                    "hand": case.hand.model_dump(mode="json"),
+                    "range_definition": range_definition.model_dump(mode="json"),
+                }
+                supplied_validation = tool_inputs.get("range_validate")
+                if supplied_validation not in (None, {}, auto_range_payload):
+                    data_quality.append(
+                        "RNG_E_PROVENANCE: conflicting range_validate input was refused"
+                    )
+                    skip_versioned_combos = True
+                requested_tool_calls.append(
+                    ToolRequest(
+                        request_id=_new_internal_id("tool-request"),
+                        tool_name="range_validate",
+                        input=auto_range_payload,
+                        contract_version=self.tool_contract_versions.get("range_validate"),
+                    )
+                )
+                auto_range_validation = validate_versioned_range(
+                    case.hand,
+                    range_definition,
+                )
+                if auto_range_validation.status == "failed":
+                    codes = ",".join(
+                        diagnostic.code.value for diagnostic in auto_range_validation.diagnostics
+                    )
+                    data_quality.append(f"versioned range validation failed closed: {codes}")
+                    skip_versioned_combos = True
         for tool_name in case.requested_tools:
             if tool_name in already_run and tool_name == "hand_validator":
+                continue
+            if tool_name == "range_validate" and auto_range_payload is not None:
+                continue
+            if tool_name == "combos" and auto_range_validation is not None:
+                if skip_versioned_combos:
+                    continue
+                expected_payload: dict[str, object] = {
+                    "range": auto_range_validation.canonical_notation,
+                    "dead_cards": [],
+                }
+                supplied_payload = tool_inputs.get(tool_name)
+                if supplied_payload not in (None, {}, expected_payload):
+                    data_quality.append("RNG_E_PROVENANCE: conflicting combos input was refused")
+                    skip_versioned_combos = True
+                    continue
+                requested_tool_calls.append(
+                    ToolRequest(
+                        request_id=_new_internal_id("tool-request"),
+                        tool_name=tool_name,
+                        input=expected_payload,
+                        contract_version=self.tool_contract_versions.get(tool_name),
+                    )
+                )
+                continue
+            if tool_name == "combos" and versioned_ranges and skip_versioned_combos:
                 continue
             payload = tool_inputs.get(tool_name, {})
             if not isinstance(payload, dict):

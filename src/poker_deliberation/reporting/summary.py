@@ -32,6 +32,14 @@ _IMPORTANT_OUTPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "polar_river_bluff_fraction": ("bluff_fraction", "bluff_percent"),
     "bayes_update": ("posterior", "evidence_probability"),
     "pot_reconstruction": ("final_pot",),
+    "range_validate": (
+        "status",
+        "range_id",
+        "target_player_id",
+        "combo_count",
+        "total_weight_millionths",
+        "diagnostics",
+    ),
     "combos": ("count", "combo_count", "total_combo_weight"),
     "holdem_equity": (
         "hero_equity",

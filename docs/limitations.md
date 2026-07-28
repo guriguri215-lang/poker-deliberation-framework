@@ -23,8 +23,12 @@
 - No external poker solver, external card library, paid range, or private dataset is bundled.
 - No full NLHE game-tree equilibrium, CFR/CFR+, node locking, or solver exploitability computation.
 - Equity is heads-up NLHE only; multiway and PLO equity are unsupported.
-- Range syntax supports explicit combos, pairs, suited/offsuit classes, and weights; `+`, intervals,
-  exclusions, and solver-native range formats are not implemented.
+- P3-016Aのversioned range grammarは、provenanceとexact game-conditionを持つ1 opponent range
+  に限り、explicit combo、pair、canonical descending suited/offsuit class、最大6桁の`@` decimal
+  weightを受理する。weightはinteger millionthsで保持し、overlapはblocker前に拒否する。
+  `+`、interval、exclusion、colon/sign/exponent weight、複数versioned range、equity integration、
+  import/site/solver-native format、自然言語range inferenceは未実装である。legacy
+  `RangeDefinition`、legacy parser、既存equity semanticsは変更しない。
 - Legacy `hand_validator` does not fully model straddles, returned uncalled bets, site-specific rake
   timing, side pots, or every jurisdictional minimum-raise rule; its existing semantics remain
   unchanged.

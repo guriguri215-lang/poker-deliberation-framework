@@ -58,6 +58,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "supported site: none.",
     ),
     Capability(
+        "versioned_nlhe_range_grammar",
+        "implemented",
+        "Version 1 of the bounded provenance-qualified NLHE range grammar validates and "
+        "canonicalizes one opponent range before combo expansion.",
+    ),
+    Capability(
         "profiled_nlhe_side_pot_ledger",
         "implemented",
         "generic_nlhe_cash_no_rake_v1 provides an integer contribution, uncalled-return, "

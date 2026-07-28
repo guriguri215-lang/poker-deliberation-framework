@@ -13,12 +13,12 @@ from poker_deliberation.local_data_cleanup import LocalDataCleanupExecutor
 
 ROOT = Path(__file__).resolve().parents[2]
 
-P2_027B_UNCHANGED_BOUNDARY_SHA256 = {
+P3_016A_COMPATIBLE_BOUNDARY_SHA256 = {
     "src/poker_deliberation/context_lifecycle.py": (
         "969d03a57af3405b0873766cd53c3f079772b09bc27222691dfa6cafaad5b111"
     ),
     "src/poker_deliberation/schemas.py": (
-        "57518549c4312aa7bac97fd13cd455f45798a4a043b0685f31b6393087dfa582"
+        "93df8451f9825e0f09b43515df401a723b581cef3c41133118df48a1af4f2256"
     ),
     "src/poker_deliberation/phases/revision_coordinator.py": (
         "10b457da988a935ce12a68cb7152f1844586160aa2d52b4c2fd23d3dacb6f75b"
@@ -26,14 +26,15 @@ P2_027B_UNCHANGED_BOUNDARY_SHA256 = {
 }
 
 
-def test_p2_027b_unchanged_runtime_boundaries_remain_byte_exact() -> None:
+def test_p2_027b_boundaries_remain_compatible_after_additive_range_schema() -> None:
     # P2-013B explicitly adds resume/reissue wiring to orchestrator.py and cli.py.
-    # P2-027B's independent context/schema/tool/coordinator boundaries stay frozen.
+    # P3-016A changes only CanonicalHand.known_ranges additively; the legacy
+    # RangeDefinition shape and P2-027B context/coordinator behavior stay characterized.
     observed = {
         path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
-        for path in P2_027B_UNCHANGED_BOUNDARY_SHA256
+        for path in P3_016A_COMPATIBLE_BOUNDARY_SHA256
     }
-    assert observed == P2_027B_UNCHANGED_BOUNDARY_SHA256
+    assert observed == P3_016A_COMPATIBLE_BOUNDARY_SHA256
 
 
 def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:

@@ -26,7 +26,11 @@ from poker_deliberation.schemas import (
 )
 from poker_deliberation.tools.best_response import best_response_to_fixed_strategy
 from poker_deliberation.tools.combinations import combo_summary, parse_weighted_range
-from poker_deliberation.tools.contracts import ToolContract, contract_by_name
+from poker_deliberation.tools.contracts import (
+    RangeValidateInput,
+    ToolContract,
+    contract_by_name,
+)
 from poker_deliberation.tools.equity import holdem_equity
 from poker_deliberation.tools.ev_tree import evaluate_ev_tree
 from poker_deliberation.tools.hand_pot_ledger import calculate_hand_pot_ledger
@@ -530,6 +534,16 @@ def _combo_tool(payload: dict[str, Any]) -> dict[str, Any]:
     return combo_summary(str(payload["hand_class"]), tuple(map(str, payload.get("dead_cards", []))))
 
 
+def _range_validate_tool(payload: dict[str, Any]) -> dict[str, Any]:
+    from poker_deliberation.range_grammar import validate_versioned_range
+
+    request = RangeValidateInput.model_validate(payload)
+    return validate_versioned_range(
+        request.hand,
+        request.range_definition,
+    ).model_dump(mode="python")
+
+
 def _equity_tool(payload: dict[str, Any]) -> dict[str, Any]:
     game_type = str(payload.get("game_type", "NLHE")).upper()
     if game_type != "NLHE":
@@ -657,6 +671,13 @@ def default_registry(
             "floating-verified",
             ("generic",),
             lambda p: reconstruct_pot(**p),
+        ),
+        ToolDefinition(
+            "range_validate",
+            "Validate and canonicalize one provenance-qualified versioned NLHE range.",
+            "exact",
+            ("NLHE",),
+            _range_validate_tool,
         ),
         ToolDefinition(
             "combos",

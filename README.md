@@ -144,13 +144,17 @@ poker-deliberate resume RUN_ID --reject APPROVAL_ID --reason "外部実行を許
 ToolResultは `runs/<run_id>/tool_results/` に保存され、再現コマンドがレポートに入ります。
 新しいcontract version 2では、旧3値`exactness`を互換用に残し、`numeric_exactness`で
 `exact` / `exact-under-model` / `floating-verified` / `approximate` / `unavailable`を区別します。
-21 toolのstrict input/output schema、前提、上限、単位、toleranceは
+22 toolのstrict input/output schema、前提、上限、単位、toleranceは
 [生成済みtool contracts](docs/tool-contracts.md)を参照してください。
 自由文ハンドは `key: value`、`player: id, position, stack`、
 `action: street, actor, action, amount[, to_amount]` のversion 1保守形式だけを正規化します。
 exact source bytesとcanonical handのSHA-256、parser ID/version、安定診断コードは
 [`normalization.json` contract](docs/normalization-contract.md)に従います。対応siteは`none`で、
 自然言語およびsite-specific hand historyは解析しません。
+versioned rangeは[`poker-deliberation.nlhe-range` grammar v1](docs/range-grammar.md)に従い、
+明示syntax、source rights、content hash、game condition、action prefix、blockerを検証してから
+canonical comboへ変換します。自然言語からrangeを推測せず、複数range、equityへの自動接続、
+external import、solver/GTO主張はこのsliceに含みません。
 承認待ちのCLIはレポートを出力して終了コード3を返します。
 正常完了は0、入力・計算失敗および`failed_with_limitations`は2です。
 

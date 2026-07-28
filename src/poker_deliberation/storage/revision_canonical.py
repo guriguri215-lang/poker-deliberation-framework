@@ -35,6 +35,7 @@ from poker_deliberation.normalization import (
 )
 from poker_deliberation.phases.contracts import canonical_sha256 as phase_canonical_sha256
 from poker_deliberation.phases.models import ToolExecutionBinding
+from poker_deliberation.range_grammar import verify_versioned_range_tool_chain
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import (
     AgentAssignment,
@@ -1009,7 +1010,10 @@ def _validate_source_graph(
         if contract is None:
             raise CanonicalStorageError("tool input names an unknown registry contract")
         try:
-            contract.input_model.model_validate(parsed[logical_name], strict=True)
+            contract.input_model.model_validate_json(
+                canonical_json_bytes(parsed[logical_name]),
+                strict=True,
+            )
         except ValidationError as exc:
             raise CanonicalStorageError("tool input fails its registry contract") from exc
         if (
@@ -1285,6 +1289,11 @@ def _validate_source_graph(
         tool_results = tuple(cast(ToolResult, parsed[name]) for name in ordered_tool_result_names)
         if tuple(final_report_json.tool_results) != tool_results:
             raise CanonicalStorageError("final report embedded tool results mismatch")
+        input_case = cast(CaseInput, parsed["input.json"])
+        try:
+            verify_versioned_range_tool_chain(input_case, tool_results)
+        except ValueError as exc:
+            raise CanonicalStorageError("versioned range tool chain replay failed") from exc
         final_contexts = bindings_of_type("final_report.json", ContextBindingV1)
         if final_report_v2:
             provider_trace_present = bool(report_names) or bool(

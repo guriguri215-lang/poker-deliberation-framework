@@ -1336,6 +1336,771 @@ tools:
   version: 1.0.0
   contract_version: 2.0.0
   command: poker-deliberate calculate pot_reconstruction --analysis-scope retrospective --input INPUT.json
+- name: range_validate
+  purpose: Validate, bind, expand, and canonicalize one provenance-qualified NLHE range.
+  supported_games:
+  - NLHE
+  input_schema:
+    $defs:
+      CanonicalHand:
+        additionalProperties: false
+        properties:
+          game_type:
+            default: NLHE
+            enum:
+            - NLHE
+            - PLO
+            - OTHER
+            title: Game Type
+            type: string
+          format:
+            enum:
+            - cash
+            - tournament
+            title: Format
+            type: string
+          table_size:
+            maximum: 10
+            minimum: 2
+            title: Table Size
+            type: integer
+          small_blind:
+            exclusiveMinimum: 0
+            title: Small Blind
+            type: number
+          big_blind:
+            exclusiveMinimum: 0
+            title: Big Blind
+            type: number
+          ante:
+            default: 0
+            minimum: 0
+            title: Ante
+            type: number
+          rake:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Rake
+          players:
+            items:
+              $ref: '#/$defs/PlayerStack'
+            minItems: 2
+            title: Players
+            type: array
+          hero_player_id:
+            anyOf:
+            - type: string
+            - type: 'null'
+            default: null
+            title: Hero Player Id
+          hero_cards:
+            items:
+              type: string
+            maxItems: 4
+            title: Hero Cards
+            type: array
+          board:
+            items:
+              type: string
+            maxItems: 5
+            title: Board
+            type: array
+          actions:
+            items:
+              $ref: '#/$defs/HandAction'
+            title: Actions
+            type: array
+          tournament:
+            anyOf:
+            - $ref: '#/$defs/TournamentContext'
+            - type: 'null'
+            default: null
+          known_ranges:
+            items:
+              anyOf:
+              - $ref: '#/$defs/RangeDefinition'
+              - $ref: '#/$defs/VersionedRangeDefinitionV1'
+            title: Known Ranges
+            type: array
+          opponent_observations:
+            items:
+              type: string
+            title: Opponent Observations
+            type: array
+          analysis_objective:
+            default: strategy_review
+            title: Analysis Objective
+            type: string
+        required:
+        - format
+        - table_size
+        - small_blind
+        - big_blind
+        - players
+        title: CanonicalHand
+        type: object
+      HandAction:
+        additionalProperties: false
+        properties:
+          street:
+            $ref: '#/$defs/Street'
+          actor:
+            minLength: 1
+            title: Actor
+            type: string
+          action:
+            enum:
+            - post_blind
+            - post_ante
+            - fold
+            - check
+            - call
+            - bet
+            - raise
+            - all_in
+            title: Action
+            type: string
+          amount:
+            default: 0
+            description: Incremental chips committed
+            minimum: 0
+            title: Amount
+            type: number
+          to_amount:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: To Amount
+          pot_before:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Pot Before
+          pot_after:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Pot After
+        required:
+        - street
+        - actor
+        - action
+        title: HandAction
+        type: object
+      PlayerStack:
+        additionalProperties: false
+        properties:
+          player_id:
+            minLength: 1
+            title: Player Id
+            type: string
+          position:
+            minLength: 1
+            title: Position
+            type: string
+          starting_stack:
+            minimum: 0
+            title: Starting Stack
+            type: number
+        required:
+        - player_id
+        - position
+        - starting_stack
+        title: PlayerStack
+        type: object
+      RangeDefinition:
+        additionalProperties: false
+        properties:
+          player_id:
+            title: Player Id
+            type: string
+          notation:
+            minLength: 1
+            title: Notation
+            type: string
+          source:
+            anyOf:
+            - type: string
+            - type: 'null'
+            default: null
+            title: Source
+          game_conditions:
+            additionalProperties: true
+            title: Game Conditions
+            type: object
+          assumed:
+            default: false
+            title: Assumed
+            type: boolean
+        required:
+        - player_id
+        - notation
+        title: RangeDefinition
+        type: object
+      RangeGameConditionsV1:
+        additionalProperties: false
+        properties:
+          game_type:
+            const: NLHE
+            title: Game Type
+            type: string
+          format:
+            enum:
+            - cash
+            - tournament
+            title: Format
+            type: string
+          table_size:
+            maximum: 10
+            minimum: 2
+            title: Table Size
+            type: integer
+          target_position:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$
+            title: Target Position
+            type: string
+          street:
+            enum:
+            - preflop
+            - flop
+            - turn
+            - river
+            title: Street
+            type: string
+          starting_stack_min_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Min Bb Milli
+            type: integer
+          starting_stack_max_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Max Bb Milli
+            type: integer
+          as_of_action_index:
+            maximum: 512
+            minimum: 0
+            title: As Of Action Index
+            type: integer
+          action_prefix_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Action Prefix Sha256
+            type: string
+        required:
+        - game_type
+        - format
+        - table_size
+        - target_position
+        - street
+        - starting_stack_min_bb_milli
+        - starting_stack_max_bb_milli
+        - as_of_action_index
+        - action_prefix_sha256
+        title: RangeGameConditionsV1
+        type: object
+      RangeSourceProvenanceV1:
+        additionalProperties: false
+        properties:
+          source_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Source Id
+            type: string
+          source_kind:
+            enum:
+            - user_supplied
+            - repository_fixture
+            title: Source Kind
+            type: string
+          license_classification:
+            enum:
+            - user_supplied_private_analysis
+            - repository_owned_mit
+            title: License Classification
+            type: string
+          usage_classification:
+            enum:
+            - local_analysis_only
+            - redistribution_allowed
+            title: Usage Classification
+            type: string
+          content_status:
+            enum:
+            - USER_CLAIM
+            - ASSUMPTION
+            title: Content Status
+            type: string
+          content_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Content Sha256
+            type: string
+        required:
+        - source_id
+        - source_kind
+        - license_classification
+        - usage_classification
+        - content_status
+        - content_sha256
+        title: RangeSourceProvenanceV1
+        type: object
+      Street:
+        enum:
+        - preflop
+        - flop
+        - turn
+        - river
+        - showdown
+        title: Street
+        type: string
+      TournamentContext:
+        additionalProperties: false
+        properties:
+          payouts:
+            items:
+              minimum: 0
+              type: number
+            title: Payouts
+            type: array
+          remaining_players:
+            anyOf:
+            - minimum: 2
+              type: integer
+            - type: 'null'
+            default: null
+            title: Remaining Players
+          hero_stack:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Hero Stack
+          bounty_type:
+            default: none
+            enum:
+            - none
+            - fixed
+            - progressive
+            - mystery
+            title: Bounty Type
+            type: string
+          hero_bounty:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Hero Bounty
+          notes:
+            items:
+              type: string
+            title: Notes
+            type: array
+        title: TournamentContext
+        type: object
+      VersionedRangeDefinitionV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          grammar_id:
+            default: poker-deliberation.nlhe-range
+            title: Grammar Id
+            type: string
+          grammar_version:
+            default: 1.0.0
+            title: Grammar Version
+            type: string
+          range_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Range Id
+            type: string
+          target_player_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Target Player Id
+            type: string
+          notation:
+            minLength: 1
+            title: Notation
+            type: string
+          source:
+            $ref: '#/$defs/RangeSourceProvenanceV1'
+          game_conditions:
+            $ref: '#/$defs/RangeGameConditionsV1'
+        required:
+        - range_id
+        - target_player_id
+        - notation
+        - source
+        - game_conditions
+        title: VersionedRangeDefinitionV1
+        type: object
+    additionalProperties: false
+    properties:
+      schema_version:
+        const: 1.0.0
+        default: 1.0.0
+        title: Schema Version
+        type: string
+      hand:
+        $ref: '#/$defs/CanonicalHand'
+      range_definition:
+        $ref: '#/$defs/VersionedRangeDefinitionV1'
+    required:
+    - hand
+    - range_definition
+    title: RangeValidateInput
+    type: object
+  output_schema:
+    $defs:
+      CanonicalWeightedComboV1:
+        additionalProperties: false
+        properties:
+          cards:
+            maxItems: 2
+            minItems: 2
+            prefixItems:
+            - type: string
+            - type: string
+            title: Cards
+            type: array
+          weight_millionths:
+            maximum: 1000000
+            minimum: 1
+            title: Weight Millionths
+            type: integer
+          canonical_token:
+            maxLength: 20
+            minLength: 4
+            title: Canonical Token
+            type: string
+        required:
+        - cards
+        - weight_millionths
+        - canonical_token
+        title: CanonicalWeightedComboV1
+        type: object
+      RangeDiagnosticCode:
+        enum:
+        - RNG_E_UNSUPPORTED_VERSION
+        - RNG_E_LIMIT
+        - RNG_E_NON_ASCII
+        - RNG_E_SYNTAX
+        - RNG_E_CARD
+        - RNG_E_CLASS_ORDER
+        - RNG_E_WEIGHT_LEXEME
+        - RNG_E_WEIGHT_RANGE
+        - RNG_E_OVERLAP
+        - RNG_E_BLOCKER
+        - RNG_E_EMPTY
+        - RNG_E_PROVENANCE
+        - RNG_E_LICENSE
+        - RNG_E_TARGET
+        - RNG_E_GAME_CONDITION
+        - RNG_E_DIAGNOSTIC_LIMIT
+        title: RangeDiagnosticCode
+        type: string
+      RangeDiagnosticV1:
+        additionalProperties: false
+        properties:
+          code:
+            $ref: '#/$defs/RangeDiagnosticCode'
+          field:
+            enum:
+            - envelope
+            - notation
+            - weight
+            - card
+            - blockers
+            - provenance
+            - license
+            - target_player
+            - game_conditions
+            title: Field
+            type: string
+          token_index:
+            anyOf:
+            - exclusiveMaximum: 1326
+              minimum: 0
+              type: integer
+            - type: 'null'
+            default: null
+            title: Token Index
+        required:
+        - code
+        - field
+        title: RangeDiagnosticV1
+        type: object
+      RangeGameConditionsV1:
+        additionalProperties: false
+        properties:
+          game_type:
+            const: NLHE
+            title: Game Type
+            type: string
+          format:
+            enum:
+            - cash
+            - tournament
+            title: Format
+            type: string
+          table_size:
+            maximum: 10
+            minimum: 2
+            title: Table Size
+            type: integer
+          target_position:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$
+            title: Target Position
+            type: string
+          street:
+            enum:
+            - preflop
+            - flop
+            - turn
+            - river
+            title: Street
+            type: string
+          starting_stack_min_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Min Bb Milli
+            type: integer
+          starting_stack_max_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Max Bb Milli
+            type: integer
+          as_of_action_index:
+            maximum: 512
+            minimum: 0
+            title: As Of Action Index
+            type: integer
+          action_prefix_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Action Prefix Sha256
+            type: string
+        required:
+        - game_type
+        - format
+        - table_size
+        - target_position
+        - street
+        - starting_stack_min_bb_milli
+        - starting_stack_max_bb_milli
+        - as_of_action_index
+        - action_prefix_sha256
+        title: RangeGameConditionsV1
+        type: object
+      RangeSourceProvenanceV1:
+        additionalProperties: false
+        properties:
+          source_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Source Id
+            type: string
+          source_kind:
+            enum:
+            - user_supplied
+            - repository_fixture
+            title: Source Kind
+            type: string
+          license_classification:
+            enum:
+            - user_supplied_private_analysis
+            - repository_owned_mit
+            title: License Classification
+            type: string
+          usage_classification:
+            enum:
+            - local_analysis_only
+            - redistribution_allowed
+            title: Usage Classification
+            type: string
+          content_status:
+            enum:
+            - USER_CLAIM
+            - ASSUMPTION
+            title: Content Status
+            type: string
+          content_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Content Sha256
+            type: string
+        required:
+        - source_id
+        - source_kind
+        - license_classification
+        - usage_classification
+        - content_status
+        - content_sha256
+        title: RangeSourceProvenanceV1
+        type: object
+    additionalProperties: false
+    properties:
+      schema_version:
+        default: 1.0.0
+        title: Schema Version
+        type: string
+      result_version:
+        default: 1.0.0
+        title: Result Version
+        type: string
+      grammar_id:
+        default: poker-deliberation.nlhe-range
+        title: Grammar Id
+        type: string
+      grammar_version:
+        default: 1.0.0
+        title: Grammar Version
+        type: string
+      hash_algorithm:
+        const: sha256
+        default: sha256
+        title: Hash Algorithm
+        type: string
+      status:
+        enum:
+        - success
+        - failed
+        title: Status
+        type: string
+      range_id:
+        pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+        title: Range Id
+        type: string
+      target_player_id:
+        pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+        title: Target Player Id
+        type: string
+      source:
+        $ref: '#/$defs/RangeSourceProvenanceV1'
+      game_conditions:
+        $ref: '#/$defs/RangeGameConditionsV1'
+      source_notation_sha256:
+        pattern: ^[0-9a-f]{64}$
+        title: Source Notation Sha256
+        type: string
+      condition_binding_sha256:
+        anyOf:
+        - pattern: ^[0-9a-f]{64}$
+          type: string
+        - type: 'null'
+        default: null
+        title: Condition Binding Sha256
+      blockers:
+        default: []
+        items:
+          type: string
+        maxItems: 52
+        title: Blockers
+        type: array
+      diagnostics:
+        default: []
+        items:
+          $ref: '#/$defs/RangeDiagnosticV1'
+        maxItems: 64
+        title: Diagnostics
+        type: array
+      canonical_notation:
+        anyOf:
+        - type: string
+        - type: 'null'
+        default: null
+        title: Canonical Notation
+      canonical_combo_sha256:
+        anyOf:
+        - pattern: ^[0-9a-f]{64}$
+          type: string
+        - type: 'null'
+        default: null
+        title: Canonical Combo Sha256
+      combos:
+        default: []
+        items:
+          $ref: '#/$defs/CanonicalWeightedComboV1'
+        maxItems: 1326
+        title: Combos
+        type: array
+      combo_count:
+        maximum: 1326
+        minimum: 0
+        title: Combo Count
+        type: integer
+      total_weight_millionths:
+        maximum: 1326000000
+        minimum: 0
+        title: Total Weight Millionths
+        type: integer
+    required:
+    - status
+    - range_id
+    - target_player_id
+    - source
+    - game_conditions
+    - source_notation_sha256
+    - combo_count
+    - total_weight_millionths
+    title: RangeValidationResultV1
+    type: object
+  numeric_exactness_modes:
+  - exact
+  legacy_exactness_projection:
+    exact: exact
+    exact-under-model: exact
+    floating-verified: exact
+    approximate: approximate
+    unavailable: unavailable
+  assumptions:
+  - Exactly one versioned range is bound to one non-hero target player.
+  - Source content is USER_CLAIM or ASSUMPTION, never solver-inferred.
+  - Only approved local-analysis or repository-owned source rights are accepted.
+  preconditions:
+  - grammar and schema version 1.0.0
+  - exact hand, target, action-prefix, street, position, and stack binding
+  - source content hash matches notation bytes
+  limits:
+    notation_bytes: 16384
+    tokens: 1326
+    expanded_combos: 1326
+    action_prefix: 512
+    diagnostics: 64
+    blockers: 52
+    external_execution: not performed
+  units:
+    weight_millionths: integer millionths in (0, 1000000]
+    stack_bounds: integer big-blind thousandths
+    combo_count: count
+  failure_modes:
+  - strict input schema rejection (including extra or missing fields)
+  - documented precondition violation
+  - hard resource limit violation
+  - strict output schema or invariant failure
+  - unsupported grammar syntax or version
+  - overlapping combo expansion
+  - source provenance or license mismatch
+  - hand, target, or game-condition binding mismatch
+  - all expanded combos removed by blockers
+  verification_checks:
+  - source notation SHA-256
+  - canonical action-prefix and condition-binding SHA-256
+  - pre-blocker overlap detection
+  - canonical combo SHA-256 and integer weight sum
+  tolerance: null
+  model_qualifier: poker-deliberation.nlhe-range version 1.0.0
+  version: 1.0.0
+  contract_version: 2.0.0
+  command: poker-deliberate calculate range_validate --analysis-scope retrospective --input INPUT.json
 - name: combos
   purpose: Hold'em combo expansion, weights, and blocker removal.
   supported_games:
@@ -2543,6 +3308,111 @@ tools:
         - notation
         title: RangeDefinition
         type: object
+      RangeGameConditionsV1:
+        additionalProperties: false
+        properties:
+          game_type:
+            const: NLHE
+            title: Game Type
+            type: string
+          format:
+            enum:
+            - cash
+            - tournament
+            title: Format
+            type: string
+          table_size:
+            maximum: 10
+            minimum: 2
+            title: Table Size
+            type: integer
+          target_position:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$
+            title: Target Position
+            type: string
+          street:
+            enum:
+            - preflop
+            - flop
+            - turn
+            - river
+            title: Street
+            type: string
+          starting_stack_min_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Min Bb Milli
+            type: integer
+          starting_stack_max_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Max Bb Milli
+            type: integer
+          as_of_action_index:
+            maximum: 512
+            minimum: 0
+            title: As Of Action Index
+            type: integer
+          action_prefix_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Action Prefix Sha256
+            type: string
+        required:
+        - game_type
+        - format
+        - table_size
+        - target_position
+        - street
+        - starting_stack_min_bb_milli
+        - starting_stack_max_bb_milli
+        - as_of_action_index
+        - action_prefix_sha256
+        title: RangeGameConditionsV1
+        type: object
+      RangeSourceProvenanceV1:
+        additionalProperties: false
+        properties:
+          source_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Source Id
+            type: string
+          source_kind:
+            enum:
+            - user_supplied
+            - repository_fixture
+            title: Source Kind
+            type: string
+          license_classification:
+            enum:
+            - user_supplied_private_analysis
+            - repository_owned_mit
+            title: License Classification
+            type: string
+          usage_classification:
+            enum:
+            - local_analysis_only
+            - redistribution_allowed
+            title: Usage Classification
+            type: string
+          content_status:
+            enum:
+            - USER_CLAIM
+            - ASSUMPTION
+            title: Content Status
+            type: string
+          content_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Content Sha256
+            type: string
+        required:
+        - source_id
+        - source_kind
+        - license_classification
+        - usage_classification
+        - content_status
+        - content_sha256
+        title: RangeSourceProvenanceV1
+        type: object
       Street:
         enum:
         - preflop
@@ -2597,6 +3467,45 @@ tools:
             title: Notes
             type: array
         title: TournamentContext
+        type: object
+      VersionedRangeDefinitionV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          grammar_id:
+            default: poker-deliberation.nlhe-range
+            title: Grammar Id
+            type: string
+          grammar_version:
+            default: 1.0.0
+            title: Grammar Version
+            type: string
+          range_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Range Id
+            type: string
+          target_player_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Target Player Id
+            type: string
+          notation:
+            minLength: 1
+            title: Notation
+            type: string
+          source:
+            $ref: '#/$defs/RangeSourceProvenanceV1'
+          game_conditions:
+            $ref: '#/$defs/RangeGameConditionsV1'
+        required:
+        - range_id
+        - target_player_id
+        - notation
+        - source
+        - game_conditions
+        title: VersionedRangeDefinitionV1
         type: object
     additionalProperties: false
     properties:
@@ -2675,7 +3584,9 @@ tools:
         default: null
       known_ranges:
         items:
-          $ref: '#/$defs/RangeDefinition'
+          anyOf:
+          - $ref: '#/$defs/RangeDefinition'
+          - $ref: '#/$defs/VersionedRangeDefinitionV1'
         title: Known Ranges
         type: array
       opponent_observations:
@@ -2891,7 +3802,9 @@ tools:
             default: null
           known_ranges:
             items:
-              $ref: '#/$defs/RangeDefinition'
+              anyOf:
+              - $ref: '#/$defs/RangeDefinition'
+              - $ref: '#/$defs/VersionedRangeDefinitionV1'
             title: Known Ranges
             type: array
           opponent_observations:
@@ -3053,6 +3966,111 @@ tools:
         - notation
         title: RangeDefinition
         type: object
+      RangeGameConditionsV1:
+        additionalProperties: false
+        properties:
+          game_type:
+            const: NLHE
+            title: Game Type
+            type: string
+          format:
+            enum:
+            - cash
+            - tournament
+            title: Format
+            type: string
+          table_size:
+            maximum: 10
+            minimum: 2
+            title: Table Size
+            type: integer
+          target_position:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$
+            title: Target Position
+            type: string
+          street:
+            enum:
+            - preflop
+            - flop
+            - turn
+            - river
+            title: Street
+            type: string
+          starting_stack_min_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Min Bb Milli
+            type: integer
+          starting_stack_max_bb_milli:
+            maximum: 10000000
+            minimum: 0
+            title: Starting Stack Max Bb Milli
+            type: integer
+          as_of_action_index:
+            maximum: 512
+            minimum: 0
+            title: As Of Action Index
+            type: integer
+          action_prefix_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Action Prefix Sha256
+            type: string
+        required:
+        - game_type
+        - format
+        - table_size
+        - target_position
+        - street
+        - starting_stack_min_bb_milli
+        - starting_stack_max_bb_milli
+        - as_of_action_index
+        - action_prefix_sha256
+        title: RangeGameConditionsV1
+        type: object
+      RangeSourceProvenanceV1:
+        additionalProperties: false
+        properties:
+          source_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Source Id
+            type: string
+          source_kind:
+            enum:
+            - user_supplied
+            - repository_fixture
+            title: Source Kind
+            type: string
+          license_classification:
+            enum:
+            - user_supplied_private_analysis
+            - repository_owned_mit
+            title: License Classification
+            type: string
+          usage_classification:
+            enum:
+            - local_analysis_only
+            - redistribution_allowed
+            title: Usage Classification
+            type: string
+          content_status:
+            enum:
+            - USER_CLAIM
+            - ASSUMPTION
+            title: Content Status
+            type: string
+          content_sha256:
+            pattern: ^[0-9a-f]{64}$
+            title: Content Sha256
+            type: string
+        required:
+        - source_id
+        - source_kind
+        - license_classification
+        - usage_classification
+        - content_status
+        - content_sha256
+        title: RangeSourceProvenanceV1
+        type: object
       Street:
         enum:
         - preflop
@@ -3107,6 +4125,45 @@ tools:
             title: Notes
             type: array
         title: TournamentContext
+        type: object
+      VersionedRangeDefinitionV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          grammar_id:
+            default: poker-deliberation.nlhe-range
+            title: Grammar Id
+            type: string
+          grammar_version:
+            default: 1.0.0
+            title: Grammar Version
+            type: string
+          range_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Range Id
+            type: string
+          target_player_id:
+            pattern: ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$
+            title: Target Player Id
+            type: string
+          notation:
+            minLength: 1
+            title: Notation
+            type: string
+          source:
+            $ref: '#/$defs/RangeSourceProvenanceV1'
+          game_conditions:
+            $ref: '#/$defs/RangeGameConditionsV1'
+        required:
+        - range_id
+        - target_player_id
+        - notation
+        - source
+        - game_conditions
+        title: VersionedRangeDefinitionV1
         type: object
     additionalProperties: false
     properties:

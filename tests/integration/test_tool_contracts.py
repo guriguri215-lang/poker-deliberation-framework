@@ -27,8 +27,10 @@ from poker_deliberation.tools.verification import within_tolerance
 from scripts.generate_tool_contracts import main as generate_tool_contracts
 from scripts.generate_tool_contracts import manifest_document, render_docs
 from tests.hand_pot_ledger_support import heads_up_hand, request
+from tests.range_support import versioned_range_hand
 
 ROOT = Path(__file__).resolve().parents[2]
+RANGE_HAND, RANGE_DEFINITION = versioned_range_hand()
 
 
 VALID_INPUTS: dict[str, dict[str, object]] = {
@@ -53,6 +55,11 @@ VALID_INPUTS: dict[str, dict[str, object]] = {
         "likelihood_given_not_h": 0.2,
     },
     "pot_reconstruction": {"starting_pot": 10, "contributions": [5, 15]},
+    "range_validate": {
+        "schema_version": "1.0.0",
+        "hand": RANGE_HAND.model_dump(mode="json"),
+        "range_definition": RANGE_DEFINITION.model_dump(mode="json"),
+    },
     "combos": {"hand_class": "AA", "dead_cards": []},
     "holdem_equity": {
         "hero_range": "AsAh",
@@ -83,10 +90,10 @@ VALID_INPUTS: dict[str, dict[str, object]] = {
 }
 
 
-def test_canonical_inventory_has_twenty_one_unique_complete_contracts() -> None:
+def test_canonical_inventory_has_twenty_two_unique_complete_contracts() -> None:
     contracts = tool_contracts()
-    assert len(contracts) == 21
-    assert len({contract.name for contract in contracts}) == 21
+    assert len(contracts) == 22
+    assert len({contract.name for contract in contracts}) == 22
     assert {contract.name for contract in contracts} == set(VALID_INPUTS)
     for contract in contracts:
         assert contract.assumptions is not None

@@ -29,9 +29,11 @@ from poker_deliberation.range_models import (
 from poker_deliberation.schemas import (
     CanonicalHand,
     CaseInput,
+    Exactness,
     NumericalExactness,
     ToolResult,
     ToolStatus,
+    VerificationMetadata,
 )
 from poker_deliberation.tools.cards import RANKS, SUITS, normalize_cards
 
@@ -194,8 +196,10 @@ def _condition_binding(
     conditions = definition.game_conditions
     players = {player.player_id: player for player in hand.players}
     player = players.get(definition.target_player_id)
-    if player is None or (
-        hand.hero_player_id is not None and definition.target_player_id == hand.hero_player_id
+    if (
+        hand.hero_player_id is None
+        or player is None
+        or definition.target_player_id == hand.hero_player_id
     ):
         return (
             None,
@@ -280,6 +284,8 @@ def _condition_binding(
     binding_value: dict[str, Any] = {
         "range_id": definition.range_id,
         "target_player_id": definition.target_player_id,
+        "hero_player_id": hand.hero_player_id,
+        "game_conditions": conditions.model_dump(mode="json"),
         "game_type": hand.game_type,
         "format": hand.format,
         "table_size": hand.table_size,
@@ -518,18 +524,40 @@ def _replay_combos_result(
         raise ValueError("versioned range combos result differs from deterministic replay")
     contract = contract_by_name()["combos"]
     evidence = contract.verify_floating(result.input, result.output)
-    if (
-        result.verification is None
-        or not result.verification.passed
-        or tuple(result.verification.checks) != evidence.checks
-        or result.verification.tolerance != evidence.tolerance
-    ):
+    expected_verification = VerificationMetadata(
+        method="executed tool-specific invariant checks",
+        checks=list(evidence.checks),
+        observations=list(evidence.observations),
+        tolerance=evidence.tolerance,
+        passed=True,
+    )
+    if result.verification != expected_verification:
         raise ValueError("versioned range combos verification metadata is invalid")
+
+
+def _verify_failed_product_result(
+    result: ToolResult,
+    *,
+    expected_payload: dict[str, object],
+) -> None:
+    if (
+        result.status is ToolStatus.SUCCESS
+        or result.contract_version != "2.0.0"
+        or result.input != expected_payload
+        or result.output
+        or result.exactness is not Exactness.UNAVAILABLE
+        or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
+        or result.verification is not None
+        or not result.error
+    ):
+        raise ValueError("failed versioned range product result lacks its exact failure binding")
 
 
 def verify_versioned_range_tool_chain(
     case: CaseInput,
     tool_results: Sequence[ToolResult],
+    *,
+    run_status: str = "completed",
 ) -> None:
     """Replay versioned range artifacts and enforce the product-chain boundary."""
 
@@ -551,6 +579,15 @@ def verify_versioned_range_tool_chain(
         if combo_results:
             raise ValueError("multiple versioned ranges must fail closed before combos")
         return
+    if (
+        run_status in {"approval_required", "failed_with_limitations"}
+        and not range_results
+        and not combo_results
+    ):
+        # A terminal run may fail closed before the requested-tool phase starts.
+        # Absence of both product results is therefore valid only for a
+        # non-completed report; partial chains remain subject to replay below.
+        return
     definition = versioned[0]
     expected_range_payload: dict[str, object] = {
         "schema_version": "1.0.0",
@@ -563,7 +600,13 @@ def verify_versioned_range_tool_chain(
     validation_result = product_results[0]
     validated = replayed.get(id(validation_result))
     if validated is None:
-        raise ValueError("versioned range product validation did not complete successfully")
+        if run_status != "failed_with_limitations" or combo_results:
+            raise ValueError("versioned range product validation did not complete successfully")
+        _verify_failed_product_result(
+            validation_result,
+            expected_payload=expected_range_payload,
+        )
+        return
     if validated.status == "failed":
         if combo_results:
             raise ValueError("failed versioned range validation must not reach combos")
@@ -588,8 +631,29 @@ def verify_versioned_range_tool_chain(
         if combo_results:
             raise ValueError("conflicting versioned range inputs must fail closed")
         return
+    if not combo_results and run_status in {
+        "approval_required",
+        "failed_with_limitations",
+    }:
+        return
     if len(combo_results) != 1:
         raise ValueError("successful versioned range validation requires one combos result")
+    range_index = next(
+        index for index, result in enumerate(tool_results) if result is validation_result
+    )
+    combo_index = next(
+        index for index, result in enumerate(tool_results) if result is combo_results[0]
+    )
+    if range_index >= combo_index:
+        raise ValueError("versioned range validation must precede combos")
+    if combo_results[0].status is not ToolStatus.SUCCESS:
+        if run_status != "failed_with_limitations":
+            raise ValueError("completed versioned range product requires successful combos")
+        _verify_failed_product_result(
+            combo_results[0],
+            expected_payload=expected_combo_payload,
+        )
+        return
     _replay_combos_result(
         combo_results[0],
         expected_payload=expected_combo_payload,

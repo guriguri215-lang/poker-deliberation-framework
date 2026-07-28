@@ -1291,7 +1291,11 @@ def _validate_source_graph(
             raise CanonicalStorageError("final report embedded tool results mismatch")
         input_case = cast(CaseInput, parsed["input.json"])
         try:
-            verify_versioned_range_tool_chain(input_case, tool_results)
+            verify_versioned_range_tool_chain(
+                input_case,
+                tool_results,
+                run_status=final_report_json.run_status,
+            )
         except ValueError as exc:
             raise CanonicalStorageError("versioned range tool chain replay failed") from exc
         final_contexts = bindings_of_type("final_report.json", ContextBindingV1)

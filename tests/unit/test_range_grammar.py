@@ -99,6 +99,42 @@ def test_provenance_and_game_condition_mismatches_fail_closed() -> None:
     assert condition.diagnostics[0].code is RangeDiagnosticCode.GAME_CONDITION
 
 
+def test_versioned_range_requires_an_identified_non_hero_target() -> None:
+    hand, definition = versioned_range_hand(
+        target_player_id="hero",
+        game_condition_updates={"target_position": "SB"},
+    )
+    same_player = validate_versioned_range(hand, definition)
+    payload = hand.model_dump(mode="json")
+    payload["hero_player_id"] = None
+    unidentified_hand = CanonicalHand.model_validate(payload)
+    unidentified_definition = unidentified_hand.known_ranges[0]
+    assert isinstance(unidentified_definition, VersionedRangeDefinitionV1)
+
+    unidentified = validate_versioned_range(unidentified_hand, unidentified_definition)
+
+    assert same_player.status == "failed"
+    assert same_player.diagnostics[0].code is RangeDiagnosticCode.TARGET
+    assert unidentified.status == "failed"
+    assert unidentified.diagnostics[0].code is RangeDiagnosticCode.TARGET
+
+
+def test_condition_binding_hash_includes_declared_stack_bounds() -> None:
+    exact_hand, exact_definition = versioned_range_hand()
+    broad_hand, broad_definition = versioned_range_hand(
+        game_condition_updates={
+            "starting_stack_min_bb_milli": 0,
+            "starting_stack_max_bb_milli": 100_000,
+        }
+    )
+
+    exact = validate_versioned_range(exact_hand, exact_definition)
+    broad = validate_versioned_range(broad_hand, broad_definition)
+
+    assert exact.status == broad.status == "success"
+    assert exact.condition_binding_sha256 != broad.condition_binding_sha256
+
+
 def test_range_notation_byte_limit_is_a_typed_failed_result() -> None:
     notation = ",".join("QcQd" for _ in range(3_278))
     hand, definition = versioned_range_hand(notation)

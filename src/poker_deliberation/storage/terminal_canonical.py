@@ -374,7 +374,11 @@ def product_payload_commitments(
         if input_name not in payloads or parse_canonical_json(payloads[input_name]) != result.input:
             raise CanonicalStorageError("tool input/result correlation mismatch")
     try:
-        verify_versioned_range_tool_chain(input_case, report.tool_results)
+        verify_versioned_range_tool_chain(
+            input_case,
+            report.tool_results,
+            run_status=report.run_status,
+        )
     except ValueError as exc:
         raise CanonicalStorageError("versioned range tool chain replay failed") from exc
 

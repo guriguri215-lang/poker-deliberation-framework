@@ -29,6 +29,7 @@ from poker_deliberation.tools.combinations import combo_summary, parse_weighted_
 from poker_deliberation.tools.contracts import ToolContract, contract_by_name
 from poker_deliberation.tools.equity import holdem_equity
 from poker_deliberation.tools.ev_tree import evaluate_ev_tree
+from poker_deliberation.tools.hand_pot_ledger import calculate_hand_pot_ledger
 from poker_deliberation.tools.hand_validator import validate_hand
 from poker_deliberation.tools.icm import calculate_icm
 from poker_deliberation.tools.matrix_game import solve_zero_sum_matrix
@@ -718,6 +719,13 @@ def default_registry(
             "floating-verified",
             ("NLHE", "PLO"),
             _hand_validator_tool,
+        ),
+        ToolDefinition(
+            "hand_pot_ledger",
+            "Exact profiled NLHE contribution, return, side-pot, and eligibility ledger.",
+            "exact-under-model",
+            ("NLHE cash",),
+            calculate_hand_pot_ledger,
         ),
         ToolDefinition(
             "sensitivity",

@@ -25,8 +25,14 @@
 - Equity is heads-up NLHE only; multiway and PLO equity are unsupported.
 - Range syntax supports explicit combos, pairs, suited/offsuit classes, and weights; `+`, intervals,
   exclusions, and solver-native range formats are not implemented.
-- Hand validation does not fully model straddles, returned uncalled bets, site-specific rake timing,
-  side pots, or every jurisdictional minimum-raise rule.
+- Legacy `hand_validator` does not fully model straddles, returned uncalled bets, site-specific rake
+  timing, side pots, or every jurisdictional minimum-raise rule; its existing semantics remain
+  unchanged.
+- `hand_pot_ledger` implements returned uncalled bets, contribution layers, fold eligibility, and
+  full-raise/short-all-in reopening only for `generic_nlhe_cash_no_rake_v1` version `1.0.0`,
+  `supported_site=none`, one board, and explicit zero rake. It does not assign winners, evaluate
+  hand strength, split payouts, or support rake, straddles, run-it-twice, PLO, tournaments, bounties,
+  site-specific rules, or jurisdictional conformance.
 - Free-text normalization supports only
   `poker-deliberation.generic-key-value-hand` version `1.0.0`, with `supported_site=none`.
   It is not a natural-language or site-specific parser. Unknown/malformed/duplicate/ambiguous input

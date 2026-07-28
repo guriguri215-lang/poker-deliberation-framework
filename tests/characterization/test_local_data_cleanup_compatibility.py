@@ -20,9 +20,6 @@ P2_027B_UNCHANGED_BOUNDARY_SHA256 = {
     "src/poker_deliberation/schemas.py": (
         "57518549c4312aa7bac97fd13cd455f45798a4a043b0685f31b6393087dfa582"
     ),
-    "src/poker_deliberation/tools/registry.py": (
-        "cdf1846f72122b6d3252242fb71cd822b16ac957173cb09d4b118ac28e48b32b"
-    ),
     "src/poker_deliberation/phases/revision_coordinator.py": (
         "10b457da988a935ce12a68cb7152f1844586160aa2d52b4c2fd23d3dacb6f75b"
     ),
@@ -70,3 +67,13 @@ def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:
 def test_context_lifecycle_boundary_is_unchanged() -> None:
     assert CONTEXT_SCHEMA_VERSION == "1.0.0"
     assert ATTEMPT_MEMORY_ONLY_RETENTION_POLICY == "attempt-memory-only-v1"
+
+
+def test_tool_registry_change_is_additive_and_keeps_cleanup_out_of_tool_surface() -> None:
+    registry_source = (ROOT / "src/poker_deliberation/tools/registry.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"hand_validator"' in registry_source
+    assert '"hand_pot_ledger"' in registry_source
+    assert '"cleanup"' not in registry_source

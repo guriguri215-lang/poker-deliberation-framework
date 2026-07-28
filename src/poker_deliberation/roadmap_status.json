@@ -1,5 +1,5 @@
 {
-  "schema_version": "6.0.0",
+  "schema_version": "7.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -238,6 +238,16 @@
       "scope": "Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser."
     },
     {
+      "id": "P3-015A",
+      "rm_id": "RM-015",
+      "status": "completed",
+      "status_reason": "The approved generic no-rake NLHE cash profile, exact side-pot ledger, independent oracle, product integration, documentation, and declared tests are implemented.",
+      "dependencies": [
+        "P3-014A"
+      ],
+      "scope": "Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none."
+    },
+    {
       "id": "P3-017A",
       "rm_id": "RM-017",
       "status": "completed",
@@ -434,7 +444,7 @@
       "phase": "phase-1",
       "priority": "P1",
       "status": "completed",
-      "status_reason": "All 20 tools expose contract version 2.0.0 with typed schemas.",
+      "status_reason": "All 21 tools expose contract version 2.0.0 with typed schemas.",
       "dependencies": [
         "RM-005"
       ],
@@ -865,32 +875,46 @@
       "title": "Hand rule profiles and side-pot accounting",
       "phase": "phase-3",
       "priority": "P2",
-      "status": "planned",
-      "status_reason": "Accepted roadmap scope; not implemented.",
+      "status": "in_progress",
+      "status_reason": "P3-015A completed the approved generic no-rake NLHE cash vertical slice; raked and site-specific profiles remain future RM-015 work.",
       "dependencies": [
         "RM-014"
       ],
-      "capabilities": [],
-      "objective": "Define selected rule profiles for raises, all-ins, uncalled bets, side pots, and rake timing.",
+      "capabilities": [
+        "profiled_nlhe_side_pot_ledger"
+      ],
+      "objective": "Implement the approved repository-owned generic no-rake NLHE cash profile for raises, all-ins, uncalled returns, eligibility, and exact side-pot accounting while retaining fail-closed boundaries for all other profiles.",
       "targets": [
-        "src/poker_deliberation/schemas.py",
-        "src/poker_deliberation/tools/hand_validator.py"
+        "src/poker_deliberation/tools/hand_pot_ledger.py",
+        "src/poker_deliberation/tools/contracts.py",
+        "src/poker_deliberation/tools/registry.py",
+        "docs/hand-rule-profile.md"
       ],
       "acceptance_criteria": [
-        "Supported rule profiles and unsupported cases match schema, documentation, and golden ledgers."
+        "Only generic_nlhe_cash_no_rake_v1 version 1.0.0 with supported site none and explicit zero rake is accepted.",
+        "Caller-declared canonical chip units produce bounded integer ledgers, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and independently verified oracle evidence.",
+        "CanonicalHand and normalization grammar version 1 remain unchanged while rake, straddle, run-it-twice, PLO, tournament, bounty, site-specific, split-pot, and unknown-version inputs fail closed."
       ],
       "tests": [
-        "multiway side-pot, short-call, folded-contribution, and rule-profile golden tests"
+        "tests/unit/test_hand_pot_ledger.py",
+        "tests/property/test_hand_pot_ledger_properties.py",
+        "tests/integration/test_hand_pot_ledger_product_path.py",
+        "tests/adversarial/test_hand_pot_ledger_security.py",
+        "tests/characterization/test_hand_pot_ledger_compatibility.py"
       ],
       "milestones": {
-        "entry": null,
+        "entry": "P3-015A",
         "completion": null
       },
-      "relations": [],
+      "relations": [
+        "P3-015A is limited to the repository-owned generic no-rake NLHE cash profile with supported site none.",
+        "Raked and site-specific rule profiles remain future RM-015 work.",
+        "P3-015A does not implement RM-016, RM-019, RM-020, RM-025 bridge work, or P2-028A external execution."
+      ],
       "decision_gate": {
         "required": true,
         "rationale": [
-          "site, jurisdiction, and game rule profiles"
+          "future site, jurisdiction, rake, and game rule profiles require a separate approved decision"
         ]
       }
     },

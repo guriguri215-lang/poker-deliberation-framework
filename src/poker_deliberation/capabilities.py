@@ -58,6 +58,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         "supported site: none.",
     ),
     Capability(
+        "profiled_nlhe_side_pot_ledger",
+        "implemented",
+        "generic_nlhe_cash_no_rake_v1 provides an integer contribution, uncalled-return, "
+        "side-pot, and eligibility ledger with an independent oracle.",
+    ),
+    Capability(
         "natural_language_or_site_parser",
         "unavailable",
         "Natural-language and site-specific hand histories are not parsed.",

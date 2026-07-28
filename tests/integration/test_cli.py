@@ -37,10 +37,10 @@ def test_doctor_markdown_is_fenced_json(capsys) -> None:  # type: ignore[no-unty
     assert payload["status"] == "ok"
 
 
-def test_list_tools_json_and_markdown_have_twenty_canonical_tools(capsys) -> None:  # type: ignore[no-untyped-def]
+def test_list_tools_json_and_markdown_have_twenty_one_canonical_tools(capsys) -> None:  # type: ignore[no-untyped-def]
     assert main(["list-tools", "--format", "json"]) == 0
     json_payload = json.loads(capsys.readouterr().out)
-    assert len(json_payload) == 20
+    assert len(json_payload) == 21
 
     assert main(["list-tools", "--format", "markdown"]) == 0
     rendered = capsys.readouterr().out

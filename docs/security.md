@@ -1,5 +1,10 @@
 # Security
 
+- P3-015A `hand_pot_ledger`はstrict/frozen schemaと明示profile/version/site/chip unitを要求し、
+  unknown field/version、非整数unit、overflow、rake、straddle、PLO、tournament、run-it-twiceを
+  fail closedにする。unknown profile値はclosed error codeで拒否し、caller contentをerrorへecho
+  しない。product pathはmetadataのhand置換を拒否し、既存canonical case handだけをtool requestへ
+  束縛する。整数conservationと独立`Fraction` oracleの両方が一致しないresultは成功にならない。
 - P3-014A normalization accepts exact bytes only through a strict/frozen version `1.0.0` request.
   BOM、invalid UTF-8、mixed/bare-CR newline、non-NFC、control/format character、secret shape、
   unknown key、duplicate scalar、ambiguous numeric syntax、resource overflowをfail closedにする。

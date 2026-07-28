@@ -2806,6 +2806,727 @@ tools:
   version: 1.0.0
   contract_version: 2.0.0
   command: poker-deliberate calculate hand_validator --analysis-scope retrospective --input INPUT.json
+- name: hand_pot_ledger
+  purpose: Exact integer contribution, uncalled-return, side-pot, and eligibility ledger for one explicit
+    repository-owned no-rake NLHE cash profile.
+  supported_games:
+  - NLHE cash
+  input_schema:
+    $defs:
+      CanonicalHand:
+        additionalProperties: false
+        properties:
+          game_type:
+            default: NLHE
+            enum:
+            - NLHE
+            - PLO
+            - OTHER
+            title: Game Type
+            type: string
+          format:
+            enum:
+            - cash
+            - tournament
+            title: Format
+            type: string
+          table_size:
+            maximum: 10
+            minimum: 2
+            title: Table Size
+            type: integer
+          small_blind:
+            exclusiveMinimum: 0
+            title: Small Blind
+            type: number
+          big_blind:
+            exclusiveMinimum: 0
+            title: Big Blind
+            type: number
+          ante:
+            default: 0
+            minimum: 0
+            title: Ante
+            type: number
+          rake:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Rake
+          players:
+            items:
+              $ref: '#/$defs/PlayerStack'
+            minItems: 2
+            title: Players
+            type: array
+          hero_player_id:
+            anyOf:
+            - type: string
+            - type: 'null'
+            default: null
+            title: Hero Player Id
+          hero_cards:
+            items:
+              type: string
+            maxItems: 4
+            title: Hero Cards
+            type: array
+          board:
+            items:
+              type: string
+            maxItems: 5
+            title: Board
+            type: array
+          actions:
+            items:
+              $ref: '#/$defs/HandAction'
+            title: Actions
+            type: array
+          tournament:
+            anyOf:
+            - $ref: '#/$defs/TournamentContext'
+            - type: 'null'
+            default: null
+          known_ranges:
+            items:
+              $ref: '#/$defs/RangeDefinition'
+            title: Known Ranges
+            type: array
+          opponent_observations:
+            items:
+              type: string
+            title: Opponent Observations
+            type: array
+          analysis_objective:
+            default: strategy_review
+            title: Analysis Objective
+            type: string
+        required:
+        - format
+        - table_size
+        - small_blind
+        - big_blind
+        - players
+        title: CanonicalHand
+        type: object
+      HandAction:
+        additionalProperties: false
+        properties:
+          street:
+            $ref: '#/$defs/Street'
+          actor:
+            minLength: 1
+            title: Actor
+            type: string
+          action:
+            enum:
+            - post_blind
+            - post_ante
+            - fold
+            - check
+            - call
+            - bet
+            - raise
+            - all_in
+            title: Action
+            type: string
+          amount:
+            default: 0
+            description: Incremental chips committed
+            minimum: 0
+            title: Amount
+            type: number
+          to_amount:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: To Amount
+          pot_before:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Pot Before
+          pot_after:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Pot After
+        required:
+        - street
+        - actor
+        - action
+        title: HandAction
+        type: object
+      HandRuleProfileV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            const: 1.0.0
+            title: Schema Version
+            type: string
+          profile_id:
+            maxLength: 64
+            minLength: 1
+            pattern: ^[a-z0-9_]+$
+            title: Profile Id
+            type: string
+          profile_version:
+            maxLength: 16
+            minLength: 1
+            pattern: ^[0-9]+\.[0-9]+\.[0-9]+$
+            title: Profile Version
+            type: string
+          supported_site:
+            maxLength: 32
+            minLength: 1
+            pattern: ^[a-z0-9_-]+$
+            title: Supported Site
+            type: string
+          chip_unit:
+            maxLength: 28
+            minLength: 1
+            title: Chip Unit
+            type: string
+        required:
+        - schema_version
+        - profile_id
+        - profile_version
+        - supported_site
+        - chip_unit
+        title: HandRuleProfileV1
+        type: object
+      PlayerStack:
+        additionalProperties: false
+        properties:
+          player_id:
+            minLength: 1
+            title: Player Id
+            type: string
+          position:
+            minLength: 1
+            title: Position
+            type: string
+          starting_stack:
+            minimum: 0
+            title: Starting Stack
+            type: number
+        required:
+        - player_id
+        - position
+        - starting_stack
+        title: PlayerStack
+        type: object
+      RangeDefinition:
+        additionalProperties: false
+        properties:
+          player_id:
+            title: Player Id
+            type: string
+          notation:
+            minLength: 1
+            title: Notation
+            type: string
+          source:
+            anyOf:
+            - type: string
+            - type: 'null'
+            default: null
+            title: Source
+          game_conditions:
+            additionalProperties: true
+            title: Game Conditions
+            type: object
+          assumed:
+            default: false
+            title: Assumed
+            type: boolean
+        required:
+        - player_id
+        - notation
+        title: RangeDefinition
+        type: object
+      Street:
+        enum:
+        - preflop
+        - flop
+        - turn
+        - river
+        - showdown
+        title: Street
+        type: string
+      TournamentContext:
+        additionalProperties: false
+        properties:
+          payouts:
+            items:
+              minimum: 0
+              type: number
+            title: Payouts
+            type: array
+          remaining_players:
+            anyOf:
+            - minimum: 2
+              type: integer
+            - type: 'null'
+            default: null
+            title: Remaining Players
+          hero_stack:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Hero Stack
+          bounty_type:
+            default: none
+            enum:
+            - none
+            - fixed
+            - progressive
+            - mystery
+            title: Bounty Type
+            type: string
+          hero_bounty:
+            anyOf:
+            - minimum: 0
+              type: number
+            - type: 'null'
+            default: null
+            title: Hero Bounty
+          notes:
+            items:
+              type: string
+            title: Notes
+            type: array
+        title: TournamentContext
+        type: object
+    additionalProperties: false
+    properties:
+      schema_version:
+        const: 1.0.0
+        title: Schema Version
+        type: string
+      rule_profile:
+        $ref: '#/$defs/HandRuleProfileV1'
+      hand:
+        $ref: '#/$defs/CanonicalHand'
+    required:
+    - schema_version
+    - rule_profile
+    - hand
+    title: HandPotLedgerInputV1
+    type: object
+  output_schema:
+    $defs:
+      LedgerActionV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            const: 1.0.0
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          action_index:
+            maximum: 511
+            minimum: 0
+            title: Action Index
+            type: integer
+          street:
+            enum:
+            - preflop
+            - flop
+            - turn
+            - river
+            title: Street
+            type: string
+          actor:
+            minLength: 1
+            title: Actor
+            type: string
+          action:
+            enum:
+            - post_blind
+            - post_ante
+            - fold
+            - check
+            - call
+            - bet
+            - raise
+            - all_in
+            title: Action
+            type: string
+          committed_units:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Committed Units
+            type: integer
+          street_contribution_units_after:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Street Contribution Units After
+            type: integer
+          total_contribution_units_after:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Total Contribution Units After
+            type: integer
+          remaining_stack_units_after:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Remaining Stack Units After
+            type: integer
+          pot_units_after:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Pot Units After
+            type: integer
+          current_bet_units_after:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Current Bet Units After
+            type: integer
+          raise_rights_before:
+            title: Raise Rights Before
+            type: boolean
+          full_raise:
+            title: Full Raise
+            type: boolean
+          minimum_full_raise_units_after:
+            exclusiveMinimum: 0
+            maximum: 9223372036854775807
+            title: Minimum Full Raise Units After
+            type: integer
+        required:
+        - action_index
+        - street
+        - actor
+        - action
+        - committed_units
+        - street_contribution_units_after
+        - total_contribution_units_after
+        - remaining_stack_units_after
+        - pot_units_after
+        - current_bet_units_after
+        - raise_rights_before
+        - full_raise
+        - minimum_full_raise_units_after
+        title: LedgerActionV1
+        type: object
+      PlayerEligibilityV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            const: 1.0.0
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          player_id:
+            minLength: 1
+            title: Player Id
+            type: string
+          eligible_for_contested_pots:
+            title: Eligible For Contested Pots
+            type: boolean
+          folded_at_action_index:
+            anyOf:
+            - maximum: 511
+              minimum: 0
+              type: integer
+            - type: 'null'
+            default: null
+            title: Folded At Action Index
+        required:
+        - player_id
+        - eligible_for_contested_pots
+        title: PlayerEligibilityV1
+        type: object
+      PotLayerV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            const: 1.0.0
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          pot_id:
+            pattern: ^pot-[0-9]+$
+            title: Pot Id
+            type: string
+          layer_index:
+            maximum: 511
+            minimum: 0
+            title: Layer Index
+            type: integer
+          kind:
+            enum:
+            - main
+            - side
+            title: Kind
+            type: string
+          lower_bound_units:
+            maximum: 9223372036854775807
+            minimum: 0
+            title: Lower Bound Units
+            type: integer
+          upper_bound_units:
+            exclusiveMinimum: 0
+            maximum: 9223372036854775807
+            title: Upper Bound Units
+            type: integer
+          amount_units:
+            exclusiveMinimum: 0
+            maximum: 9223372036854775807
+            title: Amount Units
+            type: integer
+          contributors:
+            items:
+              type: string
+            minItems: 1
+            title: Contributors
+            type: array
+          eligible_players:
+            items:
+              type: string
+            minItems: 1
+            title: Eligible Players
+            type: array
+          evidence_action_indexes:
+            items:
+              type: integer
+            minItems: 1
+            title: Evidence Action Indexes
+            type: array
+        required:
+        - pot_id
+        - layer_index
+        - kind
+        - lower_bound_units
+        - upper_bound_units
+        - amount_units
+        - contributors
+        - eligible_players
+        - evidence_action_indexes
+        title: PotLayerV1
+        type: object
+      UncalledReturnV1:
+        additionalProperties: false
+        properties:
+          schema_version:
+            const: 1.0.0
+            default: 1.0.0
+            title: Schema Version
+            type: string
+          return_id:
+            pattern: ^return-[0-9]+$
+            title: Return Id
+            type: string
+          street:
+            enum:
+            - preflop
+            - flop
+            - turn
+            - river
+            title: Street
+            type: string
+          player_id:
+            minLength: 1
+            title: Player Id
+            type: string
+          amount_units:
+            exclusiveMinimum: 0
+            maximum: 9223372036854775807
+            title: Amount Units
+            type: integer
+          source_action_indexes:
+            items:
+              type: integer
+            minItems: 1
+            title: Source Action Indexes
+            type: array
+        required:
+        - return_id
+        - street
+        - player_id
+        - amount_units
+        - source_action_indexes
+        title: UncalledReturnV1
+        type: object
+    additionalProperties: false
+    properties:
+      schema_version:
+        const: 1.0.0
+        default: 1.0.0
+        title: Schema Version
+        type: string
+      profile_id:
+        const: generic_nlhe_cash_no_rake_v1
+        title: Profile Id
+        type: string
+      profile_version:
+        const: 1.0.0
+        title: Profile Version
+        type: string
+      supported_site:
+        const: none
+        title: Supported Site
+        type: string
+      chip_unit:
+        title: Chip Unit
+        type: string
+      ledger_actions:
+        items:
+          $ref: '#/$defs/LedgerActionV1'
+        maxItems: 512
+        minItems: 1
+        title: Ledger Actions
+        type: array
+      uncalled_returns:
+        items:
+          $ref: '#/$defs/UncalledReturnV1'
+        title: Uncalled Returns
+        type: array
+      pot_layers:
+        items:
+          $ref: '#/$defs/PotLayerV1'
+        minItems: 1
+        title: Pot Layers
+        type: array
+      player_eligibility:
+        items:
+          $ref: '#/$defs/PlayerEligibilityV1'
+        maxItems: 10
+        minItems: 2
+        title: Player Eligibility
+        type: array
+      gross_contributions_units:
+        additionalProperties:
+          maximum: 9223372036854775807
+          minimum: 0
+          type: integer
+        title: Gross Contributions Units
+        type: object
+      net_contributions_units:
+        additionalProperties:
+          maximum: 9223372036854775807
+          minimum: 0
+          type: integer
+        title: Net Contributions Units
+        type: object
+      remaining_stacks_units:
+        additionalProperties:
+          maximum: 9223372036854775807
+          minimum: 0
+          type: integer
+        title: Remaining Stacks Units
+        type: object
+      gross_committed_units:
+        maximum: 9223372036854775807
+        minimum: 0
+        title: Gross Committed Units
+        type: integer
+      total_returned_units:
+        maximum: 9223372036854775807
+        minimum: 0
+        title: Total Returned Units
+        type: integer
+      final_pot_units:
+        exclusiveMinimum: 0
+        maximum: 9223372036854775807
+        title: Final Pot Units
+        type: integer
+      starting_chips_units:
+        exclusiveMinimum: 0
+        maximum: 9223372036854775807
+        title: Starting Chips Units
+        type: integer
+      conservation_verified:
+        const: true
+        title: Conservation Verified
+        type: boolean
+      oracle_verified:
+        const: true
+        title: Oracle Verified
+        type: boolean
+      limitations:
+        items:
+          type: string
+        minItems: 1
+        title: Limitations
+        type: array
+    required:
+    - profile_id
+    - profile_version
+    - supported_site
+    - chip_unit
+    - ledger_actions
+    - uncalled_returns
+    - pot_layers
+    - player_eligibility
+    - gross_contributions_units
+    - net_contributions_units
+    - remaining_stacks_units
+    - gross_committed_units
+    - total_returned_units
+    - final_pot_units
+    - starting_chips_units
+    - conservation_verified
+    - oracle_verified
+    - limitations
+    title: HandPotLedgerOutputV1
+    type: object
+  numeric_exactness_modes:
+  - exact-under-model
+  legacy_exactness_projection:
+    exact: exact
+    exact-under-model: exact
+    floating-verified: exact
+    approximate: approximate
+    unavailable: unavailable
+  assumptions:
+  - Action amounts use the caller-declared canonical decimal chip unit.
+  - Only generic_nlhe_cash_no_rake_v1 version 1.0.0 and supported site none apply.
+  - No winner assignment, payout split, rake, or hand-strength evaluation is made.
+  preconditions:
+  - explicit supported profile and version
+  - explicit zero rake
+  - complete legal betting rounds
+  - every monetary value is an exact bounded integer number of chip units
+  limits:
+    players: 10
+    actions: 512
+    ledger_units: 9223372036854775807
+    supported_profiles: 1
+    external_execution: not performed
+  units:
+    all ledger, stack, return, and pot values: input.rule_profile.chip_unit
+  failure_modes:
+  - strict input schema rejection (including extra or missing fields)
+  - documented precondition violation
+  - hard resource limit violation
+  - strict output schema or invariant failure
+  - unsupported profile, version, site, game, format, rake, straddle, or ante shape
+  - illegal or incomplete betting sequence
+  - ambiguous uncalled return
+  - non-integral or overflowing chip-unit conversion
+  - conservation or independent-oracle mismatch
+  verification_checks:
+  - integer stack and pot conservation
+  - gross contribution equals final pot plus uncalled returns
+  - pot layers sum to final pot
+  - independent Fraction/integer oracle agreement
+  tolerance: null
+  model_qualifier: generic_nlhe_cash_no_rake_v1 version 1.0.0
+  version: 1.0.0
+  contract_version: 2.0.0
+  command: poker-deliberate calculate hand_pot_ledger --analysis-scope retrospective --input INPUT.json
 - name: sensitivity
   purpose: Bounds and influence ranking over a supplied scenario grid.
   supported_games:

@@ -24,7 +24,9 @@ from poker_deliberation.tools.contracts import contract_by_name, tool_contracts
 from poker_deliberation.tools.icm import calculate_icm
 from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 from poker_deliberation.tools.verification import within_tolerance
+from scripts.generate_tool_contracts import main as generate_tool_contracts
 from scripts.generate_tool_contracts import manifest_document, render_docs
+from tests.hand_pot_ledger_support import heads_up_hand, request
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -75,15 +77,16 @@ VALID_INPUTS: dict[str, dict[str, object]] = {
             {"player_id": "villain", "position": "BB", "starting_stack": 100},
         ],
     },
+    "hand_pot_ledger": request(heads_up_hand()),
     "sensitivity": {"scenarios": [{"name": "base", "parameters": {"x": 1}, "value": 2}]},
     "solver_status": {},
 }
 
 
-def test_canonical_inventory_has_twenty_unique_complete_contracts() -> None:
+def test_canonical_inventory_has_twenty_one_unique_complete_contracts() -> None:
     contracts = tool_contracts()
-    assert len(contracts) == 20
-    assert len({contract.name for contract in contracts}) == 20
+    assert len(contracts) == 21
+    assert len({contract.name for contract in contracts}) == 21
     assert {contract.name for contract in contracts} == set(VALID_INPUTS)
     for contract in contracts:
         assert contract.assumptions is not None
@@ -103,6 +106,7 @@ def test_manifest_docs_and_registry_are_full_canonical_projections() -> None:
     assert default_registry().describe() == sorted(
         [contract.manifest_entry() for contract in tool_contracts()], key=lambda item: item["name"]
     )
+    assert generate_tool_contracts(["--check"]) == 0
 
 
 @pytest.mark.parametrize("tool_name", sorted(VALID_INPUTS))

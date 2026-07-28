@@ -29,6 +29,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `heads_up_nlhe_equity` | **implemented** | heads-up NLHEに限り、上限付きexact enumerationまたはseed付きMonte Carloを実行する。 |
 | `multiway_or_plo_equity` | **unavailable** | multiway equityとPLO equityは未対応。 |
 | `documented_hand_parser` | **implemented** | version 1のstrictかつprovenance-boundなkey-value/player/action形式だけを保守的に正規化する。対応siteは`none`。 |
+| `profiled_nlhe_side_pot_ledger` | **implemented** | `generic_nlhe_cash_no_rake_v1`に限り、整数単位のcontribution、uncalled return、side pot、eligibilityを独立oracle付きで計算する。 |
 | `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
@@ -41,9 +42,9 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `offline_evaluation_harness` | **implemented** | P3-017Aのstrictなoffline dataset、決定的exact-evidence scorer、provenance binding、再現可能なresult artifactを、外部実行なしで提供する。 |
 | `phase_1_hardening` | **implemented** | typed tool contract、contract v2の数値区分、実行時verification、ローカルoracle/metamorphic testを実装済み。 |
 
-## 20 tools、Codex 9役、Python 7役
+## 21 tools、Codex 9役、Python 7役
 
-- **FACT**: `default_registry()`と`tools/manifest.yaml`には`20`個のtool名があり、計算または
+- **FACT**: `default_registry()`と`tools/manifest.yaml`には`21`個のtool名があり、計算または
   capability照会の実行単位を表す。
 - **FACT**: `.codex/agents/`の`9`定義はCodexネイティブの役割である。orchestratorと開発専用
   calculator builderを含む。

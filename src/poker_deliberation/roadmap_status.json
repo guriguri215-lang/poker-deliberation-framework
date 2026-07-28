@@ -240,8 +240,8 @@
     {
       "id": "P3-015A",
       "rm_id": "RM-015",
-      "status": "in_progress",
-      "status_reason": "The approved generic no-rake NLHE cash profile and exact side-pot ledger vertical slice are being implemented.",
+      "status": "completed",
+      "status_reason": "The approved generic no-rake NLHE cash profile, exact side-pot ledger, independent oracle, product integration, documentation, and declared tests are implemented.",
       "dependencies": [
         "P3-014A"
       ],
@@ -876,7 +876,7 @@
       "phase": "phase-3",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "The approved P3-015A generic no-rake NLHE cash vertical slice is in implementation; raked and site-specific profiles remain future RM-015 work.",
+      "status_reason": "P3-015A completed the approved generic no-rake NLHE cash vertical slice; raked and site-specific profiles remain future RM-015 work.",
       "dependencies": [
         "RM-014"
       ],

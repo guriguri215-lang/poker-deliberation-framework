@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `7.0.0`
-- source SHA-256: `4a72dc720c3171ef393f2848858af3452447eb8d4ce28c031ded44c8324590b5`
+- source SHA-256: `a3acc431231bdda0d9cfb32852cfbf683ef4818e9a98c8c1c5aa27086484d123`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -47,7 +47,7 @@
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
-| `P3-015A` | `RM-015` | `in_progress` | `P3-014A` | Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none. | The approved generic no-rake NLHE cash profile and exact side-pot ledger vertical slice are being implemented. |
+| `P3-015A` | `RM-015` | `completed` | `P3-014A` | Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none. | The approved generic no-rake NLHE cash profile, exact side-pot ledger, independent oracle, product integration, documentation, and declared tests are implemented. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 
 ## Current RM state
@@ -435,7 +435,7 @@
 ### RM-015 — Hand rule profiles and side-pot accounting
 
 - Status: `in_progress`
-- Status reason: The approved P3-015A generic no-rake NLHE cash vertical slice is in implementation; raked and site-specific profiles remain future RM-015 work.
+- Status reason: P3-015A completed the approved generic no-rake NLHE cash vertical slice; raked and site-specific profiles remain future RM-015 work.
 - Objective: Implement the approved repository-owned generic no-rake NLHE cash profile for raises, all-ins, uncalled returns, eligibility, and exact side-pot accounting while retaining fail-closed boundaries for all other profiles.
 - Capabilities:
   - profiled_nlhe_side_pot_ledger

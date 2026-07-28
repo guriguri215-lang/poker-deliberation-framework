@@ -187,6 +187,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-029A",
         "P2-025A",
         "P3-014A",
+        "P3-015A",
         "P3-017A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
@@ -195,9 +196,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
         "P2-028A",
     }
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
-        "P3-015A",
-    }
+    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -269,7 +268,7 @@ def test_p3_015a_registration_is_profiled_exact_and_bounded() -> None:
         "entry": "P3-015A",
         "completion": None,
     }
-    assert milestones["P3-015A"]["status"] == "in_progress"
+    assert milestones["P3-015A"]["status"] == "completed"
     assert milestones["P3-015A"]["dependencies"] == ["P3-014A"]
     assert "generic_nlhe_cash_no_rake_v1" in milestones["P3-015A"]["scope"]
     assert "supported site none" in milestones["P3-015A"]["scope"]
@@ -515,8 +514,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 15,
-        "in_progress": 1,
+        "completed": 16,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []

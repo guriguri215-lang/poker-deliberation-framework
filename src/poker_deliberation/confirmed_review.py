@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -56,15 +55,13 @@ from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_json_bytes,
 )
-from poker_deliberation.tools.combinations import parse_weighted_range
+from poker_deliberation.tools import default_registry
 from poker_deliberation.tools.hand_pot_ledger import (
     PROFILE_ID,
     PROFILE_SCHEMA_VERSION,
     PROFILE_VERSION,
     SUPPORTED_SITE,
-    calculate_hand_pot_ledger,
 )
-from poker_deliberation.tools.hand_validator import validate_hand
 
 
 class ConfirmedReviewError(ValueError):
@@ -672,26 +669,14 @@ def _tool_support(result: ToolResult) -> ConfirmedReviewToolSupportV1:
     )
 
 
-def _json_object(value: Any) -> dict[str, Any]:
-    projected = json.loads(canonical_json_bytes(value))
-    if not isinstance(projected, dict):
-        _fail(
-            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
-            "report.tool_results",
-        )
-    return projected
-
-
-def _expected_tool_evidence(
+def _expected_tool_results(
     admission: ConfirmedReviewAdmission,
-) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+) -> dict[str, ToolResult]:
     hand = admission.case.hand
     if hand is None:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING, "candidate.hand")
     hand_payload = hand.model_dump(mode="json")
-    expected: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
-        "hand_validator": (hand_payload, _json_object(validate_hand(hand))),
-    }
+    expected_inputs: dict[str, dict[str, Any]] = {"hand_validator": hand_payload}
     candidate_input = admission.candidate.projection.candidate_input
     if candidate_input.ledger_profile is not None:
         raw_tool_inputs = admission.case.metadata.get("tool_inputs")
@@ -704,10 +689,7 @@ def _expected_tool_evidence(
                 "candidate.ledger_profile",
             )
         exact_ledger_payload = {**ledger_payload, "hand": hand_payload}
-        expected["hand_pot_ledger"] = (
-            exact_ledger_payload,
-            _json_object(calculate_hand_pot_ledger(exact_ledger_payload)),
-        )
+        expected_inputs["hand_pot_ledger"] = exact_ledger_payload
     if candidate_input.hand.known_ranges:
         range_definition = candidate_input.hand.known_ranges[0]
         if not isinstance(range_definition, VersionedRangeDefinitionV1):
@@ -727,32 +709,29 @@ def _expected_tool_evidence(
             "hand": hand_payload,
             "range_definition": range_definition.model_dump(mode="json"),
         }
-        expected["range_validate"] = (
-            range_payload,
-            _json_object(validation.model_dump(mode="json")),
-        )
-        combo_payload: dict[str, Any] = {
+        expected_inputs["range_validate"] = range_payload
+        expected_inputs["combos"] = {
             "range": canonical_notation,
             "dead_cards": [],
         }
-        combos = parse_weighted_range(canonical_notation)
-        total_weight = sum(combo.weight for combo in combos)
-        expected["combos"] = (
-            combo_payload,
-            {
-                "range": canonical_notation,
-                "combo_count": len(combos),
-                "total_combo_weight": total_weight,
-                "normalized_weights": [
-                    {
-                        "cards": list(combo.cards),
-                        "weight": combo.weight / total_weight,
-                    }
-                    for combo in combos
-                ],
-            },
-        )
+    registry = default_registry()
+    expected: dict[str, ToolResult] = {}
+    for tool_name, payload in expected_inputs.items():
+        result = registry.execute(tool_name, payload)
+        if result.status is not ToolStatus.SUCCESS:
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.tool_results",
+            )
+        expected[tool_name] = result
     return expected
+
+
+def _tool_result_semantic_projection(result: ToolResult) -> dict[str, Any]:
+    return result.model_dump(
+        mode="json",
+        exclude={"result_id", "duration_seconds", "created_at"},
+    )
 
 
 def build_confirmed_review_provenance(
@@ -799,12 +778,8 @@ def build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.claim_assessments",
         )
-    expected_tool_names = ["hand_validator"]
-    candidate_input = admission.candidate.projection.candidate_input
-    if candidate_input.ledger_profile is not None:
-        expected_tool_names.append("hand_pot_ledger")
-    if candidate_input.hand.known_ranges:
-        expected_tool_names.extend(("range_validate", "combos"))
+    expected_tool_results = _expected_tool_results(admission)
+    expected_tool_names = list(expected_tool_results)
     actual_tool_names = [result.tool_name for result in report.tool_results]
     if Counter(actual_tool_names) != Counter(expected_tool_names):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
@@ -818,14 +793,10 @@ def build_confirmed_review_provenance(
         or validator_results[0].output.get("valid") is not True
     ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING, "report.hand_validator")
-    expected_tool_evidence = _expected_tool_evidence(admission)
     for result in report.tool_results:
-        expected_input, expected_output = expected_tool_evidence[result.tool_name]
-        if (
-            result.status is not ToolStatus.SUCCESS
-            or result.input != expected_input
-            or result.output != expected_output
-        ):
+        if result.status is not ToolStatus.SUCCESS or _tool_result_semantic_projection(
+            result
+        ) != _tool_result_semantic_projection(expected_tool_results[result.tool_name]):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
                 "report.tool_results",

@@ -58,19 +58,26 @@ _REAL_TIME_ASSISTANCE = re.compile(
     r"real[- ]?time.{0,20}(?:advice|assistance).{0,20}while\s+i\s+play)",
     re.IGNORECASE,
 )
-_LIVE_REQUEST_ASSISTANCE = re.compile(
-    r"(?:(?:オンライン(?:ポーカー|卓)?|ポーカー|卓)(?:に|で|を)?"
-    r"(?:参加して(?:おり|い)ます|プレイして(?:おり|い)ます|"
-    r"打って(?:おり|い)ます|着席して(?:おり|い)ます|参加中|プレイ中)"
-    r".{0,96}(?:call|fold|check|bet|raise|shove|コール|フォールド|"
-    r"オールイン|アクション|どちら|どうすべき|教えて|すべき)|"
-    r"\b(?:i(?:['\u2019]m| am)\s+)?(?:"
-    r"playing\s+(?:online\s+)?poker|"
-    r"in\s+(?:an?\s+)?(?:online\s+)?(?:poker\s+)?(?:game|tournament|hand)|"
+_LIVE_PLAY_CONTEXT = re.compile(
+    r"(?:(?:オンライン(?:ポーカー|卓|MTT|SNG)|"
+    r"(?:ポーカー|トーナメント|MTT|SNG|シット[- ]?アンド[- ]?ゴー)(?:卓)?)"
+    r"(?:に|で|を)?(?:参加して(?:おり|い)ます|出場して(?:おり|い)ます|"
+    r"プレイして(?:おり|い)ます|打って(?:おり|い)ます|"
+    r"着席して(?:おり|い)ます|参加中|出場中|プレイ中)|"
+    r"\bi(?:['\u2019]m| am)\s+(?:"
+    r"playing\s+(?:an?\s+)?(?:online\s+)?"
+    r"(?:poker|mtt|sng|sit[- ]and[- ]go)|"
+    r"in\s+(?:an?\s+)?(?:online\s+)?"
+    r"(?:(?:poker\s+)?(?:game|tournament|hand)|mtt|sng|sit[- ]and[- ]go)|"
     r"at\s+(?:a|the)\s+(?:poker|tournament)\s+table|"
-    r"seated\s+at\s+(?:a|the)\s+(?:poker|tournament)\s+table)"
-    r".{0,96}(?:\b(?:call|fold|check|bet|raise|shove|all[- ]?in)\b|"
-    r"what\s+should\s+i\s+do|should\s+i))",
+    r"seated\s+at\s+(?:a|the)\s+(?:poker|tournament)\s+table))",
+    re.IGNORECASE,
+)
+_DECISION_REQUEST = re.compile(
+    r"(?:\b(?:call|fold|check|bet|raise|shove|all[- ]?in)\b|"
+    r"\bshould\s+i\b|what\s+should\s+i\s+do|"
+    r"コール|フォールド|チェック|ベット|レイズ|オールイン|"
+    r"アクション|どちら|どうすべき|教えて|すべき)",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -270,9 +277,9 @@ def _walk_strings(value: Any) -> list[str]:
 def _contains_real_time_assistance(value: Any) -> bool:
     for text in _walk_strings(value):
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", text)
-        if (
-            _REAL_TIME_ASSISTANCE.search(cleaned) is not None
-            or _LIVE_REQUEST_ASSISTANCE.search(cleaned) is not None
+        if _REAL_TIME_ASSISTANCE.search(cleaned) is not None or (
+            _LIVE_PLAY_CONTEXT.search(cleaned) is not None
+            and _DECISION_REQUEST.search(cleaned) is not None
         ):
             return True
     return False

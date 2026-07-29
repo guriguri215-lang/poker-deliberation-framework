@@ -100,6 +100,42 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
         (
+            b"I am in an online poker tournament.\nShould I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "オンラインMTTに出場しています。\nコールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am in an online poker tournament. "
+            + b"Stack and action details. " * 8
+            + b"Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "オンラインMTTに出場しています。".encode()
+            + "スタックとアクションの詳細です。".encode() * 10
+            + "コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am in an online MTT. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing an online MTT. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am in a sit-and-go. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "オンラインSNGに参加しています。コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
             b"The hand from yesterday is complete. "
             b"I am in an online poker tournament. Should I call or fold?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
@@ -124,6 +160,11 @@ def test_source_contract_fails_closed_with_stable_codes(
             b"For the completed hand from yesterday, should I call or fold?\n"
         ),
         "現在のポーカー理論を使い、昨日終了したハンドでcallすべきだったか教えてください。\n".encode(),
+        (
+            b"For the hand I played yesterday in an online poker tournament, "
+            b"should I have called or folded?\n"
+        ),
+        (b"I was in an online poker tournament yesterday. Should I have called or folded?\n"),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:

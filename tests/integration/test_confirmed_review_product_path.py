@@ -151,6 +151,24 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
         build_confirmed_review_provenance(admission, forged_tool_output_report)
     assert tool_output.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    for metadata_field in ("version", "contract_version"):
+        forged_tool_metadata = validator.model_copy(
+            update={metadata_field: "9.9.9"},
+            deep=True,
+        )
+        forged_tool_metadata_report = report.model_copy(
+            update={
+                "tool_results": [
+                    forged_tool_metadata,
+                    *report.tool_results[1:],
+                ]
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as tool_metadata:
+            build_confirmed_review_provenance(admission, forged_tool_metadata_report)
+        assert tool_metadata.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
     admission = confirmed_admission(
@@ -377,6 +395,21 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
             value,
         )
 
+    def replace_terminal_clock(orchestrator) -> None:
+        orchestrator.terminal_clock = lambda: datetime.now(UTC)
+
+    def replace_terminal_id_factory(orchestrator) -> None:
+        orchestrator.terminal_id_factory = lambda prefix: f"{prefix}-forged"
+
+    def shadow_product_prepare(orchestrator) -> None:
+        orchestrator.product_store._prepare = lambda *args, **kwargs: None
+
+    def shadow_buffer_internal_write(orchestrator) -> None:
+        orchestrator.store._write = lambda *args, **kwargs: None
+
+    def shadow_revision_publish(orchestrator) -> None:
+        orchestrator.durable_budget_store.revisions.publish = lambda *args, **kwargs: None
+
     assert_runtime_rejected("provider", shadow_provider)
     assert_runtime_rejected("analysis-executor", shadow_analysis_executor)
     assert_runtime_rejected("registry-execute", shadow_registry_execute)
@@ -387,6 +420,11 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
     assert_runtime_rejected("product-publish", shadow_product_publish)
     assert_runtime_rejected("budget-reserve", shadow_budget_reserve)
     assert_runtime_rejected("buffer-write", shadow_buffer_write)
+    assert_runtime_rejected("terminal-clock", replace_terminal_clock)
+    assert_runtime_rejected("terminal-id-factory", replace_terminal_id_factory)
+    assert_runtime_rejected("product-prepare", shadow_product_prepare)
+    assert_runtime_rejected("buffer-internal-write", shadow_buffer_internal_write)
+    assert_runtime_rejected("revision-publish", shadow_revision_publish)
 
 
 def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:

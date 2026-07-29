@@ -194,6 +194,74 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
         build_confirmed_review_provenance(admission, forged_report_time)
     assert report_time.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    first_agent = report.agent_execution_records[0]
+    for update in (
+        {
+            "started_at": report.generated_at + timedelta(seconds=1),
+            "completed_at": report.generated_at + timedelta(seconds=2),
+        },
+        {
+            "started_at": first_agent.completed_at + timedelta(seconds=1),
+            "completed_at": first_agent.completed_at,
+        },
+    ):
+        forged_agent = first_agent.model_copy(update=update, deep=True)
+        forged_agent_report = report.model_copy(
+            update={
+                "agent_execution_records": [
+                    forged_agent,
+                    *report.agent_execution_records[1:],
+                ]
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as agent_time:
+            build_confirmed_review_provenance(admission, forged_agent_report)
+        assert agent_time.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    for update in (
+        {"allowed_tools": ["solver_adapter"]},
+        {"context_expires_at": first_agent.completed_at - timedelta(seconds=1)},
+        {"context_producer_runtime": "external"},
+    ):
+        forged_agent = first_agent.model_copy(update=update, deep=True)
+        forged_agent_report = report.model_copy(
+            update={
+                "agent_execution_records": [
+                    forged_agent,
+                    *report.agent_execution_records[1:],
+                ]
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError):
+            build_confirmed_review_provenance(admission, forged_agent_report)
+
+    duplicate_execution_id = first_agent.execution_id
+    duplicate_assignment_id = first_agent.assignment_id
+    duplicate_context_id = first_agent.context_id
+    duplicate_context_attempt_id = first_agent.context_attempt_id
+    duplicate_agent_report = report.model_copy(
+        update={
+            "agent_execution_records": [
+                record.model_copy(
+                    update={
+                        "execution_id": duplicate_execution_id,
+                        "assignment_id": duplicate_assignment_id,
+                        "context_id": duplicate_context_id,
+                        "context_attempt_id": duplicate_context_attempt_id,
+                    },
+                    deep=True,
+                )
+                for record in report.agent_execution_records
+            ]
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as duplicate_agent:
+        build_confirmed_review_provenance(admission, duplicate_agent_report)
+    assert duplicate_agent.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
     admission = confirmed_admission(
@@ -347,11 +415,15 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(
             app_config(tmp_path / label),
             provider=LocalProvider(),
         )
-        mutate(orchestrator)
-        with pytest.raises(ConfirmedReviewError) as runtime:
-            orchestrator.run_confirmed_review(admission)
-        assert runtime.value.code is ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER
-        assert orchestrator._namespace_kind(admission.confirmation.run_id) is None
+        cleanup = mutate(orchestrator)
+        try:
+            with pytest.raises(ConfirmedReviewError) as runtime:
+                orchestrator.run_confirmed_review(admission)
+            assert runtime.value.code is ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER
+            assert orchestrator._namespace_kind(admission.confirmation.run_id) is None
+        finally:
+            if cleanup is not None:
+                cleanup()
 
     def shadow_provider(orchestrator) -> None:
         original = orchestrator.provider.analyze
@@ -446,6 +518,40 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(
     def replace_buffer_root(orchestrator) -> None:
         orchestrator.store.root = tmp_path / "replacement-buffer-root"
 
+    def replace_terminal_clock_code(orchestrator):
+        original = orchestrator.terminal_clock
+        original_code = original.__code__
+
+        def replacement():
+            return datetime.now(UTC)
+
+        original.__code__ = replacement.__code__
+        return lambda: setattr(original, "__code__", original_code)
+
+    def replace_provider_code(orchestrator):
+        del orchestrator
+        original = LocalProvider.analyze
+        original_code = original.__code__
+
+        def replacement(self, *args, **kwargs):
+            del self, args, kwargs
+            return None
+
+        original.__code__ = replacement.__code__
+        return lambda: setattr(original, "__code__", original_code)
+
+    def replace_module_commitments_code(orchestrator):
+        del orchestrator
+        original = orchestrator_module.product_payload_commitments
+        original_code = original.__code__
+
+        def replacement(*args, **kwargs):
+            del args, kwargs
+            return None
+
+        original.__code__ = replacement.__code__
+        return lambda: setattr(original, "__code__", original_code)
+
     def replace_module_commitments(orchestrator) -> None:
         del orchestrator
         original = orchestrator_module.product_payload_commitments
@@ -472,6 +578,9 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(
     assert_runtime_rejected("revision-publish", shadow_revision_publish)
     assert_runtime_rejected("persistence-roots", replace_persistence_roots)
     assert_runtime_rejected("buffer-root", replace_buffer_root)
+    assert_runtime_rejected("terminal-clock-code", replace_terminal_clock_code)
+    assert_runtime_rejected("provider-code", replace_provider_code)
+    assert_runtime_rejected("module-commitments-code", replace_module_commitments_code)
     assert_runtime_rejected("module-commitments", replace_module_commitments)
 
 
@@ -506,6 +615,19 @@ def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:
     with pytest.raises(ConfirmedReviewError) as duplicate:
         build_confirmed_review_provenance(admission, forged_report)
     assert duplicate.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+    reordered_report = report.model_copy(
+        update={
+            "tool_results": [
+                report.tool_results[0],
+                report.tool_results[2],
+                report.tool_results[1],
+            ]
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as reordered:
+        build_confirmed_review_provenance(admission, reordered_report)
+    assert reordered.value.code is ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL
 
 
 def test_supported_ledger_profile_is_the_only_optional_ledger_path(tmp_path) -> None:

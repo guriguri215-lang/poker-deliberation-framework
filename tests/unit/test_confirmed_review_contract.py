@@ -80,6 +80,26 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            b"OPENAI_API_KEY=ABCDEFGHIJKLMNOP123456\n",
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            b"AWS_SECRET_ACCESS_KEY=ABCDEFGHIJKLMNOP123456\n",
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            b"GITHUB_TOKEN=ABCDEFGHIJKLMNOP123456\n",
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "api\u034f_key: ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "api\u0332_key: ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             b"I am currently playing poker right now. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -176,6 +196,36 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
         (
+            b"I'm multi-tabling online. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I'm on PokerStars right now. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I'm playing Zoom. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "オンラインで4面打ちしています。コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am in an online poker tournament replay, but this is the actual "
+            b"live tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am in an online poker tournament hand-history viewer, but the hand "
+            b"is actually live. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing an online MTT replay. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
             b"The hand from yesterday is complete. "
             b"I am in an online poker tournament. Should I call or fold?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
@@ -218,6 +268,22 @@ def test_source_contract_fails_closed_with_stable_codes(
             b'"I am in an online poker tournament." The quote is historical. '
             b"Should I have called or folded?\n"
         ),
+        (
+            b"I am playing an online MTT video replay from yesterday to study the "
+            b"completed hand. Should I have called or folded?\n"
+        ),
+        (
+            b"I am in an online poker tournament archive reviewing yesterday's "
+            b"completed hand. Should I have called or folded?\n"
+        ),
+        (
+            b"For retrospective review, the archived quote reads "
+            b'"I am in an online poker tournament." Should I have called or folded?\n'
+        ),
+        (
+            b"For retrospective review, archived quote: "
+            b"'I am in an online poker tournament.' Should I have called or folded?\n"
+        ),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -238,6 +304,12 @@ def test_source_size_limit_is_exact() -> None:
     ("source", "claim"),
     [
         (b"I am in an online MTT.\n", "Should I call or fold?"),
+        (b"I am currently playing", "poker. Should I call or fold?"),
+        (b"I am in an online", "MTT. Should I call or fold?"),
+        (
+            b"I am playing an online MTT replay from yesterday.",
+            "This is actually a live tournament. Should I call or fold?",
+        ),
         (
             "オンラインMTTに出場しています。\n".encode(),
             "コールかフォールドか教えてください。",
@@ -527,6 +599,11 @@ def test_legacy_range_shape_cannot_enter_candidate_contract() -> None:
         "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         "Cookie: sessionid=ABCDEFGHIJKLMNOP123456",
         "api\ufe0f_key: ABCDEFGHIJKLMNOP123456",
+        "OPENAI_API_KEY=ABCDEFGHIJKLMNOP123456",
+        "AWS_SECRET_ACCESS_KEY=ABCDEFGHIJKLMNOP123456",
+        "GITHUB_TOKEN=ABCDEFGHIJKLMNOP123456",
+        "api\u034f_key: ABCDEFGHIJKLMNOP123456",
+        "api\u0332_key: ABCDEFGHIJKLMNOP123456",
     ],
 )
 def test_candidate_secret_is_not_written_to_preparation_artifact(secret: str) -> None:

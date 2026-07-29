@@ -22,10 +22,21 @@ _SECRET_PATTERNS = (
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     re.compile(r"\b(?:authorization|cookie)\s*[:=]\s*[^\r\n]+", re.IGNORECASE),
     re.compile(
+        r"(?<![A-Za-z0-9])(?:[A-Za-z][A-Za-z0-9]*_)*"
+        r"(?:API_KEY|SECRET(?:_ACCESS_KEY)?|ACCESS_TOKEN|TOKEN|PASSWORD)"
+        r"\s*[:=]\s*[^\s,;]+",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?:api[.\s_-]*key|password|secret|token|access[.\s_-]*token|"
         r"client[.\s_-]*secret)\s*[:=]\s*[^\s,;]+",
         re.IGNORECASE,
     ),
+)
+_SECURITY_IGNORABLES = re.compile(
+    "[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u200b-\u200f"
+    "\u202a-\u202e\u2060-\u206f\u20d0-\u20ff\ufe00-\ufe0f"
+    "\ufe20-\ufe2f\ufeff\U000e0100-\U000e01ef]"
 )
 _SECURITY_DASH_TRANSLATION = str.maketrans(
     {
@@ -78,26 +89,49 @@ _LIVE_PLAY_CONTEXT = re.compile(
     r"spin\s*(?:&|and)\s*go)|"
     r"at\s+(?:an?|the)?\s*(?:online\s+)?(?:poker|tournament|cash)\s+table|"
     r"seated\s+at\s+(?:an?|the)?\s*(?:online\s+)?"
-    r"(?:poker|tournament|cash)\s+table))",
+    r"(?:poker|tournament|cash)\s+table|"
+    r"multi[- ]tabling(?:\s+online)?|"
+    r"on\s+(?:pokerstars|ggpoker|acr|wsop|888poker|partypoker|"
+    r"ignition|bovada)(?:\s+(?:right\s+)?now)?|"
+    r"playing\s+(?:zoom|rush|blitz|snap|fast[- ]?forward))|"
+    r"オンラインで(?:\d+|[一二三四五六七八九十]+)面打ちして(?:おり|い)ます)",
+    re.IGNORECASE,
+)
+_PARTIAL_LIVE_CONTEXT = re.compile(
+    r"\bi(?:['\u2019]m| am)\s+(?:currently\s+)?(?:"
+    r"playing\b|in\s+(?:an?\s+)?(?:online\b)?|"
+    r"at\s+(?:an?|the)?\s*(?:online\b)?|on\b|seated\b)|"
+    r"\bi(?:['\u2019]m| am)\s*$",
     re.IGNORECASE,
 )
 _DECISION_REQUEST = re.compile(
     r"(?:\b(?:call|fold|check|bet|raise|shove|all[- ]?in)\b|"
-    r"\bshould\s+i\b|what\s+should\s+i\s+do|"
+    r"\bshould\s+i\b(?!\s+have\b)|what\s+should\s+i\s+do|"
     r"コール|フォールド|チェック|ベット|レイズ|オールイン|"
     r"アクション|どちら|どうすべき|教えて|すべき)",
     re.IGNORECASE,
 )
 _ARCHIVED_QUOTATION = re.compile(
-    r"(?:(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}|"
-    r"(?:アーカイブ|過去|履歴)(?:の)?(?:引用|記録|メモ)[^\uFF1A\r\n]{0,48})"
-    r"[:\uFF1A]\s*(?:[\"“][^\"”]*[\"”]|[「『][^」』]*[」』]))",
+    r"(?:(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}"
+    r"(?::|\breads?\s+)|"
+    r"(?:アーカイブ|過去|履歴)(?:の)?(?:引用|記録|メモ)[^\uFF1A\r\n]{0,48}"
+    r"[\uFF1A:])\s*"
+    r"(?:[\"“][^\"”]*[\"”]|'[^']*'|[「『][^」』]*[」』]))",
     re.IGNORECASE,
 )
 _RETROSPECTIVE_LIVE_SUFFIX = re.compile(
-    r"\s+(?:(?:replay|recording|review|simulation|trainer|viewer)\b|"
-    r"hand[- ]?history(?:\s+viewer)?\b|from\s+yesterday\b|"
-    r"of\s+(?:an?|the)\s+completed\b)",
+    r"\s+(?:(?:(?:video\s+)?(?:replay|recording|review|simulation|trainer|viewer)"
+    r"|archive(?:\s+review)?|hand[- ]?history(?:\s+viewer)?)\b"
+    r"(?=[^.\r\n]{0,160}\b(?:yesterday(?:'s)?|completed|historical|archived|"
+    r"recorded)\b)|from\s+yesterday\b|of\s+(?:an?|the)\s+completed\b)",
+    re.IGNORECASE,
+)
+_RETROSPECTIVE_EVIDENCE = re.compile(
+    r"\b(?:yesterday(?:'s)?|completed|historical|archived|recorded)\b",
+    re.IGNORECASE,
+)
+_LIVE_CONTRADICTION = re.compile(
+    r"\b(?:actual(?:ly)?\s+live|live\s+(?:game|tournament|table|hand)|right\s+now)\b",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -202,12 +236,8 @@ _INJECTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 def _security_probe(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
-    without_variation_selectors = "".join(
-        character
-        for character in normalized
-        if not (0xFE00 <= ord(character) <= 0xFE0F or 0xE0100 <= ord(character) <= 0xE01EF)
-    )
-    return without_variation_selectors.translate(_SECURITY_DASH_TRANSLATION).casefold()
+    without_ignorables = _SECURITY_IGNORABLES.sub("", normalized)
+    return without_ignorables.translate(_SECURITY_DASH_TRANSLATION).casefold()
 
 
 def _redact_text(value: str) -> str:
@@ -300,23 +330,42 @@ def _walk_strings(value: Any) -> list[str]:
     return strings
 
 
-def _contains_real_time_assistance(value: Any) -> bool:
-    live_context_present = False
-    decision_request_present = False
+def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
+    """Return live-context, decision-request, and explicit-assistance signals."""
+
+    cleaned_texts: list[str] = []
+    partial_live_context_present = False
     for text in _walk_strings(value):
         cleaned = _security_probe(text)
         cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
-        if _REAL_TIME_ASSISTANCE.search(cleaned) is not None:
-            return True
-        decision_request_present = (
-            decision_request_present or _DECISION_REQUEST.search(cleaned) is not None
+        cleaned_texts.append(cleaned)
+        partial_live_context_present = partial_live_context_present or (
+            _PARTIAL_LIVE_CONTEXT.search(cleaned) is not None
+            and (
+                _RETROSPECTIVE_EVIDENCE.search(cleaned) is None
+                or _LIVE_CONTRADICTION.search(cleaned) is not None
+            )
         )
-        live_context_present = live_context_present or any(
-            _RETROSPECTIVE_LIVE_SUFFIX.match(cleaned, match.end()) is None
-            for match in _LIVE_PLAY_CONTEXT.finditer(cleaned)
-        )
-    return live_context_present and decision_request_present
+    combined = "\n".join(cleaned_texts)
+    decision_request_present = _DECISION_REQUEST.search(combined) is not None
+    explicit_assistance_present = _REAL_TIME_ASSISTANCE.search(combined) is not None
+    live_context_present = partial_live_context_present or any(
+        _RETROSPECTIVE_LIVE_SUFFIX.match(combined, match.end()) is None
+        for match in _LIVE_PLAY_CONTEXT.finditer(combined)
+    )
+    if _LIVE_CONTRADICTION.search(combined) is not None:
+        live_context_present = True
+    return (
+        live_context_present,
+        decision_request_present,
+        explicit_assistance_present,
+    )
+
+
+def _contains_real_time_assistance(value: Any) -> bool:
+    live_context, decision_request, explicit_assistance = real_time_assistance_signals(value)
+    return explicit_assistance or (live_context and decision_request)
 
 
 def contains_real_time_assistance(value: Any) -> bool:

@@ -6,6 +6,7 @@ import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import FunctionType
 from typing import Any, ClassVar, Literal, NoReturn, cast
 
 from poker_deliberation import __version__
@@ -256,10 +257,36 @@ _CONFIRMED_ADJUDICATION_RUN = AdjudicationService.run
 _CONFIRMED_SYNTHESIS_RUN = SynthesisService.run
 
 
+def _callable_execution_token(value: object) -> str:
+    target = getattr(value, "__func__", value)
+    if not isinstance(target, FunctionType):
+        return ""
+    kwdefaults = target.__kwdefaults__ or {}
+    closure = target.__closure__ or ()
+    closure_tokens: list[str] = []
+    for cell in closure:
+        try:
+            cell_value = cell.cell_contents
+        except ValueError:
+            closure_tokens.append(f"{id(cell)}:empty")
+        else:
+            closure_tokens.append(f"{id(cell)}:{id(cell_value)}")
+    kwdefault_tokens = ",".join(f"{name}:{id(item)}" for name, item in sorted(kwdefaults.items()))
+    return "|".join(
+        (
+            str(id(target.__code__)),
+            str(id(target.__defaults__)),
+            str(id(target.__kwdefaults__)),
+            kwdefault_tokens,
+            ",".join(closure_tokens),
+        )
+    )
+
+
 def _class_callable_snapshot(
     cls: type[Any],
-) -> tuple[tuple[type[Any], str, object], ...]:
-    snapshot: list[tuple[type[Any], str, object]] = []
+) -> tuple[tuple[type[Any], str, object, str], ...]:
+    snapshot: list[tuple[type[Any], str, object, str]] = []
     for owner in cls.__mro__:
         for name, raw_value in vars(owner).items():
             value = (
@@ -268,7 +295,7 @@ def _class_callable_snapshot(
                 else raw_value
             )
             if callable(value):
-                snapshot.append((owner, name, value))
+                snapshot.append((owner, name, value, _callable_execution_token(value)))
             if isinstance(raw_value, property):
                 for suffix, accessor in (
                     ("fget", raw_value.fget),
@@ -276,7 +303,14 @@ def _class_callable_snapshot(
                     ("fdel", raw_value.fdel),
                 ):
                     if accessor is not None:
-                        snapshot.append((owner, f"{name}.{suffix}", accessor))
+                        snapshot.append(
+                            (
+                                owner,
+                                f"{name}.{suffix}",
+                                accessor,
+                                _callable_execution_token(accessor),
+                            )
+                        )
     return tuple(
         sorted(
             snapshot,
@@ -285,19 +319,27 @@ def _class_callable_snapshot(
     )
 
 
-def _instance_callable_snapshot(instance: object) -> tuple[tuple[str, object], ...]:
+def _instance_callable_snapshot(instance: object) -> tuple[tuple[str, object, str], ...]:
     return tuple(
         sorted(
-            ((name, value) for name, value in vars(instance).items() if callable(value)),
+            (
+                (name, value, _callable_execution_token(value))
+                for name, value in vars(instance).items()
+                if callable(value)
+            ),
             key=lambda item: item[0],
         )
     )
 
 
-def _module_callable_snapshot() -> tuple[tuple[str, object], ...]:
+def _module_callable_snapshot() -> tuple[tuple[str, object, str], ...]:
     return tuple(
         sorted(
-            ((name, value) for name, value in globals().items() if callable(value)),
+            (
+                (name, value, _callable_execution_token(value))
+                for name, value in globals().items()
+                if callable(value)
+            ),
             key=lambda item: item[0],
         )
     )
@@ -323,9 +365,22 @@ def _callable_snapshot_is_exact(
     )
 
 
-_CONFIRMED_PERSISTENCE_CLASS_CALLABLES = tuple(
+_CONFIRMED_RUNTIME_CLASS_CALLABLES = tuple(
     (cls, _class_callable_snapshot(cls))
     for cls in (
+        LocalProvider,
+        AnalysisExecutor,
+        ToolResearchExecutor,
+        ToolRegistry,
+        SystemMonotonicClock,
+        PurePhaseService,
+        IntakeValidationService,
+        NormalizationService,
+        RoutingService,
+        ContextBuildService,
+        CritiqueService,
+        AdjudicationService,
+        SynthesisService,
         TerminalRunStore,
         DurableBudgetCoordinator,
         DurableBudgetStore,
@@ -630,6 +685,28 @@ class Orchestrator:
         self._confirmed_review_persistence_instance_callables = tuple(
             _instance_callable_snapshot(instance)
             for instance in self._confirmed_review_persistence_objects
+        )
+        self._confirmed_review_boundary_callables = (
+            (
+                "analysis_context_clock",
+                self.analysis_executor.context_clock,
+                _callable_execution_token(self.analysis_executor.context_clock),
+            ),
+            (
+                "analysis_record_clock",
+                self.analysis_executor.record_clock,
+                _callable_execution_token(self.analysis_executor.record_clock),
+            ),
+            (
+                "terminal_clock",
+                self.terminal_clock,
+                _callable_execution_token(self.terminal_clock),
+            ),
+            (
+                "terminal_id_factory",
+                self.terminal_id_factory,
+                _callable_execution_token(self.terminal_id_factory),
+            ),
         )
         self._confirmed_review_durable_budget_policy = self.durable_budget.policy
         self._confirmed_review_persistence_configuration = (
@@ -1391,7 +1468,32 @@ class Orchestrator:
                     _class_callable_snapshot(cls),
                     expected,
                 )
-                for cls, expected in _CONFIRMED_PERSISTENCE_CLASS_CALLABLES
+                for cls, expected in _CONFIRMED_RUNTIME_CLASS_CALLABLES
+            )
+            or not _callable_snapshot_is_exact(
+                (
+                    (
+                        "analysis_context_clock",
+                        self.analysis_executor.context_clock,
+                        _callable_execution_token(self.analysis_executor.context_clock),
+                    ),
+                    (
+                        "analysis_record_clock",
+                        self.analysis_executor.record_clock,
+                        _callable_execution_token(self.analysis_executor.record_clock),
+                    ),
+                    (
+                        "terminal_clock",
+                        self.terminal_clock,
+                        _callable_execution_token(self.terminal_clock),
+                    ),
+                    (
+                        "terminal_id_factory",
+                        self.terminal_id_factory,
+                        _callable_execution_token(self.terminal_id_factory),
+                    ),
+                ),
+                self._confirmed_review_boundary_callables,
             )
             or self.durable_budget.policy is not self._confirmed_review_durable_budget_policy
             or (

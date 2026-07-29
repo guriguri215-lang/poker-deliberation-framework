@@ -51,7 +51,7 @@ from poker_deliberation.schemas import (
     ToolStatus,
 )
 from poker_deliberation.security import (
-    contains_real_time_assistance,
+    real_time_assistance_signals,
     redact_sensitive,
     screen_case,
 )
@@ -541,14 +541,20 @@ def _validate_combined_security_scope(
     candidate: ReviewIntakeCandidateV1,
 ) -> CaseInput:
     case = _case_from_candidate(candidate)
-    source_text = source_bytes.decode("utf-8", errors="strict")
-    if screen_case(case) or contains_real_time_assistance(
-        {
-            "source": source_text,
-            "candidate": case.model_dump(mode="json"),
-        }
-    ):
+    if screen_case(case):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    candidate_live, candidate_decision, candidate_explicit = real_time_assistance_signals(
+        [claim.text for claim in case.claims]
+    )
+    if candidate_explicit:
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    if candidate_live or candidate_decision:
+        source_text = source_bytes.decode("utf-8", errors="strict")
+        source_live, source_decision, source_explicit = real_time_assistance_signals(source_text)
+        if source_explicit or (
+            (source_live or candidate_live) and (source_decision or candidate_decision)
+        ):
+            _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     return case
 
 
@@ -820,7 +826,7 @@ def build_confirmed_review_provenance(
     expected_tool_results = _expected_tool_results(admission)
     expected_tool_names = list(expected_tool_results)
     actual_tool_names = [result.tool_name for result in report.tool_results]
-    if Counter(actual_tool_names) != Counter(expected_tool_names):
+    if actual_tool_names != expected_tool_names:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
     result_ids = [result.result_id for result in report.tool_results]
     if len(set(result_ids)) != len(result_ids):
@@ -851,6 +857,22 @@ def build_confirmed_review_provenance(
                 "report.tool_results",
             )
     agents: list[ConfirmedReviewAgentSupportV1] = []
+    execution_ids = [record.execution_id for record in report.agent_execution_records]
+    assignment_ids = [record.assignment_id for record in report.agent_execution_records]
+    context_ids = [record.context_id for record in report.agent_execution_records]
+    context_attempt_ids = [record.context_attempt_id for record in report.agent_execution_records]
+    if (
+        len(set(execution_ids)) != len(execution_ids)
+        or len(set(assignment_ids)) != len(assignment_ids)
+        or None in context_ids
+        or len(set(context_ids)) != len(context_ids)
+        or None in context_attempt_ids
+        or len(set(context_attempt_ids)) != len(context_attempt_ids)
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.agent_execution_records",
+        )
     if report.run_status == "completed":
         from poker_deliberation.agents import select_roles
 
@@ -862,8 +884,42 @@ def build_confirmed_review_provenance(
                 "report.agent_execution_records",
             )
     for record in report.agent_execution_records:
-        if record.provider != "local" or record.provider_version != "1.0.0":
+        expected_allowed_tools = (
+            list(admission.case.requested_tools) if record.agent_role == "math-auditor" else []
+        )
+        if (
+            record.provider != "local"
+            or record.provider_version != "1.0.0"
+            or record.model is not None
+            or record.reasoning_effort is not None
+            or record.allowed_tools != expected_allowed_tools
+            or record.context_schema_version != "1.0.0"
+            or record.context_classification != "internal"
+            or record.context_payload_sha256 is None
+            or record.context_source_sha256 is None
+            or record.context_policy_sha256 is None
+            or record.context_envelope_sha256 is None
+            or record.context_expires_at is None
+            or record.context_producer_runtime != "python-local"
+            or record.context_consumer_runtime != "python-local"
+        ):
             _fail(ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER, "report.agent_execution_records")
+        if (
+            record.started_at.tzinfo is None
+            or record.started_at.utcoffset() is None
+            or record.completed_at.tzinfo is None
+            or record.completed_at.utcoffset() is None
+            or record.started_at < admission.admitted_at
+            or record.completed_at < record.started_at
+            or record.completed_at > report.generated_at
+            or record.context_expires_at.tzinfo is None
+            or record.context_expires_at.utcoffset() is None
+            or record.completed_at > record.context_expires_at
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.agent_execution_records",
+            )
         agents.append(
             ConfirmedReviewAgentSupportV1(
                 execution_id=record.execution_id,

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import poker_deliberation.orchestrator as orchestrator_module
 from poker_deliberation.config import BudgetConfig
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewError,
@@ -169,6 +170,30 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
             build_confirmed_review_provenance(admission, forged_tool_metadata_report)
         assert tool_metadata.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    for observation_field, forged_value in (
+        ("duration_seconds", 1_000_000.0),
+        ("created_at", report.generated_at + timedelta(days=1)),
+    ):
+        forged_observation = validator.model_copy(
+            update={observation_field: forged_value},
+            deep=True,
+        )
+        forged_observation_report = report.model_copy(
+            update={"tool_results": [forged_observation, *report.tool_results[1:]]},
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as observation:
+            build_confirmed_review_provenance(admission, forged_observation_report)
+        assert observation.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    forged_report_time = report.model_copy(
+        update={"generated_at": admission.confirmation.expires_at + timedelta(seconds=1)},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as report_time:
+        build_confirmed_review_provenance(admission, forged_report_time)
+    assert report_time.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
     admission = confirmed_admission(
@@ -309,7 +334,10 @@ def test_runtime_dependency_mutation_and_historical_admission_are_rejected(tmp_p
     assert current_clock._namespace_kind(admission.confirmation.run_id) is None
 
 
-def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> None:
+def test_runtime_callable_and_tool_function_mutation_are_rejected(
+    tmp_path,
+    monkeypatch,
+) -> None:
     def assert_runtime_rejected(label, mutate) -> None:
         admission = confirmed_admission(
             run_id=f"run-confirmed-callable-{label}",
@@ -410,6 +438,23 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
     def shadow_revision_publish(orchestrator) -> None:
         orchestrator.durable_budget_store.revisions.publish = lambda *args, **kwargs: None
 
+    def replace_persistence_roots(orchestrator) -> None:
+        replacement = tmp_path / "replacement-budget-root"
+        orchestrator.durable_budget_runs_root = replacement
+        orchestrator.durable_budget_store.revisions.revision_root = replacement
+
+    def replace_buffer_root(orchestrator) -> None:
+        orchestrator.store.root = tmp_path / "replacement-buffer-root"
+
+    def replace_module_commitments(orchestrator) -> None:
+        del orchestrator
+        original = orchestrator_module.product_payload_commitments
+        monkeypatch.setattr(
+            orchestrator_module,
+            "product_payload_commitments",
+            lambda *args, **kwargs: original(*args, **kwargs),
+        )
+
     assert_runtime_rejected("provider", shadow_provider)
     assert_runtime_rejected("analysis-executor", shadow_analysis_executor)
     assert_runtime_rejected("registry-execute", shadow_registry_execute)
@@ -425,6 +470,9 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
     assert_runtime_rejected("product-prepare", shadow_product_prepare)
     assert_runtime_rejected("buffer-internal-write", shadow_buffer_internal_write)
     assert_runtime_rejected("revision-publish", shadow_revision_publish)
+    assert_runtime_rejected("persistence-roots", replace_persistence_roots)
+    assert_runtime_rejected("buffer-root", replace_buffer_root)
+    assert_runtime_rejected("module-commitments", replace_module_commitments)
 
 
 def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:
@@ -446,6 +494,18 @@ def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:
         "range_validate",
         "combos",
     ]
+    duplicated_id = report.tool_results[0].result_id
+    forged_results = [
+        result.model_copy(update={"result_id": duplicated_id}, deep=True)
+        for result in report.tool_results
+    ]
+    forged_report = report.model_copy(
+        update={"tool_results": forged_results},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as duplicate:
+        build_confirmed_review_provenance(admission, forged_report)
+    assert duplicate.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_supported_ledger_profile_is_the_only_optional_ledger_path(tmp_path) -> None:

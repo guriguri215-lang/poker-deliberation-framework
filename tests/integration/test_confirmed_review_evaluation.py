@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+import poker_deliberation.confirmed_review_evaluation as evaluation_module
 from poker_deliberation.confirmed_review_evaluation import (
     EVALUATION_FAMILY_ID,
     REQUIRED_CASE_IDS,
@@ -97,3 +98,14 @@ def test_evaluation_reuses_work_root_without_cross_run_collision(tmp_path) -> No
     first = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
     second = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
     assert second == first
+
+
+def test_evaluation_handler_identity_is_immutable_and_verified(tmp_path, monkeypatch) -> None:
+    fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
+    replacement = {
+        case_id: (lambda _context, evidence=evidence: evidence)
+        for case_id, evidence in evaluation_module.REQUIRED_CASE_EVIDENCE
+    }
+    monkeypatch.setattr(evaluation_module, "_HANDLERS", replacement)
+    with pytest.raises(ValueError, match="handler inventory mismatch"):
+        run_confirmed_review_evaluation(fixture, work_root=tmp_path)

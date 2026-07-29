@@ -68,6 +68,18 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            b"Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==\n",
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            b"Cookie: sessionid=ABCDEFGHIJKLMNOP123456\n",
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "api\ufe0f_key: ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             b"I am currently playing poker right now. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -132,6 +144,34 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
         (
+            b"I am currently in an online poker tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I'm playing in an online poker tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing in a Spin & Go. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am at an online cash table. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I'm playing a PKO. Should I shove?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "オンラインキャッシュに参加しています。コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "I am in an online \uff2d\uff34\uff34. Should I call or fold?\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
             "オンラインSNGに参加しています。コールかフォールドか教えてください。\n".encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -165,6 +205,19 @@ def test_source_contract_fails_closed_with_stable_codes(
             b"should I have called or folded?\n"
         ),
         (b"I was in an online poker tournament yesterday. Should I have called or folded?\n"),
+        (
+            b"I am playing an online MTT replay from yesterday to study the completed hand. "
+            b"Should I have called or folded?\n"
+        ),
+        (
+            b"I am in an online poker tournament hand-history viewer, "
+            b"reviewing yesterday's completed hand. Should I have called or folded?\n"
+        ),
+        (
+            b"For retrospective review of yesterday's completed hand, archived quote: "
+            b'"I am in an online poker tournament." The quote is historical. '
+            b"Should I have called or folded?\n"
+        ),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -179,6 +232,36 @@ def test_source_size_limit_is_exact() -> None:
     rejected = _prepare_source(b"x" * (MAX_CONFIRMED_REVIEW_SOURCE_BYTES + 1))
     assert accepted.status == "ready"
     assert rejected.diagnostics[0].code is ConfirmedReviewDiagnosticCode.SOURCE_SIZE
+
+
+@pytest.mark.parametrize(
+    ("source", "claim"),
+    [
+        (b"I am in an online MTT.\n", "Should I call or fold?"),
+        (
+            "オンラインMTTに出場しています。\n".encode(),
+            "コールかフォールドか教えてください。",
+        ),
+    ],
+)
+def test_live_context_and_decision_cannot_be_split_across_artifacts(
+    source: bytes,
+    claim: str,
+) -> None:
+    payload = candidate_payload()
+    payload["claims"][0]["text"] = claim
+    result = prepare_review_intake(
+        source,
+        payload,
+        source_id="source-split-live-1",
+        source_kind="user_supplied",
+        license_classification="user_supplied_private_analysis",
+        usage_classification="local_analysis_only",
+        classification="internal",
+    )
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
 
 
 def test_source_rights_matrix_is_closed() -> None:
@@ -437,9 +520,18 @@ def test_legacy_range_shape_cannot_enter_candidate_contract() -> None:
     assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA
 
 
-def test_candidate_secret_is_not_written_to_preparation_artifact() -> None:
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "api_key=sk-abcdefgh",
+        "Authorization: Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+        "Cookie: sessionid=ABCDEFGHIJKLMNOP123456",
+        "api\ufe0f_key: ABCDEFGHIJKLMNOP123456",
+    ],
+)
+def test_candidate_secret_is_not_written_to_preparation_artifact(secret: str) -> None:
     payload = candidate_payload()
-    payload["claims"][0]["text"] = "api_key=sk-abcdefgh"
+    payload["claims"][0]["text"] = secret
     result = prepare_review_intake(
         SOURCE_BYTES,
         payload,

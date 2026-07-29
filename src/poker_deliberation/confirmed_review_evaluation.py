@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import mkdtemp
+from types import MappingProxyType
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -16,7 +16,7 @@ from poker_deliberation.config import AppConfig
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewAdmission,
     ConfirmedReviewError,
-    admit_confirmed_review,
+    _admit_confirmed_review_at,
     build_confirmed_review_provenance,
     create_review_confirmation,
     prepare_review_intake,
@@ -74,7 +74,6 @@ REQUIRED_CASE_EVIDENCE = (
 REQUIRED_CASE_IDS = tuple(case_id for case_id, _evidence in REQUIRED_CASE_EVIDENCE)
 
 _SOURCE = b"Synthetic retrospective NLHE hand for contract evaluation.\n"
-_NOW = datetime.now(UTC)
 
 
 class _EvaluationModel(BaseModel):
@@ -260,7 +259,7 @@ def _confirmation(
     candidate: ReviewIntakeCandidateV1,
     *,
     run_id: str,
-    confirmed_at: datetime = _NOW,
+    confirmed_at: datetime | None = None,
     expires_at: datetime | None = None,
 ) -> ReviewIntakeConfirmationV1:
     authority = ReviewConfirmationAuthorityV1(
@@ -276,7 +275,7 @@ def _confirmation(
         authority=authority,
         expected_source_sha256=candidate.projection.source.content_sha256,
         expected_candidate_sha256=candidate.candidate_sha256,
-        confirmed_at=confirmed_at,
+        confirmed_at=confirmed_at or datetime.now(UTC),
         expires_at=expires_at,
     )
 
@@ -292,10 +291,11 @@ def _admission(
     if prepared.candidate is None:
         raise AssertionError("evaluation fixture did not prepare")
     confirmation = _confirmation(prepared.candidate, run_id=run_id)
-    return admit_confirmed_review(
+    return _admit_confirmed_review_at(
         _SOURCE,
         prepared.candidate,
         confirmation,
+        admitted_at=confirmation.confirmed_at,
     )
 
 
@@ -447,10 +447,11 @@ def _hash_mismatch(_context: _EvaluationContext) -> tuple[str, ...]:
 def _source_mutation(_context: _EvaluationContext) -> tuple[str, ...]:
     admission = _admission(run_id="run-evaluation-source-mutation")
     try:
-        admit_confirmed_review(
+        _admit_confirmed_review_at(
             _SOURCE + b"mutation\n",
             admission.candidate,
             admission.confirmation,
+            admitted_at=admission.admitted_at,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING:
@@ -467,10 +468,11 @@ def _candidate_mutation(_context: _EvaluationContext) -> tuple[str, ...]:
     changed_projection = projection.model_copy(update={"candidate_input": changed_input})
     changed_candidate = admission.candidate.model_copy(update={"projection": changed_projection})
     try:
-        admit_confirmed_review(
+        _admit_confirmed_review_at(
             _SOURCE,
             changed_candidate,
             admission.confirmation,
+            admitted_at=admission.admitted_at,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING:
@@ -490,17 +492,19 @@ def _expired(_context: _EvaluationContext) -> tuple[str, ...]:
     prepared = _prepare(_candidate_payload(intake_id="intake-expired"))
     if prepared.candidate is None:
         return ()
+    reference_time = datetime.now(UTC)
     confirmation = _confirmation(
         prepared.candidate,
         run_id="run-evaluation-expired",
-        confirmed_at=_NOW - timedelta(seconds=2),
-        expires_at=_NOW - timedelta(seconds=1),
+        confirmed_at=reference_time - timedelta(seconds=2),
+        expires_at=reference_time - timedelta(seconds=1),
     )
     try:
-        admit_confirmed_review(
+        _admit_confirmed_review_at(
             _SOURCE,
             prepared.candidate,
             confirmation,
+            admitted_at=reference_time,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_EXPIRED:
@@ -546,10 +550,11 @@ def _unsupported_range(_context: _EvaluationContext) -> tuple[str, ...]:
         run_id="run-evaluation-unsupported-range",
     )
     try:
-        admit_confirmed_review(
+        _admit_confirmed_review_at(
             _SOURCE,
             prepared.candidate,
             confirmation,
+            admitted_at=confirmation.confirmed_at,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED:
@@ -663,25 +668,28 @@ def _boundaries(_context: _EvaluationContext) -> tuple[str, ...]:
     return tuple(evidence)
 
 
-_HANDLERS: dict[str, Callable[[_EvaluationContext], tuple[str, ...]]] = {
-    "confirmed-complete-hand": _complete,
-    "confirmed-hand-one-range": _one_range,
-    "missing-required-fact": _missing_fact,
-    "source-candidate-hash-mismatch": _hash_mismatch,
-    "source-mutation-after-confirmation": _source_mutation,
-    "candidate-mutation-after-confirmation": _candidate_mutation,
-    "missing-invalid-confirmation": _missing_confirmation,
-    "expired-confirmation": _expired,
-    "authority-scope-mismatch": _authority_scope,
-    "cross-run-replay": _cross_run,
-    "unsupported-range": _unsupported_range,
-    "multiple-ranges": _multiple_ranges,
-    "external-provider-request": _external_provider,
-    "solver-request": _solver,
-    "report-claim-overreach": _overreach,
-    "missing-tampered-storage-artifact": _storage_tamper,
-    "size-encoding-security-boundary": _boundaries,
-}
+_HANDLERS = MappingProxyType(
+    {
+        "confirmed-complete-hand": _complete,
+        "confirmed-hand-one-range": _one_range,
+        "missing-required-fact": _missing_fact,
+        "source-candidate-hash-mismatch": _hash_mismatch,
+        "source-mutation-after-confirmation": _source_mutation,
+        "candidate-mutation-after-confirmation": _candidate_mutation,
+        "missing-invalid-confirmation": _missing_confirmation,
+        "expired-confirmation": _expired,
+        "authority-scope-mismatch": _authority_scope,
+        "cross-run-replay": _cross_run,
+        "unsupported-range": _unsupported_range,
+        "multiple-ranges": _multiple_ranges,
+        "external-provider-request": _external_provider,
+        "solver-request": _solver,
+        "report-claim-overreach": _overreach,
+        "missing-tampered-storage-artifact": _storage_tamper,
+        "size-encoding-security-boundary": _boundaries,
+    }
+)
+_HANDLER_IDENTITIES = tuple(_HANDLERS.items())
 
 
 def run_confirmed_review_evaluation(
@@ -689,7 +697,19 @@ def run_confirmed_review_evaluation(
     *,
     work_root: Path,
 ) -> ConfirmedReviewEvaluationResultV1:
-    if tuple(_HANDLERS) != REQUIRED_CASE_IDS:
+    current_handlers = tuple(_HANDLERS.items())
+    if (
+        tuple(_HANDLERS) != REQUIRED_CASE_IDS
+        or len(current_handlers) != len(_HANDLER_IDENTITIES)
+        or any(
+            current_name != expected_name or current_handler is not expected_handler
+            for (current_name, current_handler), (expected_name, expected_handler) in zip(
+                current_handlers,
+                _HANDLER_IDENTITIES,
+                strict=True,
+            )
+        )
+    ):
         raise ValueError("confirmed-review evaluation handler inventory mismatch")
     work_root.mkdir(parents=True, exist_ok=True)
     context = _EvaluationContext(Path(mkdtemp(prefix="i-", dir=work_root)))

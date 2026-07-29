@@ -50,7 +50,11 @@ from poker_deliberation.schemas import (
     ToolResult,
     ToolStatus,
 )
-from poker_deliberation.security import redact_sensitive, screen_case
+from poker_deliberation.security import (
+    contains_real_time_assistance,
+    redact_sensitive,
+    screen_case,
+)
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_json_bytes,
@@ -410,6 +414,14 @@ def prepare_review_intake(
         projection=projection,
         candidate_sha256=candidate_sha256(projection),
     )
+    try:
+        _validate_combined_security_scope(source_bytes, candidate)
+    except ConfirmedReviewError as exc:
+        return ReviewIntakePreparationResultV1(
+            status="blocked",
+            source=source,
+            diagnostics=(_diagnostic(exc.code, exc.field_path),),
+        )
     if len(canonical_json_bytes(candidate)) > MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES:
         return ReviewIntakePreparationResultV1(
             status="blocked",
@@ -524,6 +536,22 @@ def _case_from_candidate(candidate: ReviewIntakeCandidateV1) -> CaseInput:
     )
 
 
+def _validate_combined_security_scope(
+    source_bytes: bytes,
+    candidate: ReviewIntakeCandidateV1,
+) -> CaseInput:
+    case = _case_from_candidate(candidate)
+    source_text = source_bytes.decode("utf-8", errors="strict")
+    if screen_case(case) or contains_real_time_assistance(
+        {
+            "source": source_text,
+            "candidate": case.model_dump(mode="json"),
+        }
+    ):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    return case
+
+
 def _admit_confirmed_review_at(
     source_bytes: bytes,
     candidate: ReviewIntakeCandidateV1,
@@ -580,9 +608,7 @@ def _admit_confirmed_review_at(
                 ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED,
                 "candidate.hand.known_ranges",
             )
-    case = _case_from_candidate(candidate)
-    if screen_case(case):
-        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    case = _validate_combined_security_scope(source_bytes, candidate)
     if not set(case.requested_tools).issubset(CONFIRMED_REVIEW_TOOL_ALLOWLIST):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "candidate.requested_tools")
     return ConfirmedReviewAdmission(
@@ -734,6 +760,9 @@ def _tool_result_semantic_projection(result: ToolResult) -> dict[str, Any]:
     )
 
 
+_CONFIRMED_REVIEW_TOOL_MAX_DURATION_SECONDS = 30.0
+
+
 def build_confirmed_review_provenance(
     admission: ConfirmedReviewAdmission,
     report: FinalReport,
@@ -778,11 +807,24 @@ def build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.claim_assessments",
         )
+    if (
+        report.generated_at.tzinfo is None
+        or report.generated_at.utcoffset() is None
+        or report.generated_at < admission.admitted_at
+        or report.generated_at > admission.confirmation.expires_at
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.generated_at",
+        )
     expected_tool_results = _expected_tool_results(admission)
     expected_tool_names = list(expected_tool_results)
     actual_tool_names = [result.tool_name for result in report.tool_results]
     if Counter(actual_tool_names) != Counter(expected_tool_names):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
+    result_ids = [result.result_id for result in report.tool_results]
+    if len(set(result_ids)) != len(result_ids):
+        _fail(ConfirmedReviewDiagnosticCode.REPORT_OVERREACH, "report.tool_results")
     tool_support = tuple(_tool_support(result) for result in report.tool_results)
     validator_results = [
         result for result in report.tool_results if result.tool_name == "hand_validator"
@@ -794,9 +836,16 @@ def build_confirmed_review_provenance(
     ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING, "report.hand_validator")
     for result in report.tool_results:
-        if result.status is not ToolStatus.SUCCESS or _tool_result_semantic_projection(
-            result
-        ) != _tool_result_semantic_projection(expected_tool_results[result.tool_name]):
+        if (
+            result.status is not ToolStatus.SUCCESS
+            or result.duration_seconds > _CONFIRMED_REVIEW_TOOL_MAX_DURATION_SECONDS
+            or result.created_at.tzinfo is None
+            or result.created_at.utcoffset() is None
+            or result.created_at < admission.admitted_at
+            or result.created_at > report.generated_at
+            or _tool_result_semantic_projection(result)
+            != _tool_result_semantic_projection(expected_tool_results[result.tool_name])
+        ):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
                 "report.tool_results",

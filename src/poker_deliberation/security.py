@@ -20,6 +20,7 @@ _SENSITIVE_KEY = re.compile(
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
+    re.compile(r"\b(?:authorization|cookie)\s*[:=]\s*[^\r\n]+", re.IGNORECASE),
     re.compile(
         r"\b(?:api[.\s_-]*key|password|secret|token|access[.\s_-]*token|"
         r"client[.\s_-]*secret)\s*[:=]\s*[^\s,;]+",
@@ -59,18 +60,25 @@ _REAL_TIME_ASSISTANCE = re.compile(
     re.IGNORECASE,
 )
 _LIVE_PLAY_CONTEXT = re.compile(
-    r"(?:(?:オンライン(?:ポーカー|卓|MTT|SNG)|"
-    r"(?:ポーカー|トーナメント|MTT|SNG|シット[- ]?アンド[- ]?ゴー)(?:卓)?)"
+    r"(?:(?:オンライン\s*(?:ポーカー|卓|MTT|SNG|PKO|キャッシュ(?:ゲーム)?|"
+    r"スピン\s*(?:&|アンド)\s*ゴー)|"
+    r"(?:ポーカー|トーナメント|MTT|SNG|PKO|キャッシュ(?:ゲーム)?|"
+    r"シット[- ]?アンド[- ]?ゴー|スピン\s*(?:&|アンド)\s*ゴー)(?:卓)?)"
     r"(?:に|で|を)?(?:参加して(?:おり|い)ます|出場して(?:おり|い)ます|"
     r"プレイして(?:おり|い)ます|打って(?:おり|い)ます|"
     r"着席して(?:おり|い)ます|参加中|出場中|プレイ中)|"
-    r"\bi(?:['\u2019]m| am)\s+(?:"
-    r"playing\s+(?:an?\s+)?(?:online\s+)?"
-    r"(?:poker|mtt|sng|sit[- ]and[- ]go)|"
+    r"\bi(?:['\u2019]m| am)\s+(?:currently\s+)?(?:"
+    r"playing\s+(?:in\s+)?(?:an?\s+)?(?:online\s+)?"
+    r"(?:(?:poker|cash)\s+(?:game|tournament|hand)|"
+    r"poker|game|tournament|mtt|sng|pko|sit[- ]and[- ]go|"
+    r"spin\s*(?:&|and)\s*go)|"
     r"in\s+(?:an?\s+)?(?:online\s+)?"
-    r"(?:(?:poker\s+)?(?:game|tournament|hand)|mtt|sng|sit[- ]and[- ]go)|"
-    r"at\s+(?:a|the)\s+(?:poker|tournament)\s+table|"
-    r"seated\s+at\s+(?:a|the)\s+(?:poker|tournament)\s+table))",
+    r"(?:(?:poker|cash)\s+(?:game|tournament|hand)|"
+    r"game|tournament|mtt|sng|pko|sit[- ]and[- ]go|"
+    r"spin\s*(?:&|and)\s*go)|"
+    r"at\s+(?:an?|the)?\s*(?:online\s+)?(?:poker|tournament|cash)\s+table|"
+    r"seated\s+at\s+(?:an?|the)?\s*(?:online\s+)?"
+    r"(?:poker|tournament|cash)\s+table))",
     re.IGNORECASE,
 )
 _DECISION_REQUEST = re.compile(
@@ -78,6 +86,18 @@ _DECISION_REQUEST = re.compile(
     r"\bshould\s+i\b|what\s+should\s+i\s+do|"
     r"コール|フォールド|チェック|ベット|レイズ|オールイン|"
     r"アクション|どちら|どうすべき|教えて|すべき)",
+    re.IGNORECASE,
+)
+_ARCHIVED_QUOTATION = re.compile(
+    r"(?:(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}|"
+    r"(?:アーカイブ|過去|履歴)(?:の)?(?:引用|記録|メモ)[^\uFF1A\r\n]{0,48})"
+    r"[:\uFF1A]\s*(?:[\"“][^\"”]*[\"”]|[「『][^」』]*[」』]))",
+    re.IGNORECASE,
+)
+_RETROSPECTIVE_LIVE_SUFFIX = re.compile(
+    r"\s+(?:(?:replay|recording|review|simulation|trainer|viewer)\b|"
+    r"hand[- ]?history(?:\s+viewer)?\b|from\s+yesterday\b|"
+    r"of\s+(?:an?|the)\s+completed\b)",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -181,17 +201,23 @@ _INJECTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def _security_probe(value: str) -> str:
-    return unicodedata.normalize("NFKC", value).translate(_SECURITY_DASH_TRANSLATION).casefold()
+    normalized = unicodedata.normalize("NFKC", value)
+    without_variation_selectors = "".join(
+        character
+        for character in normalized
+        if not (0xFE00 <= ord(character) <= 0xFE0F or 0xE0100 <= ord(character) <= 0xE01EF)
+    )
+    return without_variation_selectors.translate(_SECURITY_DASH_TRANSLATION).casefold()
 
 
 def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
-    if redacted == value and any(
-        pattern.search(_security_probe(value)) for pattern in _SECRET_PATTERNS
-    ):
-        return "[REDACTED]"
+    if redacted == value:
+        security_probe = _security_probe(value)
+        if any(pattern.search(security_probe) for pattern in _SECRET_PATTERNS):
+            return "[REDACTED]"
     return redacted
 
 
@@ -234,7 +260,7 @@ def redact_sensitive(value: Any, *, enabled: bool = True) -> Any:
 
 
 def _isolate_prompt_injection_text(value: str) -> str:
-    if any(pattern.search(value) for _, pattern in _INJECTION_RULES):
+    if any(pattern.search(_security_probe(value)) for _, pattern in _INJECTION_RULES):
         digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
         return f"[PROMPT_INJECTION_REMOVED:{digest}]"
     return value
@@ -275,14 +301,28 @@ def _walk_strings(value: Any) -> list[str]:
 
 
 def _contains_real_time_assistance(value: Any) -> bool:
+    live_context_present = False
+    decision_request_present = False
     for text in _walk_strings(value):
-        cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", text)
-        if _REAL_TIME_ASSISTANCE.search(cleaned) is not None or (
-            _LIVE_PLAY_CONTEXT.search(cleaned) is not None
-            and _DECISION_REQUEST.search(cleaned) is not None
-        ):
+        cleaned = _security_probe(text)
+        cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
+        cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
+        if _REAL_TIME_ASSISTANCE.search(cleaned) is not None:
             return True
-    return False
+        decision_request_present = (
+            decision_request_present or _DECISION_REQUEST.search(cleaned) is not None
+        )
+        live_context_present = live_context_present or any(
+            _RETROSPECTIVE_LIVE_SUFFIX.match(cleaned, match.end()) is None
+            for match in _LIVE_PLAY_CONTEXT.finditer(cleaned)
+        )
+    return live_context_present and decision_request_present
+
+
+def contains_real_time_assistance(value: Any) -> bool:
+    """Return whether strong live context and decision language coexist in one envelope."""
+
+    return _contains_real_time_assistance(value)
 
 
 def blocked_security_guidance(events: list[SecurityEvent]) -> list[str]:
@@ -308,6 +348,7 @@ def screen_case(case: CaseInput) -> list[SecurityEvent]:
 
     dumped = case.model_dump(mode="json")
     serialized = json.dumps(dumped, ensure_ascii=False, sort_keys=True, allow_nan=False)
+    security_probe = _security_probe(serialized)
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     events: list[SecurityEvent] = []
     seen: set[tuple[str, str]] = set()
@@ -334,9 +375,9 @@ def screen_case(case: CaseInput) -> list[SecurityEvent]:
     if _contains_real_time_assistance(dumped):
         add("real_time_assistance", "scope-real-time", blocked=True)
     for category, rule_id, pattern in _BLOCKING_RULES:
-        if pattern.search(serialized):
+        if pattern.search(security_probe):
             add(category, rule_id, blocked=True)
     for rule_id, pattern in _INJECTION_RULES:
-        if pattern.search(serialized):
+        if pattern.search(security_probe):
             add("prompt_injection", rule_id, blocked=False)
     return events

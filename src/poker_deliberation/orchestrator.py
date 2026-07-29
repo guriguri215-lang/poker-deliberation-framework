@@ -294,6 +294,15 @@ def _instance_callable_snapshot(instance: object) -> tuple[tuple[str, object], .
     )
 
 
+def _module_callable_snapshot() -> tuple[tuple[str, object], ...]:
+    return tuple(
+        sorted(
+            ((name, value) for name, value in globals().items() if callable(value)),
+            key=lambda item: item[0],
+        )
+    )
+
+
 def _callable_snapshot_is_exact(
     current: tuple[tuple[Any, ...], ...],
     expected: tuple[tuple[Any, ...], ...],
@@ -322,6 +331,7 @@ _CONFIRMED_PERSISTENCE_CLASS_CALLABLES = tuple(
         DurableBudgetStore,
         RunRevisionStore,
         BufferedRunStore,
+        LegacyRunAdapter,
     )
 )
 
@@ -612,6 +622,7 @@ class Orchestrator:
             self.durable_budget_store,
             self.durable_budget_store.revisions,
             self.store,
+            self.legacy_adapter,
         )
         self._confirmed_review_persistence_types = tuple(
             type(instance) for instance in self._confirmed_review_persistence_objects
@@ -619,6 +630,32 @@ class Orchestrator:
         self._confirmed_review_persistence_instance_callables = tuple(
             _instance_callable_snapshot(instance)
             for instance in self._confirmed_review_persistence_objects
+        )
+        self._confirmed_review_durable_budget_policy = self.durable_budget.policy
+        self._confirmed_review_persistence_configuration = (
+            self.legacy_runs_root,
+            self.revision_runs_root,
+            self.durable_budget_runs_root,
+            self.legacy_adapter.root,
+            self.legacy_adapter.max_artifact_bytes,
+            self.legacy_adapter.max_run_bytes,
+            self.product_store.foundation.revision_root,
+            self.product_store.foundation.legacy_runs_root,
+            self.product_store.foundation.max_artifact_bytes,
+            self.product_store.foundation.max_run_bytes,
+            self.product_store.foundation.fault_injector,
+            self.product_store.foundation.producer_id,
+            self.product_store.foundation.producer_version,
+            self.durable_budget_store.revisions.revision_root,
+            self.durable_budget_store.revisions.legacy_runs_root,
+            self.durable_budget_store.revisions.max_artifact_bytes,
+            self.durable_budget_store.revisions.max_run_bytes,
+            self.durable_budget_store.revisions.fault_injector,
+            self.durable_budget_store.revisions.producer_id,
+            self.durable_budget_store.revisions.producer_version,
+            self.store.root,
+            self.store.max_artifact_bytes,
+            self.store.max_run_bytes,
         )
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
@@ -1271,9 +1308,14 @@ class Orchestrator:
             self.durable_budget_store,
             self.durable_budget_store.revisions,
             self.store,
+            self.legacy_adapter,
         )
         if (
-            LocalProvider.availability is not _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY
+            not _callable_snapshot_is_exact(
+                _module_callable_snapshot(),
+                _CONFIRMED_ORCHESTRATOR_MODULE_CALLABLES,
+            )
+            or LocalProvider.availability is not _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY
             or LocalProvider.analyze is not _CONFIRMED_LOCAL_PROVIDER_ANALYZE
             or AnalysisExecutor.run is not _CONFIRMED_ANALYSIS_EXECUTOR_RUN
             or ToolResearchExecutor.run is not _CONFIRMED_TOOL_EXECUTOR_RUN
@@ -1351,6 +1393,33 @@ class Orchestrator:
                 )
                 for cls, expected in _CONFIRMED_PERSISTENCE_CLASS_CALLABLES
             )
+            or self.durable_budget.policy is not self._confirmed_review_durable_budget_policy
+            or (
+                self.legacy_runs_root,
+                self.revision_runs_root,
+                self.durable_budget_runs_root,
+                self.legacy_adapter.root,
+                self.legacy_adapter.max_artifact_bytes,
+                self.legacy_adapter.max_run_bytes,
+                self.product_store.foundation.revision_root,
+                self.product_store.foundation.legacy_runs_root,
+                self.product_store.foundation.max_artifact_bytes,
+                self.product_store.foundation.max_run_bytes,
+                self.product_store.foundation.fault_injector,
+                self.product_store.foundation.producer_id,
+                self.product_store.foundation.producer_version,
+                self.durable_budget_store.revisions.revision_root,
+                self.durable_budget_store.revisions.legacy_runs_root,
+                self.durable_budget_store.revisions.max_artifact_bytes,
+                self.durable_budget_store.revisions.max_run_bytes,
+                self.durable_budget_store.revisions.fault_injector,
+                self.durable_budget_store.revisions.producer_id,
+                self.durable_budget_store.revisions.producer_version,
+                self.store.root,
+                self.store.max_artifact_bytes,
+                self.store.max_run_bytes,
+            )
+            != self._confirmed_review_persistence_configuration
             or type(self.product_store) is not TerminalRunStore
             or self.product_store is not self._confirmed_review_product_store
             or self.product_store.foundation is not self._confirmed_review_product_foundation
@@ -3898,3 +3967,6 @@ class Orchestrator:
                 stage="report_path",
             )
         return self.product_store.report_path(read, format_name)
+
+
+_CONFIRMED_ORCHESTRATOR_MODULE_CALLABLES = _module_callable_snapshot()

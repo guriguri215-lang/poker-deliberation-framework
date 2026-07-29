@@ -94,6 +94,10 @@ Serialization = Literal[
 ]
 OriginKind = Literal[
     "case_input",
+    "confirmed_review_source",
+    "confirmed_review_candidate",
+    "confirmed_review_confirmation",
+    "confirmed_review_provenance",
     "normalization_output",
     "assumption_ledger",
     "evidence_ledger",
@@ -343,7 +347,12 @@ class ProvenanceHeadV1(_RevisionModel):
 class PayloadInventoryEntryV1(_RevisionModel):
     logical_name: str = Field(min_length=1, max_length=256)
     revision_relative_path: str = Field(min_length=1, max_length=264)
-    media_type: Literal["application/json", "application/x-ndjson", "text/markdown"]
+    media_type: Literal[
+        "application/json",
+        "application/x-ndjson",
+        "text/markdown",
+        "text/plain",
+    ]
     artifact_schema_version: str = Field(
         min_length=1,
         max_length=96,
@@ -363,7 +372,12 @@ class PayloadInventoryEntryV1(_RevisionModel):
 
 class RevisionArtifactV1(_RevisionModel):
     logical_name: str = Field(min_length=1, max_length=256)
-    media_type: Literal["application/json", "application/x-ndjson", "text/markdown"]
+    media_type: Literal[
+        "application/json",
+        "application/x-ndjson",
+        "text/markdown",
+        "text/plain",
+    ]
     artifact_schema_version: str = Field(
         min_length=1,
         max_length=96,

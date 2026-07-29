@@ -32,6 +32,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `versioned_nlhe_range_grammar` | **implemented** | provenance、game condition、blocker、整数millionth weightを検証し、1 opponent rangeをcanonical comboへ変換するbounded grammar v1。 |
 | `profiled_nlhe_side_pot_ledger` | **implemented** | `generic_nlhe_cash_no_rake_v1`に限り、整数単位のcontribution、uncalled return、side pot、eligibilityを独立oracle付きで計算する。 |
 | `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
+| `confirmed_natural_language_review_intake` | **implemented** | 呼出側が作成した完全な候補を利用者がsource/candidate hashで明示確認した場合に限り、固定LocalProvider・限定tool・検証済みterminal reportへ接続する。自然言語の意味抽出やsite parserを実装したという意味ではない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `runtime_conformance_contract` | **implemented** | P2-025Aの役割inventory、assignment/context/resultのversioned contract、pure比較、verified Python product projectionを提供する。実行bridgeではない。 |

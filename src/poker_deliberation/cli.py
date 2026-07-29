@@ -17,7 +17,9 @@ import pydantic
 
 from poker_deliberation import __version__
 from poker_deliberation.agents import ROLE_CATALOG
-from poker_deliberation.approval_canonical import parse_canonical_model
+from poker_deliberation.approval_canonical import (
+    parse_canonical_model as parse_approval_model,
+)
 from poker_deliberation.approval_models import (
     ApprovalDecisionBatch,
     ApprovalDecisionItemV2,
@@ -31,6 +33,19 @@ from poker_deliberation.approvals import (
 )
 from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.config import AppConfig
+from poker_deliberation.confirmed_review import (
+    admit_confirmed_review,
+    create_review_confirmation,
+    prepare_review_intake,
+    review_confirmed_intake,
+)
+from poker_deliberation.confirmed_review_models import (
+    MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
+    MAX_CONFIRMED_REVIEW_SOURCE_BYTES,
+    ReviewConfirmationAuthorityV1,
+    ReviewIntakeConfirmationV1,
+    ReviewIntakePreparationResultV1,
+)
 from poker_deliberation.normalization import (
     MAX_SOURCE_BYTES,
     NormalizationDiagnosticCode,
@@ -43,6 +58,10 @@ from poker_deliberation.reporting import render_markdown, render_summary
 from poker_deliberation.roadmap import roadmap_summary
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
 from poker_deliberation.security import redact_sensitive
+from poker_deliberation.storage.revision_canonical import (
+    canonical_json_bytes,
+    parse_canonical_model,
+)
 from poker_deliberation.tools import default_registry
 
 _DEFAULT_RESUME_REASON = "human decision recorded by CLI"
@@ -66,6 +85,45 @@ def _read_json(path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("JSON input must be an object")
     return value
+
+
+def _read_limited_json(path: str, limit: int) -> dict[str, Any]:
+    data = _read_limited_bytes(path, limit)
+
+    def reject_non_finite_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON number is not allowed: {value}")
+
+    value = json.loads(
+        data.decode("utf-8", errors="strict"),
+        parse_constant=reject_non_finite_constant,
+    )
+    if not isinstance(value, dict):
+        raise ValueError("JSON input must be an object")
+    return value
+
+
+def _read_limited_bytes(path: str, limit: int) -> bytes:
+    source = Path(path)
+    if source.stat().st_size > limit:
+        raise ValueError("CRI_E_SOURCE_SIZE")
+    with source.open("rb") as stream:
+        value = stream.read(limit + 1)
+    if len(value) > limit:
+        raise ValueError("CRI_E_SOURCE_SIZE")
+    return value
+
+
+def _write_canonical_model(path: str, value: Any) -> None:
+    Path(path).write_bytes(canonical_json_bytes(value))
+
+
+def _parse_cli_datetime(value: str | None) -> datetime | None:
+    if value is None:
+        return None
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("CRI_E_CONFIRMATION_BINDING")
+    return parsed
 
 
 def _emit(value: Any, format_name: str) -> None:
@@ -193,6 +251,52 @@ def build_parser() -> argparse.ArgumentParser:
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--format", choices=["json", "markdown"], default="json")
 
+    prepare_intake = subparsers.add_parser("prepare-review-intake")
+    prepare_intake.add_argument("--source", required=True)
+    prepare_intake.add_argument("--candidate", required=True)
+    prepare_intake.add_argument("--output", required=True)
+    prepare_intake.add_argument("--source-id", required=True)
+    prepare_intake.add_argument(
+        "--source-kind",
+        choices=["user_supplied", "repository_fixture"],
+        default="user_supplied",
+    )
+    prepare_intake.add_argument(
+        "--license-classification",
+        choices=["user_supplied_private_analysis", "repository_owned_mit"],
+        default="user_supplied_private_analysis",
+    )
+    prepare_intake.add_argument(
+        "--usage-classification",
+        choices=["local_analysis_only", "redistribution_allowed"],
+        default="local_analysis_only",
+    )
+    prepare_intake.add_argument(
+        "--classification",
+        choices=["internal", "public"],
+        default="internal",
+    )
+    prepare_intake.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    confirm_intake = subparsers.add_parser("confirm-review-intake")
+    confirm_intake.add_argument("--preparation", required=True)
+    confirm_intake.add_argument("--output", required=True)
+    confirm_intake.add_argument("--run-id", required=True)
+    confirm_intake.add_argument("--authority-id", required=True)
+    confirm_intake.add_argument("--confirmation-id", required=True)
+    confirm_intake.add_argument("--idempotency-key", required=True)
+    confirm_intake.add_argument("--expected-source-sha256", required=True)
+    confirm_intake.add_argument("--expected-candidate-sha256", required=True)
+    confirm_intake.add_argument("--confirmed-at")
+    confirm_intake.add_argument("--expires-at")
+    confirm_intake.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    review_intake = subparsers.add_parser("review-confirmed-intake")
+    review_intake.add_argument("--source", required=True)
+    review_intake.add_argument("--preparation", required=True)
+    review_intake.add_argument("--confirmation", required=True)
+    review_intake.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
+
     for command in ("review-hand", "review-strategy"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--file", required=True)
@@ -250,6 +354,93 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "doctor":
             _emit(doctor(), args.format)
             return 0
+        if args.command == "prepare-review-intake":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_CONFIRMED_REVIEW_SOURCE_BYTES,
+            )
+            preparation = prepare_review_intake(
+                source_bytes,
+                _read_limited_json(
+                    args.candidate,
+                    MAX_CONFIRMED_REVIEW_SOURCE_BYTES,
+                ),
+                source_id=args.source_id,
+                source_kind=args.source_kind,
+                license_classification=args.license_classification,
+                usage_classification=args.usage_classification,
+                classification=args.classification,
+            )
+            _write_canonical_model(args.output, preparation)
+            _emit(preparation, args.format)
+            return 0 if preparation.status == "ready" else 2
+        if args.command == "confirm-review-intake":
+            preparation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.preparation,
+                    MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
+                ),
+                ReviewIntakePreparationResultV1,
+            )
+            if preparation.status != "ready" or preparation.candidate is None:
+                raise ValueError("CRI_E_CONFIRMATION_MISSING")
+            authority = ReviewConfirmationAuthorityV1(
+                authority_id=args.authority_id,
+                authority_kind="local_user",
+                authentication="self_asserted",
+            )
+            confirmation = create_review_confirmation(
+                preparation.candidate,
+                run_id=args.run_id,
+                confirmation_id=args.confirmation_id,
+                idempotency_key=args.idempotency_key,
+                authority=authority,
+                expected_source_sha256=args.expected_source_sha256,
+                expected_candidate_sha256=args.expected_candidate_sha256,
+                confirmed_at=_parse_cli_datetime(args.confirmed_at),
+                expires_at=_parse_cli_datetime(args.expires_at),
+            )
+            _write_canonical_model(args.output, confirmation)
+            _emit(confirmation, args.format)
+            return 0
+        if args.command == "review-confirmed-intake":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_CONFIRMED_REVIEW_SOURCE_BYTES,
+            )
+            preparation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.preparation,
+                    MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
+                ),
+                ReviewIntakePreparationResultV1,
+            )
+            if preparation.status != "ready" or preparation.candidate is None:
+                raise ValueError("CRI_E_CONFIRMATION_MISSING")
+            confirmation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.confirmation,
+                    MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
+                ),
+                ReviewIntakeConfirmationV1,
+            )
+            admission = admit_confirmed_review(
+                source_bytes,
+                preparation.candidate,
+                confirmation,
+            )
+            report = review_confirmed_intake(
+                admission,
+                config=AppConfig.from_env(),
+            )
+            if args.format == "json":
+                rendered_confirmed_report: object = report
+            elif args.format == "summary":
+                rendered_confirmed_report = render_summary(report)
+            else:
+                rendered_confirmed_report = render_markdown(report)
+            _emit(rendered_confirmed_report, args.format)
+            return 2 if report.run_status == "failed_with_limitations" else 0
         if args.command == "calculate":
             if args.analysis_scope != "retrospective":
                 print("error: calculate is retrospective-only", file=sys.stderr)
@@ -299,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if conflicting:
                 parser.error("--reissue-file cannot be combined with decision construction options")
-            reissue_batch = parse_canonical_model(
+            reissue_batch = parse_approval_model(
                 Path(args.reissue_file).read_bytes(),
                 ApprovalReissueBatchV2,
             )
@@ -320,7 +511,7 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error(
                     "--decision-file cannot be combined with decision construction options"
                 )
-            decision_batch = parse_canonical_model(
+            decision_batch = parse_approval_model(
                 Path(args.decision_file).read_bytes(),
                 ApprovalDecisionBatch,
             )

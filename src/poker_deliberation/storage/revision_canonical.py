@@ -21,6 +21,15 @@ from poker_deliberation.budgets.durable_models import (
     DURABLE_BUDGET_PRODUCER_VERSION,
     DurableBudgetStateV1,
 )
+from poker_deliberation.confirmed_review_models import (
+    CANDIDATE_ARTIFACT_SCHEMA,
+    CONFIRMATION_ARTIFACT_SCHEMA,
+    PROVENANCE_ARTIFACT_SCHEMA,
+    SOURCE_ARTIFACT_SCHEMA,
+    ConfirmedReviewProvenanceV1,
+    ReviewIntakeCandidateV1,
+    ReviewIntakeConfirmationV1,
+)
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     DEFAULT_LOCAL_DATA_POLICY,
@@ -116,6 +125,24 @@ _WINDOWS_RESERVED = frozenset(
 
 _ArtifactTableValue = tuple[str, str, str, str]
 _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
+    "confirmed_review_source.txt": (
+        "text/plain",
+        TEXT_SERIALIZATION,
+        SOURCE_ARTIFACT_SCHEMA,
+        "confirmed_review_source",
+    ),
+    "confirmed_review_candidate.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        CANDIDATE_ARTIFACT_SCHEMA,
+        "confirmed_review_candidate",
+    ),
+    "confirmed_review_confirmation.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        CONFIRMATION_ARTIFACT_SCHEMA,
+        "confirmed_review_confirmation",
+    ),
     "input.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -188,6 +215,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         "poker-final-report-markdown-artifact-v1",
         "final_report_markdown",
     ),
+    "confirmed_review_provenance.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        PROVENANCE_ARTIFACT_SCHEMA,
+        "confirmed_review_provenance",
+    ),
     "budget_state.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -197,6 +230,9 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
 }
 
 _PAYLOAD_ORDER_PREFIX = (
+    "confirmed_review_source.txt",
+    "confirmed_review_candidate.json",
+    "confirmed_review_confirmation.json",
     "input.json",
     "normalization.json",
     "normalized_case.json",
@@ -516,19 +552,21 @@ def payload_order_key(logical_name: str) -> tuple[int, bytes]:
     if logical_name in _PAYLOAD_ORDER_PREFIX:
         return (_PAYLOAD_ORDER_PREFIX.index(logical_name), b"")
     if logical_name.endswith(".input.json") and logical_name.startswith("tool_results/"):
-        return (8, logical_name.encode("utf-8"))
+        return (12, logical_name.encode("utf-8"))
     if logical_name.startswith("tool_results/"):
-        return (9, logical_name.encode("utf-8"))
+        return (13, logical_name.encode("utf-8"))
     if logical_name.startswith("agent_reports/"):
-        return (10, logical_name.encode("utf-8"))
+        return (14, logical_name.encode("utf-8"))
     if logical_name == "disputes.json":
-        return (11, b"")
+        return (15, b"")
     if logical_name == "final_report.json":
-        return (12, b"")
+        return (16, b"")
     if logical_name == "final_report.md":
-        return (13, b"")
+        return (17, b"")
+    if logical_name == "confirmed_review_provenance.json":
+        return (18, b"")
     if logical_name == "budget_state.json":
-        return (14, b"")
+        return (19, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -727,6 +765,15 @@ def _local_data_binding(artifact: RevisionArtifactV1) -> LocalDataBindingV1:
 def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
     logical_name = artifact.logical_name
     data = artifact.exact_bytes
+    if logical_name == "confirmed_review_source.txt":
+        return validate_canonical_text(data)
+    if logical_name == "confirmed_review_candidate.json":
+        return parse_canonical_model(data, ReviewIntakeCandidateV1)
+    if logical_name == "confirmed_review_confirmation.json":
+        confirmation = parse_canonical_model(data, ReviewIntakeConfirmationV1)
+        if confirmation.run_id != run_id:
+            raise CanonicalStorageError("confirmed-review confirmation run ID mismatch")
+        return confirmation
     if logical_name in {"input.json", "normalized_case.json"}:
         return parse_canonical_model(data, CaseInput)
     if logical_name == "normalization.json":
@@ -769,6 +816,11 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         return final_report
     if logical_name == "final_report.md":
         return validate_canonical_text(data)
+    if logical_name == "confirmed_review_provenance.json":
+        provenance = parse_canonical_model(data, ConfirmedReviewProvenanceV1)
+        if provenance.run_id != run_id:
+            raise CanonicalStorageError("confirmed-review provenance run ID mismatch")
+        return provenance
     if logical_name == "budget_state.json":
         state = parse_canonical_model(data, DurableBudgetStateV1)
         if state.run_id != run_id:

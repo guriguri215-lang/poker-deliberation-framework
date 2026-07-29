@@ -69,6 +69,17 @@ from poker_deliberation.budgets.durable_store import (
     initialize_durable_budget_root,
 )
 from poker_deliberation.config import AppConfig, migrate_budget_config
+from poker_deliberation.confirmed_review import (
+    ConfirmedReviewAdmission,
+    ConfirmedReviewError,
+    admit_confirmed_review,
+    build_confirmed_review_provenance,
+)
+from poker_deliberation.confirmed_review_models import (
+    MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
+    MAX_CONFIRMED_REVIEW_RUN_BYTES,
+    ConfirmedReviewDiagnosticCode,
+)
 from poker_deliberation.context_lifecycle import (
     new_attempt_id,
     new_context_id,
@@ -317,6 +328,7 @@ class Orchestrator:
             if registry is not None
             else (tool_research_executor.registry if tool_research_executor is not None else None)
         )
+        self._registry_was_injected = injected_registry is not None
         injected_clocks = [
             clock
             for clock in (
@@ -461,6 +473,11 @@ class Orchestrator:
         self._product_storage_initialized = False
         self._publication_plans: dict[str, tuple[int, str]] = {}
         self._approval_v2_payloads: dict[str, dict[str, bytes]] = {}
+        self._confirmed_review_admissions: dict[str, ConfirmedReviewAdmission] = {}
+        self._confirmed_review_registry_sha256 = canonical_domain_sha256(
+            "poker-confirmed-review-registry-v1",
+            self.registry.describe(),
+        )
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
         machine = self._run_machines.get(run_id)
@@ -1045,6 +1062,11 @@ class Orchestrator:
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
+        if "confirmed_review" in case.metadata:
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.CONFIRMATION_MISSING,
+                "case.metadata.confirmed_review",
+            )
         case, normalization = extract_normalization_result(case)
         actual_run_id = run_id or new_run_id()
         try:
@@ -1078,6 +1100,126 @@ class Orchestrator:
                 confidence=ConfidenceGrade.D,
             )
 
+    def run_confirmed_review(
+        self,
+        admission: ConfirmedReviewAdmission,
+    ) -> FinalReport:
+        """Execute a pre-admitted review with exact local runtime dependencies."""
+
+        verified_admission = admit_confirmed_review(
+            admission.source_bytes,
+            admission.candidate,
+            admission.confirmation,
+            admitted_at=admission.admitted_at,
+        )
+        if verified_admission != admission:
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING,
+                "admission",
+            )
+        admission = verified_admission
+        run_id = admission.confirmation.run_id
+        if (
+            type(self.provider) is not LocalProvider
+            or self.provider.availability().provider != "local"
+            or self.provider.availability().version != "1.0.0"
+            or self._registry_was_injected
+            or type(self.registry) is not ToolRegistry
+            or canonical_domain_sha256(
+                "poker-confirmed-review-registry-v1",
+                self.registry.describe(),
+            )
+            != self._confirmed_review_registry_sha256
+        ):
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        if (
+            self.budget_policy.max_artifact_bytes > MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES
+            or self.budget_policy.max_run_bytes > MAX_CONFIRMED_REVIEW_RUN_BYTES
+        ):
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.RUNTIME_BUDGET,
+                "runtime.budget",
+            )
+        namespace = self._namespace_kind(run_id)
+        if namespace is not None:
+            if namespace != "product":
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
+                    "confirmation.run_id",
+                )
+            current = self.product_store.read_current(run_id)
+            expected = {
+                "confirmed_review_source.txt": admission.source_bytes,
+                "confirmed_review_candidate.json": canonical_storage_json_bytes(
+                    admission.candidate
+                ),
+                "confirmed_review_confirmation.json": canonical_storage_json_bytes(
+                    admission.confirmation
+                ),
+            }
+            try:
+                exact_replay = all(
+                    current.payload_bytes(name) == payload for name, payload in expected.items()
+                )
+            except KeyError:
+                exact_replay = False
+            if not exact_replay:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
+                    "confirmation.idempotency_key",
+                )
+            return self.load_report(run_id)
+        hand_validation = self.registry.execute(
+            "hand_validator",
+            admission.case.hand.model_dump(mode="json") if admission.case.hand is not None else {},
+            contract_version=self.tool_contract_versions.get("hand_validator"),
+        )
+        if (
+            hand_validation.status is not ToolStatus.SUCCESS
+            or hand_validation.output.get("valid") is not True
+        ):
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING,
+                "candidate.hand",
+            )
+        if "hand_pot_ledger" in admission.case.requested_tools:
+            raw_tool_inputs = admission.case.metadata.get("tool_inputs", {})
+            ledger_payload = (
+                raw_tool_inputs.get("hand_pot_ledger", {})
+                if isinstance(raw_tool_inputs, dict)
+                else {}
+            )
+            if not isinstance(ledger_payload, dict) or admission.case.hand is None:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                    "candidate.ledger_profile",
+                )
+            ledger_validation = self.registry.execute(
+                "hand_pot_ledger",
+                {
+                    **ledger_payload,
+                    "hand": admission.case.hand.model_dump(mode="json"),
+                },
+                contract_version=self.tool_contract_versions.get("hand_pot_ledger"),
+            )
+            if ledger_validation.status is not ToolStatus.SUCCESS:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                    "candidate.ledger_profile",
+                )
+        self._confirmed_review_admissions[run_id] = admission
+        try:
+            return self._run(
+                CaseInput.model_validate(admission.case.model_dump(mode="python")),
+                run_id,
+                normalization=None,
+            )
+        finally:
+            self._confirmed_review_admissions.pop(run_id, None)
+
     def _run(
         self,
         case: CaseInput,
@@ -1109,6 +1251,28 @@ class Orchestrator:
                 read_status=status,
             )
         self.store.create_run(actual_run_id)
+        confirmed_admission = self._confirmed_review_admissions.get(actual_run_id)
+        if confirmed_admission is not None:
+            if confirmed_admission.confirmation.run_id != actual_run_id:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING,
+                    "confirmation.run_id",
+                )
+            self.store.write_text(
+                actual_run_id,
+                "confirmed_review_source.txt",
+                confirmed_admission.source_bytes.decode("utf-8", errors="strict"),
+            )
+            self.store.write_json(
+                actual_run_id,
+                "confirmed_review_candidate.json",
+                confirmed_admission.candidate,
+            )
+            self.store.write_json(
+                actual_run_id,
+                "confirmed_review_confirmation.json",
+                confirmed_admission.confirmation,
+            )
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         self._run_machines[actual_run_id] = machine
         approvals = ApprovalLedger()
@@ -2379,6 +2543,17 @@ class Orchestrator:
         if pause_before_return:
             machine.pause_active_runtime()
             self.store.write_json(run_id, "state.json", machine.snapshot())
+        confirmed_admission = self._confirmed_review_admissions.get(run_id)
+        if confirmed_admission is not None:
+            provenance = build_confirmed_review_provenance(
+                confirmed_admission,
+                report,
+            )
+            self.store.write_json(
+                run_id,
+                "confirmed_review_provenance.json",
+                provenance,
+            )
         self._publication_plans[run_id] = (planned_revision, transaction_id)
         try:
             verified = self._publish_buffer(run_id, report)

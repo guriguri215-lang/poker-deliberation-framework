@@ -24,6 +24,11 @@ from poker_deliberation.approvals import (
     project_v1_approvals,
     read_approval_state_v2,
 )
+from poker_deliberation.confirmed_review_models import (
+    ConfirmedReviewProvenanceV1,
+    ReviewIntakeCandidateV1,
+    ReviewIntakeConfirmationV1,
+)
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     ClassificationEvidence,
@@ -56,6 +61,7 @@ from poker_deliberation.storage.revision_canonical import (
     JSONL_SERIALIZATION,
     TEXT_SERIALIZATION,
     CanonicalStorageError,
+    artifact_table_entry,
     canonical_domain_sha256,
     canonical_json_bytes,
     canonicalize_bindings,
@@ -99,6 +105,46 @@ APPROVAL_V2_CORE_ARTIFACTS = frozenset(
 )
 APPROVAL_REISSUE_ARTIFACT = "approval_reissues_v2.jsonl"
 APPROVAL_V2_ARTIFACTS = APPROVAL_V2_CORE_ARTIFACTS | {APPROVAL_REISSUE_ARTIFACT}
+_CONFIRMED_REVIEW_ARTIFACTS = frozenset(
+    {
+        "confirmed_review_source.txt",
+        "confirmed_review_candidate.json",
+        "confirmed_review_confirmation.json",
+        "confirmed_review_provenance.json",
+    }
+)
+_TERMINAL_ONLY_ARTIFACT_TABLE: dict[str, tuple[str, str, str]] = {
+    "state.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-workflow-state-artifact-v1",
+    ),
+    "lifecycle_audit.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-lifecycle-audit-artifact-v1",
+    ),
+    "approval_ledger_v2.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-approval-ledger-artifact-v2",
+    ),
+    "approval_decisions_v2.jsonl": (
+        "application/x-ndjson",
+        JSONL_SERIALIZATION,
+        "poker-approval-decision-log-artifact-v2",
+    ),
+    "approval_audit_v2.jsonl": (
+        "application/x-ndjson",
+        JSONL_SERIALIZATION,
+        "poker-approval-domain-audit-log-artifact-v2",
+    ),
+    APPROVAL_REISSUE_ARTIFACT: (
+        "application/x-ndjson",
+        JSONL_SERIALIZATION,
+        "poker-approval-reissue-log-artifact-v2",
+    ),
+}
 
 _SUPPORTED_VERSION = TERMINAL_SCHEMA_VERSION
 _VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}$")
@@ -381,6 +427,45 @@ def product_payload_commitments(
         )
     except ValueError as exc:
         raise CanonicalStorageError("versioned range tool chain replay failed") from exc
+    confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS
+    if confirmed_names:
+        if confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS:
+            raise CanonicalStorageError(
+                "confirmed-review publication lacks its complete artifact set"
+            )
+        source_bytes = payloads["confirmed_review_source.txt"]
+        candidate = _parse_json_model(
+            payloads["confirmed_review_candidate.json"],
+            ReviewIntakeCandidateV1,
+        )
+        confirmation = _parse_json_model(
+            payloads["confirmed_review_confirmation.json"],
+            ReviewIntakeConfirmationV1,
+        )
+        provenance = _parse_json_model(
+            payloads["confirmed_review_provenance.json"],
+            ConfirmedReviewProvenanceV1,
+        )
+        if confirmation.run_id != run_id or provenance.run_id != run_id:
+            raise CanonicalStorageError("confirmed-review run ID correlation mismatch")
+        try:
+            # Delayed to preserve the storage package's import direction:
+            # confirmed_review uses canonical storage helpers, while terminal
+            # replay is the only path that needs the higher-level verifier.
+            from poker_deliberation.confirmed_review import (
+                verify_confirmed_review_provenance,
+            )
+
+            verify_confirmed_review_provenance(
+                source_bytes=source_bytes,
+                candidate=candidate,
+                confirmation=confirmation,
+                case=input_case,
+                report=report,
+                provenance=provenance,
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError("confirmed-review source-to-report replay failed") from exc
 
     context_bindings = [
         {
@@ -459,6 +544,38 @@ def required_inventory_sha256(
     return canonical_domain_sha256(REQUIRED_INVENTORY_DOMAIN, required)
 
 
+def _validate_inventory_contract(entry: PayloadInventoryEntryV1) -> None:
+    logical_name = entry.logical_name
+    terminal_only = _TERMINAL_ONLY_ARTIFACT_TABLE.get(logical_name)
+    if terminal_only is None:
+        try:
+            media_type, serialization, schema, _origin = artifact_table_entry(
+                logical_name,
+                (entry.artifact_schema_version if logical_name == "final_report.json" else None),
+            )
+            expected_tuple = (media_type, serialization, schema)
+        except CanonicalStorageError as exc:
+            raise CanonicalStorageError(
+                "terminal inventory logical artifact is not admitted"
+            ) from exc
+    else:
+        expected_tuple = terminal_only
+    actual_tuple = (
+        entry.media_type,
+        entry.serialization,
+        entry.artifact_schema_version,
+    )
+    legacy_lifecycle_tuple = (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-lifecycle-audit-list-artifact-v1",
+    )
+    if actual_tuple != expected_tuple and not (
+        logical_name == "lifecycle_audit.json" and actual_tuple == legacy_lifecycle_tuple
+    ):
+        raise CanonicalStorageError("terminal inventory media/schema/serialization mismatch")
+
+
 def verify_payload_inventory(
     inventory: Sequence[PayloadInventoryEntryV1],
     payloads: Mapping[str, bytes],
@@ -470,6 +587,8 @@ def verify_payload_inventory(
     if set(payloads) != expected:
         raise CanonicalStorageError("terminal payload inventory membership mismatch")
     for entry in entries:
+        if not allow_opaque:
+            _validate_inventory_contract(entry)
         data = payloads[entry.logical_name]
         if (
             not isinstance(data, bytes)
@@ -528,6 +647,9 @@ def _parse_normalization_result(data: bytes) -> NormalizationResultV1:
 
 def _validate_json_value(logical_name: str, data: bytes) -> None:
     single_models: dict[str, type[BaseModel]] = {
+        "confirmed_review_candidate.json": ReviewIntakeCandidateV1,
+        "confirmed_review_confirmation.json": ReviewIntakeConfirmationV1,
+        "confirmed_review_provenance.json": ConfirmedReviewProvenanceV1,
         "input.json": CaseInput,
         "normalized_case.json": CaseInput,
         "final_report.json": FinalReport,

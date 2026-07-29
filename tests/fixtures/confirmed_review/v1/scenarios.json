@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0.0",
+  "family_id": "poker-confirmed-review-evaluation-json-v1",
+  "fixture_id": "confirmed-review-contract-cases-v1",
+  "source_kind": "repository_fixture",
+  "license_classification": "repository_owned_mit",
+  "usage_classification": "redistribution_allowed",
+  "content_classification": "public",
+  "scoring": "exact-evidence-set-v1",
+  "threshold": "1.0",
+  "cases": [
+    {
+      "case_id": "confirmed-complete-hand",
+      "expected_evidence": ["complete-local-terminal"]
+    },
+    {
+      "case_id": "confirmed-hand-one-range",
+      "expected_evidence": ["range-validate-then-combos"]
+    },
+    {
+      "case_id": "missing-required-fact",
+      "expected_evidence": ["missing-fact-rejected"]
+    },
+    {
+      "case_id": "source-candidate-hash-mismatch",
+      "expected_evidence": ["hash-mismatch-rejected"]
+    },
+    {
+      "case_id": "source-mutation-after-confirmation",
+      "expected_evidence": ["source-mutation-rejected"]
+    },
+    {
+      "case_id": "candidate-mutation-after-confirmation",
+      "expected_evidence": ["candidate-mutation-rejected"]
+    },
+    {
+      "case_id": "missing-invalid-confirmation",
+      "expected_evidence": ["missing-confirmation-rejected"]
+    },
+    {
+      "case_id": "expired-confirmation",
+      "expected_evidence": ["expired-confirmation-rejected"]
+    },
+    {
+      "case_id": "authority-scope-mismatch",
+      "expected_evidence": ["authority-scope-rejected"]
+    },
+    {
+      "case_id": "cross-run-replay",
+      "expected_evidence": ["cross-run-replay-rejected"]
+    },
+    {
+      "case_id": "unsupported-range",
+      "expected_evidence": ["unsupported-range-rejected"]
+    },
+    {
+      "case_id": "multiple-ranges",
+      "expected_evidence": ["multiple-ranges-rejected"]
+    },
+    {
+      "case_id": "external-provider-request",
+      "expected_evidence": ["external-provider-rejected"]
+    },
+    {
+      "case_id": "solver-request",
+      "expected_evidence": ["solver-request-rejected"]
+    },
+    {
+      "case_id": "report-claim-overreach",
+      "expected_evidence": ["report-overreach-rejected"]
+    },
+    {
+      "case_id": "missing-tampered-storage-artifact",
+      "expected_evidence": ["storage-tamper-rejected"]
+    },
+    {
+      "case_id": "size-encoding-security-boundary",
+      "expected_evidence": [
+        "size-boundary-rejected",
+        "encoding-boundary-rejected",
+        "security-boundary-rejected"
+      ]
+    }
+  ]
+}

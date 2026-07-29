@@ -136,6 +136,13 @@ Web pages, GitHub content, hand histories, ranges, and model output are untruste
 input, validated tool results, primary evidence records, and explicit approvals cross into synthesis.
 New run IDs are created exclusively; only resume may mutate an existing run.
 
+P3-030Aの確認済みレビュー経路では、自然言語source自体をagent contextへ渡さない。呼出側が
+提示した完全なcandidateをsource/candidate hash、authority snapshot、run ID、期限でbindし、
+確認後にだけrun namespaceを作る。製品経路はexact `LocalProvider`とdefault registryを内部固定し、
+`hand_validator`、任意のprofiled ledger、単一rangeの`range_validate -> combos`以外のtool結果を
+拒否する。terminal readerはsourceからtyped provenance wrapperまでを再計算する。この境界は
+自然言語の意味抽出、外部provider/solver、Codex/Python bridge、GTO/均衡を追加しない。
+
 High-level `implemented / disabled / unavailable / planned` states are centralized in
 `capabilities.py`, exposed by `doctor`, documented in `docs/capabilities.md`, and checked by contract
 tests. The offline public preflight scans only Git-tracked and non-ignored public candidates; it does

@@ -1,5 +1,13 @@
 # Current limitations
 
+- P3-030Aの確認済みレビュー入力は、一般自然言語parserではない。呼出側が完全な
+  `CanonicalHand`と任意の単一`VersionedRangeDefinitionV1`を提示し、利用者または検証済み
+  application authorityがsource/candidate hashを明示確認した場合だけ、retrospectiveかつ
+  local-onlyの製品経路へ入る。確認はsourceからcandidateへの写像を承認するが、入力内容を
+  FACTへ昇格しない。任意文章の意味的正しさ、site/image/PDF取込、外部provider/solver、
+  range equity、multiway range、GTO/均衡、暗号署名、同一権限の悪意あるwriter耐性は未実装。
+  `poker-confirmed-review-evaluation-json-v1`の17件・exact score `1.0`はこの境界契約の
+  合格だけを意味し、自然言語抽出精度、戦略品質、release readinessを測定しない。
 - P3-017A は repository-owned MIT synthetic fixture の 10 declared case と
   `exact-evidence-match` scorer だけを実装する。threshold `1.0` の pass は宣言済みevidenceの
   完全一致を意味するだけで、戦略品質、GTO、均衡、正確なrange、release readinessを意味しない。

@@ -46,10 +46,13 @@ def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:
     assert set(subparsers.choices) == {
         "audit-claim",
         "calculate",
+        "confirm-review-intake",
         "doctor",
         "list-agents",
         "list-tools",
+        "prepare-review-intake",
         "resume",
+        "review-confirmed-intake",
         "review-hand",
         "review-strategy",
         "show",

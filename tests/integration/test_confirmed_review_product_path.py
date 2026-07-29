@@ -121,6 +121,36 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
         build_confirmed_review_provenance(admission, forged_claim_report)
     assert claims.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    validator = report.tool_results[0]
+    forged_tool_input = validator.model_copy(
+        update={
+            "input": {
+                **validator.input,
+                "hero_cards": ["Qs", "Jd"],
+            }
+        },
+        deep=True,
+    )
+    forged_tool_input_report = report.model_copy(
+        update={"tool_results": [forged_tool_input, *report.tool_results[1:]]},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as tool_input:
+        build_confirmed_review_provenance(admission, forged_tool_input_report)
+    assert tool_input.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    forged_tool_output = validator.model_copy(
+        update={"output": {**validator.output, "warnings": ["forged-output"]}},
+        deep=True,
+    )
+    forged_tool_output_report = report.model_copy(
+        update={"tool_results": [forged_tool_output, *report.tool_results[1:]]},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as tool_output:
+        build_confirmed_review_provenance(admission, forged_tool_output_report)
+    assert tool_output.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
     admission = confirmed_admission(
@@ -328,6 +358,25 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
         original = orchestrator.synthesis_service.run
         orchestrator.synthesis_service.run = lambda request: original(request)
 
+    def shadow_product_publish(orchestrator) -> None:
+        original = orchestrator.product_store.publish
+        orchestrator.product_store.publish = lambda request: original(request)
+
+    def shadow_budget_reserve(orchestrator) -> None:
+        original = orchestrator.durable_budget.reserve
+        orchestrator.durable_budget.reserve = lambda request, **kwargs: original(
+            request,
+            **kwargs,
+        )
+
+    def shadow_buffer_write(orchestrator) -> None:
+        original = orchestrator.store.write_json
+        orchestrator.store.write_json = lambda run_id, relative, value: original(
+            run_id,
+            relative,
+            value,
+        )
+
     assert_runtime_rejected("provider", shadow_provider)
     assert_runtime_rejected("analysis-executor", shadow_analysis_executor)
     assert_runtime_rejected("registry-execute", shadow_registry_execute)
@@ -335,6 +384,9 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
     assert_runtime_rejected("registry-clock", replace_registry_clock)
     assert_runtime_rejected("registry-mapping", replace_registry_mapping)
     assert_runtime_rejected("synthesis-service", shadow_synthesis_service)
+    assert_runtime_rejected("product-publish", shadow_product_publish)
+    assert_runtime_rejected("budget-reserve", shadow_budget_reserve)
+    assert_runtime_rejected("buffer-write", shadow_buffer_write)
 
 
 def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:

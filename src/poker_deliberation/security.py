@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from typing import Any
 
 from pydantic import BaseModel
@@ -12,18 +13,29 @@ from pydantic import BaseModel
 from poker_deliberation.schemas import CaseInput, SecurityEvent
 
 _SENSITIVE_KEY = re.compile(
-    r"(?:api[\s_-]*key|authorization|bearer|cookie|password|passwd|secret|"
-    r"session[\s_-]*token|access[\s_-]*token|client[\s_-]*secret)",
+    r"(?:api[.\s_-]*key|authorization|bearer|cookie|password|passwd|secret|"
+    r"session[.\s_-]*token|access[.\s_-]*token|client[.\s_-]*secret)",
     re.IGNORECASE,
 )
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     re.compile(
-        r"\b(?:api[\s_-]*key|password|secret|token|access[\s_-]*token|"
-        r"client[\s_-]*secret)\s*[:=]\s*[^\s,;]+",
+        r"\b(?:api[.\s_-]*key|password|secret|token|access[.\s_-]*token|"
+        r"client[.\s_-]*secret)\s*[:=]\s*[^\s,;]+",
         re.IGNORECASE,
     ),
+)
+_SECURITY_DASH_TRANSLATION = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2015": "-",
+        "\u2212": "-",
+    }
 )
 
 _REAL_TIME_ASSISTANCE = re.compile(
@@ -46,24 +58,19 @@ _REAL_TIME_ASSISTANCE = re.compile(
     r"real[- ]?time.{0,20}(?:advice|assistance).{0,20}while\s+i\s+play)",
     re.IGNORECASE,
 )
-_JAPANESE_CURRENT_TERM = re.compile(r"(?:ただいま|いま|今|現在)")
-_JAPANESE_POKER_CONTEXT = re.compile(r"(?:オンライン|ポーカー|ハンド|ゲーム|卓)")
-_JAPANESE_DECISION_REQUEST = re.compile(
-    r"(?:call|fold|check|bet|raise|shove|オールイン|"
-    r"アクション|どちら|どうすべき|教えて|すべき)",
-    re.IGNORECASE,
-)
-_ENGLISH_CURRENT_TERM = re.compile(
-    r"\b(?:now|currently|at\s+the\s+moment|right\s+now)\b",
-    re.IGNORECASE,
-)
-_ENGLISH_POKER_CONTEXT = re.compile(
-    r"\b(?:poker|hand|table|game)\b",
-    re.IGNORECASE,
-)
-_ENGLISH_DECISION_REQUEST = re.compile(
-    r"(?:\b(?:call|fold|check|bet|raise|shove|all[- ]?in)\b|"
-    r"what\s+should\s+i\s+do|should\s+i)",
+_LIVE_REQUEST_ASSISTANCE = re.compile(
+    r"(?:(?:オンライン(?:ポーカー|卓)?|ポーカー|卓)(?:に|で|を)?"
+    r"(?:参加して(?:おり|い)ます|プレイして(?:おり|い)ます|"
+    r"打って(?:おり|い)ます|着席して(?:おり|い)ます|参加中|プレイ中)"
+    r".{0,96}(?:call|fold|check|bet|raise|shove|コール|フォールド|"
+    r"オールイン|アクション|どちら|どうすべき|教えて|すべき)|"
+    r"\b(?:i(?:['\u2019]m| am)\s+)?(?:"
+    r"playing\s+(?:online\s+)?poker|"
+    r"in\s+(?:an?\s+)?(?:online\s+)?(?:poker\s+)?(?:game|tournament|hand)|"
+    r"at\s+(?:a|the)\s+(?:poker|tournament)\s+table|"
+    r"seated\s+at\s+(?:a|the)\s+(?:poker|tournament)\s+table)"
+    r".{0,96}(?:\b(?:call|fold|check|bet|raise|shove|all[- ]?in)\b|"
+    r"what\s+should\s+i\s+do|should\s+i))",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -166,10 +173,18 @@ _INJECTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
+def _security_probe(value: str) -> str:
+    return unicodedata.normalize("NFKC", value).translate(_SECURITY_DASH_TRANSLATION).casefold()
+
+
 def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
+    if redacted == value and any(
+        pattern.search(_security_probe(value)) for pattern in _SECRET_PATTERNS
+    ):
+        return "[REDACTED]"
     return redacted
 
 
@@ -200,7 +215,7 @@ def redact_sensitive(value: Any, *, enabled: bool = True) -> Any:
             safe_key = _collision_free_key(_redact_text(raw_key), redacted_mapping)
             redacted_mapping[safe_key] = (
                 "[REDACTED]"
-                if _SENSITIVE_KEY.search(raw_key)
+                if _SENSITIVE_KEY.search(_security_probe(raw_key))
                 else redact_sensitive(item, enabled=True)
             )
         return redacted_mapping
@@ -255,17 +270,10 @@ def _walk_strings(value: Any) -> list[str]:
 def _contains_real_time_assistance(value: Any) -> bool:
     for text in _walk_strings(value):
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", text)
-        japanese_request = (
-            _JAPANESE_CURRENT_TERM.search(cleaned) is not None
-            and _JAPANESE_POKER_CONTEXT.search(cleaned) is not None
-            and _JAPANESE_DECISION_REQUEST.search(cleaned) is not None
-        )
-        english_request = (
-            _ENGLISH_CURRENT_TERM.search(cleaned) is not None
-            and _ENGLISH_POKER_CONTEXT.search(cleaned) is not None
-            and _ENGLISH_DECISION_REQUEST.search(cleaned) is not None
-        )
-        if _REAL_TIME_ASSISTANCE.search(cleaned) is not None or japanese_request or english_request:
+        if (
+            _REAL_TIME_ASSISTANCE.search(cleaned) is not None
+            or _LIVE_REQUEST_ASSISTANCE.search(cleaned) is not None
+        ):
             return True
     return False
 

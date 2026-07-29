@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -55,12 +56,15 @@ from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_json_bytes,
 )
+from poker_deliberation.tools.combinations import parse_weighted_range
 from poker_deliberation.tools.hand_pot_ledger import (
     PROFILE_ID,
     PROFILE_SCHEMA_VERSION,
     PROFILE_VERSION,
     SUPPORTED_SITE,
+    calculate_hand_pot_ledger,
 )
+from poker_deliberation.tools.hand_validator import validate_hand
 
 
 class ConfirmedReviewError(ValueError):
@@ -668,6 +672,89 @@ def _tool_support(result: ToolResult) -> ConfirmedReviewToolSupportV1:
     )
 
 
+def _json_object(value: Any) -> dict[str, Any]:
+    projected = json.loads(canonical_json_bytes(value))
+    if not isinstance(projected, dict):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.tool_results",
+        )
+    return projected
+
+
+def _expected_tool_evidence(
+    admission: ConfirmedReviewAdmission,
+) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    hand = admission.case.hand
+    if hand is None:
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING, "candidate.hand")
+    hand_payload = hand.model_dump(mode="json")
+    expected: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
+        "hand_validator": (hand_payload, _json_object(validate_hand(hand))),
+    }
+    candidate_input = admission.candidate.projection.candidate_input
+    if candidate_input.ledger_profile is not None:
+        raw_tool_inputs = admission.case.metadata.get("tool_inputs")
+        ledger_payload = (
+            raw_tool_inputs.get("hand_pot_ledger") if isinstance(raw_tool_inputs, dict) else None
+        )
+        if not isinstance(ledger_payload, dict):
+            _fail(
+                ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                "candidate.ledger_profile",
+            )
+        exact_ledger_payload = {**ledger_payload, "hand": hand_payload}
+        expected["hand_pot_ledger"] = (
+            exact_ledger_payload,
+            _json_object(calculate_hand_pot_ledger(exact_ledger_payload)),
+        )
+    if candidate_input.hand.known_ranges:
+        range_definition = candidate_input.hand.known_ranges[0]
+        if not isinstance(range_definition, VersionedRangeDefinitionV1):
+            _fail(
+                ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED,
+                "candidate.hand.known_ranges",
+            )
+        validation = validate_versioned_range(candidate_input.hand, range_definition)
+        if validation.status != "success" or validation.canonical_notation is None:
+            _fail(
+                ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED,
+                "candidate.hand.known_ranges",
+            )
+        canonical_notation = validation.canonical_notation
+        range_payload = {
+            "schema_version": "1.0.0",
+            "hand": hand_payload,
+            "range_definition": range_definition.model_dump(mode="json"),
+        }
+        expected["range_validate"] = (
+            range_payload,
+            _json_object(validation.model_dump(mode="json")),
+        )
+        combo_payload: dict[str, Any] = {
+            "range": canonical_notation,
+            "dead_cards": [],
+        }
+        combos = parse_weighted_range(canonical_notation)
+        total_weight = sum(combo.weight for combo in combos)
+        expected["combos"] = (
+            combo_payload,
+            {
+                "range": canonical_notation,
+                "combo_count": len(combos),
+                "total_combo_weight": total_weight,
+                "normalized_weights": [
+                    {
+                        "cards": list(combo.cards),
+                        "weight": combo.weight / total_weight,
+                    }
+                    for combo in combos
+                ],
+            },
+        )
+    return expected
+
+
 def build_confirmed_review_provenance(
     admission: ConfirmedReviewAdmission,
     report: FinalReport,
@@ -731,6 +818,18 @@ def build_confirmed_review_provenance(
         or validator_results[0].output.get("valid") is not True
     ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING, "report.hand_validator")
+    expected_tool_evidence = _expected_tool_evidence(admission)
+    for result in report.tool_results:
+        expected_input, expected_output = expected_tool_evidence[result.tool_name]
+        if (
+            result.status is not ToolStatus.SUCCESS
+            or result.input != expected_input
+            or result.output != expected_output
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.tool_results",
+            )
     agents: list[ConfirmedReviewAgentSupportV1] = []
     if report.run_status == "completed":
         from poker_deliberation.agents import select_roles

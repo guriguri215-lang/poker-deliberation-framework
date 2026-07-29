@@ -58,6 +58,15 @@ def _prepare_source(source: bytes):
             "api\u00a0key: ABCDEFGHIJKLMNOP123456\n".encode(),
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
+        (b"api.key: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
+        (
+            "api\u2010key: ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "\uff21\uff30\uff29 \uff2b\uff25\uff39: ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
         (
             b"I am currently playing poker right now. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
@@ -82,6 +91,19 @@ def _prepare_source(source: bytes):
             b"I am playing online poker at the moment. Should I call or fold?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            "オンラインポーカーに参加しております。コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am in an online poker tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"The hand from yesterday is complete. "
+            b"I am in an online poker tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(
@@ -92,6 +114,23 @@ def test_source_contract_fails_closed_with_stable_codes(
     assert result.status == "blocked"
     assert result.candidate is None
     assert [item.code for item in result.diagnostics] == [expected]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            b"Currently, poker theory discusses blockers. "
+            b"For the completed hand from yesterday, should I call or fold?\n"
+        ),
+        "現在のポーカー理論を使い、昨日終了したハンドでcallすべきだったか教えてください。\n".encode(),
+    ],
+)
+def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
+    result = _prepare_source(source)
+    assert result.status == "ready"
+    assert result.candidate is not None
+    assert result.diagnostics == ()
 
 
 def test_source_size_limit_is_exact() -> None:

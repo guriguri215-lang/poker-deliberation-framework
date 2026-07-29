@@ -210,7 +210,7 @@ from poker_deliberation.storage.revision_canonical import (
     canonical_json_bytes as canonical_storage_json_bytes,
 )
 from poker_deliberation.storage.revision_models import RunStorageError
-from poker_deliberation.storage.revision_store import inspect_root_initialization
+from poker_deliberation.storage.revision_store import RunRevisionStore, inspect_root_initialization
 from poker_deliberation.storage.run_store import BufferedRunStore
 from poker_deliberation.storage.terminal_canonical import (
     empty_lineage_head_sha256,
@@ -254,6 +254,33 @@ _CONFIRMED_CONTEXT_BUILD_RUN = ContextBuildService.run
 _CONFIRMED_CRITIQUE_RUN = CritiqueService.run
 _CONFIRMED_ADJUDICATION_RUN = AdjudicationService.run
 _CONFIRMED_SYNTHESIS_RUN = SynthesisService.run
+_CONFIRMED_TERMINAL_INITIALIZE = TerminalRunStore.initialize
+_CONFIRMED_TERMINAL_FREEZE = TerminalRunStore.freeze_budget_binding
+_CONFIRMED_TERMINAL_PUBLISH = TerminalRunStore.publish
+_CONFIRMED_TERMINAL_READ = TerminalRunStore.read_current
+_CONFIRMED_TERMINAL_PLANNED_PATH = TerminalRunStore.planned_payload_path
+_CONFIRMED_BUDGET_RESERVE = DurableBudgetCoordinator.reserve
+_CONFIRMED_BUDGET_FREEZE = DurableBudgetCoordinator.freeze_binding
+_CONFIRMED_BUDGET_SETTLE = DurableBudgetCoordinator.settle
+_CONFIRMED_BUDGET_RELEASE = DurableBudgetCoordinator.release_no_effect
+_CONFIRMED_BUDGET_VERIFY = DurableBudgetCoordinator.verify
+_CONFIRMED_BUDGET_STORE_CREATE = DurableBudgetStore.create
+_CONFIRMED_BUDGET_STORE_LOAD = DurableBudgetStore.load
+_CONFIRMED_BUDGET_STORE_REBASE = DurableBudgetStore.rebase_monotonic_clock
+_CONFIRMED_BUDGET_STORE_RESERVE = DurableBudgetStore.reserve
+_CONFIRMED_BUDGET_STORE_START = DurableBudgetStore.start
+_CONFIRMED_BUDGET_STORE_SETTLE = DurableBudgetStore.settle
+_CONFIRMED_BUDGET_STORE_RELEASE = DurableBudgetStore.release_no_effect
+_CONFIRMED_REVISION_OWNERSHIP = RunRevisionStore._ownership
+_CONFIRMED_REVISION_AUTHORITY = RunRevisionStore._authority
+_CONFIRMED_BUFFER_CREATE = BufferedRunStore.create_run
+_CONFIRMED_BUFFER_DIRECTORY = BufferedRunStore.ensure_directory
+_CONFIRMED_BUFFER_WRITE_JSON = BufferedRunStore.write_json
+_CONFIRMED_BUFFER_WRITE_TEXT = BufferedRunStore.write_text
+_CONFIRMED_BUFFER_APPEND_JSONL = BufferedRunStore.append_jsonl
+_CONFIRMED_BUFFER_READ_JSON = BufferedRunStore.read_json
+_CONFIRMED_BUFFER_LOAD = BufferedRunStore.load_verified
+_CONFIRMED_BUFFER_PAYLOADS = BufferedRunStore.verified_payloads
 
 
 def new_run_id() -> str:
@@ -333,6 +360,15 @@ class Orchestrator:
         terminal_id_factory: Callable[[str], str] | None = None,
         decision_authority_provider: DecisionAuthorityProvider | None = None,
     ) -> None:
+        self._confirmed_review_persistence_was_injected = any(
+            dependency is not None
+            for dependency in (
+                product_store,
+                budget_store,
+                terminal_clock,
+                terminal_id_factory,
+            )
+        )
         self.config = config or AppConfig.from_env()
         self.budget_migration: V1BudgetMigrationResult | None
         if budget_policy is None:
@@ -511,6 +547,21 @@ class Orchestrator:
         )
         self._confirmed_review_analysis_context_clock = self.analysis_executor.context_clock
         self._confirmed_review_analysis_record_clock = self.analysis_executor.record_clock
+        self._confirmed_review_product_store = self.product_store
+        self._confirmed_review_product_foundation = self.product_store.foundation
+        self._confirmed_review_durable_budget = self.durable_budget
+        self._confirmed_review_durable_budget_store = self.durable_budget_store
+        self._confirmed_review_buffer_store = self.store
+        self._confirmed_review_terminal_clock = self.terminal_clock
+        self._confirmed_review_terminal_id_factory = self.terminal_id_factory
+        self._confirmed_review_product_store_snapshot = (
+            self.product_store.revision_root,
+            self.product_store.legacy_runs_root,
+            self.product_store.max_artifact_bytes,
+            self.product_store.max_run_bytes,
+            self.product_store.framework_version,
+            self.product_store.source_commit_id,
+        )
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
         machine = self._run_machines.get(run_id)
@@ -1155,6 +1206,75 @@ class Orchestrator:
             ),
             (self.synthesis_service, SynthesisService, _CONFIRMED_SYNTHESIS_RUN),
         )
+        terminal_methods = (
+            ("initialize", TerminalRunStore.initialize, _CONFIRMED_TERMINAL_INITIALIZE),
+            (
+                "freeze_budget_binding",
+                TerminalRunStore.freeze_budget_binding,
+                _CONFIRMED_TERMINAL_FREEZE,
+            ),
+            ("publish", TerminalRunStore.publish, _CONFIRMED_TERMINAL_PUBLISH),
+            ("read_current", TerminalRunStore.read_current, _CONFIRMED_TERMINAL_READ),
+            (
+                "planned_payload_path",
+                TerminalRunStore.planned_payload_path,
+                _CONFIRMED_TERMINAL_PLANNED_PATH,
+            ),
+        )
+        budget_methods = (
+            ("reserve", DurableBudgetCoordinator.reserve, _CONFIRMED_BUDGET_RESERVE),
+            (
+                "freeze_binding",
+                DurableBudgetCoordinator.freeze_binding,
+                _CONFIRMED_BUDGET_FREEZE,
+            ),
+            ("settle", DurableBudgetCoordinator.settle, _CONFIRMED_BUDGET_SETTLE),
+            (
+                "release_no_effect",
+                DurableBudgetCoordinator.release_no_effect,
+                _CONFIRMED_BUDGET_RELEASE,
+            ),
+            ("verify", DurableBudgetCoordinator.verify, _CONFIRMED_BUDGET_VERIFY),
+        )
+        budget_store_methods = (
+            ("create", DurableBudgetStore.create, _CONFIRMED_BUDGET_STORE_CREATE),
+            ("load", DurableBudgetStore.load, _CONFIRMED_BUDGET_STORE_LOAD),
+            (
+                "rebase_monotonic_clock",
+                DurableBudgetStore.rebase_monotonic_clock,
+                _CONFIRMED_BUDGET_STORE_REBASE,
+            ),
+            ("reserve", DurableBudgetStore.reserve, _CONFIRMED_BUDGET_STORE_RESERVE),
+            ("start", DurableBudgetStore.start, _CONFIRMED_BUDGET_STORE_START),
+            ("settle", DurableBudgetStore.settle, _CONFIRMED_BUDGET_STORE_SETTLE),
+            (
+                "release_no_effect",
+                DurableBudgetStore.release_no_effect,
+                _CONFIRMED_BUDGET_STORE_RELEASE,
+            ),
+        )
+        buffer_methods = (
+            ("create_run", BufferedRunStore.create_run, _CONFIRMED_BUFFER_CREATE),
+            (
+                "ensure_directory",
+                BufferedRunStore.ensure_directory,
+                _CONFIRMED_BUFFER_DIRECTORY,
+            ),
+            ("write_json", BufferedRunStore.write_json, _CONFIRMED_BUFFER_WRITE_JSON),
+            ("write_text", BufferedRunStore.write_text, _CONFIRMED_BUFFER_WRITE_TEXT),
+            (
+                "append_jsonl",
+                BufferedRunStore.append_jsonl,
+                _CONFIRMED_BUFFER_APPEND_JSONL,
+            ),
+            ("read_json", BufferedRunStore.read_json, _CONFIRMED_BUFFER_READ_JSON),
+            ("load_verified", BufferedRunStore.load_verified, _CONFIRMED_BUFFER_LOAD),
+            (
+                "verified_payloads",
+                BufferedRunStore.verified_payloads,
+                _CONFIRMED_BUFFER_PAYLOADS,
+            ),
+        )
         if (
             LocalProvider.availability is not _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY
             or LocalProvider.analyze is not _CONFIRMED_LOCAL_PROVIDER_ANALYZE
@@ -1203,6 +1323,52 @@ class Orchestrator:
                 for service, expected_type, expected_run in phase_services
             )
             or self.context_build_service.blind_context_builder is not build_blind_decision_context
+            or self._confirmed_review_persistence_was_injected
+            or type(self.product_store) is not TerminalRunStore
+            or self.product_store is not self._confirmed_review_product_store
+            or self.product_store.foundation is not self._confirmed_review_product_foundation
+            or type(self.product_store.foundation) is not RunRevisionStore
+            or RunRevisionStore._ownership is not _CONFIRMED_REVISION_OWNERSHIP
+            or RunRevisionStore._authority is not _CONFIRMED_REVISION_AUTHORITY
+            or any(
+                name in vars(self.product_store.foundation) for name in ("_ownership", "_authority")
+            )
+            or self.product_store.budget is not self._confirmed_review_durable_budget
+            or self.product_store.clock is not self._confirmed_review_terminal_clock
+            or self.product_store.id_factory is not self._confirmed_review_terminal_id_factory
+            or self.product_store.fault_injector is not None
+            or (
+                self.product_store.revision_root,
+                self.product_store.legacy_runs_root,
+                self.product_store.max_artifact_bytes,
+                self.product_store.max_run_bytes,
+                self.product_store.framework_version,
+                self.product_store.source_commit_id,
+            )
+            != self._confirmed_review_product_store_snapshot
+            or any(
+                current is not expected or name in vars(self.product_store)
+                for name, current, expected in terminal_methods
+            )
+            or type(self.durable_budget) is not DurableBudgetCoordinator
+            or self.durable_budget is not self._confirmed_review_durable_budget
+            or self.durable_budget.store is not self._confirmed_review_durable_budget_store
+            or any(
+                current is not expected or name in vars(self.durable_budget)
+                for name, current, expected in budget_methods
+            )
+            or type(self.durable_budget_store) is not DurableBudgetStore
+            or self.durable_budget_store is not self._confirmed_review_durable_budget_store
+            or any(
+                current is not expected or name in vars(self.durable_budget_store)
+                for name, current, expected in budget_store_methods
+            )
+            or type(self.store) is not BufferedRunStore
+            or self.store is not self._confirmed_review_buffer_store
+            or any(
+                current is not expected or name in vars(self.store)
+                for name, current, expected in buffer_methods
+            )
         ):
             return False
         current = ToolRegistry.runtime_identity_snapshot(self.registry)

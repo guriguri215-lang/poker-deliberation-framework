@@ -685,6 +685,11 @@ def build_confirmed_review_provenance(
     admission = verified_admission
     if report.run_id != admission.confirmation.run_id:
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "report.run_id")
+    if report.reconstructed_input != admission.case.model_dump(mode="json"):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reconstructed_input",
+        )
     expected_marker = admission.case.metadata.get("confirmed_review")
     report_metadata = report.reconstructed_input.get("metadata")
     report_marker_present = isinstance(report_metadata, dict) and (
@@ -702,11 +707,11 @@ def build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reconstructed_input.metadata.confirmed_review",
         )
-    input_claims = {claim.claim_id: claim for claim in admission.case.claims}
-    for assessment in report.claim_assessments:
-        source_claim = input_claims.get(assessment.claim_id)
-        if source_claim is not None and assessment.label is not EpistemicLabel.USER_CLAIM:
-            _fail(ConfirmedReviewDiagnosticCode.REPORT_OVERREACH, "report.claim_assessments")
+    if report.claim_assessments != admission.case.claims:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.claim_assessments",
+        )
     expected_tool_names = ["hand_validator"]
     candidate_input = admission.candidate.projection.candidate_input
     if candidate_input.ledger_profile is not None:

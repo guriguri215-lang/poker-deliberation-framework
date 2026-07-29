@@ -55,6 +55,10 @@ def _prepare_source(source: bytes):
         (b"api  key: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
         (b"api\tkey: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
         (
+            "api\u00a0key: ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             b"I am currently playing poker right now. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -68,6 +72,14 @@ def _prepare_source(source: bytes):
         ),
         (
             "ただいまオンラインポーカーを打っています。次のアクションを教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "現在オンライン卓に着席しています。次のアクションはcallとfoldのどちらですか?\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing online poker at the moment. Should I call or fold?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
     ],

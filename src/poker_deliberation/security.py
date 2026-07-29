@@ -12,16 +12,16 @@ from pydantic import BaseModel
 from poker_deliberation.schemas import CaseInput, SecurityEvent
 
 _SENSITIVE_KEY = re.compile(
-    r"(?:api[ \t_-]*key|authorization|bearer|cookie|password|passwd|secret|"
-    r"session[ \t_-]*token|access[ \t_-]*token|client[ \t_-]*secret)",
+    r"(?:api[\s_-]*key|authorization|bearer|cookie|password|passwd|secret|"
+    r"session[\s_-]*token|access[\s_-]*token|client[\s_-]*secret)",
     re.IGNORECASE,
 )
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     re.compile(
-        r"\b(?:api[ \t_-]*key|password|secret|token|access[ \t_-]*token|"
-        r"client[ \t_-]*secret)\s*[:=]\s*[^\s,;]+",
+        r"\b(?:api[\s_-]*key|password|secret|token|access[\s_-]*token|"
+        r"client[\s_-]*secret)\s*[:=]\s*[^\s,;]+",
         re.IGNORECASE,
     ),
 )
@@ -30,7 +30,7 @@ _REAL_TIME_ASSISTANCE = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
     r"(?:オンライン(?:ポーカー|卓)?|ポーカー|ハンド|ゲーム|卓).{0,20}"
     r"(?:中|プレイ中|参加中|参加して(?:い)?(?:る|ます)|"
-    r"打って(?:い)?(?:る|ます))|"
+    r"打って(?:い)?(?:る|ます)|着席して(?:い)?(?:る|ます))|"
     r"今(?:まさに)?プレイ中|リアルタイム(?:で|の).{0,20}(?:指示|助言|教えて)|"
     r"(?:i(?:['\u2019]m| am)\s+)?playing\s+(?:poker\s+)?(?:right\s+)?now\b|"
     r"(?:i(?:['\u2019]m| am)\s+)?at\s+(?:a|the)\s+poker\s+table\s+(?:right\s+)?now\b|"
@@ -44,6 +44,26 @@ _REAL_TIME_ASSISTANCE = re.compile(
     r"(?:call|fold|check|bet|raise|shove|all[- ]?in|what\s+should\s+i\s+do)|"
     r"(?:give|provide|need|want|use).{0,20}real[- ]?time.{0,20}(?:advice|assistance)|"
     r"real[- ]?time.{0,20}(?:advice|assistance).{0,20}while\s+i\s+play)",
+    re.IGNORECASE,
+)
+_JAPANESE_CURRENT_TERM = re.compile(r"(?:ただいま|いま|今|現在)")
+_JAPANESE_POKER_CONTEXT = re.compile(r"(?:オンライン|ポーカー|ハンド|ゲーム|卓)")
+_JAPANESE_DECISION_REQUEST = re.compile(
+    r"(?:call|fold|check|bet|raise|shove|オールイン|"
+    r"アクション|どちら|どうすべき|教えて|すべき)",
+    re.IGNORECASE,
+)
+_ENGLISH_CURRENT_TERM = re.compile(
+    r"\b(?:now|currently|at\s+the\s+moment|right\s+now)\b",
+    re.IGNORECASE,
+)
+_ENGLISH_POKER_CONTEXT = re.compile(
+    r"\b(?:poker|hand|table|game)\b",
+    re.IGNORECASE,
+)
+_ENGLISH_DECISION_REQUEST = re.compile(
+    r"(?:\b(?:call|fold|check|bet|raise|shove|all[- ]?in)\b|"
+    r"what\s+should\s+i\s+do|should\s+i)",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -233,10 +253,21 @@ def _walk_strings(value: Any) -> list[str]:
 
 
 def _contains_real_time_assistance(value: Any) -> bool:
-    return any(
-        _REAL_TIME_ASSISTANCE.search(_NEGATED_REAL_TIME_CONTEXT.sub("", text))
-        for text in _walk_strings(value)
-    )
+    for text in _walk_strings(value):
+        cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", text)
+        japanese_request = (
+            _JAPANESE_CURRENT_TERM.search(cleaned) is not None
+            and _JAPANESE_POKER_CONTEXT.search(cleaned) is not None
+            and _JAPANESE_DECISION_REQUEST.search(cleaned) is not None
+        )
+        english_request = (
+            _ENGLISH_CURRENT_TERM.search(cleaned) is not None
+            and _ENGLISH_POKER_CONTEXT.search(cleaned) is not None
+            and _ENGLISH_DECISION_REQUEST.search(cleaned) is not None
+        )
+        if _REAL_TIME_ASSISTANCE.search(cleaned) is not None or japanese_request or english_request:
+            return True
+    return False
 
 
 def blocked_security_guidance(events: list[SecurityEvent]) -> list[str]:

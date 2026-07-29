@@ -19,6 +19,7 @@ from poker_deliberation.confirmed_review_models import (
 )
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider
+from poker_deliberation.schemas import ConfidenceGrade, EpistemicLabel
 from poker_deliberation.storage.revision_canonical import parse_canonical_model
 from poker_deliberation.storage.terminal_models import RunReadStatus
 from poker_deliberation.tools import default_registry
@@ -82,6 +83,43 @@ def test_report_confirmed_marker_must_match_admitted_case(tmp_path) -> None:
     with pytest.raises(ConfirmedReviewError) as marker:
         build_confirmed_review_provenance(admission, forged_report)
     assert marker.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
+def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -> None:
+    admission = confirmed_admission(
+        run_id="run-confirmed-report-input-1",
+        now=datetime.now(UTC),
+    )
+    report = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    ).run_confirmed_review(admission)
+
+    reconstructed_input = report.model_dump(mode="json")["reconstructed_input"]
+    reconstructed_input["case_id"] = "forged-different-case"
+    forged_input_report = report.model_copy(
+        update={"reconstructed_input": reconstructed_input},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as reconstructed:
+        build_confirmed_review_provenance(admission, forged_input_report)
+    assert reconstructed.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    forged_claim = report.claim_assessments[0].model_copy(
+        update={
+            "claim_id": "forged-fact-claim",
+            "label": EpistemicLabel.FACT,
+            "confidence": ConfidenceGrade.A,
+        },
+        deep=True,
+    )
+    forged_claim_report = report.model_copy(
+        update={"claim_assessments": [*report.claim_assessments, forged_claim]},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as claims:
+        build_confirmed_review_provenance(admission, forged_claim_report)
+    assert claims.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
@@ -260,10 +298,43 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> N
             function=lambda payload: definition.function(payload),
         )
 
+    def replace_registry_clock(orchestrator) -> None:
+        class InjectedClock:
+            def now_ns(self) -> int:
+                raise AssertionError("injected registry clock must not execute")
+
+        orchestrator.registry.monotonic_clock = InjectedClock()
+
+    def replace_registry_mapping(orchestrator) -> None:
+        original_mapping = orchestrator.registry._tools
+        original = original_mapping["hand_validator"]
+        replacement = replace(
+            original,
+            function=lambda payload: original.function(payload),
+        )
+
+        class SplitLookupDict(dict):
+            def items(self):
+                return original_mapping.items()
+
+            def get(self, key, default=None):
+                if key == "hand_validator":
+                    return replacement
+                return original_mapping.get(key, default)
+
+        orchestrator.registry._tools = SplitLookupDict(original_mapping)
+
+    def shadow_synthesis_service(orchestrator) -> None:
+        original = orchestrator.synthesis_service.run
+        orchestrator.synthesis_service.run = lambda request: original(request)
+
     assert_runtime_rejected("provider", shadow_provider)
     assert_runtime_rejected("analysis-executor", shadow_analysis_executor)
     assert_runtime_rejected("registry-execute", shadow_registry_execute)
     assert_runtime_rejected("tool-function", replace_tool_function)
+    assert_runtime_rejected("registry-clock", replace_registry_clock)
+    assert_runtime_rejected("registry-mapping", replace_registry_mapping)
+    assert_runtime_rejected("synthesis-service", shadow_synthesis_service)
 
 
 def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:

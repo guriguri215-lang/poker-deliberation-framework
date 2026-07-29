@@ -163,6 +163,7 @@ from poker_deliberation.phases.revision_coordinator import (
     _is_issued_plan,
     _issue_transition_plan,
 )
+from poker_deliberation.phases.services import PurePhaseService
 from poker_deliberation.providers import AgentProvider, LocalProvider
 from poker_deliberation.range_grammar import validate_versioned_range
 from poker_deliberation.range_models import RangeValidationResultV1, VersionedRangeDefinitionV1
@@ -244,6 +245,15 @@ _CONFIRMED_REGISTRY_EXECUTE = ToolRegistry.execute
 _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE = ToolRegistry.execute_for_phase
 _CONFIRMED_REGISTRY_NAMES = ToolRegistry.names
 _CONFIRMED_REGISTRY_RUNTIME_IDENTITY = ToolRegistry.runtime_identity_snapshot
+_CONFIRMED_SYSTEM_MONOTONIC_NOW = SystemMonotonicClock.now_ns
+_CONFIRMED_PURE_PHASE_ISOLATE = PurePhaseService.isolate
+_CONFIRMED_INTAKE_RUN = IntakeValidationService.run
+_CONFIRMED_NORMALIZATION_RUN = NormalizationService.run
+_CONFIRMED_ROUTING_RUN = RoutingService.run
+_CONFIRMED_CONTEXT_BUILD_RUN = ContextBuildService.run
+_CONFIRMED_CRITIQUE_RUN = CritiqueService.run
+_CONFIRMED_ADJUDICATION_RUN = AdjudicationService.run
+_CONFIRMED_SYNTHESIS_RUN = SynthesisService.run
 
 
 def new_run_id() -> str:
@@ -492,6 +502,12 @@ class Orchestrator:
         )
         self._confirmed_review_registry_runtime_snapshot = ToolRegistry.runtime_identity_snapshot(
             self.registry
+        )
+        self._confirmed_review_registry_mapping = self.registry._tools
+        self._confirmed_review_registry_limits = (
+            self.registry.max_payload_bytes,
+            self.registry.max_output_bytes,
+            self.registry.max_duration_seconds,
         )
         self._confirmed_review_analysis_context_clock = self.analysis_executor.context_clock
         self._confirmed_review_analysis_record_clock = self.analysis_executor.record_clock
@@ -1118,6 +1134,27 @@ class Orchestrator:
             )
 
     def _confirmed_review_runtime_is_exact(self) -> bool:
+        phase_services = (
+            (self.intake_service, IntakeValidationService, _CONFIRMED_INTAKE_RUN),
+            (
+                self.normalization_service,
+                NormalizationService,
+                _CONFIRMED_NORMALIZATION_RUN,
+            ),
+            (self.routing_service, RoutingService, _CONFIRMED_ROUTING_RUN),
+            (
+                self.context_build_service,
+                ContextBuildService,
+                _CONFIRMED_CONTEXT_BUILD_RUN,
+            ),
+            (self.critique_service, CritiqueService, _CONFIRMED_CRITIQUE_RUN),
+            (
+                self.adjudication_service,
+                AdjudicationService,
+                _CONFIRMED_ADJUDICATION_RUN,
+            ),
+            (self.synthesis_service, SynthesisService, _CONFIRMED_SYNTHESIS_RUN),
+        )
         if (
             LocalProvider.availability is not _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY
             or LocalProvider.analyze is not _CONFIRMED_LOCAL_PROVIDER_ANALYZE
@@ -1128,6 +1165,10 @@ class Orchestrator:
             or ToolRegistry.execute_for_phase is not _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE
             or ToolRegistry.names is not _CONFIRMED_REGISTRY_NAMES
             or ToolRegistry.runtime_identity_snapshot is not _CONFIRMED_REGISTRY_RUNTIME_IDENTITY
+            or SystemMonotonicClock.now_ns is not _CONFIRMED_SYSTEM_MONOTONIC_NOW
+            or PurePhaseService.isolate is not _CONFIRMED_PURE_PHASE_ISOLATE
+            or type(self.monotonic_clock) is not SystemMonotonicClock
+            or "now_ns" in getattr(self.monotonic_clock, "__dict__", {})
             or any(name in vars(self.provider) for name in ("availability", "analyze"))
             or "run" in vars(self.analysis_executor)
             or "run" in vars(self.tool_research_executor)
@@ -1145,6 +1186,23 @@ class Orchestrator:
             is not self._confirmed_review_analysis_context_clock
             or self.analysis_executor.record_clock
             is not self._confirmed_review_analysis_record_clock
+            or self.registry.monotonic_clock is not self.monotonic_clock
+            or type(self.registry._tools) is not dict
+            or self.registry._tools is not self._confirmed_review_registry_mapping
+            or (
+                self.registry.max_payload_bytes,
+                self.registry.max_output_bytes,
+                self.registry.max_duration_seconds,
+            )
+            != self._confirmed_review_registry_limits
+            or any(
+                type(service) is not expected_type
+                or expected_type.run is not expected_run
+                or "run" in vars(service)
+                or "isolate" in vars(service)
+                for service, expected_type, expected_run in phase_services
+            )
+            or self.context_build_service.blind_context_builder is not build_blind_decision_context
         ):
             return False
         current = ToolRegistry.runtime_identity_snapshot(self.registry)

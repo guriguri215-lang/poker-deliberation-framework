@@ -122,6 +122,64 @@ def provenance_sha256(provenance: ConfirmedReviewProvenanceV1) -> str:
     )
 
 
+def _strict_candidate(candidate: ReviewIntakeCandidateV1) -> ReviewIntakeCandidateV1:
+    try:
+        payload = canonical_json_bytes(candidate)
+    except (CanonicalStorageError, TypeError, ValueError):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA, "candidate")
+    if len(payload) > MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES:
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA, "candidate.size_bytes")
+    try:
+        return ReviewIntakeCandidateV1.model_validate_json(payload, strict=True)
+    except ValidationError:
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA, "candidate")
+
+
+def _strict_authority(
+    authority: ReviewConfirmationAuthorityV1,
+) -> ReviewConfirmationAuthorityV1:
+    try:
+        payload = canonical_json_bytes(authority)
+        return ReviewConfirmationAuthorityV1.model_validate_json(payload, strict=True)
+    except (CanonicalStorageError, TypeError, ValueError, ValidationError):
+        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_AUTHORITY, "confirmation.authority")
+
+
+def _strict_confirmation(
+    confirmation: ReviewIntakeConfirmationV1,
+) -> ReviewIntakeConfirmationV1:
+    try:
+        payload = canonical_json_bytes(confirmation)
+    except (CanonicalStorageError, TypeError, ValueError):
+        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "confirmation")
+    if len(payload) > MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES:
+        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "confirmation.size_bytes")
+    try:
+        return ReviewIntakeConfirmationV1.model_validate_json(payload, strict=True)
+    except ValidationError as exc:
+        if any(error["loc"] and error["loc"][0] == "authority" for error in exc.errors()):
+            _fail(
+                ConfirmedReviewDiagnosticCode.CONFIRMATION_AUTHORITY,
+                "confirmation.authority",
+            )
+        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "confirmation")
+
+
+def _strict_provenance(
+    provenance: ConfirmedReviewProvenanceV1,
+) -> ConfirmedReviewProvenanceV1:
+    try:
+        payload = canonical_json_bytes(provenance)
+    except (CanonicalStorageError, TypeError, ValueError):
+        _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")
+    if len(payload) > MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES:
+        _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")
+    try:
+        return ConfirmedReviewProvenanceV1.model_validate_json(payload, strict=True)
+    except ValidationError:
+        _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")
+
+
 def _diagnostic(
     code: ConfirmedReviewDiagnosticCode,
     field_path: str,
@@ -369,10 +427,12 @@ def prepare_review_intake(
     )
 
 
-def verify_candidate(candidate: ReviewIntakeCandidateV1) -> None:
+def verify_candidate(candidate: ReviewIntakeCandidateV1) -> ReviewIntakeCandidateV1:
+    candidate = _strict_candidate(candidate)
     if candidate.candidate_sha256 != candidate_sha256(candidate.projection):
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "candidate.candidate_sha256")
     _validate_candidate_scope(candidate.projection.candidate_input)
+    return candidate
 
 
 def create_review_confirmation(
@@ -389,7 +449,8 @@ def create_review_confirmation(
 ) -> ReviewIntakeConfirmationV1:
     """Bind an explicit confirmation to hashes supplied out of band by the user."""
 
-    verify_candidate(candidate)
+    candidate = verify_candidate(candidate)
+    authority = _strict_authority(authority)
     if (
         expected_source_sha256 != candidate.projection.source.content_sha256
         or expected_candidate_sha256 != candidate.candidate_sha256
@@ -462,16 +523,19 @@ def _case_from_candidate(candidate: ReviewIntakeCandidateV1) -> CaseInput:
     )
 
 
-def admit_confirmed_review(
+def _admit_confirmed_review_at(
     source_bytes: bytes,
     candidate: ReviewIntakeCandidateV1,
     confirmation: ReviewIntakeConfirmationV1,
     *,
-    admitted_at: datetime | None = None,
+    admitted_at: datetime,
 ) -> ConfirmedReviewAdmission:
-    """Validate all bindings before an orchestrator is allowed to create a run."""
+    """Validate one admission at a trusted execution or historical replay time."""
 
-    verify_candidate(candidate)
+    candidate = verify_candidate(candidate)
+    confirmation = _strict_confirmation(confirmation)
+    if admitted_at.tzinfo is None or admitted_at.utcoffset() is None:
+        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "admission.admitted_at")
     source = validate_review_source(
         source_bytes,
         source_id=candidate.projection.source.source_id,
@@ -501,8 +565,7 @@ def admit_confirmed_review(
         or confirmation.extractor_version != CONFIRMED_REVIEW_EXTRACTOR_VERSION
     ):
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "confirmation")
-    admitted_time = admitted_at or datetime.now(UTC)
-    if confirmation.confirmed_at > admitted_time or admitted_time > confirmation.expires_at:
+    if confirmation.confirmed_at > admitted_at or admitted_at > confirmation.expires_at:
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_EXPIRED, "confirmation.expires_at")
     for range_definition in candidate_input.hand.known_ranges:
         if not isinstance(range_definition, VersionedRangeDefinitionV1):
@@ -525,8 +588,23 @@ def admit_confirmed_review(
         source_bytes=source_bytes,
         candidate=candidate,
         confirmation=confirmation,
-        admitted_at=admitted_time,
+        admitted_at=admitted_at,
         case=case,
+    )
+
+
+def admit_confirmed_review(
+    source_bytes: bytes,
+    candidate: ReviewIntakeCandidateV1,
+    confirmation: ReviewIntakeConfirmationV1,
+) -> ConfirmedReviewAdmission:
+    """Admit a new run only against this process's current trusted UTC clock."""
+
+    return _admit_confirmed_review_at(
+        source_bytes,
+        candidate,
+        confirmation,
+        admitted_at=datetime.now(UTC),
     )
 
 
@@ -596,6 +674,15 @@ def build_confirmed_review_provenance(
 ) -> ConfirmedReviewProvenanceV1:
     """Build the typed authority wrapper after the ordinary report is complete."""
 
+    verified_admission = _admit_confirmed_review_at(
+        admission.source_bytes,
+        admission.candidate,
+        admission.confirmation,
+        admitted_at=admission.admitted_at,
+    )
+    if verified_admission != admission:
+        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "admission")
+    admission = verified_admission
     if report.run_id != admission.confirmation.run_id:
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "report.run_id")
     input_claims = {claim.claim_id: claim for claim in admission.case.claims}
@@ -690,7 +777,8 @@ def verify_confirmed_review_provenance(
 ) -> None:
     """Replay every durable source-to-report binding without provider execution."""
 
-    admission = admit_confirmed_review(
+    provenance = _strict_provenance(provenance)
+    admission = _admit_confirmed_review_at(
         source_bytes,
         candidate,
         confirmation,

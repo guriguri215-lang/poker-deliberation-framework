@@ -109,6 +109,77 @@ def test_three_stage_confirmed_review_cli_requires_explicit_hash_confirmation(
     assert "completed" in output
 
 
+def test_prepare_and_confirm_markdown_outputs_are_json_fenced(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    source_path = tmp_path / "source.txt"
+    candidate_path = tmp_path / "candidate.json"
+    preparation_path = tmp_path / "preparation.json"
+    confirmation_path = tmp_path / "confirmation.json"
+    source_path.write_bytes(SOURCE_BYTES)
+    candidate_path.write_text(json.dumps(candidate_payload()), encoding="utf-8")
+
+    assert (
+        main(
+            [
+                "prepare-review-intake",
+                "--source",
+                str(source_path),
+                "--candidate",
+                str(candidate_path),
+                "--output",
+                str(preparation_path),
+                "--source-id",
+                "source-cli-markdown-1",
+                "--format",
+                "markdown",
+            ]
+        )
+        == 0
+    )
+    prepared_output = capsys.readouterr().out
+    assert prepared_output.startswith("```json\n")
+    assert prepared_output.endswith("\n```\n")
+    preparation = parse_canonical_model(
+        preparation_path.read_bytes(),
+        ReviewIntakePreparationResultV1,
+    )
+    assert preparation.source is not None
+    assert preparation.candidate is not None
+
+    assert (
+        main(
+            [
+                "confirm-review-intake",
+                "--preparation",
+                str(preparation_path),
+                "--output",
+                str(confirmation_path),
+                "--run-id",
+                "run-confirmed-cli-markdown-1",
+                "--authority-id",
+                "local-cli-markdown-user",
+                "--confirmation-id",
+                "confirmation-cli-markdown-1",
+                "--idempotency-key",
+                "idempotency-cli-markdown-1",
+                "--expected-source-sha256",
+                preparation.source.content_sha256,
+                "--expected-candidate-sha256",
+                preparation.candidate.candidate_sha256,
+                "--format",
+                "markdown",
+            ]
+        )
+        == 0
+    )
+    confirmed_output = capsys.readouterr().out
+    assert confirmed_output.startswith("```json\n")
+    assert confirmed_output.endswith("\n```\n")
+    assert confirmation_path.is_file()
+
+
 def test_confirmation_cli_refuses_hash_mismatch_without_output(
     tmp_path: Path,
     capsys,

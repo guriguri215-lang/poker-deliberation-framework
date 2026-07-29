@@ -133,7 +133,6 @@ def confirmed_admission(
         source_bytes,
         prepared.candidate,
         confirmation,
-        admitted_at=confirmation_time,
     )
 
 

@@ -65,7 +65,7 @@ REQUIRED_CASE_IDS = (
 )
 
 _SOURCE = b"Synthetic retrospective NLHE hand for contract evaluation.\n"
-_NOW = datetime(2026, 7, 29, 0, tzinfo=UTC)
+_NOW = datetime.now(UTC)
 
 
 class _EvaluationModel(BaseModel):
@@ -109,6 +109,15 @@ class ConfirmedReviewEvaluationCaseResultV1(_EvaluationModel):
     score: Literal["0.0", "1.0"]
     passed: bool
 
+    @model_validator(mode="after")
+    def evidence_and_score_are_exact(self) -> ConfirmedReviewEvaluationCaseResultV1:
+        expected_passed = self.expected_evidence == self.observed_evidence
+        if self.passed is not expected_passed or self.score != (
+            "1.0" if expected_passed else "0.0"
+        ):
+            raise ValueError("confirmed-review evaluation case result mismatch")
+        return self
+
 
 class ConfirmedReviewEvaluationResultV1(_EvaluationModel):
     schema_version: Literal["1.0.0"] = "1.0.0"
@@ -121,11 +130,36 @@ class ConfirmedReviewEvaluationResultV1(_EvaluationModel):
     passed: bool
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
+    @model_validator(mode="after")
+    def inventory_score_and_digest_are_exact(self) -> ConfirmedReviewEvaluationResultV1:
+        case_ids = tuple(item.case_id for item in self.case_results)
+        if case_ids != REQUIRED_CASE_IDS or len(case_ids) != len(set(case_ids)):
+            raise ValueError("confirmed-review evaluation result inventory mismatch")
+        all_passed = all(item.passed and item.score == "1.0" for item in self.case_results)
+        if self.passed is not all_passed or self.overall_score != ("1.0" if all_passed else "0.0"):
+            raise ValueError("confirmed-review evaluation overall result mismatch")
+        expected_digest = canonical_domain_sha256(
+            EVALUATION_FAMILY_ID,
+            self.model_dump(mode="json", exclude={"result_sha256"}),
+        )
+        if self.result_sha256 != expected_digest:
+            raise ValueError("confirmed-review evaluation result digest mismatch")
+        return self
+
 
 def load_confirmed_review_evaluation_fixture(
     path: Path,
 ) -> ConfirmedReviewEvaluationFixtureV1:
     return ConfirmedReviewEvaluationFixtureV1.model_validate_json(
+        path.read_bytes(),
+        strict=True,
+    )
+
+
+def load_confirmed_review_evaluation_result(
+    path: Path,
+) -> ConfirmedReviewEvaluationResultV1:
+    return ConfirmedReviewEvaluationResultV1.model_validate_json(
         path.read_bytes(),
         strict=True,
     )
@@ -243,7 +277,6 @@ def _admission(
         _SOURCE,
         prepared.candidate,
         confirmation,
-        admitted_at=_NOW,
     )
 
 
@@ -399,7 +432,6 @@ def _source_mutation(_context: _EvaluationContext) -> tuple[str, ...]:
             _SOURCE + b"mutation\n",
             admission.candidate,
             admission.confirmation,
-            admitted_at=_NOW,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING:
@@ -420,7 +452,6 @@ def _candidate_mutation(_context: _EvaluationContext) -> tuple[str, ...]:
             _SOURCE,
             changed_candidate,
             admission.confirmation,
-            admitted_at=_NOW,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING:
@@ -443,14 +474,14 @@ def _expired(_context: _EvaluationContext) -> tuple[str, ...]:
     confirmation = _confirmation(
         prepared.candidate,
         run_id="run-evaluation-expired",
-        expires_at=_NOW + timedelta(seconds=1),
+        confirmed_at=_NOW - timedelta(seconds=2),
+        expires_at=_NOW - timedelta(seconds=1),
     )
     try:
         admit_confirmed_review(
             _SOURCE,
             prepared.candidate,
             confirmation,
-            admitted_at=_NOW + timedelta(seconds=2),
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_EXPIRED:
@@ -500,7 +531,6 @@ def _unsupported_range(_context: _EvaluationContext) -> tuple[str, ...]:
             _SOURCE,
             prepared.candidate,
             confirmation,
-            admitted_at=_NOW,
         )
     except ConfirmedReviewError as exc:
         if exc.code is ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED:
@@ -662,14 +692,28 @@ def run_confirmed_review_evaluation(
     all_passed = len(results) == len(REQUIRED_CASE_IDS) and all(
         result.passed and result.score == EVALUATION_THRESHOLD for result in results
     )
-    provisional = ConfirmedReviewEvaluationResultV1(
-        case_results=tuple(results),
-        overall_score="1.0" if all_passed else "0.0",
-        passed=all_passed,
-        result_sha256="0" * 64,
-    )
+    result_payload = {
+        "schema_version": EVALUATION_SCHEMA_VERSION,
+        "family_id": EVALUATION_FAMILY_ID,
+        "fixture_id": "confirmed-review-contract-cases-v1",
+        "scoring": "exact-evidence-set-v1",
+        "threshold": EVALUATION_THRESHOLD,
+        "case_results": tuple(result.model_dump(mode="json") for result in results),
+        "overall_score": "1.0" if all_passed else "0.0",
+        "passed": all_passed,
+    }
     digest = canonical_domain_sha256(
         EVALUATION_FAMILY_ID,
-        provisional.model_dump(mode="json", exclude={"result_sha256"}),
+        result_payload,
     )
-    return provisional.model_copy(update={"result_sha256": digest})
+    return ConfirmedReviewEvaluationResultV1.model_validate_json(
+        json.dumps(
+            {
+                **result_payload,
+                "result_sha256": digest,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        strict=True,
+    )

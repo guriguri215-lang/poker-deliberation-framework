@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewError,
     admit_confirmed_review,
+    authority_snapshot_sha256,
     candidate_sha256,
     confirmation_sha256,
     create_review_confirmation,
@@ -50,8 +51,13 @@ def _prepare_source(source: bytes):
         ("e\u0301\n".encode(), ConfirmedReviewDiagnosticCode.SOURCE_NFC),
         (b"source\x00\n", ConfirmedReviewDiagnosticCode.SOURCE_CONTROL),
         (b"api_key=sk-abcdefgh\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
+        (b"api key: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
         (
             b"I am currently playing poker right now. What should I do?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "いまオンラインポーカー中です。次のアクションはcallとfoldのどちらですか?\n".encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
     ],
@@ -155,6 +161,80 @@ def test_candidate_and_confirmation_hashes_are_self_replayable() -> None:
     assert confirmation.confirmation_sha256 == confirmation_sha256(confirmation)
 
 
+def test_model_copy_cannot_bypass_candidate_confirmation_or_authority_contracts() -> None:
+    prepared = ready_preparation()
+    assert prepared.candidate is not None
+    assert prepared.source is not None
+    authority = ReviewConfirmationAuthorityV1(
+        authority_id="local-unit-user",
+        authority_kind="local_user",
+        authentication="self_asserted",
+    )
+    now = datetime.now(UTC)
+    confirmation = create_review_confirmation(
+        prepared.candidate,
+        run_id="run-unit-model-copy-1",
+        confirmation_id="confirmation-unit-model-copy-1",
+        idempotency_key="idempotency-unit-model-copy-1",
+        authority=authority,
+        expected_source_sha256=prepared.source.content_sha256,
+        expected_candidate_sha256=prepared.candidate.candidate_sha256,
+        confirmed_at=now,
+    )
+
+    unconfirmed = confirmation.model_copy(update={"confirmed": False})
+    unconfirmed = unconfirmed.model_copy(
+        update={"confirmation_sha256": confirmation_sha256(unconfirmed)}
+    )
+    with pytest.raises(ConfirmedReviewError) as invalid_confirmation:
+        admit_confirmed_review(SOURCE_BYTES, prepared.candidate, unconfirmed)
+    assert invalid_confirmation.value.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING
+
+    invalid_authority = authority.model_copy(update={"authority_kind": "verified_application"})
+    forged_authority = confirmation.model_copy(
+        update={
+            "authority": invalid_authority,
+            "authority_snapshot_sha256": authority_snapshot_sha256(invalid_authority),
+        }
+    )
+    forged_authority = forged_authority.model_copy(
+        update={"confirmation_sha256": confirmation_sha256(forged_authority)}
+    )
+    with pytest.raises(ConfirmedReviewError) as invalid_authority_error:
+        admit_confirmed_review(SOURCE_BYTES, prepared.candidate, forged_authority)
+    assert (
+        invalid_authority_error.value.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_AUTHORITY
+    )
+
+    candidate_input = prepared.candidate.projection.candidate_input
+    oversized_claim = candidate_input.claims[0].model_copy(
+        update={"text": "x" * (MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES + 1)}
+    )
+    oversized_input = candidate_input.model_copy(update={"claims": (oversized_claim,)})
+    oversized_projection = prepared.candidate.projection.model_copy(
+        update={"candidate_input": oversized_input}
+    )
+    oversized_candidate = prepared.candidate.model_copy(
+        update={
+            "projection": oversized_projection,
+            "candidate_sha256": candidate_sha256(oversized_projection),
+        }
+    )
+    oversized_confirmation = confirmation.model_copy(
+        update={"candidate_sha256": oversized_candidate.candidate_sha256}
+    )
+    oversized_confirmation = oversized_confirmation.model_copy(
+        update={"confirmation_sha256": confirmation_sha256(oversized_confirmation)}
+    )
+    with pytest.raises(ConfirmedReviewError) as invalid_candidate:
+        admit_confirmed_review(
+            SOURCE_BYTES,
+            oversized_candidate,
+            oversized_confirmation,
+        )
+    assert invalid_candidate.value.code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA
+
+
 def test_preparation_rejects_a_mismatched_duplicate_source_projection() -> None:
     prepared = ready_preparation()
     assert prepared.source is not None
@@ -194,7 +274,7 @@ def test_source_mutation_and_expiry_are_rejected_before_run_admission() -> None:
         authority_kind="local_user",
         authentication="self_asserted",
     )
-    now = datetime(2026, 7, 29, 1, tzinfo=UTC)
+    now = datetime.now(UTC)
     confirmation = create_review_confirmation(
         prepared.candidate,
         run_id="run-unit-admission-1",
@@ -211,15 +291,24 @@ def test_source_mutation_and_expiry_are_rejected_before_run_admission() -> None:
             SOURCE_BYTES + b"mutation\n",
             prepared.candidate,
             confirmation,
-            admitted_at=now,
         )
     assert mutated.value.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING
+    expired_confirmation = create_review_confirmation(
+        prepared.candidate,
+        run_id="run-unit-admission-expired",
+        confirmation_id="confirmation-unit-expired",
+        idempotency_key="idempotency-unit-expired",
+        authority=authority,
+        expected_source_sha256=prepared.source.content_sha256,
+        expected_candidate_sha256=prepared.candidate.candidate_sha256,
+        confirmed_at=now - timedelta(minutes=2),
+        expires_at=now - timedelta(minutes=1),
+    )
     with pytest.raises(ConfirmedReviewError) as expired:
         admit_confirmed_review(
             SOURCE_BYTES,
             prepared.candidate,
-            confirmation,
-            admitted_at=now + timedelta(minutes=2),
+            expired_confirmation,
         )
     assert expired.value.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_EXPIRED
 

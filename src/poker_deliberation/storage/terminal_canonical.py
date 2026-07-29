@@ -428,11 +428,14 @@ def product_payload_commitments(
     except ValueError as exc:
         raise CanonicalStorageError("versioned range tool chain replay failed") from exc
     confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS
-    if confirmed_names:
-        if confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS:
-            raise CanonicalStorageError(
-                "confirmed-review publication lacks its complete artifact set"
-            )
+    confirmed_marker = "confirmed_review" in input_case.metadata
+    if confirmed_marker != bool(confirmed_names) or (
+        confirmed_names and confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS
+    ):
+        raise CanonicalStorageError(
+            "confirmed-review marker and complete artifact set must appear together"
+        )
+    if confirmed_marker:
         source_bytes = payloads["confirmed_review_source.txt"]
         candidate = _parse_json_model(
             payloads["confirmed_review_candidate.json"],

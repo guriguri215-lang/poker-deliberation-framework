@@ -12,20 +12,24 @@ from pydantic import BaseModel
 from poker_deliberation.schemas import CaseInput, SecurityEvent
 
 _SENSITIVE_KEY = re.compile(
-    r"(?:api[_-]?key|authorization|bearer|cookie|password|passwd|secret|session[_-]?token|access[_-]?token)",
+    r"(?:api[ _-]?key|authorization|bearer|cookie|password|passwd|secret|"
+    r"session[ _-]?token|access[ _-]?token|client[ _-]?secret)",
     re.IGNORECASE,
 )
 _SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"),
     re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b", re.IGNORECASE),
     re.compile(
-        r"\b(?:api[_-]?key|password|secret|token)\s*[:=]\s*[^\s,;]+",
+        r"\b(?:api[ _-]?key|password|secret|token|access[ _-]?token|"
+        r"client[ _-]?secret)\s*[:=]\s*[^\s,;]+",
         re.IGNORECASE,
     ),
 )
 
 _REAL_TIME_ASSISTANCE = re.compile(
-    r"(?:今(?:まさに)?プレイ中|リアルタイム(?:で|の).{0,20}(?:指示|助言|教えて)|"
+    r"(?:(?:いま|今|現在)(?:は)?.{0,24}(?:ポーカー|ハンド|ゲーム).{0,16}"
+    r"(?:中|プレイ中|参加中|打って(?:い)?る)|"
+    r"今(?:まさに)?プレイ中|リアルタイム(?:で|の).{0,20}(?:指示|助言|教えて)|"
     r"(?:i(?:['\u2019]m| am)\s+)?playing\s+(?:poker\s+)?(?:right\s+)?now\b|"
     r"(?:i(?:['\u2019]m| am)\s+)?at\s+(?:a|the)\s+poker\s+table\s+(?:right\s+)?now\b|"
     r"(?:i(?:['\u2019]m| am)\s+)?in\s+(?:an?\s+)?(?:online\s+)?"
@@ -41,7 +45,9 @@ _REAL_TIME_ASSISTANCE = re.compile(
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
-    r"(?:\b(?:i(?:['\u2019]m| am)\s+)?not\s+(?:currently\s+)?"
+    r"(?:(?:いま|今|現在)(?:は)?.{0,24}(?:ポーカー|ハンド|ゲーム).{0,16}"
+    r"(?:中ではありません|中ではない|プレイしていません|参加していません)|"
+    r"\b(?:i(?:['\u2019]m| am)\s+)?not\s+(?:currently\s+)?"
     r"(?:playing(?:\s+poker)?|at\s+(?:a|the)\s+poker\s+table|"
     r"in\s+(?:an?\s+)?(?:online\s+)?(?:poker\s+|cash\s+)?game|"
     r"seated\s+at\s+(?:a|the)\s+(?:poker|tournament)\s+table)\s+"

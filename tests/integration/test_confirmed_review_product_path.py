@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -19,6 +20,7 @@ from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider
 from poker_deliberation.storage.revision_canonical import parse_canonical_model
 from poker_deliberation.storage.terminal_models import RunReadStatus
+from poker_deliberation.tools import default_registry
 from tests.confirmed_review_support import app_config, confirmed_admission
 from tests.confirmed_review_support import candidate_payload as base_candidate_payload
 from tests.range_support import versioned_range_hand
@@ -97,7 +99,6 @@ def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> No
         admission.source_bytes,
         admission.candidate,
         different_confirmation,
-        admitted_at=admission.admitted_at,
     )
     with pytest.raises(ConfirmedReviewError) as captured:
         orchestrator.run_confirmed_review(conflicting)
@@ -140,6 +141,65 @@ def test_forged_confirmed_metadata_and_injected_runtime_are_rejected(tmp_path) -
         over_permissive.run_confirmed_review(admission)
     assert runtime_budget.value.code is ConfirmedReviewDiagnosticCode.RUNTIME_BUDGET
     assert over_permissive._namespace_kind(admission.confirmation.run_id) is None
+
+
+def test_runtime_dependency_mutation_and_historical_admission_are_rejected(tmp_path) -> None:
+    admission = confirmed_admission(
+        run_id="run-confirmed-runtime-mutation-1",
+        now=datetime.now(UTC),
+    )
+
+    class LocalProviderSubclass(LocalProvider):
+        pass
+
+    provider_mutated = Orchestrator(
+        app_config(tmp_path / "provider-mutated"),
+        provider=LocalProvider(),
+    )
+    provider_mutated.analysis_executor.provider = LocalProviderSubclass()
+    with pytest.raises(ConfirmedReviewError) as provider_error:
+        provider_mutated.run_confirmed_review(admission)
+    assert provider_error.value.code is ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER
+
+    registry_mutated = Orchestrator(
+        app_config(tmp_path / "registry-mutated"),
+        provider=LocalProvider(),
+    )
+    registry_mutated.tool_research_executor.registry = default_registry()
+    with pytest.raises(ConfirmedReviewError) as registry_error:
+        registry_mutated.run_confirmed_review(admission)
+    assert registry_error.value.code is ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER
+
+    authority = ReviewConfirmationAuthorityV1(
+        authority_id="local-test-user",
+        authority_kind="local_user",
+        authentication="self_asserted",
+    )
+    historical_time = datetime.now(UTC) - timedelta(days=2)
+    expired_confirmation = create_review_confirmation(
+        admission.candidate,
+        run_id=admission.confirmation.run_id,
+        confirmation_id="confirmation-historical-expired",
+        idempotency_key="idempotency-historical-expired",
+        authority=authority,
+        expected_source_sha256=admission.candidate.projection.source.content_sha256,
+        expected_candidate_sha256=admission.candidate.candidate_sha256,
+        confirmed_at=historical_time,
+        expires_at=historical_time + timedelta(hours=1),
+    )
+    forged_historical_admission = replace(
+        admission,
+        confirmation=expired_confirmation,
+        admitted_at=historical_time + timedelta(minutes=1),
+    )
+    current_clock = Orchestrator(
+        app_config(tmp_path / "historical"),
+        provider=LocalProvider(),
+    )
+    with pytest.raises(ConfirmedReviewError) as expired:
+        current_clock.run_confirmed_review(forged_historical_admission)
+    assert expired.value.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_EXPIRED
+    assert current_clock._namespace_kind(admission.confirmation.run_id) is None
 
 
 def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:

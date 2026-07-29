@@ -229,6 +229,15 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
     ),
 }
 
+_CONFIRMED_REVIEW_ARTIFACTS = frozenset(
+    {
+        "confirmed_review_source.txt",
+        "confirmed_review_candidate.json",
+        "confirmed_review_confirmation.json",
+        "confirmed_review_provenance.json",
+    }
+)
+
 _PAYLOAD_ORDER_PREFIX = (
     "confirmed_review_source.txt",
     "confirmed_review_candidate.json",
@@ -871,6 +880,21 @@ def _validate_source_graph(
         else None
     )
     final_report_v2 = final_report_schema_version == FINAL_REPORT_ARTIFACT_V2
+    confirmed_names = set(by_name) & _CONFIRMED_REVIEW_ARTIFACTS
+    input_case = parsed.get("input.json")
+    confirmed_marker = isinstance(input_case, CaseInput) and (
+        "confirmed_review" in input_case.metadata
+    )
+    if confirmed_marker != bool(confirmed_names) or (
+        confirmed_names and confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS
+    ):
+        raise CanonicalStorageError(
+            "confirmed-review marker and complete artifact set must appear together"
+        )
+    if confirmed_marker and not {"input.json", "final_report.json"} <= set(by_name):
+        raise CanonicalStorageError(
+            "confirmed-review structural revision requires input and final report"
+        )
     for entry in inventories:
         allowed_binding_kinds = {"local_data", "source"}
         if entry.logical_name == "approvals.json":
@@ -959,6 +983,56 @@ def _validate_source_graph(
             for binding in by_name[logical_name].provenance_bindings
             if isinstance(binding, binding_type)
         )
+
+    if confirmed_marker:
+        require_payload_sources(
+            "confirmed_review_candidate.json",
+            {"confirmed_review_source.txt"},
+        )
+        require_payload_sources(
+            "confirmed_review_confirmation.json",
+            {
+                "confirmed_review_source.txt",
+                "confirmed_review_candidate.json",
+            },
+        )
+        require_payload_sources(
+            "confirmed_review_provenance.json",
+            {
+                "confirmed_review_source.txt",
+                "confirmed_review_candidate.json",
+                "confirmed_review_confirmation.json",
+                "input.json",
+                "final_report.json",
+            },
+        )
+        try:
+            # Delayed import preserves the canonical-storage dependency direction.
+            from poker_deliberation.confirmed_review import (
+                verify_confirmed_review_provenance,
+            )
+
+            verify_confirmed_review_provenance(
+                source_bytes=cast(str, parsed["confirmed_review_source.txt"]).encode("utf-8"),
+                candidate=cast(
+                    ReviewIntakeCandidateV1,
+                    parsed["confirmed_review_candidate.json"],
+                ),
+                confirmation=cast(
+                    ReviewIntakeConfirmationV1,
+                    parsed["confirmed_review_confirmation.json"],
+                ),
+                case=cast(CaseInput, parsed["input.json"]),
+                report=cast(FinalReport, parsed["final_report.json"]),
+                provenance=cast(
+                    ConfirmedReviewProvenanceV1,
+                    parsed["confirmed_review_provenance.json"],
+                ),
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError(
+                "confirmed-review structural source-to-report replay failed"
+            ) from exc
 
     for entry in inventories:
         phase_bindings = bindings_of_type(entry.logical_name, PhaseBindingV1)

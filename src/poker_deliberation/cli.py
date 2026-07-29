@@ -127,9 +127,9 @@ def _parse_cli_datetime(value: str | None) -> datetime | None:
 
 
 def _emit(value: Any, format_name: str) -> None:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump(mode="json")
     if format_name == "json":
-        if hasattr(value, "model_dump"):
-            value = value.model_dump(mode="json")
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False))
     else:
         if isinstance(value, str):

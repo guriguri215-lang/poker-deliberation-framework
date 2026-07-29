@@ -10,7 +10,9 @@ from poker_deliberation.confirmed_review_evaluation import (
     EVALUATION_FAMILY_ID,
     REQUIRED_CASE_IDS,
     ConfirmedReviewEvaluationFixtureV1,
+    ConfirmedReviewEvaluationResultV1,
     load_confirmed_review_evaluation_fixture,
+    load_confirmed_review_evaluation_result,
     run_confirmed_review_evaluation,
 )
 
@@ -53,3 +55,29 @@ def test_unexpected_or_missing_evidence_scores_zero(tmp_path) -> None:
     assert result.case_results[0].score == "0.0"
     assert result.overall_score == "0.0"
     assert result.passed is False
+
+
+@pytest.mark.parametrize("mutation", ["case", "inventory", "digest"])
+def test_forged_evaluation_result_is_rejected(tmp_path, mutation: str) -> None:
+    fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
+    result = run_confirmed_review_evaluation(fixture, work_root=tmp_path / mutation)
+    value = result.model_dump(mode="json")
+    if mutation == "case":
+        value["case_results"][0]["observed_evidence"] = ["forged-evidence"]
+    elif mutation == "inventory":
+        value["case_results"].pop()
+    else:
+        value["result_sha256"] = "0" * 64
+    with pytest.raises(ValidationError):
+        ConfirmedReviewEvaluationResultV1.model_validate_json(
+            json.dumps(value),
+            strict=True,
+        )
+
+
+def test_verified_evaluation_result_loader_recomputes_digest(tmp_path) -> None:
+    fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
+    result = run_confirmed_review_evaluation(fixture, work_root=tmp_path / "run")
+    path = tmp_path / "result.json"
+    path.write_text(result.model_dump_json(), encoding="utf-8")
+    assert load_confirmed_review_evaluation_result(path) == result

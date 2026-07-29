@@ -474,6 +474,8 @@ class Orchestrator:
         self._publication_plans: dict[str, tuple[int, str]] = {}
         self._approval_v2_payloads: dict[str, dict[str, bytes]] = {}
         self._confirmed_review_admissions: dict[str, ConfirmedReviewAdmission] = {}
+        self._confirmed_review_provider = self.provider
+        self._confirmed_review_registry = self.registry
         self._confirmed_review_registry_sha256 = canonical_domain_sha256(
             "poker-confirmed-review-registry-v1",
             self.registry.describe(),
@@ -1110,9 +1112,13 @@ class Orchestrator:
             admission.source_bytes,
             admission.candidate,
             admission.confirmation,
-            admitted_at=admission.admitted_at,
         )
-        if verified_admission != admission:
+        if (
+            verified_admission.source_bytes != admission.source_bytes
+            or verified_admission.candidate != admission.candidate
+            or verified_admission.confirmation != admission.confirmation
+            or verified_admission.case != admission.case
+        ):
             raise ConfirmedReviewError(
                 ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING,
                 "admission",
@@ -1121,10 +1127,19 @@ class Orchestrator:
         run_id = admission.confirmation.run_id
         if (
             type(self.provider) is not LocalProvider
+            or self.provider is not self._confirmed_review_provider
             or self.provider.availability().provider != "local"
             or self.provider.availability().version != "1.0.0"
             or self._registry_was_injected
             or type(self.registry) is not ToolRegistry
+            or self.registry is not self._confirmed_review_registry
+            or type(self.analysis_executor) is not AnalysisExecutor
+            or self.analysis_executor.provider is not self.provider
+            or self.analysis_executor.monotonic_clock is not self.monotonic_clock
+            or type(self.tool_research_executor) is not ToolResearchExecutor
+            or self.tool_research_executor.registry is not self.registry
+            or self.tool_research_executor.record_sensitive_data
+            != self.config.record_sensitive_data
             or canonical_domain_sha256(
                 "poker-confirmed-review-registry-v1",
                 self.registry.describe(),

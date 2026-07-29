@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pytest
@@ -15,6 +16,7 @@ from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     artifact_table_entry,
     build_inventory,
+    canonical_json_bytes,
     classification_evidence_sha256,
 )
 from poker_deliberation.storage.revision_models import (
@@ -54,6 +56,7 @@ def _published_payloads(tmp_path):
         "provenance",
         "omit-provenance",
         "omit-all-confirmed-artifacts",
+        "report-marker-only",
     ],
 )
 def test_any_confirmed_review_chain_mutation_fails_replay(tmp_path, mutation: str) -> None:
@@ -62,10 +65,14 @@ def test_any_confirmed_review_chain_mutation_fails_replay(tmp_path, mutation: st
         payloads["confirmed_review_source.txt"] += b"tamper\n"
     elif mutation == "omit-provenance":
         del payloads["confirmed_review_provenance.json"]
-    elif mutation == "omit-all-confirmed-artifacts":
+    elif mutation in {"omit-all-confirmed-artifacts", "report-marker-only"}:
         for logical_name in tuple(payloads):
             if logical_name.startswith("confirmed_review_"):
                 del payloads[logical_name]
+        if mutation == "report-marker-only":
+            input_payload = json.loads(payloads["input.json"])
+            del input_payload["metadata"]["confirmed_review"]
+            payloads["input.json"] = canonical_json_bytes(input_payload)
     else:
         logical_name = f"confirmed_review_{mutation}.json"
         data = bytearray(payloads[logical_name])

@@ -52,12 +52,22 @@ def _prepare_source(source: bytes):
         (b"source\x00\n", ConfirmedReviewDiagnosticCode.SOURCE_CONTROL),
         (b"api_key=sk-abcdefgh\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
         (b"api key: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
+        (b"api  key: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
+        (b"api\tkey: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
         (
             b"I am currently playing poker right now. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
         (
             "いまオンラインポーカー中です。次のアクションはcallとfoldのどちらですか?\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "いまオンライン卓に参加しています。次のアクションはcallとfoldのどちらですか?\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "ただいまオンラインポーカーを打っています。次のアクションを教えてください。\n".encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
     ],

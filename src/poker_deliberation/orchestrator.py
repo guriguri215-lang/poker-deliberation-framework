@@ -235,6 +235,16 @@ from poker_deliberation.storage.terminal_store import (
 )
 from poker_deliberation.tools import ToolRegistry, default_registry
 
+_CONFIRMED_LOCAL_PROVIDER_AVAILABILITY = LocalProvider.availability
+_CONFIRMED_LOCAL_PROVIDER_ANALYZE = LocalProvider.analyze
+_CONFIRMED_ANALYSIS_EXECUTOR_RUN = AnalysisExecutor.run
+_CONFIRMED_TOOL_EXECUTOR_RUN = ToolResearchExecutor.run
+_CONFIRMED_REGISTRY_DESCRIBE = ToolRegistry.describe
+_CONFIRMED_REGISTRY_EXECUTE = ToolRegistry.execute
+_CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE = ToolRegistry.execute_for_phase
+_CONFIRMED_REGISTRY_NAMES = ToolRegistry.names
+_CONFIRMED_REGISTRY_RUNTIME_IDENTITY = ToolRegistry.runtime_identity_snapshot
+
 
 def new_run_id() -> str:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -480,6 +490,11 @@ class Orchestrator:
             "poker-confirmed-review-registry-v1",
             self.registry.describe(),
         )
+        self._confirmed_review_registry_runtime_snapshot = ToolRegistry.runtime_identity_snapshot(
+            self.registry
+        )
+        self._confirmed_review_analysis_context_clock = self.analysis_executor.context_clock
+        self._confirmed_review_analysis_record_clock = self.analysis_executor.record_clock
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
         machine = self._run_machines.get(run_id)
@@ -1102,6 +1117,56 @@ class Orchestrator:
                 confidence=ConfidenceGrade.D,
             )
 
+    def _confirmed_review_runtime_is_exact(self) -> bool:
+        if (
+            LocalProvider.availability is not _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY
+            or LocalProvider.analyze is not _CONFIRMED_LOCAL_PROVIDER_ANALYZE
+            or AnalysisExecutor.run is not _CONFIRMED_ANALYSIS_EXECUTOR_RUN
+            or ToolResearchExecutor.run is not _CONFIRMED_TOOL_EXECUTOR_RUN
+            or ToolRegistry.describe is not _CONFIRMED_REGISTRY_DESCRIBE
+            or ToolRegistry.execute is not _CONFIRMED_REGISTRY_EXECUTE
+            or ToolRegistry.execute_for_phase is not _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE
+            or ToolRegistry.names is not _CONFIRMED_REGISTRY_NAMES
+            or ToolRegistry.runtime_identity_snapshot is not _CONFIRMED_REGISTRY_RUNTIME_IDENTITY
+            or any(name in vars(self.provider) for name in ("availability", "analyze"))
+            or "run" in vars(self.analysis_executor)
+            or "run" in vars(self.tool_research_executor)
+            or any(
+                name in vars(self.registry)
+                for name in (
+                    "describe",
+                    "execute",
+                    "execute_for_phase",
+                    "names",
+                    "runtime_identity_snapshot",
+                )
+            )
+            or self.analysis_executor.context_clock
+            is not self._confirmed_review_analysis_context_clock
+            or self.analysis_executor.record_clock
+            is not self._confirmed_review_analysis_record_clock
+        ):
+            return False
+        current = ToolRegistry.runtime_identity_snapshot(self.registry)
+        expected = self._confirmed_review_registry_runtime_snapshot
+        return len(current) == len(expected) and all(
+            current_name == expected_name
+            and current_definition is expected_definition
+            and current_function is expected_function
+            and current_contract is expected_contract
+            for (
+                current_name,
+                current_definition,
+                current_function,
+                current_contract,
+            ), (
+                expected_name,
+                expected_definition,
+                expected_function,
+                expected_contract,
+            ) in zip(current, expected, strict=True)
+        )
+
     def run_confirmed_review(
         self,
         admission: ConfirmedReviewAdmission,
@@ -1125,11 +1190,17 @@ class Orchestrator:
             )
         admission = verified_admission
         run_id = admission.confirmation.run_id
+        if not self._confirmed_review_runtime_is_exact():
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        provider_availability = self.provider.availability()
         if (
             type(self.provider) is not LocalProvider
             or self.provider is not self._confirmed_review_provider
-            or self.provider.availability().provider != "local"
-            or self.provider.availability().version != "1.0.0"
+            or provider_availability.provider != "local"
+            or provider_availability.version != "1.0.0"
             or self._registry_was_injected
             or type(self.registry) is not ToolRegistry
             or self.registry is not self._confirmed_review_registry

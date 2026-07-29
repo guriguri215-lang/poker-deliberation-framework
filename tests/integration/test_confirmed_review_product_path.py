@@ -9,6 +9,7 @@ from poker_deliberation.config import BudgetConfig
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewError,
     admit_confirmed_review,
+    build_confirmed_review_provenance,
     create_review_confirmation,
 )
 from poker_deliberation.confirmed_review_models import (
@@ -61,6 +62,26 @@ def test_confirmed_review_publishes_complete_bound_artifact_chain(tmp_path) -> N
     assert provenance.confirmation_sha256 == admission.confirmation.confirmation_sha256
     assert provenance.provider_narrative_epistemic_label == "UNKNOWN"
     assert {item.epistemic_label for item in provenance.tool_support} == {"CALCULATED"}
+
+
+def test_report_confirmed_marker_must_match_admitted_case(tmp_path) -> None:
+    admission = confirmed_admission(
+        run_id="run-confirmed-report-marker-1",
+        now=datetime.now(UTC),
+    )
+    report = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    ).run_confirmed_review(admission)
+    reconstructed_input = report.model_dump(mode="json")["reconstructed_input"]
+    reconstructed_input["metadata"]["confirmed_review"]["intake_id"] = "intake-forged"
+    forged_report = report.model_copy(
+        update={"reconstructed_input": reconstructed_input},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as marker:
+        build_confirmed_review_provenance(admission, forged_report)
+    assert marker.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
@@ -200,6 +221,49 @@ def test_runtime_dependency_mutation_and_historical_admission_are_rejected(tmp_p
         current_clock.run_confirmed_review(forged_historical_admission)
     assert expired.value.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_EXPIRED
     assert current_clock._namespace_kind(admission.confirmation.run_id) is None
+
+
+def test_runtime_callable_and_tool_function_mutation_are_rejected(tmp_path) -> None:
+    def assert_runtime_rejected(label, mutate) -> None:
+        admission = confirmed_admission(
+            run_id=f"run-confirmed-callable-{label}",
+            now=datetime.now(UTC),
+        )
+        orchestrator = Orchestrator(
+            app_config(tmp_path / label),
+            provider=LocalProvider(),
+        )
+        mutate(orchestrator)
+        with pytest.raises(ConfirmedReviewError) as runtime:
+            orchestrator.run_confirmed_review(admission)
+        assert runtime.value.code is ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER
+        assert orchestrator._namespace_kind(admission.confirmation.run_id) is None
+
+    def shadow_provider(orchestrator) -> None:
+        original = orchestrator.provider.analyze
+        orchestrator.provider.analyze = lambda context, assignment, control: original(
+            context, assignment, control
+        )
+
+    def shadow_analysis_executor(orchestrator) -> None:
+        original = orchestrator.analysis_executor.run
+        orchestrator.analysis_executor.run = lambda request: original(request)
+
+    def shadow_registry_execute(orchestrator) -> None:
+        original = orchestrator.registry.execute
+        orchestrator.registry.execute = lambda *args, **kwargs: original(*args, **kwargs)
+
+    def replace_tool_function(orchestrator) -> None:
+        definition = orchestrator.registry._tools["hand_validator"]
+        orchestrator.registry._tools["hand_validator"] = replace(
+            definition,
+            function=lambda payload: definition.function(payload),
+        )
+
+    assert_runtime_rejected("provider", shadow_provider)
+    assert_runtime_rejected("analysis-executor", shadow_analysis_executor)
+    assert_runtime_rejected("registry-execute", shadow_registry_execute)
+    assert_runtime_rejected("tool-function", replace_tool_function)
 
 
 def test_one_versioned_range_runs_only_validation_then_combos(tmp_path) -> None:

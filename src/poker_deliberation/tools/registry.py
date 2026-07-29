@@ -147,6 +147,16 @@ class ToolRegistry:
             )
         return descriptions
 
+    def runtime_identity_snapshot(
+        self,
+    ) -> tuple[tuple[str, ToolDefinition, ToolFunction, ToolContract | None], ...]:
+        """Return in-process identities that the serial runtime actually invokes."""
+
+        return tuple(
+            (name, definition, definition.function, definition.contract)
+            for name, definition in sorted(self._tools.items())
+        )
+
     def execute(
         self,
         name: str,

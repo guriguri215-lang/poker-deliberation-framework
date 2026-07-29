@@ -685,6 +685,23 @@ def build_confirmed_review_provenance(
     admission = verified_admission
     if report.run_id != admission.confirmation.run_id:
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "report.run_id")
+    expected_marker = admission.case.metadata.get("confirmed_review")
+    report_metadata = report.reconstructed_input.get("metadata")
+    report_marker_present = isinstance(report_metadata, dict) and (
+        "confirmed_review" in report_metadata
+    )
+    report_marker = (
+        report_metadata.get("confirmed_review") if isinstance(report_metadata, dict) else None
+    )
+    if (
+        "confirmed_review" not in admission.case.metadata
+        or not report_marker_present
+        or report_marker != expected_marker
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reconstructed_input.metadata.confirmed_review",
+        )
     input_claims = {claim.claim_id: claim for claim in admission.case.claims}
     for assessment in report.claim_assessments:
         source_claim = input_claims.get(assessment.claim_id)

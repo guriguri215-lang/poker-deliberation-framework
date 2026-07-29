@@ -7,6 +7,7 @@ import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import mkdtemp
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -44,25 +45,33 @@ EVALUATION_FAMILY_ID: Literal["poker-confirmed-review-evaluation-json-v1"] = (
 EVALUATION_SCHEMA_VERSION = "1.0.0"
 EVALUATION_THRESHOLD = "1.0"
 
-REQUIRED_CASE_IDS = (
-    "confirmed-complete-hand",
-    "confirmed-hand-one-range",
-    "missing-required-fact",
-    "source-candidate-hash-mismatch",
-    "source-mutation-after-confirmation",
-    "candidate-mutation-after-confirmation",
-    "missing-invalid-confirmation",
-    "expired-confirmation",
-    "authority-scope-mismatch",
-    "cross-run-replay",
-    "unsupported-range",
-    "multiple-ranges",
-    "external-provider-request",
-    "solver-request",
-    "report-claim-overreach",
-    "missing-tampered-storage-artifact",
-    "size-encoding-security-boundary",
+REQUIRED_CASE_EVIDENCE = (
+    ("confirmed-complete-hand", ("complete-local-terminal",)),
+    ("confirmed-hand-one-range", ("range-validate-then-combos",)),
+    ("missing-required-fact", ("missing-fact-rejected",)),
+    ("source-candidate-hash-mismatch", ("hash-mismatch-rejected",)),
+    ("source-mutation-after-confirmation", ("source-mutation-rejected",)),
+    ("candidate-mutation-after-confirmation", ("candidate-mutation-rejected",)),
+    ("missing-invalid-confirmation", ("missing-confirmation-rejected",)),
+    ("expired-confirmation", ("expired-confirmation-rejected",)),
+    ("authority-scope-mismatch", ("authority-scope-rejected",)),
+    ("cross-run-replay", ("cross-run-replay-rejected",)),
+    ("unsupported-range", ("unsupported-range-rejected",)),
+    ("multiple-ranges", ("multiple-ranges-rejected",)),
+    ("external-provider-request", ("external-provider-rejected",)),
+    ("solver-request", ("solver-request-rejected",)),
+    ("report-claim-overreach", ("report-overreach-rejected",)),
+    ("missing-tampered-storage-artifact", ("storage-tamper-rejected",)),
+    (
+        "size-encoding-security-boundary",
+        (
+            "size-boundary-rejected",
+            "encoding-boundary-rejected",
+            "security-boundary-rejected",
+        ),
+    ),
 )
+REQUIRED_CASE_IDS = tuple(case_id for case_id, _evidence in REQUIRED_CASE_EVIDENCE)
 
 _SOURCE = b"Synthetic retrospective NLHE hand for contract evaluation.\n"
 _NOW = datetime.now(UTC)
@@ -96,8 +105,13 @@ class ConfirmedReviewEvaluationFixtureV1(_EvaluationModel):
 
     @model_validator(mode="after")
     def exact_case_inventory(self) -> ConfirmedReviewEvaluationFixtureV1:
-        case_ids = tuple(item.case_id for item in self.cases)
-        if case_ids != REQUIRED_CASE_IDS or len(case_ids) != len(set(case_ids)):
+        inventory = tuple((item.case_id, item.expected_evidence) for item in self.cases)
+        case_ids = tuple(case_id for case_id, _evidence in inventory)
+        if (
+            inventory != REQUIRED_CASE_EVIDENCE
+            or case_ids != REQUIRED_CASE_IDS
+            or len(case_ids) != len(set(case_ids))
+        ):
             raise ValueError("confirmed-review evaluation case inventory mismatch")
         return self
 
@@ -132,8 +146,13 @@ class ConfirmedReviewEvaluationResultV1(_EvaluationModel):
 
     @model_validator(mode="after")
     def inventory_score_and_digest_are_exact(self) -> ConfirmedReviewEvaluationResultV1:
-        case_ids = tuple(item.case_id for item in self.case_results)
-        if case_ids != REQUIRED_CASE_IDS or len(case_ids) != len(set(case_ids)):
+        inventory = tuple((item.case_id, item.expected_evidence) for item in self.case_results)
+        case_ids = tuple(case_id for case_id, _evidence in inventory)
+        if (
+            inventory != REQUIRED_CASE_EVIDENCE
+            or case_ids != REQUIRED_CASE_IDS
+            or len(case_ids) != len(set(case_ids))
+        ):
             raise ValueError("confirmed-review evaluation result inventory mismatch")
         all_passed = all(item.passed and item.score == "1.0" for item in self.case_results)
         if self.passed is not all_passed or self.overall_score != ("1.0" if all_passed else "0.0"):
@@ -672,7 +691,8 @@ def run_confirmed_review_evaluation(
 ) -> ConfirmedReviewEvaluationResultV1:
     if tuple(_HANDLERS) != REQUIRED_CASE_IDS:
         raise ValueError("confirmed-review evaluation handler inventory mismatch")
-    context = _EvaluationContext(work_root)
+    work_root.mkdir(parents=True, exist_ok=True)
+    context = _EvaluationContext(Path(mkdtemp(prefix="i-", dir=work_root)))
     results: list[ConfirmedReviewEvaluationCaseResultV1] = []
     for case in fixture.cases:
         try:

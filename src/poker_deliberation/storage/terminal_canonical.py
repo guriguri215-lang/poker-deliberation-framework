@@ -428,7 +428,19 @@ def product_payload_commitments(
     except ValueError as exc:
         raise CanonicalStorageError("versioned range tool chain replay failed") from exc
     confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS
-    confirmed_marker = "confirmed_review" in input_case.metadata
+    input_marker_present = "confirmed_review" in input_case.metadata
+    report_metadata = report.reconstructed_input.get("metadata")
+    report_marker_present = isinstance(report_metadata, dict) and (
+        "confirmed_review" in report_metadata
+    )
+    report_marker = (
+        report_metadata.get("confirmed_review") if isinstance(report_metadata, dict) else None
+    )
+    if input_marker_present != report_marker_present or (
+        input_marker_present and report_marker != input_case.metadata["confirmed_review"]
+    ):
+        raise CanonicalStorageError("confirmed-review input and report markers must match exactly")
+    confirmed_marker = input_marker_present or report_marker_present
     if confirmed_marker != bool(confirmed_names) or (
         confirmed_names and confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS
     ):

@@ -15,6 +15,7 @@ from poker_deliberation.confirmed_review_evaluation import (
     load_confirmed_review_evaluation_result,
     run_confirmed_review_evaluation,
 )
+from poker_deliberation.storage.revision_canonical import canonical_domain_sha256
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "confirmed_review" / "v1" / "scenarios.json"
@@ -47,17 +48,17 @@ def test_evaluation_case_inventory_fails_closed(mutation: str) -> None:
         ConfirmedReviewEvaluationFixtureV1.model_validate_json(json.dumps(value))
 
 
-def test_unexpected_or_missing_evidence_scores_zero(tmp_path) -> None:
+def test_fixture_expected_evidence_mutation_fails_closed() -> None:
     value = json.loads(FIXTURE.read_text(encoding="utf-8"))
     value["cases"][0]["expected_evidence"] = ["undeclared-evidence"]
-    fixture = ConfirmedReviewEvaluationFixtureV1.model_validate_json(json.dumps(value))
-    result = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
-    assert result.case_results[0].score == "0.0"
-    assert result.overall_score == "0.0"
-    assert result.passed is False
+    with pytest.raises(ValidationError):
+        ConfirmedReviewEvaluationFixtureV1.model_validate_json(json.dumps(value))
 
 
-@pytest.mark.parametrize("mutation", ["case", "inventory", "digest"])
+@pytest.mark.parametrize(
+    "mutation",
+    ["case", "inventory", "digest", "expected-and-observed"],
+)
 def test_forged_evaluation_result_is_rejected(tmp_path, mutation: str) -> None:
     fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
     result = run_confirmed_review_evaluation(fixture, work_root=tmp_path / mutation)
@@ -66,6 +67,14 @@ def test_forged_evaluation_result_is_rejected(tmp_path, mutation: str) -> None:
         value["case_results"][0]["observed_evidence"] = ["forged-evidence"]
     elif mutation == "inventory":
         value["case_results"].pop()
+    elif mutation == "expected-and-observed":
+        for case_result in value["case_results"]:
+            case_result["expected_evidence"] = ["forged-evidence"]
+            case_result["observed_evidence"] = ["forged-evidence"]
+        value["result_sha256"] = canonical_domain_sha256(
+            EVALUATION_FAMILY_ID,
+            {key: item for key, item in value.items() if key != "result_sha256"},
+        )
     else:
         value["result_sha256"] = "0" * 64
     with pytest.raises(ValidationError):
@@ -81,3 +90,10 @@ def test_verified_evaluation_result_loader_recomputes_digest(tmp_path) -> None:
     path = tmp_path / "result.json"
     path.write_text(result.model_dump_json(), encoding="utf-8")
     assert load_confirmed_review_evaluation_result(path) == result
+
+
+def test_evaluation_reuses_work_root_without_cross_run_collision(tmp_path) -> None:
+    fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
+    first = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
+    second = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
+    assert second == first

@@ -882,9 +882,29 @@ def _validate_source_graph(
     final_report_v2 = final_report_schema_version == FINAL_REPORT_ARTIFACT_V2
     confirmed_names = set(by_name) & _CONFIRMED_REVIEW_ARTIFACTS
     input_case = parsed.get("input.json")
-    confirmed_marker = isinstance(input_case, CaseInput) and (
+    final_report = parsed.get("final_report.json")
+    input_marker_present = isinstance(input_case, CaseInput) and (
         "confirmed_review" in input_case.metadata
     )
+    input_marker = (
+        input_case.metadata.get("confirmed_review") if isinstance(input_case, CaseInput) else None
+    )
+    report_metadata = (
+        final_report.reconstructed_input.get("metadata")
+        if isinstance(final_report, FinalReport)
+        else None
+    )
+    report_marker_present = isinstance(report_metadata, dict) and (
+        "confirmed_review" in report_metadata
+    )
+    report_marker = (
+        report_metadata.get("confirmed_review") if isinstance(report_metadata, dict) else None
+    )
+    if input_marker_present != report_marker_present or (
+        input_marker_present and report_marker != input_marker
+    ):
+        raise CanonicalStorageError("confirmed-review input and report markers must match exactly")
+    confirmed_marker = input_marker_present or report_marker_present
     if confirmed_marker != bool(confirmed_names) or (
         confirmed_names and confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS
     ):

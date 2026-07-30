@@ -462,6 +462,7 @@ def test_noncompleted_execution_requires_safe_nonempty_error(
         secret_error_report = report.model_copy(
             update={
                 "run_status": "failed_with_limitations",
+                "conclusion": ("実行予算または安全上の制限に達したため、制限付きで終了しました。"),
                 "agent_execution_records": [
                     secret_error,
                     *report.agent_execution_records[1:],
@@ -472,6 +473,159 @@ def test_noncompleted_execution_requires_safe_nonempty_error(
         with pytest.raises(ConfirmedReviewError) as secret:
             build_confirmed_review_provenance(admission, secret_error_report)
         assert secret.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
+def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -> None:
+    admission = confirmed_admission(
+        run_id="run-confirmed-provider-failure-authority-1",
+        now=datetime.now(UTC),
+    )
+    orchestrator = Orchestrator(app_config(tmp_path), provider=LocalProvider())
+    report = orchestrator.run_confirmed_review(admission)
+    read = orchestrator.product_store.read_current(report.run_id)
+    storage_authority = {
+        "storage_root": orchestrator.product_store.revision_root,
+        "storage_revision": read.revision,
+        "storage_transaction_id": read.transaction_id,
+    }
+    assignments = [
+        AgentAssignment.model_validate(item)
+        for item in json.loads(read.payload_bytes("assignments.json"))
+    ]
+    reports_by_role = {
+        parsed.agent_role: parsed
+        for payload in read.payloads
+        if payload.inventory.logical_name.startswith("agent_reports/")
+        for parsed in [AgentReport.model_validate_json(payload.exact_bytes)]
+    }
+    agent_reports = [
+        reports_by_role[record.agent_role] for record in report.agent_execution_records
+    ]
+    provenance_authority = {
+        **storage_authority,
+        "assignments": assignments,
+        "agent_reports": agent_reports,
+    }
+    first = report.agent_execution_records[0]
+
+    def forged_failure_report(
+        *,
+        status: AgentExecutionStatus,
+        error: str,
+        data_quality: list[str],
+    ) -> FinalReport:
+        record = first.model_copy(update={"status": status, "error": error}, deep=True)
+        exact_data_quality = [*report.data_quality, *data_quality]
+        return report.model_copy(
+            update={
+                "run_status": "failed_with_limitations",
+                "conclusion": ("実行予算または安全上の制限に達したため、制限付きで終了しました。"),
+                "agent_execution_records": [
+                    record,
+                    *report.agent_execution_records[1:],
+                ],
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+
+    wrong_status_cases = (
+        (
+            AgentExecutionStatus.REFUSED,
+            "context envelope has expired",
+            ["provider intake context rejected: context envelope has expired"],
+        ),
+        (
+            AgentExecutionStatus.FALLBACK,
+            "context envelope has expired",
+            ["provider intake context rejected: context envelope has expired"],
+        ),
+        (
+            AgentExecutionStatus.FAILED,
+            "context handoff policy refused",
+            ["provider intake handoff refused: context handoff policy refused"],
+        ),
+        (
+            AgentExecutionStatus.REFUSED,
+            "provider report ID is duplicated",
+            ["provider intake report ID rejected: provider report ID is duplicated"],
+        ),
+        (
+            AgentExecutionStatus.FAILED,
+            "RuntimeError: provider analyze failed",
+            ["provider intake failed: RuntimeError"],
+        ),
+        (
+            AgentExecutionStatus.REFUSED,
+            "RuntimeError: provider analyze failed",
+            ["provider intake failed: RuntimeError"],
+        ),
+    )
+    for status, error, data_quality in wrong_status_cases:
+        with pytest.raises(ConfirmedReviewError) as wrong_status:
+            build_confirmed_review_provenance(
+                admission,
+                forged_failure_report(
+                    status=status,
+                    error=error,
+                    data_quality=data_quality,
+                ),
+                **provenance_authority,
+            )
+        assert wrong_status.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    alias_report = forged_failure_report(
+        status=AgentExecutionStatus.FAILED,
+        error="context envelope has expired",
+        data_quality=[
+            "provider intake context rejected: context envelope has expired",
+            "provider intake report ID rejected: context envelope has expired",
+        ],
+    )
+    with pytest.raises(ConfirmedReviewError) as alias:
+        build_confirmed_review_provenance(
+            admission,
+            alias_report,
+            **provenance_authority,
+        )
+    assert alias.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    cancellation_report = forged_failure_report(
+        status=AgentExecutionStatus.FAILED,
+        error="provider exceeded deadline 0.125 seconds",
+        data_quality=[
+            "provider exceeded deadline 0.125 seconds",
+            "provider cancellation was not confirmed",
+        ],
+    )
+    cancellation_provenance = build_confirmed_review_provenance(
+        admission,
+        cancellation_report,
+        **provenance_authority,
+    )
+    assert cancellation_provenance.run_id == report.run_id
+
+    runtime_message = "maximum runtime reached before provider analysis"
+    runtime_report = report.model_copy(
+        update={
+            "run_status": "failed_with_limitations",
+            "data_quality": [*report.data_quality, runtime_message],
+            "limitations": [
+                *report.data_quality,
+                runtime_message,
+                report.limitations[-1],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as runtime_stage:
+        build_confirmed_review_provenance(
+            admission,
+            runtime_report,
+            **provenance_authority,
+        )
+    assert runtime_stage.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> None:

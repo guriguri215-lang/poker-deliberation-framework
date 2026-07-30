@@ -132,6 +132,14 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            "\u0455ecret=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "pa\u0455sword=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             b"I am mid-hand at the moment. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -491,6 +499,11 @@ def test_source_contract_fails_closed_with_stable_codes(
             b'"the action is on me." Should I have called or folded?\n'
         ),
         (b'The phrase "the event is not done yet" is terminology, and "call" is a poker term.\n'),
+        (b'The sentence "The event is not done yet. Should I call?" is a terminology example.\n'),
+        (
+            b'The expression "the event is not done yet" is terminology, '
+            b'and "call" is a poker term.\n'
+        ),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -540,6 +553,30 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "We are still alive",
         "We still have chips",
         "I have not been knocked out yet",
+        "We are in the middle of a hand",
+        "The tournament is still on",
+        "We are currently heads-up in the tournament",
+        "Cards are being dealt",
+        "There are 10 seconds left to act",
+        "The timer says 10 seconds",
+        "まだプレイ中です",
+        "まだ卓にいます",
+        "ハンドの途中です",
+        "自分の番が来ました",
+        "残り時間は10秒です",
+        "今ヘッズアップです",
+        (
+            "Yesterday's hand ended. The ongoing livestream transcript says "
+            '"The action is back on me. Should I call?"'
+        ),
+        (
+            "Yesterday's hand ended. The ongoing broadcast caption says "
+            '"The action is back on me. Should I call?"'
+        ),
+        (
+            "Yesterday's hand ended. The ongoing feed caption says "
+            '"The action is back on me. Should I call?"'
+        ),
         (
             'For retrospective review, the hand-history note says "the action is on me." '
             "The stream is live"
@@ -725,6 +762,69 @@ def test_secret_shape_cannot_be_split_into_resolved_ambiguity_text() -> None:
     assert result.status == "blocked"
     assert result.candidate is None
     assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+
+
+@pytest.mark.parametrize("field", ["candidates", "selected"])
+def test_secret_source_tail_is_checked_against_each_later_ambiguity_field(field: str) -> None:
+    payload = candidate_payload()
+    ambiguity = {
+        "ambiguity_id": "ambiguity-secret-nonadjacent-1",
+        "field_path": "hand.actions.2.amount",
+        "description": "Resolved amount.",
+        "status": "resolved",
+        "candidates": ["5"],
+        "selected": "5",
+    }
+    ambiguity[field] = (
+        ["_key=ABCDEFGHIJKLMNOP123456"] if field == "candidates" else "_key=ABCDEFGHIJKLMNOP123456"
+    )
+    payload["ambiguities"] = [ambiguity]
+
+    result = _prepare_source_with_payload(b"api", payload)
+
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+
+
+def test_secret_source_tail_is_checked_against_unrestricted_hand_identifiers() -> None:
+    payload = candidate_payload()
+    payload["hand"]["players"][0]["player_id"] = "_key=ABCDEFGHIJKLMNOP123456"
+    payload["hand"]["hero_player_id"] = "_key=ABCDEFGHIJKLMNOP123456"
+    for action in payload["hand"]["actions"]:
+        if action["actor"] == "hero":
+            action["actor"] = "_key=ABCDEFGHIJKLMNOP123456"
+
+    result = _prepare_source_with_payload(b"api", payload)
+
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+
+
+@pytest.mark.parametrize("field", ["candidates", "selected"])
+def test_live_source_tail_is_checked_against_each_later_ambiguity_field(field: str) -> None:
+    payload = candidate_payload()
+    ambiguity = {
+        "ambiguity_id": "ambiguity-live-nonadjacent-1",
+        "field_path": "hand.actions.2.amount",
+        "description": "Resolved amount.",
+        "status": "resolved",
+        "candidates": ["5"],
+        "selected": "5",
+    }
+    ambiguity[field] = (
+        ["ing poker. Should I call or fold?"]
+        if field == "candidates"
+        else "ing poker. Should I call or fold?"
+    )
+    payload["ambiguities"] = [ambiguity]
+
+    result = _prepare_source_with_payload(b"I am currently play", payload)
+
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
 
 
 def test_hand_observation_free_text_is_in_the_live_security_envelope() -> None:

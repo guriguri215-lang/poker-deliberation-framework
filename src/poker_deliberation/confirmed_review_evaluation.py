@@ -736,14 +736,29 @@ def _boundaries(_context: _EvaluationContext) -> tuple[str, ...]:
         secret.diagnostics
         and secret.diagnostics[0].code is ConfirmedReviewDiagnosticCode.SOURCE_SECRET
     )
-    live = _prepare(
-        _candidate_payload(intake_id="intake-boundary-live"),
-        source=b"I am still in. Should I call?\n",
-        source_id="source-boundary-live",
-    )
-    live_rejected = (
-        live.diagnostics
-        and live.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+    live_rejected = all(
+        (
+            prepared := _prepare(
+                _candidate_payload(intake_id=f"intake-boundary-live-{ordinal}"),
+                source=source,
+                source_id=f"source-boundary-live-{ordinal}",
+            )
+        ).diagnostics
+        and prepared.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+        for ordinal, source in enumerate(
+            (
+                b"I am still in. Should I call?\n",
+                b"We are in the middle of a hand. Should I call?\n",
+                b"The tournament is still on. Should I call?\n",
+                b"There are 10 seconds left to act. Should I call?\n",
+                "まだプレイ中です。コールすべきですか?\n".encode(),
+                (
+                    b"Yesterday's hand ended. The ongoing broadcast caption says "
+                    b'"The action is back on me. Should I call?"\n'
+                ),
+            ),
+            start=1,
+        )
     )
     split_payload = _candidate_payload(intake_id="intake-boundary-split-live")
     split_payload["claims"][0]["text"] = "Review this spot."
@@ -779,7 +794,43 @@ def _boundaries(_context: _EvaluationContext) -> tuple[str, ...]:
             )
         except ConfirmedReviewError as exc:
             admission_rejected = exc.code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
-    if secret_rejected and live_rejected and admission_rejected:
+    split_secret_payload = _candidate_payload(intake_id="intake-boundary-split-secret")
+    split_secret_payload["claims"][0]["text"] = "Review this spot."
+    split_secret = _prepare(
+        split_secret_payload,
+        source=b"api",
+        source_id="source-boundary-split-secret",
+    )
+    split_secret_rejected = False
+    if split_secret.candidate is not None:
+        candidate_input = split_secret.candidate.projection.candidate_input
+        changed_claim = candidate_input.claims[0].model_copy(
+            update={"text": "_key=ABCDEFGHIJKLMNOP123456"}
+        )
+        changed_input = candidate_input.model_copy(update={"claims": (changed_claim,)})
+        changed_projection = split_secret.candidate.projection.model_copy(
+            update={"candidate_input": changed_input}
+        )
+        changed_candidate = split_secret.candidate.model_copy(
+            update={
+                "projection": changed_projection,
+                "candidate_sha256": candidate_sha256(changed_projection),
+            }
+        )
+        confirmation = _confirmation(
+            changed_candidate,
+            run_id="run-evaluation-boundary-split-secret",
+        )
+        try:
+            _admit_confirmed_review_at(
+                b"api",
+                changed_candidate,
+                confirmation,
+                admitted_at=confirmation.confirmed_at,
+            )
+        except ConfirmedReviewError as exc:
+            split_secret_rejected = exc.code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+    if secret_rejected and live_rejected and admission_rejected and split_secret_rejected:
         evidence.append("security-boundary-rejected")
     return tuple(evidence)
 

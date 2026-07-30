@@ -69,6 +69,7 @@ from poker_deliberation.schemas import (
     ToolStatus,
 )
 from poker_deliberation.security import (
+    contains_sensitive_data_across_fragments,
     real_time_assistance_signals,
     redact_sensitive,
     screen_case,
@@ -584,6 +585,23 @@ def _candidate_free_text(candidate: ReviewIntakeCandidateV1) -> list[str]:
     return values
 
 
+def _candidate_string_leaves(candidate: ReviewIntakeCandidateV1) -> list[str]:
+    values: list[str] = []
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            for item in value.values():
+                collect(item)
+        elif isinstance(value, list):
+            for item in value:
+                collect(item)
+        elif isinstance(value, str):
+            values.append(value)
+
+    collect(candidate.projection.candidate_input.model_dump(mode="json"))
+    return values
+
+
 def _validate_combined_security_scope(
     source_bytes: bytes,
     candidate: ReviewIntakeCandidateV1,
@@ -593,6 +611,10 @@ def _validate_combined_security_scope(
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     source_text = source_bytes.decode("utf-8", errors="strict")
     candidate_texts = _candidate_free_text(candidate)
+    if contains_sensitive_data_across_fragments(
+        [source_text, *_candidate_string_leaves(candidate)]
+    ):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY, "candidate")
     boundary_tail = ""
     for fragment in (source_text, *candidate_texts):
         boundary_probe = boundary_tail + fragment[:512]
@@ -604,6 +626,13 @@ def _validate_combined_security_scope(
     )
     if candidate_explicit:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    source_tail = source_text[-512:]
+    for fragment in candidate_texts:
+        boundary_live, boundary_decision, boundary_explicit = real_time_assistance_signals(
+            source_tail + fragment[:512]
+        )
+        if boundary_explicit or (boundary_live and boundary_decision):
+            _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     combined_live, combined_decision, combined_explicit = real_time_assistance_signals(
         [source_text, *candidate_texts]
     )
@@ -970,6 +999,8 @@ def _validate_reproduction_steps(
 def _validate_confirmed_report_projection(
     report: FinalReport,
     *,
+    expected_agent_count: int,
+    expected_tool_names: Sequence[str],
     storage_root: Path | str | None,
     storage_revision: int | None,
     storage_transaction_id: str | None,
@@ -1040,6 +1071,67 @@ def _validate_confirmed_report_projection(
             "monotonic clock must return non-negative integer nanoseconds",
         },
     }
+    actual_tool_names = [result.tool_name for result in report.tool_results]
+
+    def runtime_stage_consistent(item: str) -> bool:
+        record_count = len(report.agent_execution_records)
+        if item == "strict runtime refused before hand validation":
+            return record_count == 0 and not actual_tool_names
+        if item == "provider analysis skipped because round budget is zero":
+            return record_count == 0
+        if item in {
+            "maximum runtime reached before provider analysis",
+            "maximum runtime reached during context build",
+            "maximum runtime reached during provider preflight",
+        }:
+            return record_count < expected_agent_count
+        if item in {
+            "maximum runtime exceeded after provider analysis",
+            "strict runtime refused before versioned range validation",
+            "strict runtime refused before requested tool execution",
+            "maximum runtime exceeded after tool execution",
+        }:
+            return record_count == expected_agent_count
+        if item == "confirmed terminal publication refused with less than 0.25 seconds remaining":
+            return record_count == expected_agent_count and actual_tool_names == list(
+                expected_tool_names
+            )
+        if item in {
+            "maximum runtime exceeded during final synthesis",
+            "maximum runtime exceeded during final artifact writes",
+        }:
+            return (
+                (
+                    record_count == expected_agent_count
+                    and actual_tool_names == list(expected_tool_names)
+                )
+                or any(
+                    record.status.value != "completed" for record in report.agent_execution_records
+                )
+                or any(
+                    other != item
+                    and other
+                    in {
+                        "strict runtime refused before hand validation",
+                        "provider analysis skipped because round budget is zero",
+                        "maximum runtime reached before provider analysis",
+                        "maximum runtime reached during context build",
+                        "maximum runtime reached during provider preflight",
+                        "maximum runtime exceeded after provider analysis",
+                        "strict runtime refused before versioned range validation",
+                        "strict runtime refused before requested tool execution",
+                        "maximum runtime exceeded after tool execution",
+                    }
+                    for other in report.data_quality
+                )
+                or any(
+                    other.startswith(
+                        ("strict usage settlement failed: ", "strict budget failure: ")
+                    )
+                    for other in report.data_quality
+                )
+            )
+        return item in _CONFIRMED_RUNTIME_DATA_QUALITY
 
     def record_data_quality(record: AgentExecutionRecord, item: str) -> bool:
         role = record.agent_role
@@ -1051,26 +1143,41 @@ def _validate_confirmed_report_projection(
             and record.error == "provider context expired before output acceptance"
         ):
             return True
-        for prefix in (
-            f"provider {role} context rejected: ",
-            f"provider {role} handoff refused: ",
-            f"provider {role} report ID rejected: ",
-        ):
-            if item.startswith(prefix) and item.removeprefix(prefix) == record.error:
+        for prefix in (f"provider {role} context rejected: ",):
+            if (
+                item.startswith(prefix)
+                and record.status.value == "failed"
+                and item.removeprefix(prefix) == record.error
+            ):
                 return True
+        handoff_prefix = f"provider {role} handoff refused: "
+        if (
+            item.startswith(handoff_prefix)
+            and record.status.value == "refused"
+            and item.removeprefix(handoff_prefix) == record.error
+        ):
+            return True
+        report_id_prefix = f"provider {role} report ID rejected: "
+        if (
+            item.startswith(report_id_prefix)
+            and record.status.value == "failed"
+            and item.removeprefix(report_id_prefix) == record.error
+        ):
+            return True
         failure_prefix = f"provider {role} failed: "
-        if item.startswith(failure_prefix):
+        if item.startswith(failure_prefix) and record.status.value == "fallback":
             error_type = item.removeprefix(failure_prefix)
             if record.error == f"{error_type}: provider analyze failed":
                 return True
-        if (
-            item == f"provider {role} output exceeded the hard byte limit"
-            and record.status.value in {"failed", "refused"}
-            and record.error
-            in {
-                "provider output exceeded the hard byte limit",
-                "provider_output_bytes exceeded its strict budget",
-            }
+        if item == f"provider {role} output exceeded the hard byte limit" and (
+            (
+                record.status.value == "failed"
+                and record.error == "provider output exceeded the hard byte limit"
+            )
+            or (
+                record.status.value == "refused"
+                and record.error == "provider_output_bytes exceeded its strict budget"
+            )
         ):
             return True
         budget_prefix = f"provider {role} budget refused: "
@@ -1094,27 +1201,47 @@ def _validate_confirmed_report_projection(
 
     def runtime_data_quality(item: str) -> bool:
         if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
-            return True
+            return runtime_stage_consistent(item)
         for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
             if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
                 return True
         return any(record_data_quality(record, item) for record in report.agent_execution_records)
+
+    def cancellation_data_quality(item: str) -> bool:
+        return item == "provider cancellation was not confirmed" and any(
+            record.status.value == "failed"
+            and record.error is not None
+            and re.fullmatch(
+                r"provider exceeded deadline "
+                r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)? seconds",
+                record.error,
+            )
+            is not None
+            for record in report.agent_execution_records
+        )
 
     def allowed_data_quality(item: str) -> bool:
         return (
             item in tool_messages
             or item == _CONFIRMED_UNVERIFIED_CLAIM_WARNING
             or runtime_data_quality(item)
+            or cancellation_data_quality(item)
         )
 
     expected_limitations = list(dict.fromkeys([*report.data_quality, _CONFIRMED_SOLVER_LIMITATION]))
+    record_data_quality_matches = {
+        record.execution_id: [
+            item for item in report.data_quality if record_data_quality(record, item)
+        ]
+        for record in report.agent_execution_records
+    }
     if (
         report.data_quality != unique_data_quality
         or report.limitations != unique_limitations
         or not all(allowed_data_quality(item) for item in report.data_quality)
         or any(
             record.status.value != "completed"
-            and not any(record_data_quality(record, item) for item in report.data_quality)
+            and len(record_data_quality_matches[record.execution_id]) != 1
             for record in report.agent_execution_records
         )
         or report.limitations != expected_limitations
@@ -1261,6 +1388,7 @@ def _build_confirmed_review_provenance(
         )
     expected_tool_results = _expected_tool_results(admission)
     expected_tool_names = list(expected_tool_results)
+    assignment_template_sequence = tuple(select_roles(admission.case))
     actual_tool_names = [result.tool_name for result in report.tool_results]
     if (report.run_status == "completed" and actual_tool_names != expected_tool_names) or (
         report.run_status == "failed_with_limitations"
@@ -1269,6 +1397,8 @@ def _build_confirmed_review_provenance(
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
     _validate_confirmed_report_projection(
         report,
+        expected_agent_count=len(assignment_template_sequence),
+        expected_tool_names=expected_tool_names,
         storage_root=storage_root,
         storage_revision=storage_revision,
         storage_transaction_id=storage_transaction_id,
@@ -1320,7 +1450,6 @@ def _build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.agent_execution_records",
         )
-    assignment_template_sequence = tuple(select_roles(admission.case))
     assignment_templates = {
         assignment.agent_role: assignment for assignment in assignment_template_sequence
     }

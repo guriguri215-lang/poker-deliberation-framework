@@ -66,6 +66,7 @@ _SECRET_CONFUSABLE_TRANSLATION = str.maketrans(
         "\u0442": "t",  # Cyrillic te
         "\u0445": "x",  # Cyrillic ha
         "\u0443": "y",  # Cyrillic u
+        "\u0455": "s",  # Cyrillic dze
         "\u03b1": "a",  # Greek alpha
         "\u03b5": "e",  # Greek epsilon
         "\u03b9": "i",  # Greek iota
@@ -76,6 +77,13 @@ _SECRET_CONFUSABLE_TRANSLATION = str.maketrans(
         "\u03c7": "x",  # Greek chi
         "\u03c5": "y",  # Greek upsilon
     }
+)
+_MIXED_SCRIPT_SECRET_ASSIGNMENT = re.compile(
+    r"(?<![\w.-])"
+    r"(?=[^\s:=]{2,64}\s*[:=])"
+    r"(?=[^\s:=]*[A-Za-z])"
+    r"(?=[^\s:=]*[\u0370-\u052f])"
+    r"[^\s:=]{2,64}\s*[:=]\s*[^\s,;]{8,}",
 )
 
 _REAL_TIME_ASSISTANCE = re.compile(
@@ -179,10 +187,10 @@ _ARCHIVED_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 _LIVE_ATTRIBUTION = re.compile(
-    r"\b(?:current(?:ly)?|live|right\s+now|today(?:'s)?|"
+    r"\b(?:current(?:ly)?|live|ongoing|right\s+now|today(?:'s)?|"
     r"currently\s+broadcasting)\b"
     r"[^.!?\r\n\"'“”]{0,64}"
-    r"\b(?:video|stream|livestream|broadcast|broadcasting|subtitle|caption|"
+    r"\b(?:video|feed|stream|livestream|broadcast|broadcasting|subtitle|caption|"
     r"transcript|recording)\b|"
     r"(?:現在|ライブ)(?:の)?(?:動画|配信|放送|字幕|文字起こし|録画)",
     re.IGNORECASE,
@@ -194,7 +202,8 @@ _INERT_LANGUAGE_EXAMPLE = re.compile(
     r"(?:grammar|language)\s+example\b|"
     r"(?:the\s+)?word\s+(?:call|fold|check|bet|raise|shove|all[- ]?in)\s+"
     r"(?:names?|means?|denotes?|refers?\s+to)\s+(?:an?\s+)?poker\s+action\b|"
-    r"(?:the\s+)?phrase\s+[\"'][^\"'\r\n]{1,128}[\"']\s+is\s+"
+    r"(?:the\s+)?(?:phrase|sentence|expression)\s+"
+    r"[\"'][^\"'\r\n]{1,256}[\"']\s+is\s+"
     r"(?:a\s+)?(?:term|terminology|language\s+example)\b|"
     r"[「『][^」』\r\n]{1,128}[」』](?:は|が)"
     r"[^.!?\r\n\u3002\uff01\uff1f]{0,48}(?:文法例|用語)(?:です|である)?"
@@ -271,7 +280,7 @@ _ACTIVE_LIVE_STATUS = re.compile(
     r"(?:(?:playing|competing|participating)(?:\s+(?:in\s+)?(?:it|this\s+"
     r"(?:mtt|sng|event|game|tournament|hand)))?|in\s+(?:it|this\s+"
     r"(?:mtt|sng|event|game|tournament|hand))|on\s+the\s+bubble)|"
-    r"cards\s+are\s+still\s+being\s+dealt|play\s+is\s+(?:still\s+)?ongoing)\b|"
+    r"cards\s+are\s+(?:still\s+)?being\s+dealt|play\s+is\s+(?:still\s+)?ongoing)\b|"
     r"(?:この|その)?(?:大会|トーナメント|トナメ|MTT|SNG|イベント|ハンド|ゲーム|プレイ)"
     r".{0,16}(?:現在進行中|進行中|継続中|真っ最中|"
     r"まだ終わっていません|終わっていません|終了していません|"
@@ -307,7 +316,7 @@ _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
     r"(?:my\s+)?(?:decision|action)\s+(?:clock|timer)\s+is\s+(?:still\s+)?running|"
     r"(?:before|until)\s+(?:my\s+|the\s+)?"
     r"(?:decision|action)?\s*(?:clock|timer|time\s*bank)\s+expires|"
-    r"cards\s+are\s+still\s+being\s+dealt|play\s+is\s+(?:still\s+)?ongoing"
+    r"cards\s+are\s+(?:still\s+)?being\s+dealt|play\s+is\s+(?:still\s+)?ongoing"
     r")\b|"
     r"(?:\u3053\u306e|\u305d\u306e)?"
     r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|\u30c8\u30ca\u30e1|"
@@ -342,7 +351,7 @@ _ACTIVE_GAME_PREDICATE = re.compile(
     r"(?:is|remains)\s+(?:still\s+|currently\s+)?"
     r"(?:in\s+progress|in\s+full\s+swing|underway|ongoing|active|live|"
     r"going|running|playing|"
-    r"not\s+over|unfinished)|"
+    r"not\s+over|still\s+on|on|unfinished)|"
     r"has\s+yet\s+to\s+(?:end|finish|conclude)|"
     r"(?:is(?:n't|n\u2019t|\s+not)|has(?:n't|n\u2019t|\s+not))\s+"
     r"(?:done|over|ended|finished|completed|concluded|wrapped\s+up)(?:\s+yet)?|"
@@ -355,6 +364,10 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"\b(?:"
     r"i(?:['\u2019]m| am)\s+mid[- ]hand"
     r"(?:\s+(?:right\s+now|at\s+the\s+moment))?|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
+    r"in\s+the\s+middle\s+of\s+(?:a|the)\s+hand|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+currently\s+"
+    r"heads[- ]up(?:\s+in\s+(?:the|this)\s+(?:event|game|tourney|tournament))?|"
     r"i(?:['\u2019]m| am)\s+facing\s+(?:a\s+)?bet\s+"
     r"(?:right\s+now|at\s+this\s+moment)|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+(?:in|alive)|"
@@ -384,7 +397,13 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"(?:my\s+)?time\s*bank\s+has\s+\d+\s+seconds?\s+(?:left|remaining)|"
     r"i\s+have\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)"
-    r"\s+seconds?\s+left(?:\s+to\s+(?:act|decide))?"
+    r"\s+seconds?\s+left(?:\s+to\s+(?:act|decide))?|"
+    r"(?:there\s+(?:are|is)\s+)?(?:\d+|one|two|three|four|five|six|seven|"
+    r"eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|"
+    r"forty|fifty|sixty)\s+seconds?\s+left\s+to\s+(?:act|decide)|"
+    r"(?:the\s+)?(?:decision\s+|action\s+)?(?:clock|timer)\s+says\s+"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)\s+seconds?"
     r")\b",
     re.IGNORECASE,
 )
@@ -424,8 +443,15 @@ _ACTIVE_JAPANESE_PLAYER_STATUS = re.compile(
     r"\u4eca[^.!?\r\n\u3002\uff01\uff1f]{0,16}"
     r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|\u30c8\u30ca\u30e1|MTT)"
     r"\u306b\u51fa\u3066\u3044\u307e\u3059|"
-    r"\u3042\u3068\s*\d+\s*\u79d2[^.!?\r\n\u3002\uff01\uff1f]{0,64}"
-    r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))",
+    r"\u3042\u3068\s*\d+\s*\u79d2"
+    r"(?:\u3067\u3059|[^.!?\r\n\u3002\uff01\uff1f]{0,64}"
+    r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))|"
+    r"\u6b8b\u308a\u6642\u9593(?:\u306f|\u304c)?\s*\d+\s*\u79d2(?:\u3067\u3059)?|"
+    r"\u307e\u3060(?:\u30d7\u30ec\u30a4\u4e2d|"
+    r"(?:\u3053\u306e|\u305d\u306e)?\u5353\u306b\u3044(?:\u307e\u3059|\u308b))|"
+    r"\u30cf\u30f3\u30c9\u306e\u9014\u4e2d(?:\u3067\u3059)?|"
+    r"(?:\u79c1|\u81ea\u5206)\u306e\u756a\u304c\u6765(?:\u307e\u3057\u305f|\u305f)|"
+    r"\u4eca(?:\u306f)?\u30d8\u30c3\u30ba\u30a2\u30c3\u30d7(?:\u3067\u3059)?)",
     re.IGNORECASE,
 )
 _ACTIVE_JAPANESE_PLAYER_SUBJECT = re.compile(
@@ -587,6 +613,8 @@ def _secret_probe(value: str) -> str:
 
 
 def _contains_secret_shape(value: str) -> bool:
+    if _MIXED_SCRIPT_SECRET_ASSIGNMENT.search(unicodedata.normalize("NFKC", value)):
+        return True
     probes = (_security_probe(value), _secret_probe(value))
     if any(pattern.search(probe) is not None for probe in probes for pattern in _SECRET_PATTERNS):
         return True
@@ -621,6 +649,46 @@ def _contains_secret_shape(value: str) -> bool:
                 )
             if character in ":=" and index < last_nonspace and identifier_is_sensitive:
                 return True
+    return False
+
+
+_SENSITIVE_ASSIGNMENT_NAMES = (
+    "apikey",
+    "authorization",
+    "cookie",
+    "password",
+    "passwd",
+    "secret",
+    "secretaccesskey",
+    "sessiontoken",
+    "accesstoken",
+    "clientsecret",
+    "token",
+)
+
+
+def contains_sensitive_data_across_fragments(values: list[str]) -> bool:
+    """Detect one secret assignment split across nonadjacent durable fields."""
+
+    open_identifier_prefixes: set[str] = set()
+    max_name_length = max(map(len, _SENSITIVE_ASSIGNMENT_NAMES))
+    for value in values:
+        if _contains_secret_shape(value):
+            return True
+        head = value[:512]
+        if any(_contains_secret_shape(prefix + head) for prefix in open_identifier_prefixes):
+            return True
+        probe = _secret_probe(value)
+        trailing = re.search(r"[a-z0-9_\-:= \r\n]+$", probe)
+        if trailing is None:
+            continue
+        canonical_tail = re.sub(r"[^a-z0-9]", "", trailing.group(0))[-max_name_length:]
+        for start in range(len(canonical_tail)):
+            suffix = canonical_tail[start:]
+            if len(suffix) >= 2 and any(
+                name.startswith(suffix) for name in _SENSITIVE_ASSIGNMENT_NAMES
+            ):
+                open_identifier_prefixes.add(suffix)
     return False
 
 

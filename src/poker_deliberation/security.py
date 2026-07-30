@@ -68,6 +68,7 @@ _SECRET_CONFUSABLE_TRANSLATION = str.maketrans(
         "\u0445": "x",  # Cyrillic ha
         "\u0443": "y",  # Cyrillic u
         "\u0455": "s",  # Cyrillic dze
+        "\u04bb": "h",  # Cyrillic shha
         "\u043f": "n",  # Cyrillic pe
         "\u0501": "d",  # Cyrillic komi de
         "\u051d": "w",  # Cyrillic we
@@ -184,8 +185,8 @@ _ARCHIVED_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 _LIVE_ATTRIBUTION = re.compile(
-    r"\b(?:current(?:ly)?|live|ongoing|active|in[- ]progress|real[- ]time|"
-    r"streaming|right\s+now|today(?:'s)?|currently\s+broadcasting)\b"
+    r"\b(?:current(?:ly)?|live|ongoing|active|underway|in[- ]progress|"
+    r"real[- ]time|streaming|right\s+now|today(?:'s)?|currently\s+broadcasting)\b"
     r"[^.!?\r\n\"'“”]{0,64}"
     r"\b(?:video|feed|stream|livestream|broadcast|broadcasting|subtitle|caption|"
     r"transcript|recording)\b|"
@@ -366,7 +367,7 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"i(?:['\u2019]m| am)\s+mid[- ]hand"
     r"(?:\s+(?:right\s+now|at\s+the\s+moment))?|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
-    r"(?:in\s+(?:a|the)\s+hand|(?:half|part)way\s+through\s+(?:a|the)\s+hand)"
+    r"(?:in\s+(?:a|the)\s+hand|(?:half|part|mid)way\s+through\s+(?:a|the)\s+hand)"
     r"(?:\s+(?:right\s+now|at\s+the\s+moment))?|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
     r"playing\s+(?:this|the)\s+hand\s+(?:right\s+now|at\s+the\s+moment)|"
@@ -377,6 +378,7 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"(?:\s+(?:now|right\s+now|at\s+the\s+moment)|"
     r"\s+in\s+(?:the|this)\s+(?:event|game|tourney|tournament))?|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+on\s+the\s+bubble|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+down\s+to\s+heads[- ]up|"
     r"i(?:['\u2019]m| am)\s+tanking|"
     r"i(?:['\u2019]m| am)\s+facing\s+(?:a\s+)?bet\s+"
     r"(?:right\s+now|at\s+this\s+moment)|"
@@ -398,9 +400,11 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"playing|competing|participating)|"
     r"(?:the\s+)?action\s+has\s+reached\s+me|"
     r"(?:the\s+)?action\s+has\s+come\s+to\s+me|"
+    r"(?:the\s+)?action\s+is\s+with\s+me|"
     r"(?:the\s+)?action\s+is\s+back\s+on\s+me|"
     r"my\s+turn\s+has\s+come|"
     r"my\s+turn\s+is\s+(?:now|current)|"
+    r"it\s+is\s+my\s+(?:action\s+now|move(?:\s+now)?)|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+not\s+out\s+of\s+"
     r"(?:the\s+)?(?:mtt|sng|event|tourney|tournament)(?:\s+yet)?|"
     r"(?:my\s+)?(?:time\s*bank|clock|decision\s+(?:clock|timer)|"
@@ -416,11 +420,14 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"i\s+need\s+to\s+(?:act|decide)\s+within\s+"
     r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
     r"thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)\s+seconds?|"
-    r"only\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"(?:i\s+have\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)"
+    r"\s+seconds?\s+to\s+(?:act|decide)|"
+    r"(?:only\s+)?(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
     r"twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)"
     r"\s+seconds?\s+remain(?:s)?(?:\s+to\s+(?:act|decide))?|"
     r"(?:the\s+)?(?:decision\s+|action\s+)?(?:clock|timer)\s+"
-    r"(?:says|shows|reads)\s+"
+    r"(?:says|shows|reads|displays)\s+"
     r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
     r"thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)\s+seconds?"
     r")\b",
@@ -467,6 +474,15 @@ _ACTIVE_JAPANESE_PLAYER_STATUS = re.compile(
     r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))|"
     r"\u6b8b\u308a\u6642\u9593(?:\u306f|\u304c)?\s*\d+\s*\u79d2(?:\u3067\u3059)?|"
     r"\u30d7\u30ec\u30a4\u4e2d(?:\u3067\u3059|\u3067\u3059\u3002)?|"
+    r"\u4eca\u30d7\u30ec\u30a4\u3057\u3066\u3044\u307e\u3059|"
+    r"\u5bfe\u6226\u4e2d(?:\u3067\u3059)?|"
+    r"\u307e\u3060\u30cf\u30f3\u30c9\u4e2d(?:\u3067\u3059)?|"
+    r"\u30d7\u30ec\u30a4\u306e\u6700\u4e2d(?:\u3067\u3059)?|"
+    r"(?:\u79c1|\u81ea\u5206)\u304c\u30a2\u30af\u30b7\u30e7\u30f3\u3059\u308b"
+    r"\u756a(?:\u3067\u3059)?|"
+    r"\u3042\u3068\s*[0-9\u4e00\u4e8c\u4e09\u56db\u4e94\u516d\u4e03\u516b"
+    r"\u4e5d\u5341\u767e]+\s*\u79d2(?:\u3067\u3059)?|"
+    r"\u307e\u3060\u30b2\u30fc\u30e0\u5185(?:\u3067\u3059)?|"
     r"\u5353\u306b\u3064\u3044\u3066\u3044\u307e\u3059|"
     r"\d+\s*\u79d2\u3057\u304b\u306a\u3044|"
     r"\u307e\u3060(?:\u30d7\u30ec\u30a4\u4e2d|"
@@ -495,7 +511,8 @@ _JAPANESE_RETROSPECTIVE_CLAUSE = re.compile(
     r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])\s*"
     r"(?![^.!?\r\n\u3002\uff01\uff1f]{0,512}"
     r"(?:\u3057\u304b\u3057|\u3060\u304c|\u3067\u3082|\u4e00\u65b9|"
-    r"\u73fe\u5728|\u4eca(?:\u306f|\u3082)))"
+    r"\u73fe\u5728|\u4eca|\u306a\u304c\u3089|\u958b\u3044\u305f\u307e\u307e|"
+    r"\u898b\u306a\u304c\u3089))"
     r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
     r"(?:\u6628\u65e5|\u904e\u53bb|\u5b8c\u4e86|\u7d42\u4e86))"
     r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
@@ -655,6 +672,7 @@ def _contains_secret_shape(value: str) -> bool:
     sensitive_assignment_suffixes = (
         "apikey",
         "authorization",
+        "bearer",
         "cookie",
         "password",
         "passwd",
@@ -689,6 +707,7 @@ def _contains_secret_shape(value: str) -> bool:
 _SENSITIVE_ASSIGNMENT_NAMES = (
     "apikey",
     "authorization",
+    "bearer",
     "cookie",
     "password",
     "passwd",

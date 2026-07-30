@@ -603,12 +603,13 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
             "provider cancellation was not confirmed",
         ],
     )
-    cancellation_provenance = build_confirmed_review_provenance(
-        admission,
-        cancellation_report,
-        **provenance_authority,
-    )
-    assert cancellation_provenance.run_id == report.run_id
+    with pytest.raises(ConfirmedReviewError) as continued_after_cancellation:
+        build_confirmed_review_provenance(
+            admission,
+            cancellation_report,
+            **provenance_authority,
+        )
+    assert continued_after_cancellation.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
     runtime_message = "maximum runtime reached before provider analysis"
     runtime_report = report.model_copy(
@@ -716,6 +717,90 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
             **provenance_authority,
         )
     assert external_budget.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    impossible_range_stage = staged_failure_report(
+        "strict runtime refused before versioned range validation"
+    )
+    with pytest.raises(ConfirmedReviewError) as absent_range_stage:
+        build_confirmed_review_provenance(
+            admission,
+            impossible_range_stage,
+            **provenance_authority,
+        )
+    assert absent_range_stage.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    mutually_exclusive_stages = staged_failure_report(
+        "provider analysis skipped because round budget is zero",
+        records=[],
+        analysis_sections=[],
+    )
+    exact_data_quality = [
+        *mutually_exclusive_stages.data_quality,
+        "maximum runtime reached before provider analysis",
+    ]
+    mutually_exclusive_stages = mutually_exclusive_stages.model_copy(
+        update={
+            "data_quality": exact_data_quality,
+            "limitations": [*exact_data_quality, report.limitations[-1]],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as double_stage:
+        build_confirmed_review_provenance(
+            admission,
+            mutually_exclusive_stages,
+            assignments=assignments,
+            agent_reports=[],
+            **storage_authority,
+        )
+    assert double_stage.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    external_record = first.model_copy(
+        update={
+            "status": AgentExecutionStatus.REFUSED,
+            "error": "external_cost_micro_usd exceeded its strict budget",
+        },
+        deep=True,
+    )
+    external_record_report = staged_failure_report(
+        f"provider {first.agent_role} budget refused: external_cost_exceeded",
+        records=[external_record],
+        analysis_sections=report.analysis_sections[:1],
+    )
+    with pytest.raises(ConfirmedReviewError) as local_external_record:
+        build_confirmed_review_provenance(
+            admission,
+            external_record_report,
+            assignments=assignments,
+            agent_reports=agent_reports[:1],
+            **storage_authority,
+        )
+    assert local_external_record.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    continued_after_failure = forged_failure_report(
+        status=AgentExecutionStatus.FAILED,
+        error="context envelope has expired",
+        data_quality=[f"provider {first.agent_role} context expired"],
+    )
+    with pytest.raises(ConfirmedReviewError) as post_failure_records:
+        build_confirmed_review_provenance(
+            admission,
+            continued_after_failure,
+            **provenance_authority,
+        )
+    assert post_failure_records.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    for impossible_budget_message in (
+        "strict usage settlement failed: tool_output_exceeded",
+        "strict budget failure: artifact_exceeded",
+    ):
+        with pytest.raises(ConfirmedReviewError) as impossible_budget_stage:
+            build_confirmed_review_provenance(
+                admission,
+                staged_failure_report(impossible_budget_message),
+                **provenance_authority,
+            )
+        assert impossible_budget_stage.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> None:

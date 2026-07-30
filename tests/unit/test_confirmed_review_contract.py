@@ -152,6 +152,14 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            "aut\u04bborization=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            b"bearer=ABCDEFGHIJKLMNOP123456\n",
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             b"I am mid-hand at the moment. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -389,6 +397,24 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             b'"the action is on me." Should I call or fold?\n',
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u30ea\u30d7\u30ec\u30a4\u753b\u9762\u3092"
+                "\u958b\u3044\u305f\u307e\u307e\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u30ea\u30d7\u30ec\u30a4\u753b\u9762\u3092"
+                "\u898b\u306a\u304c\u3089\u307e\u3060\u5353\u306b\u3044\u307e\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(
@@ -598,6 +624,7 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "We are in the middle of a hand",
         "We are in a hand at the moment",
         "We are halfway through a hand",
+        "We are midway through a hand",
         "I am partway through a hand",
         "We are playing this hand at the moment",
         "The tournament is still on",
@@ -605,17 +632,31 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "We are heads-up now",
         "I am heads-up at the moment",
         "We are on the bubble",
+        "We are down to heads-up",
         "I am tanking",
         "Cards are being dealt",
         "There are 10 seconds left to act",
         "The timer says 10 seconds",
         "The action clock shows 10 seconds",
         "The clock reads 10 seconds",
+        "The timer displays 10 seconds",
         "Only 10 seconds remain to act",
+        "Ten seconds remain to act",
         "I need to act within 10 seconds",
+        "I have 10 seconds to act",
         "The action has come to me",
+        "The action is with me",
         "My turn is now",
+        "It is my action now",
+        "It is my move",
         "\u30d7\u30ec\u30a4\u4e2d\u3067\u3059",
+        "\u4eca\u30d7\u30ec\u30a4\u3057\u3066\u3044\u307e\u3059",
+        "\u5bfe\u6226\u4e2d\u3067\u3059",
+        "\u307e\u3060\u30cf\u30f3\u30c9\u4e2d\u3067\u3059",
+        "\u30d7\u30ec\u30a4\u306e\u6700\u4e2d\u3067\u3059",
+        "\u81ea\u5206\u304c\u30a2\u30af\u30b7\u30e7\u30f3\u3059\u308b\u756a\u3067\u3059",
+        "\u3042\u3068\u5341\u79d2\u3067\u3059",
+        "\u307e\u3060\u30b2\u30fc\u30e0\u5185\u3067\u3059",
         "\u5353\u306b\u3064\u3044\u3066\u3044\u307e\u3059",
         "10\u79d2\u3057\u304b\u306a\u3044",
         "まだプレイ中です",
@@ -986,6 +1027,10 @@ def test_secret_shape_cannot_be_split_across_adjacent_claims(prefix: str) -> Non
         ),
         (
             b"Yesterday's hand ended. The streaming feed caption says "
+            b'"The action is on me. Should I call?"\n'
+        ),
+        (
+            b"Yesterday's hand ended. The underway livestream transcript says "
             b'"The action is on me. Should I call?"\n'
         ),
     ],

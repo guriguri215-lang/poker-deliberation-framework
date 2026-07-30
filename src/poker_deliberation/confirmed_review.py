@@ -1048,18 +1048,6 @@ def _validate_confirmed_report_projection(
             "active runtime expired before provider execution",
             "active_runtime_ns exceeded its strict budget",
         },
-        BudgetFailureCode.EXTERNAL_EXECUTION_UNKNOWN.value: {
-            "provider execution class is unknown",
-        },
-        BudgetFailureCode.EXTERNAL_COST_UNKNOWN.value: {
-            "external call cost is unknown",
-        },
-        BudgetFailureCode.EXTERNAL_COST_DISABLED.value: {
-            "external calls are disabled by a zero cost cap",
-        },
-        BudgetFailureCode.EXTERNAL_COST_EXCEEDED.value: {
-            "external_cost_micro_usd exceeded its strict budget",
-        },
         BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED.value: {
             "provider_output_bytes exceeded its strict budget",
         },
@@ -1091,6 +1079,18 @@ def _validate_confirmed_report_projection(
         and report.agent_execution_records[-1].status.value != "completed"
         and actual_tool_names == pre_provider_tool_names
     )
+    primary_runtime_stages = {
+        "strict runtime refused before hand validation",
+        "provider analysis skipped because round budget is zero",
+        "maximum runtime reached before provider analysis",
+        "maximum runtime reached during context build",
+        "maximum runtime reached during provider preflight",
+        "maximum runtime exceeded after provider analysis",
+        "strict runtime refused before versioned range validation",
+        "strict runtime refused before requested tool execution",
+        "maximum runtime exceeded after tool execution",
+        "confirmed terminal publication refused with less than 0.25 seconds remaining",
+    }
 
     def runtime_stage_consistent(item: str) -> bool:
         record_count = len(report.agent_execution_records)
@@ -1112,9 +1112,14 @@ def _validate_confirmed_report_projection(
             )
         if item in {
             "maximum runtime exceeded after provider analysis",
-            "strict runtime refused before versioned range validation",
         }:
             return all_records_completed and actual_tool_names == pre_provider_tool_names
+        if item == "strict runtime refused before versioned range validation":
+            return (
+                "range_validate" in expected_tool_names
+                and all_records_completed
+                and actual_tool_names == pre_provider_tool_names
+            )
         if item == "strict runtime refused before requested tool execution":
             return all_records_completed and actual_tool_names == pre_requested_tool_names
         if item == "maximum runtime exceeded after tool execution":
@@ -1127,22 +1132,7 @@ def _validate_confirmed_report_projection(
         }:
             prior_runtime_stage = any(
                 other != item
-                and other
-                in {
-                    "strict runtime refused before hand validation",
-                    "provider analysis skipped because round budget is zero",
-                    "maximum runtime reached before provider analysis",
-                    "maximum runtime reached during context build",
-                    "maximum runtime reached during provider preflight",
-                    "maximum runtime exceeded after provider analysis",
-                    "strict runtime refused before versioned range validation",
-                    "strict runtime refused before requested tool execution",
-                    "maximum runtime exceeded after tool execution",
-                    (
-                        "confirmed terminal publication refused with less than "
-                        "0.25 seconds remaining"
-                    ),
-                }
+                and other in primary_runtime_stages
                 and runtime_stage_consistent(other)
                 for other in report.data_quality
             )
@@ -1209,7 +1199,12 @@ def _validate_confirmed_report_projection(
         budget_prefix = f"provider {role} budget refused: "
         if item.startswith(budget_prefix) and record.status.value == "refused":
             code = item.removeprefix(budget_prefix)
-            if record.error in budget_error_by_code.get(code, set()):
+            if code in {
+                BudgetFailureCode.RUNTIME_EXCEEDED.value,
+                BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED.value,
+                BudgetFailureCode.CLOCK_ROLLBACK.value,
+                BudgetFailureCode.USAGE_MALFORMED.value,
+            } and record.error in budget_error_by_code.get(code, set()):
                 return True
         return (
             record.status.value == "failed"
@@ -1231,7 +1226,7 @@ def _validate_confirmed_report_projection(
         for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
             if item.startswith(prefix):
                 code = item.removeprefix(prefix)
-                return code in budget_codes and code not in {
+                if code not in budget_codes or code in {
                     BudgetFailureCode.INVALID_POLICY.value,
                     BudgetFailureCode.UNSUPPORTED_CONCURRENCY.value,
                     BudgetFailureCode.UNSUPPORTED_LEGACY_FIELD.value,
@@ -1239,28 +1234,38 @@ def _validate_confirmed_report_projection(
                     BudgetFailureCode.EXTERNAL_COST_UNKNOWN.value,
                     BudgetFailureCode.EXTERNAL_COST_DISABLED.value,
                     BudgetFailureCode.EXTERNAL_COST_EXCEEDED.value,
-                }
+                    BudgetFailureCode.ARTIFACT_EXCEEDED.value,
+                    BudgetFailureCode.RUN_EXCEEDED.value,
+                }:
+                    return False
+                if code in {
+                    BudgetFailureCode.RUNTIME_EXCEEDED.value,
+                    BudgetFailureCode.CLOCK_ROLLBACK.value,
+                    BudgetFailureCode.USAGE_MALFORMED.value,
+                }:
+                    return True
+                if code == BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED.value:
+                    return (
+                        bool(report.agent_execution_records)
+                        and actual_tool_names == pre_provider_tool_names
+                    )
+                if code in {
+                    BudgetFailureCode.TOOL_INPUT_EXCEEDED.value,
+                    BudgetFailureCode.TOOL_OUTPUT_EXCEEDED.value,
+                }:
+                    if prefix == "strict usage settlement failed: ":
+                        return (not report.agent_execution_records and not actual_tool_names) or (
+                            all_records_completed and actual_tool_names != list(expected_tool_names)
+                        )
+                    return any(result.status is ToolStatus.FAILED for result in report.tool_results)
+                return False
         return any(record_data_quality(record, item) for record in report.agent_execution_records)
-
-    def cancellation_data_quality(item: str) -> bool:
-        return item == "provider cancellation was not confirmed" and any(
-            record.status.value == "failed"
-            and record.error is not None
-            and re.fullmatch(
-                r"provider exceeded deadline "
-                r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)? seconds",
-                record.error,
-            )
-            is not None
-            for record in report.agent_execution_records
-        )
 
     def allowed_data_quality(item: str) -> bool:
         return (
             item in tool_messages
             or item == _CONFIRMED_UNVERIFIED_CLAIM_WARNING
             or runtime_data_quality(item)
-            or cancellation_data_quality(item)
         )
 
     expected_limitations = list(dict.fromkeys([*report.data_quality, _CONFIRMED_SOLVER_LIMITATION]))
@@ -1279,6 +1284,8 @@ def _validate_confirmed_report_projection(
             and len(record_data_quality_matches[record.execution_id]) != 1
             for record in report.agent_execution_records
         )
+        or any(record.status.value != "completed" for record in report.agent_execution_records[:-1])
+        or sum(item in primary_runtime_stages for item in report.data_quality) > 1
         or report.limitations != expected_limitations
         or (
             report.run_status == "completed"
@@ -1286,10 +1293,7 @@ def _validate_confirmed_report_projection(
         )
         or (
             report.run_status == "failed_with_limitations"
-            and not any(
-                runtime_data_quality(item) or cancellation_data_quality(item)
-                for item in report.data_quality
-            )
+            and not any(runtime_data_quality(item) for item in report.data_quality)
         )
     ):
         _fail(
@@ -1582,7 +1586,14 @@ def _build_confirmed_review_provenance(
                 or agent_report.formulas
                 or agent_report.objections
                 or agent_report.falsification_conditions
-                or agent_report.confidence not in {ConfidenceGrade.C, ConfidenceGrade.D}
+                or (
+                    record.status.value == "completed"
+                    and agent_report.confidence is not ConfidenceGrade.C
+                )
+                or (
+                    record.status.value != "completed"
+                    and agent_report.confidence is not ConfidenceGrade.D
+                )
             ):
                 _fail(
                     ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,

@@ -126,12 +126,15 @@ _RETROSPECTIVE_LIVE_SUFFIX = re.compile(
     r"recorded)\b)|from\s+yesterday\b|of\s+(?:an?|the)\s+completed\b)",
     re.IGNORECASE,
 )
-_RETROSPECTIVE_EVIDENCE = re.compile(
-    r"\b(?:yesterday(?:'s)?|completed|historical|archived|recorded)\b",
-    re.IGNORECASE,
-)
 _LIVE_CONTRADICTION = re.compile(
-    r"\b(?:actual(?:ly)?\s+live|live\s+(?:game|tournament|table|hand)|right\s+now)\b",
+    r"\b(?:actual(?:ly)?\s+live|live\s+(?:game|tournament|table|hand)|right\s+now|"
+    r"i(?:['\u2019]m| am)\s+(?:still\s+)?playing(?:\s+(?:it|this\s+"
+    r"(?:game|tournament|hand)))?\s+now|"
+    r"i(?:['\u2019]m| am)\s+still\s+playing\s+(?:this\s+)?"
+    r"(?:game|tournament|hand)|"
+    r"this\s+is\s+my\s+current\s+(?:game|tournament|hand)|"
+    r"(?:this|the)\s+(?:game|tournament|hand)\s+is\s+"
+    r"(?:(?:currently\s+)?(?:in\s+progress|underway)|happening\s+now))\b",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -330,6 +333,27 @@ def _walk_strings(value: Any) -> list[str]:
     return strings
 
 
+def _has_unqualified_partial_live_context(cleaned: str) -> bool:
+    retrospective_live_spans = tuple(
+        match.span()
+        for match in _LIVE_PLAY_CONTEXT.finditer(cleaned)
+        if _RETROSPECTIVE_LIVE_SUFFIX.match(cleaned, match.end()) is not None
+    )
+    span_index = 0
+    for partial in _PARTIAL_LIVE_CONTEXT.finditer(cleaned):
+        while (
+            span_index < len(retrospective_live_spans)
+            and retrospective_live_spans[span_index][1] < partial.end()
+        ):
+            span_index += 1
+        if span_index == len(retrospective_live_spans):
+            return True
+        live_start, live_end = retrospective_live_spans[span_index]
+        if live_start > partial.start() or live_end < partial.end():
+            return True
+    return False
+
+
 def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     """Return live-context, decision-request, and explicit-assistance signals."""
 
@@ -340,12 +364,8 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
         cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
         cleaned_texts.append(cleaned)
-        partial_live_context_present = partial_live_context_present or (
-            _PARTIAL_LIVE_CONTEXT.search(cleaned) is not None
-            and (
-                _RETROSPECTIVE_EVIDENCE.search(cleaned) is None
-                or _LIVE_CONTRADICTION.search(cleaned) is not None
-            )
+        partial_live_context_present = (
+            partial_live_context_present or _has_unqualified_partial_live_context(cleaned)
         )
     combined = "\n".join(cleaned_texts)
     decision_request_present = _DECISION_REQUEST.search(combined) is not None

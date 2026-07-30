@@ -262,12 +262,14 @@ class RoutingService(PurePhaseService[RoutingInput, RoutingOutput]):
         return successful_outcome(isolated, output)
 
 
-def _agent_context(
+def build_agent_context(
     case: CaseInput,
     role: str,
     registered_tools: frozenset[str],
-    blind_context_builder: Callable[[CaseInput], Any],
+    blind_context_builder: Callable[[CaseInput], Any] = build_blind_decision_context,
 ) -> AgentContext:
+    """Build the canonical provider context for one routed role."""
+
     if role not in {
         "intake",
         "strategy-analyst",
@@ -338,7 +340,7 @@ class ContextBuildService(PurePhaseService[ContextBuildInput, ContextBuildOutput
         value = isolated.input
         if isolated.context_ids != (value.context_id,):
             raise ValueError("context build request does not match its context ID")
-        context = _agent_context(
+        context = build_agent_context(
             value.case,
             value.assignment.agent_role,
             frozenset(value.registered_tools),

@@ -222,6 +222,7 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
     for update in (
         {"allowed_tools": ["solver_adapter"]},
         {"context_expires_at": first_agent.completed_at - timedelta(seconds=1)},
+        {"context_expires_at": first_agent.started_at + timedelta(days=1)},
         {"context_producer_runtime": "external"},
     ):
         forged_agent = first_agent.model_copy(update=update, deep=True)
@@ -236,6 +237,27 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
         )
         with pytest.raises(ConfirmedReviewError):
             build_confirmed_review_provenance(admission, forged_agent_report)
+
+    for field in (
+        "context_sha256",
+        "context_payload_sha256",
+        "context_source_sha256",
+        "context_policy_sha256",
+        "context_envelope_sha256",
+    ):
+        forged_agent = first_agent.model_copy(update={field: "f" * 64}, deep=True)
+        forged_agent_report = report.model_copy(
+            update={
+                "agent_execution_records": [
+                    forged_agent,
+                    *report.agent_execution_records[1:],
+                ]
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as context_hash:
+            build_confirmed_review_provenance(admission, forged_agent_report)
+        assert context_hash.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
     duplicate_execution_id = first_agent.execution_id
     duplicate_assignment_id = first_agent.assignment_id

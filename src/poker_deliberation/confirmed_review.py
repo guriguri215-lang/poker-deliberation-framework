@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
 
+from poker_deliberation.agents import select_roles
 from poker_deliberation.confirmed_review_models import (
     CANDIDATE_CANONICALIZATION_ID,
     CONFIRMATION_CANONICALIZATION_ID,
@@ -37,9 +39,18 @@ from poker_deliberation.confirmed_review_models import (
     ReviewIntakePreparationResultV1,
     ReviewSourceProvenanceV1,
 )
+from poker_deliberation.context_lifecycle import (
+    ContextLifecycleError,
+    build_context_envelope,
+    context_payload,
+    legacy_context_sha256,
+)
+from poker_deliberation.phases.services import build_agent_context
 from poker_deliberation.range_grammar import validate_versioned_range
 from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.schemas import (
+    AgentAssignment,
+    AgentExecutionRecord,
     CanonicalHand,
     CaseInput,
     Claim,
@@ -767,6 +778,67 @@ def _tool_result_semantic_projection(result: ToolResult) -> dict[str, Any]:
 
 
 _CONFIRMED_REVIEW_TOOL_MAX_DURATION_SECONDS = 30.0
+_CONFIRMED_REVIEW_CONTEXT_MAX_DURATION_SECONDS = 30.0
+_CONFIRMED_REVIEW_ASSIGNMENT_ID = re.compile(r"assignment-[0-9a-f]{12}")
+_CONFIRMED_REVIEW_CONTEXT_ID = re.compile(r"context-[0-9a-f]{24}")
+_CONFIRMED_REVIEW_CONTEXT_ATTEMPT_ID = re.compile(r"attempt-[0-9a-f]{24}")
+_CONFIRMED_REVIEW_EXECUTION_ID = re.compile(r"execution-[0-9a-f]{24}")
+
+
+def _expected_agent_context_fields(
+    *,
+    admission: ConfirmedReviewAdmission,
+    report: FinalReport,
+    record: AgentExecutionRecord,
+    assignment_template: AgentAssignment,
+    registered_tools: frozenset[str],
+) -> dict[str, Any]:
+    try:
+        context = build_agent_context(
+            admission.case,
+            record.agent_role,
+            registered_tools,
+        )
+        assignment = AgentAssignment.model_validate(
+            assignment_template.model_copy(
+                update={
+                    "assignment_id": record.assignment_id,
+                    "context_keys": sorted(context_payload(context)),
+                },
+                deep=True,
+            ).model_dump(mode="python")
+        )
+        envelope = build_context_envelope(
+            context,
+            assignment,
+            run_id=report.run_id,
+            expires_at=cast(datetime, record.context_expires_at),
+            clock=lambda: record.started_at,
+            context_id=record.context_id,
+            attempt_id=record.context_attempt_id,
+        )
+    except (ContextLifecycleError, TypeError, ValueError):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.agent_execution_records",
+        )
+    return {
+        "assignment_id": assignment.assignment_id,
+        "agent_role": assignment.agent_role,
+        "context_sha256": legacy_context_sha256(context),
+        "context_id": envelope.lineage.context_id,
+        "context_attempt_id": envelope.lineage.attempt_id,
+        "parent_context_id": envelope.lineage.parent_context_id,
+        "context_schema_version": envelope.schema_version,
+        "context_classification": envelope.policy.classification.value,
+        "context_payload_sha256": envelope.payload_sha256,
+        "context_source_sha256": envelope.lineage.source_sha256,
+        "context_policy_sha256": envelope.policy_sha256,
+        "context_envelope_sha256": envelope.integrity_sha256,
+        "context_expires_at": envelope.policy.expires_at,
+        "context_producer_runtime": envelope.lineage.producer_runtime.value,
+        "context_consumer_runtime": envelope.lineage.consumer_runtime.value,
+    }
 
 
 def build_confirmed_review_provenance(
@@ -873,10 +945,12 @@ def build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.agent_execution_records",
         )
+    assignment_templates = {
+        assignment.agent_role: assignment for assignment in select_roles(admission.case)
+    }
+    registered_tools = frozenset(default_registry().names())
     if report.run_status == "completed":
-        from poker_deliberation.agents import select_roles
-
-        expected_roles = [assignment.agent_role for assignment in select_roles(admission.case)]
+        expected_roles = list(assignment_templates)
         actual_roles = [record.agent_role for record in report.agent_execution_records]
         if Counter(actual_roles) != Counter(expected_roles):
             _fail(
@@ -887,8 +961,16 @@ def build_confirmed_review_provenance(
         expected_allowed_tools = (
             list(admission.case.requested_tools) if record.agent_role == "math-auditor" else []
         )
+        assignment_template = assignment_templates.get(record.agent_role)
         if (
-            record.provider != "local"
+            assignment_template is None
+            or _CONFIRMED_REVIEW_EXECUTION_ID.fullmatch(record.execution_id) is None
+            or _CONFIRMED_REVIEW_ASSIGNMENT_ID.fullmatch(record.assignment_id) is None
+            or record.context_id is None
+            or _CONFIRMED_REVIEW_CONTEXT_ID.fullmatch(record.context_id) is None
+            or record.context_attempt_id is None
+            or _CONFIRMED_REVIEW_CONTEXT_ATTEMPT_ID.fullmatch(record.context_attempt_id) is None
+            or record.provider != "local"
             or record.provider_version != "1.0.0"
             or record.model is not None
             or record.reasoning_effort is not None
@@ -914,7 +996,25 @@ def build_confirmed_review_provenance(
             or record.completed_at > report.generated_at
             or record.context_expires_at.tzinfo is None
             or record.context_expires_at.utcoffset() is None
+            or record.started_at > record.context_expires_at
+            or record.context_expires_at - record.started_at
+            > timedelta(seconds=_CONFIRMED_REVIEW_CONTEXT_MAX_DURATION_SECONDS)
             or record.completed_at > record.context_expires_at
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.agent_execution_records",
+            )
+        expected_context_fields = _expected_agent_context_fields(
+            admission=admission,
+            report=report,
+            record=record,
+            assignment_template=assignment_template,
+            registered_tools=registered_tools,
+        )
+        if any(
+            getattr(record, field) != expected
+            for field, expected in expected_context_fields.items()
         ):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,

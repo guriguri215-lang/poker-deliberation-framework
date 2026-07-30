@@ -2134,9 +2134,9 @@ class Orchestrator:
                         machine=machine,
                     )
                 remaining_runtime = remaining_ns / 1_000_000_000
-                started_at = datetime.now(UTC)
                 provider_timeout = min(30.0, remaining_runtime)
                 lifecycle_now = self.context_clock()
+                started_at = lifecycle_now
                 expected_context_id = new_context_id()
                 expected_attempt_id = new_attempt_id()
                 context_request = make_phase_request(

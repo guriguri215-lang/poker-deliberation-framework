@@ -230,6 +230,31 @@ def _prepare_source(source: bytes):
             b"I am in an online poker tournament. Should I call or fold?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            b"I am playing an online MTT replay from yesterday, but I am playing it now. "
+            b"Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing an online MTT replay from yesterday, but this tournament "
+            b"is in progress. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing an online MTT replay from yesterday, but I am still playing "
+            b"this tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing an online MTT replay from yesterday, but this is my current "
+            b"tournament. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am playing an online MTT replay from yesterday, but the hand is happening "
+            b"now. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(

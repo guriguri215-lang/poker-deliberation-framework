@@ -11,7 +11,7 @@ from poker_deliberation.budgets import (
     SerialUsageLedger,
     UsageDelta,
 )
-from poker_deliberation.state_machine import WorkflowStateMachine
+from poker_deliberation.state_machine import RunState, WorkflowStateMachine
 
 
 def test_fake_clock_accepts_exact_runtime_cap_and_rejects_over_cap() -> None:
@@ -43,6 +43,23 @@ def test_runtime_failure_remains_fail_closed_across_state_machine_checks() -> No
 
     assert not machine.enforce_runtime()
     assert not machine.enforce_runtime()
+
+
+def test_runtime_failure_replaces_unpublished_completion_with_valid_failure() -> None:
+    clock = FakeMonotonicClock()
+    machine = WorkflowStateMachine(
+        BudgetPolicyV2(max_runtime_seconds=1.0),
+        state=RunState.FINAL_SYNTHESIS,
+        clock=clock,
+    )
+    machine.transition(RunState.COMPLETED, "final report artifacts written")
+    clock.advance_ns(1_000_000_001)
+
+    assert not machine.enforce_runtime()
+    assert machine.state is RunState.FAILED_WITH_LIMITATIONS
+    assert machine.events[-1].source is RunState.FINAL_SYNTHESIS
+    assert machine.events[-1].target is RunState.FAILED_WITH_LIMITATIONS
+    assert machine.events[-1].reason.startswith("strict budget observation failed:")
 
 
 def test_fake_clock_rollback_is_rejected() -> None:

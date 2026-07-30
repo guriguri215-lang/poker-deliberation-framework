@@ -184,7 +184,20 @@ class WorkflowStateMachine:
         except BudgetLimitError as exc:
             self._last_budget_failure = exc.failure
             failure_reason = f"strict budget observation failed: {exc.failure.code}"
-        if self.state is not RunState.FAILED_WITH_LIMITATIONS:
+        if self.state is RunState.COMPLETED:
+            if (
+                not self.events
+                or self.events[-1].target is not RunState.COMPLETED
+                or self.events[-1].source is not RunState.FINAL_SYNTHESIS
+            ):
+                raise ValueError("completed state lacks its final synthesis transition")
+            self.events[-1] = StateEvent(
+                source=RunState.FINAL_SYNTHESIS,
+                target=RunState.FAILED_WITH_LIMITATIONS,
+                reason=failure_reason,
+            )
+            self.state = RunState.FAILED_WITH_LIMITATIONS
+        elif self.state is not RunState.FAILED_WITH_LIMITATIONS:
             self.events.append(
                 StateEvent(
                     source=self.state,

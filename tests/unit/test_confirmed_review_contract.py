@@ -431,6 +431,28 @@ def test_source_contract_fails_closed_with_stable_codes(
             b"tournament is still running at this point, but it ended yesterday. "
             b"Should I have called or folded?\n"
         ),
+        (
+            b"This replay is from yesterday and the hand was completed. "
+            b'The subtitle states "The table is still running at this point. '
+            b'Should I call?"\n'
+        ),
+        (
+            b"This hand was completed yesterday. "
+            b'The transcript records "The action is on me. Should I call?"\n'
+        ),
+        (
+            "これは昨日終了したハンドの事後レビューです。"
+            "字幕には「今は私の手番です。コールすべきですか\uff1f」とあります。\n"
+        ).encode(),
+        (
+            b"Tournament is underway is a present-tense grammar example. "
+            b"The word call names a poker action.\n"
+        ),
+        "「大会は進行中」は現在形の文法例です。「コール」はポーカー用語です。\n".encode(),
+        (
+            b"For retrospective review under current theory, the hand-history note says "
+            b'"the action is on me." Should I have called or folded?\n'
+        ),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -465,6 +487,29 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "It is my turn in this MTT",
         "My seat is still active",
         "I have ten seconds left to act",
+        "Our tournament is underway",
+        "We're still in the tourney",
+        "The event is not done yet",
+        "We remain in the MTT",
+        "The action is back on me",
+        "My turn has come",
+        "Yesterday's hand ended, but the tournament is still running",
+        "Yesterday's hand ended, but today's tournament is still running",
+        "I reviewed a completed hand yesterday, while the MTT is ongoing",
+        "The event is in full swing",
+        "We're not out of the tournament yet",
+        (
+            'For retrospective review, the hand-history note says "the action is on me." '
+            "The stream is live"
+        ),
+        "私はまだトーナメントにいます",
+        "大会は終わっていません",
+        "まだ大会から脱落していません",
+        "今大会に出ています",
+        "昨日のハンドは終了しましたが、今日のMTTは進行中です",
+        "大会は真っ最中です",
+        "トナメは進行中です",
+        "まだ飛んでいません",
         "この大会はまだ開催中です",
         "大会は今も続いています",
         "MTTはまだ続行中",
@@ -594,6 +639,8 @@ def test_live_context_and_decision_cannot_be_split_across_artifacts(
     [
         (b"api", "_key=ABCDEFGHIJKLMNOP123456"),
         (b"api ", "key=ABCDEFGHIJKLMNOP123456"),
+        (b"api:\n", "_key=ABCDEFGHIJKLMNOP123456"),
+        (b"api=\n", "_key=ABCDEFGHIJKLMNOP123456"),
     ],
 )
 def test_secret_shape_cannot_be_split_across_artifacts(
@@ -616,12 +663,13 @@ def test_secret_shape_cannot_be_split_across_artifacts(
     assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
 
 
-def test_secret_shape_cannot_be_split_across_adjacent_claims() -> None:
+@pytest.mark.parametrize("prefix", ["api", "api:\n", "api=\n"])
+def test_secret_shape_cannot_be_split_across_adjacent_claims(prefix: str) -> None:
     payload = candidate_payload()
     payload["claims"] = [
         {
             "claim_id": "claim-secret-prefix",
-            "text": "api",
+            "text": prefix,
             "label": "USER_CLAIM",
             "confidence": "C",
         },

@@ -373,6 +373,9 @@ class ConfirmedReviewProvenanceV1(_ConfirmedReviewModel):
     confirmation_sha256: str = Field(pattern=_SHA256_PATTERN)
     case_input_sha256: str = Field(pattern=_SHA256_PATTERN)
     final_report_sha256: str = Field(pattern=_SHA256_PATTERN)
+    terminal_revision_root_sha256: str = Field(pattern=_SHA256_PATTERN)
+    terminal_revision: int = Field(ge=1)
+    terminal_transaction_id: str = Field(pattern=r"^txn-[0-9a-f]{32}$")
     agent_support: tuple[ConfirmedReviewAgentSupportV1, ...]
     tool_support: tuple[ConfirmedReviewToolSupportV1, ...]
     terminal_status: Literal["completed", "failed_with_limitations"]

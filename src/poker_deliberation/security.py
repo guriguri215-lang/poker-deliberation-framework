@@ -136,10 +136,62 @@ _ARCHIVED_QUOTATION = re.compile(
     r"(?:[\"“][^\"”\r\n]*[\"”]|'[^'\r\n]*'|[「『][^」』\r\n]*[」』]))",
     re.IGNORECASE,
 )
+_QUOTED_SEGMENT = re.compile(r"(?:[\"“][^\"”\r\n]*[\"”]|'[^'\r\n]*'|[「『][^」』\r\n]*[」』])")
+_ARCHIVED_ATTRIBUTION = re.compile(
+    r"(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}(?::|\breads?\s+)|"
+    r"(?:(?:the\s+)?(?:video|replay|recording|hand[- ]?history)\s+)?"
+    r"(?:subtitle|caption|transcript|quote|note)\s+"
+    r"(?:says?|reads?|states?|records?)\s+|"
+    r"(?:the\s+)?(?:video|replay|recording)\s+(?:says?|reads?|states?|records?)\s+|"
+    r"(?:字幕|文字起こし|記録|引用|メモ)(?:には|には、|は|に)?"
+    r"[^「『\"“'\r\n]{0,48})$",
+    re.IGNORECASE,
+)
+_ARCHIVED_CONTEXT = re.compile(
+    r"\b(?:retrospective|archived|historical|recorded|replay|recording|"
+    r"hand[- ]?history|yesterday(?:'s)?|completed|finished|ended|"
+    r"last\s+(?:week|month)|\d+\s+days?\s+ago)\b|"
+    r"(?:事後|過去|履歴|昨日|完了|終了|リプレイ|録画)",
+    re.IGNORECASE,
+)
+_LIVE_ATTRIBUTION = re.compile(
+    r"\b(?:current|live|right\s+now)\s+"
+    r"(?:video|stream|broadcast|subtitle|caption|transcript|recording)\b|"
+    r"(?:現在|ライブ)(?:の)?(?:動画|配信|放送|字幕|文字起こし|録画)",
+    re.IGNORECASE,
+)
+_INERT_LANGUAGE_EXAMPLE = re.compile(
+    r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])\s*(?:"
+    r"(?!(?:i|we|my|our|this|current|today(?:'s)?)\b)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{1,180}\b(?:present[- ]tense\s+)?"
+    r"(?:grammar|language)\s+example\b|"
+    r"(?:the\s+)?word\s+(?:call|fold|check|bet|raise|shove|all[- ]?in)\s+"
+    r"(?:names?|means?|denotes?|refers?\s+to)\s+(?:an?\s+)?poker\s+action\b|"
+    r"[「『][^」』\r\n]{1,128}[」』](?:は|が)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,48}(?:文法例|用語)(?:です|である)?"
+    r")[^.!?\r\n\u3002\uff01\uff1f]{0,96}(?=$|[.!?\r\n\u3002\uff01\uff1f]))",
+    re.IGNORECASE,
+)
 _HISTORICAL_STATUS_CLAUSE = re.compile(
     r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])"
     r"(?![^.!?\r\n\u3002\uff01\uff1f]{0,512}"
-    r"(?:\b(?:current|live|right\s+now)\b|(?:現在|ライブ)))"
+    r"(?:\b(?:current(?!\s+(?:theory|grammar|language|terminology))|"
+    r"live|right\s+now)\b|(?:現在(?!形)|ライブ)))"
+    r"(?![^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:(?:(?:\b(?:ended|completed|finished)\b|(?:終了|完了)(?:した|しました)?)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,256}|"
+    r"(?:\b(?:but|while|whereas|meanwhile)\b)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,256}"
+    r")"
+    r"\b(?:mtt|sng|event|game|match|tourney|tournament|table|stream)\b"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,96}"
+    r"\b(?:in\s+full\s+swing|in\s+progress|underway|ongoing|live|"
+    r"still\s+running|not\s+(?:done|over|finished|ended))\b|"
+    r"(?:(?:終了|完了)(?:しました|した)|ですが|が[、,]?|一方|今日)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,256}"
+    r"(?:MTT|SNG|大会|トーナメント|トナメ|イベント)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,48}"
+    r"(?:進行中|継続中|真っ最中|終わっていません|終了していません)))"
     r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
     r"(?:\b(?:replay|recording|archive|historical|retrospective|yesterday)\b|"
     r"(?:リプレイ|録画|記録|過去|昨日|事後)))"
@@ -178,30 +230,37 @@ _LIVE_CONTRADICTION = re.compile(
     re.IGNORECASE,
 )
 _ACTIVE_LIVE_STATUS = re.compile(
-    r"(?:\b(?:(?:this|the)\s+(?:mtt|sng|event|game|tournament|hand|session|play)"
+    r"(?:\b(?:(?:this|the|our|today(?:'s)?)\s+"
+    r"(?:mtt|sng|event|game|tourney|tournament|hand|session|play|stream)"
     r"\s+(?:(?:is|remains)\s+(?:currently\s+)?(?:in\s+progress|underway|ongoing|"
-    r"live|active|running)|has(?:n't|n\u2019t| not)\s+(?:ended|finished|completed|"
+    r"in\s+full\s+swing|live|active|running)|"
+    r"(?:is\s+not|isn't|isn\u2019t)\s+done(?:\s+yet)?|"
+    r"has(?:n't|n\u2019t| not)\s+(?:ended|finished|completed|"
     r"concluded)(?:\s+yet)?)|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+"
     r"(?:(?:playing|competing|participating)(?:\s+(?:in\s+)?(?:it|this\s+"
     r"(?:mtt|sng|event|game|tournament|hand)))?|in\s+(?:it|this\s+"
     r"(?:mtt|sng|event|game|tournament|hand))|on\s+the\s+bubble)|"
     r"cards\s+are\s+still\s+being\s+dealt|play\s+is\s+(?:still\s+)?ongoing)\b|"
-    r"(?:この|その)?(?:大会|トーナメント|MTT|SNG|イベント|ハンド|ゲーム|プレイ)"
-    r".{0,16}(?:現在進行中|進行中|継続中|まだ終わっていません|終了していません|"
+    r"(?:この|その)?(?:大会|トーナメント|トナメ|MTT|SNG|イベント|ハンド|ゲーム|プレイ)"
+    r".{0,16}(?:現在進行中|進行中|継続中|真っ最中|"
+    r"まだ終わっていません|終わっていません|終了していません|"
     r"まだ参加中|まだ出場中)|"
     r"(?:私|自分)?(?:は)?(?:まだ|現在).{0,12}(?:参加|出場|プレイ)して(?:い|おり)ます)",
     re.IGNORECASE,
 )
 _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
     r"(?:\b(?:"
-    r"(?:(?:(?:this|the|my|that|current)\s+(?:online\s+)?"
-    r"(?:mtt|sng|pko|contest|event|game|tournament|table|hand|session|play))|"
+    r"(?:(?:(?:this|the|my|our|that|current|today(?:'s)?)\s+(?:online\s+)?"
+    r"(?:mtt|sng|pko|contest|event|game|tourney|tournament|table|hand|"
+    r"session|play|stream))|"
     r"(?:mtt|sng|pko))\s+"
     r"(?:"
     r"(?:(?:is|remains)\s+(?:still\s+|currently\s+)?"
-    r"(?:in\s+progress|underway|ongoing|active|live|running|not\s+over))|"
-    r"(?:is(?:n't|n\u2019t|\s+not)\s+(?:over|ended|finished|completed|concluded))|"
+    r"(?:in\s+progress|in\s+full\s+swing|underway|ongoing|active|live|"
+    r"running|not\s+over))|"
+    r"(?:is(?:n't|n\u2019t|\s+not)\s+"
+    r"(?:done|over|ended|finished|completed|concluded)(?:\s+yet)?)|"
     r"(?:has(?:n't|n\u2019t|\s+not)\s+(?:ended|finished|completed|concluded)"
     r"(?:\s+yet)?)|"
     r"(?:continues?|keeps\s+going)(?:\s+(?:today|now))?"
@@ -213,18 +272,19 @@ _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
     r"i\s+still\s+have\s+chips(?:\s+in\s+(?:it|the\s+"
     r"(?:mtt|sng|contest|event|game|tournament)))?|"
     r"i\s+have(?:n't|n\u2019t|\s+not)\s+busted(?:\s+yet)?|"
-    r"(?:the\s+)?action\s+is\s+(?:still\s+)?on\s+me|"
+    r"(?:the\s+)?action\s+is\s+(?:(?:still\s+)?on|back\s+on)\s+me|"
+    r"my\s+turn\s+has\s+come|"
     r"(?:my\s+)?(?:decision|action)\s+(?:clock|timer)\s+is\s+(?:still\s+)?running|"
     r"(?:before|until)\s+(?:my\s+|the\s+)?"
     r"(?:decision|action)?\s*(?:clock|timer|time\s*bank)\s+expires|"
     r"cards\s+are\s+still\s+being\s+dealt|play\s+is\s+(?:still\s+)?ongoing"
     r")\b|"
     r"(?:\u3053\u306e|\u305d\u306e)?"
-    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|\u30c8\u30ca\u30e1|"
     r"\u30a4\u30d9\u30f3\u30c8|\u30b2\u30fc\u30e0|\u30cf\u30f3\u30c9|"
     r"\u30bb\u30c3\u30b7\u30e7\u30f3)"
     r"(?:\u306f)?\s*(?:\u307e\u3060|\u73fe\u5728)"
-    r".{0,12}(?:\u7d9a\u3044\u3066|\u9032\u884c\u4e2d|"
+    r".{0,12}(?:\u7d9a\u3044\u3066|\u9032\u884c\u4e2d|\u771f\u3063\u6700\u4e2d|"
     r"\u7d42\u308f\u3063\u3066\u3044\u306a\u3044|"
     r"\u7d42\u4e86\u3057\u3066\u3044\u306a\u3044)|"
     r"\u30a2\u30af\u30b7\u30e7\u30f3(?:\u306f|\u304c)?"
@@ -237,24 +297,25 @@ _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
 )
 
 _ACTIVE_GAME_SUBJECT = re.compile(
-    r"\b(?:(?:my|this|the|that|current)\s+"
+    r"\b(?:(?:my|our|this|the|that|current|today(?:'s)?)\s+"
     r"(?:mtt|sng|pko|competition|contest|event|game|match|tourney|tournament|table|hand|"
-    r"session|play|one|field)|(?:mtt|sng|pko))\b",
+    r"session|play|one|field|stream)|(?:mtt|sng|pko))\b",
     re.IGNORECASE,
 )
 _BARE_ACTIVE_GAME_SUBJECT = re.compile(
     r"^\s*(?:competition|contest|event|game|match|tourney|tournament|table|hand|"
-    r"session|play)\b",
+    r"session|play|stream)\b",
     re.IGNORECASE,
 )
 _ACTIVE_GAME_PREDICATE = re.compile(
     r"\b(?:"
     r"(?:is|remains)\s+(?:still\s+|currently\s+)?"
-    r"(?:in\s+progress|underway|ongoing|active|live|going|running|playing|"
+    r"(?:in\s+progress|in\s+full\s+swing|underway|ongoing|active|live|"
+    r"going|running|playing|"
     r"not\s+over|unfinished)|"
     r"has\s+yet\s+to\s+(?:end|finish|conclude)|"
     r"(?:is(?:n't|n\u2019t|\s+not)|has(?:n't|n\u2019t|\s+not))\s+"
-    r"(?:over|ended|finished|completed|concluded|wrapped\s+up)(?:\s+yet)?|"
+    r"(?:done|over|ended|finished|completed|concluded|wrapped\s+up)(?:\s+yet)?|"
     r"(?:has|have)\s+not\s+wrapped\s+up|"
     r"(?:continues?|keeps\s+going)(?:\s+(?:today|now))?"
     r")\b",
@@ -263,18 +324,24 @@ _ACTIVE_GAME_PREDICATE = re.compile(
 _ACTIVE_PLAYER_STATUS = re.compile(
     r"\b(?:"
     r"(?:i|we)\s+remain(?:s)?\s+in\s+(?:the\s+)?"
-    r"(?:contest|event|game|match|tournament)|"
+    r"(?:contest|event|game|match|mtt|sng|tourney|tournament)|"
     r"(?:i|we|i(?:['\u2019]ve|\s+have)|we(?:['\u2019]ve|\s+have))\s+"
     r"(?:have\s+)?not\s+been\s+eliminated(?:\s+yet)?|"
     r"i\s+survived\s+and\s+am\s+still\s+(?:playing|competing|participating)|"
     r"i\s+(?:survived\s+and\s+am|am|remain)\s+(?:still\s+)?alive"
-    r"(?:\s+in\s+(?:the|this)\s+(?:competition|contest|event|game|match|tournament))?|"
+    r"(?:\s+in\s+(?:the|this)\s+"
+    r"(?:competition|contest|event|game|match|mtt|sng|tourney|tournament))?|"
     r"it\s+is\s+my\s+turn(?:\s+in\s+(?:this|the)\s+(?:mtt|sng|event|game|tournament))?|"
     r"my\s+seat\s+is\s+(?:still\s+)?active|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+"
     r"(?:at\s+(?:the\s+)?table|in\s+(?:the\s+)?"
-    r"(?:contest|event|game|match|tournament)|playing|competing|participating)|"
+    r"(?:contest|event|game|match|mtt|sng|tourney|tournament)|"
+    r"playing|competing|participating)|"
     r"(?:the\s+)?action\s+has\s+reached\s+me|"
+    r"(?:the\s+)?action\s+is\s+back\s+on\s+me|"
+    r"my\s+turn\s+has\s+come|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+not\s+out\s+of\s+"
+    r"(?:the\s+)?(?:mtt|sng|event|tourney|tournament)(?:\s+yet)?|"
     r"(?:my\s+)?(?:time\s*bank|clock|decision\s+(?:clock|timer)|"
     r"action\s+(?:clock|timer))"
     r"\s+(?:is\s+)?(?:still\s+)?(?:counting\s+down|running|ticking)|"
@@ -286,7 +353,8 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     re.IGNORECASE,
 )
 _ACTIVE_JAPANESE_EVENT_SUBJECT = re.compile(
-    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|MTT|SNG|"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|\u30c8\u30ca\u30e1|"
+    r"MTT|SNG|"
     r"\u30a4\u30d9\u30f3\u30c8|\u30b2\u30fc\u30e0|\u30cf\u30f3\u30c9)",
     re.IGNORECASE,
 )
@@ -294,13 +362,21 @@ _ACTIVE_JAPANESE_EVENT_PREDICATE = re.compile(
     r"(?:\u958b\u50ac\u4e2d|\u7d9a\u884c\u4e2d|\u9032\u884c\u4e2d|"
     r"\u307e\u3060\u3084\u3063\u3066(?:\u3044)?(?:\u307e\u3059|\u3044\u308b)|"
     r"\u4eca\u3082\u7d9a\u3044\u3066|\u307e\u3060\u7d42\u308f\u3063\u3066\u3044\u306a|"
-    r"\u307e\u3060\u7d42\u4e86\u3057\u3066\u3044\u306a|\u672a\u7d42\u4e86)",
+    r"\u7d42\u308f\u3063\u3066\u3044\u306a|\u7d42\u4e86\u3057\u3066\u3044\u306a|"
+    r"\u771f\u3063\u6700\u4e2d|\u672a\u7d42\u4e86)",
     re.IGNORECASE,
 )
 _ACTIVE_JAPANESE_PLAYER_STATUS = re.compile(
     r"(?:(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060\u751f\u304d\u6b8b\u3063\u3066|"
     r"(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060\u52dd\u3061\u6b8b\u3063\u3066|"
     r"(?:\u4eca\u306f)?(?:\u79c1|\u81ea\u5206)\u306e\u624b\u756a|"
+    r"\u307e\u3060[^.!?\r\n\u3002\uff01\uff1f]{0,24}"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|\u30c8\u30ca\u30e1|MTT)"
+    r"(?:\u304b\u3089)?\u8131\u843d\u3057\u3066\u3044\u307e\u305b\u3093|"
+    r"\u307e\u3060\u98db\u3093\u3067\u3044\u307e\u305b\u3093|"
+    r"\u4eca[^.!?\r\n\u3002\uff01\uff1f]{0,16}"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|\u30c8\u30ca\u30e1|MTT)"
+    r"\u306b\u51fa\u3066\u3044\u307e\u3059|"
     r"\u3042\u3068\s*\d+\s*\u79d2[^.!?\r\n\u3002\uff01\uff1f]{0,64}"
     r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))",
     re.IGNORECASE,
@@ -309,7 +385,7 @@ _ACTIVE_JAPANESE_PLAYER_SUBJECT = re.compile(
     r"(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060",
 )
 _ACTIVE_JAPANESE_PLAYER_PREDICATE = re.compile(
-    r"(?:\u6b8b\u3063\u3066|\u53c2\u52a0\u4e2d)",
+    r"(?:(?:\u306b)?\u3044(?:\u308b|\u307e\u3059)|\u6b8b\u3063\u3066|\u53c2\u52a0\u4e2d)",
 )
 _ACTIVE_JAPANESE_TIMER_SUBJECT = re.compile(
     r"(?:\u30bf\u30a4\u30e0\u30d0\u30f3\u30af|\u6301\u3061\u6642\u9593|"
@@ -477,7 +553,12 @@ def _contains_secret_shape(value: str) -> bool:
         "clientsecret",
         "token",
     )
-    for line in probes[1].splitlines():
+    assignment_probe = re.sub(
+        r"(?<=[A-Za-z0-9_=:\-])[\r\n]+(?=[A-Za-z0-9_=:\-])",
+        "",
+        probes[1],
+    )
+    for line in assignment_probe.splitlines():
         for separator in (match.start() for match in re.finditer(r"[:=]", line)):
             identifier = "".join(
                 character
@@ -603,6 +684,29 @@ def _has_unqualified_partial_live_context(cleaned: str) -> bool:
     return False
 
 
+def _strip_archived_quotations(cleaned: str) -> str:
+    slices: list[str] = []
+    cursor = 0
+    for quoted in _QUOTED_SEGMENT.finditer(cleaned):
+        prefix = cleaned[max(0, quoted.start() - 1024) : quoted.start()]
+        attribution = _ARCHIVED_ATTRIBUTION.search(prefix)
+        if attribution is None:
+            continue
+        context = prefix[max(0, attribution.start() - 768) :]
+        attribution_context = prefix[max(0, attribution.start() - 128) :]
+        if (
+            _ARCHIVED_CONTEXT.search(context) is None
+            or _LIVE_ATTRIBUTION.search(attribution_context) is not None
+        ):
+            continue
+        slices.append(cleaned[cursor : quoted.start()])
+        cursor = quoted.end()
+    if not slices:
+        return cleaned
+    slices.append(cleaned[cursor:])
+    return "".join(slices)
+
+
 def _has_retrospective_reversal(cleaned: str) -> bool:
     for live_match in _LIVE_PLAY_CONTEXT.finditer(cleaned):
         suffix = _RETROSPECTIVE_LIVE_SUFFIX.match(cleaned, live_match.end())
@@ -657,7 +761,9 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     partial_live_context_present = False
     for text in _walk_strings(value):
         cleaned = _security_probe(text)
+        cleaned = _strip_archived_quotations(cleaned)
         cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
+        cleaned = _INERT_LANGUAGE_EXAMPLE.sub("", cleaned)
         cleaned = _HISTORICAL_STATUS_CLAUSE.sub("", cleaned)
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
         cleaned_texts.append(cleaned)

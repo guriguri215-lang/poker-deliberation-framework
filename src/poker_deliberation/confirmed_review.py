@@ -145,6 +145,19 @@ def provenance_sha256(provenance: ConfirmedReviewProvenanceV1) -> str:
     )
 
 
+def _terminal_revision_root_sha256(storage_root: Path | str) -> str:
+    root = Path(storage_root)
+    if not root.is_absolute():
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "storage_authority.revision_root",
+        )
+    return _domain_sha256(
+        PROVENANCE_CANONICALIZATION_ID + ":terminal-revision-root",
+        str(root.resolve(strict=False)).replace("\\", "/"),
+    )
+
+
 def _strict_candidate(candidate: ReviewIntakeCandidateV1) -> ReviewIntakeCandidateV1:
     try:
         payload = canonical_json_bytes(candidate)
@@ -842,18 +855,12 @@ def _validate_reproduction_steps(
             "report.reproduction_steps",
         )
     authority_values = (storage_root, storage_revision, storage_transaction_id)
-    if (
-        require_storage_authority
-        and expected_results
-        and any(value is None for value in authority_values)
-    ):
+    if require_storage_authority and any(value is None for value in authority_values):
         _fail(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reproduction_steps",
         )
-    if any(value is None for value in authority_values) and not all(
-        value is None for value in authority_values
-    ):
+    if storage_revision is None or storage_transaction_id is None:
         _fail(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reproduction_steps",
@@ -864,15 +871,12 @@ def _validate_reproduction_steps(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reproduction_steps",
         )
-    if storage_revision is not None and storage_revision < 1:
+    if storage_revision < 1:
         _fail(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reproduction_steps",
         )
-    if (
-        storage_transaction_id is not None
-        and re.fullmatch(r"txn-[0-9a-f]{32}", storage_transaction_id) is None
-    ):
+    if re.fullmatch(r"txn-[0-9a-f]{32}", storage_transaction_id) is None:
         _fail(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reproduction_steps",
@@ -933,7 +937,7 @@ def _validate_reproduction_steps(
             or any(part in {".", ".."} for part in path_parts)
             or len(path_parts) < 8
             or path_parts[-8:-4] != ("runs", report.run_id, ".terminal-store", "revisions")
-            or re.fullmatch(r"r1-txn-[0-9a-f]{32}", path_parts[-4]) is None
+            or path_parts[-4] != f"r{storage_revision}-{storage_transaction_id}"
             or path_parts[-3:] != ("payload", "tool_results", f"{result.result_id}.input.json")
             or (
                 expected_authoritative_path is not None
@@ -990,12 +994,36 @@ def _validate_confirmed_report_projection(
             ),
         )
     }
-    noncompleted_roles = {
-        record.agent_role
-        for record in report.agent_execution_records
-        if record.status.value != "completed"
-    }
+    records_by_role = {record.agent_role: record for record in report.agent_execution_records}
     budget_codes = {code.value for code in BudgetFailureCode}
+    budget_error_by_code = {
+        BudgetFailureCode.RUNTIME_EXCEEDED.value: {
+            "active runtime expired before provider execution",
+            "active_runtime_ns exceeded its strict budget",
+        },
+        BudgetFailureCode.EXTERNAL_EXECUTION_UNKNOWN.value: {
+            "provider execution class is unknown",
+        },
+        BudgetFailureCode.EXTERNAL_COST_UNKNOWN.value: {
+            "external call cost is unknown",
+        },
+        BudgetFailureCode.EXTERNAL_COST_DISABLED.value: {
+            "external calls are disabled by a zero cost cap",
+        },
+        BudgetFailureCode.EXTERNAL_COST_EXCEEDED.value: {
+            "external_cost_micro_usd exceeded its strict budget",
+        },
+        BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED.value: {
+            "provider_output_bytes exceeded its strict budget",
+        },
+        BudgetFailureCode.CLOCK_ROLLBACK.value: {
+            "monotonic clock moved backwards",
+            "monotonic clock moved backwards before provider execution",
+        },
+        BudgetFailureCode.USAGE_MALFORMED.value: {
+            "monotonic clock must return non-negative integer nanoseconds",
+        },
+    }
 
     def runtime_data_quality(item: str) -> bool:
         if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
@@ -1003,15 +1031,51 @@ def _validate_confirmed_report_projection(
         for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
             if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
                 return True
+        for role, record in records_by_role.items():
+            if record.status.value == "completed" or record.error is None:
+                continue
+            if (
+                item == f"provider {role} context expired"
+                and record.status.value == "failed"
+                and record.error == "provider context expired before output acceptance"
+            ):
+                return True
+            context_prefix = f"provider {role} context rejected: "
+            if (
+                item.startswith(context_prefix)
+                and record.status.value == "failed"
+                and item.removeprefix(context_prefix) == record.error
+                and record.error == "context envelope has expired"
+            ):
+                return True
+            if (
+                item == f"provider {role} output exceeded the hard byte limit"
+                and record.status.value in {"failed", "refused"}
+                and record.error
+                in {
+                    "provider output exceeded the hard byte limit",
+                    "provider_output_bytes exceeded its strict budget",
+                }
+            ):
+                return True
+            budget_prefix = f"provider {role} budget refused: "
+            if item.startswith(budget_prefix) and record.status.value == "refused":
+                code = item.removeprefix(budget_prefix)
+                if record.error in budget_error_by_code.get(code, set()):
+                    return True
         return any(
-            item == f"provider {role} context expired"
-            or item == f"provider {role} context rejected: context envelope has expired"
-            or item == f"provider {role} output exceeded the hard byte limit"
-            or (
-                item.startswith(f"provider {role} budget refused: ")
-                and item.removeprefix(f"provider {role} budget refused: ") in budget_codes
+            record.status.value == "failed"
+            and record.error == item
+            and (
+                item == "provider deadline/cancellation acknowledged cooperatively"
+                or re.fullmatch(
+                    r"provider exceeded deadline "
+                    r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)? seconds",
+                    item,
+                )
+                is not None
             )
-            for role in noncompleted_roles
+            for record in report.agent_execution_records
         )
 
     def allowed_data_quality(item: str) -> bool:
@@ -1113,6 +1177,7 @@ def _build_confirmed_review_provenance(
     assignments: Sequence[AgentAssignment] | None = None,
     agent_reports: Sequence[AgentReport] | None = None,
     storage_root: Path | str | None = None,
+    storage_root_sha256: str | None = None,
     storage_revision: int | None = None,
     storage_transaction_id: str | None = None,
     require_storage_authority: bool,
@@ -1491,6 +1556,38 @@ def _build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.authority_artifacts",
         )
+    if storage_root is not None and storage_root_sha256 is not None:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "storage_authority.revision_root",
+        )
+    if require_storage_authority and storage_root is None:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "storage_authority.revision_root",
+        )
+    if storage_root is not None:
+        terminal_revision_root_sha256 = _terminal_revision_root_sha256(storage_root)
+    elif (
+        storage_root_sha256 is not None
+        and re.fullmatch(r"[0-9a-f]{64}", storage_root_sha256) is not None
+    ):
+        terminal_revision_root_sha256 = storage_root_sha256
+    else:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "storage_authority.revision_root",
+        )
+    if (
+        storage_revision is None
+        or storage_revision < 1
+        or storage_transaction_id is None
+        or re.fullmatch(r"txn-[0-9a-f]{32}", storage_transaction_id) is None
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "storage_authority.revision",
+        )
     provisional = ConfirmedReviewProvenanceV1(
         run_id=report.run_id,
         intake_id=admission.candidate.projection.candidate_input.intake_id,
@@ -1506,6 +1603,9 @@ def _build_confirmed_review_provenance(
             PROVENANCE_CANONICALIZATION_ID + ":final-report",
             report.model_dump(mode="json"),
         ),
+        terminal_revision_root_sha256=terminal_revision_root_sha256,
+        terminal_revision=storage_revision,
+        terminal_transaction_id=storage_transaction_id,
         agent_support=tuple(agents),
         tool_support=tool_support,
         terminal_status=report.run_status,
@@ -1603,6 +1703,9 @@ def verify_confirmed_review_structural_provenance(
         report,
         assignments=assignments,
         agent_reports=agent_reports,
+        storage_root_sha256=provenance.terminal_revision_root_sha256,
+        storage_revision=provenance.terminal_revision,
+        storage_transaction_id=provenance.terminal_transaction_id,
         require_storage_authority=False,
     )
     if provenance != expected:

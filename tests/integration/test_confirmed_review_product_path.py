@@ -36,7 +36,11 @@ from poker_deliberation.schemas import (
     EpistemicLabel,
     FinalReport,
 )
-from poker_deliberation.storage.revision_canonical import parse_canonical_model
+from poker_deliberation.storage.revision_canonical import (
+    CanonicalStorageError,
+    parse_canonical_model,
+)
+from poker_deliberation.storage.terminal_canonical import product_payload_commitments
 from poker_deliberation.storage.terminal_models import (
     ProductRunError,
     ProductRunFailureCode,
@@ -584,6 +588,40 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
         )
     assert provider_runtime.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    mismatched_record = report.agent_execution_records[0].model_copy(
+        update={
+            "status": AgentExecutionStatus.FAILED,
+            "error": "provider returned malformed output",
+        },
+        deep=True,
+    )
+    mismatched_runtime_report = report.model_copy(
+        update={
+            "run_status": "failed_with_limitations",
+            "conclusion": "実行中の制限に達したため、制限付きで終了しました。",
+            "agent_execution_records": [
+                mismatched_record,
+                *report.agent_execution_records[1:],
+            ],
+            "data_quality": [*report.data_quality, provider_runtime_message],
+            "limitations": [
+                *report.data_quality,
+                provider_runtime_message,
+                report.limitations[-1],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as mismatched_runtime:
+        build_confirmed_review_provenance(
+            admission,
+            mismatched_runtime_report,
+            assignments=assignments,
+            agent_reports=agent_reports,
+            **storage_authority,
+        )
+    assert mismatched_runtime.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
     forged_steps = [
         step.replace(report.run_id, "run-confirmed-forged-other")
         for step in report.reproduction_steps
@@ -710,6 +748,52 @@ def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> No
         read = orchestrator.product_store.read_current(report.run_id, verify_budget=False)
         assert read.read_status is RunReadStatus.FAILED
         assert orchestrator.store.read_json(report.run_id, "assignments.json")
+        payloads = {
+            payload.inventory.logical_name: payload.exact_bytes
+            for payload in read.payloads
+            if payload.inventory.logical_name != "lifecycle_audit.json"
+        }
+        authority = {
+            "revision_root": orchestrator.product_store.revision_root,
+            "revision": read.revision,
+            "transaction_id": read.transaction_id,
+        }
+        commitments = product_payload_commitments(
+            payloads,
+            run_id=report.run_id,
+            status="failed",
+            **authority,
+        )
+        assert len(commitments) == 6
+        for mutation in (
+            {"revision_root": tmp_path / "different-revision-root"},
+            {"revision": read.revision + 1},
+            {"transaction_id": f"txn-{'a' * 32}"},
+        ):
+            with pytest.raises(CanonicalStorageError):
+                product_payload_commitments(
+                    payloads,
+                    run_id=report.run_id,
+                    status="failed",
+                    **{**authority, **mutation},
+                )
+        durable_provenance = ConfirmedReviewProvenanceV1.model_validate_json(
+            read.payload_bytes("confirmed_review_provenance.json")
+        )
+        durable_report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+        replay_admission = replace(admission, admitted_at=durable_provenance.admitted_at)
+        assignments = [
+            AgentAssignment.model_validate(item)
+            for item in json.loads(read.payload_bytes("assignments.json"))
+        ]
+        with pytest.raises(ConfirmedReviewError) as missing_authority:
+            build_confirmed_review_provenance(
+                replay_admission,
+                durable_report,
+                assignments=assignments,
+                agent_reports=[],
+            )
+        assert missing_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
         replay = orchestrator.run_confirmed_review(admission)
         replay_read = orchestrator.product_store.read_current(
             report.run_id,

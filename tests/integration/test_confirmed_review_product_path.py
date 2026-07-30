@@ -36,7 +36,11 @@ from poker_deliberation.schemas import (
     FinalReport,
 )
 from poker_deliberation.storage.revision_canonical import parse_canonical_model
-from poker_deliberation.storage.terminal_models import RunReadStatus
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+    RunReadStatus,
+)
 from poker_deliberation.tools import default_registry
 from tests.confirmed_review_support import app_config, confirmed_admission
 from tests.confirmed_review_support import candidate_payload as base_candidate_payload
@@ -507,6 +511,69 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
         )
     assert forged.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    with pytest.raises(ConfirmedReviewError) as missing_authority:
+        build_confirmed_review_provenance(admission, forged_report)
+    assert missing_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    runtime_message = "maximum runtime exceeded after provider analysis"
+    forged_runtime_report = report.model_copy(
+        update={
+            "data_quality": [*report.data_quality, runtime_message],
+            "limitations": [
+                *report.data_quality,
+                runtime_message,
+                report.limitations[-1],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as forged_runtime:
+        build_confirmed_review_provenance(
+            admission,
+            forged_runtime_report,
+            assignments=assignments,
+            agent_reports=agent_reports,
+        )
+    assert forged_runtime.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    forged_steps = [
+        step.replace(report.run_id, "run-confirmed-forged-other")
+        for step in report.reproduction_steps
+    ]
+    assert forged_steps != report.reproduction_steps
+    forged_path_report = report.model_copy(
+        update={"reproduction_steps": forged_steps},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as forged_path:
+        build_confirmed_review_provenance(
+            admission,
+            forged_path_report,
+            assignments=assignments,
+            agent_reports=agent_reports,
+        )
+    assert forged_path.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
+def test_user_claim_wording_cannot_create_a_calculated_correction(tmp_path) -> None:
+    payload = base_candidate_payload(intake_id="intake-confirmed-user-wording-1")
+    payload["claims"][0]["text"] = (
+        "USER_CLAIM contains 訂正が必要 as an unverified phrase; "
+        "no correction calculation is supplied."
+    )
+    admission = confirmed_admission(
+        run_id="run-confirmed-user-wording-1",
+        payload=payload,
+        now=datetime.now(UTC),
+    )
+    report = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    ).run_confirmed_review(admission)
+
+    assert [result.tool_name for result in report.tool_results] == ["hand_validator"]
+    assert "再現可能なローカル計算に基づく訂正" not in report.conclusion
+
 
 def test_all_final_report_authority_fields_are_fail_closed(tmp_path) -> None:
     admission = confirmed_admission(
@@ -584,6 +651,34 @@ def test_runtime_boundary_never_diverges_api_and_durable_terminal_status(tmp_pat
         assert report.run_status == "failed_with_limitations"
         assert read.read_status is RunReadStatus.FAILED
         assert durable_report == report
+
+
+@pytest.mark.parametrize("runtime_seconds", [0.4, 0.5, 0.75])
+def test_success_is_never_returned_when_budget_settlement_is_unverified(
+    tmp_path,
+    runtime_seconds: float,
+) -> None:
+    config = app_config(tmp_path / str(runtime_seconds))
+    config.budgets = BudgetConfig(max_runtime_seconds=runtime_seconds)
+    orchestrator = Orchestrator(config, provider=LocalProvider())
+    admission = confirmed_admission(
+        run_id=f"run-confirmed-settlement-boundary-{str(runtime_seconds).replace('.', '-')}",
+        now=datetime.now(UTC),
+    )
+
+    try:
+        report = orchestrator.run_confirmed_review(admission)
+    except ProductRunError as failure:
+        assert failure.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+        with pytest.raises(ProductRunError) as reread:
+            orchestrator.product_store.read_current(admission.confirmation.run_id)
+        assert reread.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+    else:
+        verified = orchestrator.product_store.read_current(report.run_id)
+        assert (verified.read_status is RunReadStatus.SUCCEEDED) == (
+            report.run_status == "completed"
+        )
+        assert orchestrator.load_report(report.run_id) == report
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:

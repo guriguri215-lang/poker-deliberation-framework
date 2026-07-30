@@ -117,14 +117,31 @@ _DECISION_REQUEST = re.compile(
     re.IGNORECASE,
 )
 _ARCHIVED_QUOTATION = re.compile(
-    r"(?:(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}"
+    r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,512}?"
+    r"(?:\b(?:retrospective|archived|historical|recorded|replay|recording|"
+    r"yesterday(?:'s)?|completed|finished|last\s+(?:week|month)|"
+    r"\d+\s+days?\s+ago)\b|(?:事後|過去|履歴|昨日|完了|終了))"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,512}?"
+    r"(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}"
     r"(?::|\breads?\s+)|"
     r"(?:(?:the\s+)?(?:video|replay|recording)\s+)?"
     r"(?:subtitle|caption|quote)\s+(?:says?|reads?)\s+|"
     r"(?:the\s+)?(?:video|replay|recording)\s+(?:says?|reads?)\s+|"
     r"(?:アーカイブ|過去|履歴)(?:の)?(?:引用|記録|メモ)[^\uFF1A\r\n]{0,48}"
     r"[\uFF1A:])\s*"
-    r"(?:[\"“][^\"”]*[\"”]|'[^']*'|[「『][^」』]*[」』]))",
+    r"(?:[\"“][^\"”\r\n]*[\"”]|'[^'\r\n]*'|[「『][^」』\r\n]*[」』]))",
+    re.IGNORECASE,
+)
+_HISTORICAL_STATUS_CLAUSE = re.compile(
+    r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])"
+    r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:\b(?:replay|recording|archive|historical|retrospective|yesterday)\b|"
+    r"(?:リプレイ|録画|記録|過去|昨日|事後)))"
+    r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:(?<!not\s)(?<!n['\u2019]t\s)\b(?:ended|completed|finished)\b|"
+    r"(?:終了|完了)(?:した|済み|しています|している|しました)))"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,512})",
     re.IGNORECASE,
 )
 _RETROSPECTIVE_LIVE_SUFFIX = re.compile(
@@ -173,8 +190,9 @@ _ACTIVE_LIVE_STATUS = re.compile(
 )
 _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
     r"(?:\b(?:"
-    r"(?:(?:this|the)\s+)?(?:online\s+)?"
-    r"(?:mtt|sng|contest|event|game|tournament|table|hand|session|play)\s+"
+    r"(?:(?:(?:this|the|my|that|current)\s+(?:online\s+)?"
+    r"(?:mtt|sng|pko|contest|event|game|tournament|table|hand|session|play))|"
+    r"(?:mtt|sng|pko))\s+"
     r"(?:"
     r"(?:(?:is|remains)\s+(?:still\s+|currently\s+)?"
     r"(?:in\s+progress|underway|ongoing|active|live|running|not\s+over))|"
@@ -214,14 +232,16 @@ _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
 )
 
 _ACTIVE_GAME_SUBJECT = re.compile(
-    r"\b(?:(?:my|this|the)\s+)?"
-    r"(?:mtt|sng|contest|event|game|match|tournament|table|hand|session|play|one|field)\b",
+    r"\b(?:(?:my|this|the|that|current)\s+"
+    r"(?:mtt|sng|pko|competition|contest|event|game|match|tournament|table|hand|"
+    r"session|play|one|field)|(?:mtt|sng|pko))\b",
     re.IGNORECASE,
 )
 _ACTIVE_GAME_PREDICATE = re.compile(
     r"\b(?:"
     r"(?:is|remains)\s+(?:still\s+|currently\s+)?"
-    r"(?:in\s+progress|underway|ongoing|active|live|going|running|playing|not\s+over)|"
+    r"(?:in\s+progress|underway|ongoing|active|live|going|running|playing|"
+    r"not\s+over|unfinished)|"
     r"(?:is(?:n't|n\u2019t|\s+not)|has(?:n't|n\u2019t|\s+not))\s+"
     r"(?:over|ended|finished|completed|concluded|wrapped\s+up)(?:\s+yet)?|"
     r"(?:has|have)\s+not\s+wrapped\s+up|"
@@ -229,45 +249,64 @@ _ACTIVE_GAME_PREDICATE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
-_ACTIVE_GAME_CLAUSE = re.compile(
-    _ACTIVE_GAME_SUBJECT.pattern
-    + r"[^.!?\r\n\u3002\uff01\uff1f]*?"
-    + _ACTIVE_GAME_PREDICATE.pattern,
-    re.IGNORECASE,
-)
 _ACTIVE_PLAYER_STATUS = re.compile(
     r"\b(?:"
     r"(?:i|we)\s+remain(?:s)?\s+in\s+(?:the\s+)?"
     r"(?:contest|event|game|match|tournament)|"
-    r"(?:i|we)\s+have\s+not\s+been\s+eliminated(?:\s+yet)?|"
+    r"(?:i|we|i(?:['\u2019]ve|\s+have)|we(?:['\u2019]ve|\s+have))\s+"
+    r"(?:have\s+)?not\s+been\s+eliminated(?:\s+yet)?|"
+    r"i\s+survived\s+and\s+am\s+still\s+(?:playing|competing|participating)|"
+    r"i\s+(?:survived\s+and\s+am|am|remain)\s+(?:still\s+)?alive"
+    r"(?:\s+in\s+(?:the|this)\s+(?:competition|contest|event|game|match|tournament))?|"
+    r"it\s+is\s+my\s+turn(?:\s+in\s+(?:this|the)\s+(?:mtt|sng|event|game|tournament))?|"
+    r"my\s+seat\s+is\s+(?:still\s+)?active|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+"
     r"(?:at\s+(?:the\s+)?table|in\s+(?:the\s+)?"
     r"(?:contest|event|game|match|tournament)|playing|competing|participating)|"
     r"(?:the\s+)?action\s+has\s+reached\s+me|"
-    r"(?:my\s+)?(?:time\s*bank|decision\s+(?:clock|timer)|action\s+(?:clock|timer))"
-    r"\s+(?:is\s+)?(?:still\s+)?(?:counting\s+down|running)|"
-    r"(?:my\s+)?time\s*bank\s+has\s+\d+\s+seconds?\s+left"
+    r"(?:my\s+)?(?:time\s*bank|clock|decision\s+(?:clock|timer)|"
+    r"action\s+(?:clock|timer))"
+    r"\s+(?:is\s+)?(?:still\s+)?(?:counting\s+down|running|ticking)|"
+    r"(?:my\s+)?time\s*bank\s+has\s+\d+\s+seconds?\s+left|"
+    r"i\s+have\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)"
+    r"\s+seconds?\s+left(?:\s+to\s+(?:act|decide))?"
     r")\b",
     re.IGNORECASE,
 )
-_ACTIVE_JAPANESE_STATUS = re.compile(
-    r"(?:(?:\u3053\u306e|\u305d\u306e|\u73fe\u5728\u306e)?"
+_ACTIVE_JAPANESE_EVENT_SUBJECT = re.compile(
     r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|MTT|SNG|"
-    r"\u30a4\u30d9\u30f3\u30c8|\u30b2\u30fc\u30e0|\u30cf\u30f3\u30c9)"
-    r"[^.!?\r\n\u3002\uff01\uff1f]*"
-    r"(?:\u958b\u50ac\u4e2d|\u7d9a\u884c\u4e2d|\u9032\u884c\u4e2d|"
-    r"\u4eca\u3082\u7d9a\u3044\u3066|\u307e\u3060\u7d42\u308f\u3063\u3066\u3044\u306a|"
-    r"\u307e\u3060\u7d42\u4e86\u3057\u3066\u3044\u306a)|"
-    r"(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060"
-    r"[^.!?\r\n\u3002\uff01\uff1f]*"
-    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|MTT|SNG)"
-    r"[^.!?\r\n\u3002\uff01\uff1f]*(?:\u6b8b\u3063\u3066|\u53c2\u52a0\u4e2d)|"
-    r"(?:\u30bf\u30a4\u30e0\u30d0\u30f3\u30af|\u6301\u3061\u6642\u9593|"
-    r"\u6b8b\u308a\u6642\u9593)[^.!?\r\n\u3002\uff01\uff1f]*"
-    r"(?:\u6e1b\u3063\u3066|\u6e1b\u5c11|\u30ab\u30a6\u30f3\u30c8\u30c0\u30a6\u30f3|"
-    r"\u6b8b\u308a\s*\d+\s*\u79d2))",
+    r"\u30a4\u30d9\u30f3\u30c8|\u30b2\u30fc\u30e0|\u30cf\u30f3\u30c9)",
     re.IGNORECASE,
 )
+_ACTIVE_JAPANESE_EVENT_PREDICATE = re.compile(
+    r"(?:\u958b\u50ac\u4e2d|\u7d9a\u884c\u4e2d|\u9032\u884c\u4e2d|"
+    r"\u4eca\u3082\u7d9a\u3044\u3066|\u307e\u3060\u7d42\u308f\u3063\u3066\u3044\u306a|"
+    r"\u307e\u3060\u7d42\u4e86\u3057\u3066\u3044\u306a|\u672a\u7d42\u4e86)",
+    re.IGNORECASE,
+)
+_ACTIVE_JAPANESE_PLAYER_STATUS = re.compile(
+    r"(?:(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060\u751f\u304d\u6b8b\u3063\u3066|"
+    r"(?:\u4eca\u306f)?(?:\u79c1|\u81ea\u5206)\u306e\u624b\u756a|"
+    r"\u3042\u3068\s*\d+\s*\u79d2[^.!?\r\n\u3002\uff01\uff1f]{0,64}"
+    r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))",
+    re.IGNORECASE,
+)
+_ACTIVE_JAPANESE_PLAYER_SUBJECT = re.compile(
+    r"(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060",
+)
+_ACTIVE_JAPANESE_PLAYER_PREDICATE = re.compile(
+    r"(?:\u6b8b\u3063\u3066|\u53c2\u52a0\u4e2d)",
+)
+_ACTIVE_JAPANESE_TIMER_SUBJECT = re.compile(
+    r"(?:\u30bf\u30a4\u30e0\u30d0\u30f3\u30af|\u6301\u3061\u6642\u9593|"
+    r"\u6b8b\u308a\u6642\u9593)",
+)
+_ACTIVE_JAPANESE_TIMER_PREDICATE = re.compile(
+    r"(?:\u6e1b\u3063\u3066|\u6e1b\u5c11|\u30ab\u30a6\u30f3\u30c8\u30c0\u30a6\u30f3|"
+    r"\u6b8b\u308a\s*\d+\s*\u79d2)",
+)
+_SENTENCE_BOUNDARY = re.compile(r"[.!?\r\n\u3002\uff01\uff1f]+")
 
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
@@ -385,12 +424,42 @@ def _security_probe(value: str) -> str:
     return without_ignorables.translate(_SECURITY_DASH_TRANSLATION).casefold()
 
 
+def _secret_probe(value: str) -> str:
+    """Build a conservative ASCII skeleton only for secret-shape matching."""
+
+    normalized = (
+        unicodedata.normalize("NFKC", value).translate(_SECURITY_DASH_TRANSLATION).casefold()
+    )
+    skeleton: list[str] = []
+    for character in normalized:
+        codepoint = ord(character)
+        if character in "\r\n":
+            skeleton.append(character)
+        elif character.isspace():
+            skeleton.append(" ")
+        elif (
+            0x30 <= codepoint <= 0x39
+            or 0x41 <= codepoint <= 0x5A
+            or 0x61 <= codepoint <= 0x7A
+            or character in "_-=:"
+        ):
+            skeleton.append(character)
+    return "".join(skeleton)
+
+
+def _contains_secret_shape(value: str) -> bool:
+    return any(
+        pattern.search(probe) is not None
+        for probe in (_security_probe(value), _secret_probe(value))
+        for pattern in _SECRET_PATTERNS
+    )
+
+
 def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
-    security_probe = _security_probe(redacted)
-    if any(pattern.search(security_probe) for pattern in _SECRET_PATTERNS):
+    if _contains_secret_shape(redacted):
         return "[REDACTED]"
     return redacted
 
@@ -423,6 +492,7 @@ def redact_sensitive(value: Any, *, enabled: bool = True) -> Any:
             redacted_mapping[safe_key] = (
                 "[REDACTED]"
                 if _SENSITIVE_KEY.search(_security_probe(raw_key))
+                or _SENSITIVE_KEY.search(_secret_probe(raw_key))
                 else redact_sensitive(item, enabled=True)
             )
         return redacted_mapping
@@ -510,11 +580,33 @@ def _has_retrospective_reversal(cleaned: str) -> bool:
 
 
 def _has_active_live_status(cleaned: str) -> bool:
-    return (
+    if (
         _ACTIVE_PLAYER_STATUS.search(cleaned) is not None
-        or _ACTIVE_JAPANESE_STATUS.search(cleaned) is not None
-        or _ACTIVE_GAME_CLAUSE.search(cleaned) is not None
-    )
+        or _ACTIVE_JAPANESE_PLAYER_STATUS.search(cleaned) is not None
+    ):
+        return True
+    for clause in _SENTENCE_BOUNDARY.split(cleaned):
+        if (
+            (
+                _ACTIVE_GAME_SUBJECT.search(clause) is not None
+                and _ACTIVE_GAME_PREDICATE.search(clause) is not None
+            )
+            or (
+                _ACTIVE_JAPANESE_EVENT_SUBJECT.search(clause) is not None
+                and _ACTIVE_JAPANESE_EVENT_PREDICATE.search(clause) is not None
+            )
+            or (
+                _ACTIVE_JAPANESE_PLAYER_SUBJECT.search(clause) is not None
+                and _ACTIVE_JAPANESE_EVENT_SUBJECT.search(clause) is not None
+                and _ACTIVE_JAPANESE_PLAYER_PREDICATE.search(clause) is not None
+            )
+            or (
+                _ACTIVE_JAPANESE_TIMER_SUBJECT.search(clause) is not None
+                and _ACTIVE_JAPANESE_TIMER_PREDICATE.search(clause) is not None
+            )
+        ):
+            return True
+    return False
 
 
 def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
@@ -525,6 +617,7 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     for text in _walk_strings(value):
         cleaned = _security_probe(text)
         cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
+        cleaned = _HISTORICAL_STATUS_CLAUSE.sub("", cleaned)
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
         cleaned_texts.append(cleaned)
         partial_live_context_present = (

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from time import perf_counter
 
 import pytest
 from pydantic import ValidationError
@@ -395,6 +396,15 @@ def test_source_contract_fails_closed_with_stable_codes(
             b"I am playing an online MTT recording saved last Monday for review. "
             b"Should I have called or folded?\n"
         ),
+        (
+            b"A tournament is ongoing until only one player remains. "
+            b"Should I call or fold in yesterday's completed hand?\n"
+        ),
+        (
+            b"I am reviewing yesterday's completed hand. In the recording, the "
+            b"tournament is still running at this point, but it ended yesterday. "
+            b"Should I have called or folded?\n"
+        ),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -415,10 +425,22 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "This one is still running",
         "We're still at the table and the action has reached me",
         "Meanwhile, the field is still playing",
+        "I survived and am still playing",
+        "I remain alive in the tournament",
+        "The competition is underway",
+        "The tournament is unfinished",
+        "My clock is ticking",
+        "I've not been eliminated yet",
+        "It is my turn in this MTT",
+        "My seat is still active",
+        "I have ten seconds left to act",
         "この大会はまだ開催中です",
         "大会は今も続いています",
         "MTTはまだ続行中",
         "私はまだこの大会に残っています",
+        "私はまだ生き残っています",
+        "今は私の手番です",
+        "あと10秒で決めないといけません",
         "タイムバンクがカウントダウン中です",
     ],
 )
@@ -438,6 +460,15 @@ def test_long_active_clause_is_refused_without_a_distance_window() -> None:
     result = _prepare_source(source)
     assert result.status == "blocked"
     assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+
+
+def test_repeated_live_subject_scan_stays_linear_enough_for_bounded_input() -> None:
+    source = ("tournament " * 6400).encode()
+    started = perf_counter()
+    result = _prepare_source(source)
+    elapsed = perf_counter() - started
+    assert result.status == "ready"
+    assert elapsed < 2.0
 
 
 @pytest.mark.parametrize(
@@ -488,6 +519,14 @@ def test_source_size_limit_is_exact() -> None:
             "running. Should I call or fold?",
         ),
         (
+            b"This tournament is still run",
+            "ning. Should I call or fold?",
+        ),
+        (
+            "この大会は現在進行".encode(),
+            "中です。コールかフォールドか教えてください。",
+        ),
+        (
             b"I am reviewing a completed hand from yesterday.",
             "Action is on me before the decision timer expires. Should I call or fold?",
         ),
@@ -514,6 +553,46 @@ def test_live_context_and_decision_cannot_be_split_across_artifacts(
     )
     assert result.status == "blocked"
     assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+
+
+@pytest.mark.parametrize(
+    ("source", "claim"),
+    [
+        (b"api", "_key=ABCDEFGHIJKLMNOP123456"),
+        (b"api ", "key=ABCDEFGHIJKLMNOP123456"),
+    ],
+)
+def test_secret_shape_cannot_be_split_across_artifacts(
+    source: bytes,
+    claim: str,
+) -> None:
+    payload = candidate_payload()
+    payload["claims"][0]["text"] = claim
+    result = prepare_review_intake(
+        source,
+        payload,
+        source_id="source-split-secret-1",
+        source_kind="user_supplied",
+        license_classification="user_supplied_private_analysis",
+        usage_classification="local_analysis_only",
+        classification="internal",
+    )
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        b'The live video subtitle says "the action is on me." Should I call or fold?\n',
+        (b'The video caption says "the action is on me." It is live. Should I call or fold?\n'),
+    ],
+)
+def test_live_quotation_is_not_treated_as_archived(source: bytes) -> None:
+    result = _prepare_source(source)
+    assert result.status == "blocked"
     assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
 
 
@@ -788,6 +867,13 @@ def test_legacy_range_shape_cannot_enter_candidate_contract() -> None:
         "api\u0600_key=ABCDEFGHIJKLMNOP123456",
         "api\ufff0_key=ABCDEFGHIJKLMNOP123456",
         "api\u0332_key: ABCDEFGHIJKLMNOP123456",
+        "api\x00_key=sk_test_never_store",
+        "api\x01_key=sk_test_never_store",
+        "api\x7f_key=sk_test_never_store",
+        "api\u0903_key=sk_test_never_store",
+        "api\ue000_key=sk_test_never_store",
+        "api\ufffc_key=sk_test_never_store",
+        "api/_key=sk_test_never_store",
     ],
 )
 def test_candidate_secret_is_not_written_to_preparation_artifact(secret: str) -> None:

@@ -3191,6 +3191,8 @@ class Orchestrator:
                 and exc.failure.domain_effect == "current_advanced"
             ):
                 durable = self.product_store.read_current(run_id, verify_budget=False)
+                if durable.read_status is not RunReadStatus.FAILED:
+                    raise
                 return self._exact_terminal_report(durable)
             allowed_ephemeral_failure = (
                 exc.failure.stage == "preflight"

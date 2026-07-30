@@ -81,6 +81,17 @@ def _approval_json_default(value: object) -> str:
     raise TypeError(f"unsupported approval proposal value: {type(value).__name__}")
 
 
+def is_verified_claim_correction(claim: Claim) -> bool:
+    """Return whether adjudication produced an exact, high-confidence correction."""
+
+    return (
+        claim.claim_id.startswith("adjudication-")
+        and claim.label is EpistemicLabel.CALCULATED
+        and claim.confidence is ConfidenceGrade.A
+        and "訂正が必要" in claim.text
+    )
+
+
 class PurePhaseService(Generic[InputT, OutputT]):
     phase_id: PhaseId
     input_type: type[InputT]
@@ -671,7 +682,9 @@ class SynthesisService(PurePhaseService[SynthesisInput, SynthesisOutput]):
         value = isolated.input
         if value.run_id != isolated.run_id:
             raise ValueError("synthesis input run ID does not match its request")
-        corrections = [claim for claim in value.claim_assessments if "訂正が必要" in claim.text]
+        corrections = [
+            claim for claim in value.claim_assessments if is_verified_claim_correction(claim)
+        ]
         failed = [result for result in value.tool_results if result.status is ToolStatus.FAILED]
         successes = [result for result in value.tool_results if result.status is ToolStatus.SUCCESS]
         if any(event.blocked for event in value.security_events):

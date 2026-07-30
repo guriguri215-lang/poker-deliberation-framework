@@ -47,7 +47,10 @@ from poker_deliberation.context_lifecycle import (
     context_payload,
     legacy_context_sha256,
 )
-from poker_deliberation.phases.services import build_agent_context
+from poker_deliberation.phases.services import (
+    build_agent_context,
+    is_verified_claim_correction,
+)
 from poker_deliberation.range_grammar import validate_versioned_range
 from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.schemas import (
@@ -559,6 +562,12 @@ def _validate_combined_security_scope(
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     source_text = source_bytes.decode("utf-8", errors="strict")
     candidate_claims = [claim.text for claim in case.claims]
+    source_boundary = source_text[-512:]
+    if any(
+        redact_sensitive(source_boundary + claim[:512]) != source_boundary + claim[:512]
+        for claim in candidate_claims
+    ):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY, "candidate")
     candidate_live, candidate_decision, candidate_explicit = real_time_assistance_signals(
         candidate_claims
     )
@@ -568,6 +577,11 @@ def _validate_combined_security_scope(
         [source_text, *candidate_claims]
     )
     if combined_explicit or (combined_live and combined_decision):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    joined_live, joined_decision, joined_explicit = real_time_assistance_signals(
+        "".join((source_text, *candidate_claims))
+    )
+    if joined_explicit or (joined_live and joined_decision):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     if candidate_live and candidate_decision:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
@@ -852,11 +866,14 @@ def _validate_reproduction_steps(report: FinalReport) -> None:
                 "report.reproduction_steps",
             )
         normalized_path = argv[6].replace("\\", "/")
-        expected_suffix = f"/payload/tool_results/{result.result_id}.input.json"
+        path_parts = tuple(part for part in normalized_path.split("/") if part)
         if (
-            not normalized_path.endswith(expected_suffix)
-            or not re.match(r"^(?:[A-Za-z]:/|/)", normalized_path)
-            or "/../" in normalized_path
+            re.match(r"^(?:[A-Za-z]:/|/)", normalized_path) is None
+            or any(part in {".", ".."} for part in path_parts)
+            or len(path_parts) < 8
+            or path_parts[-8:-4] != ("runs", report.run_id, ".terminal-store", "revisions")
+            or re.fullmatch(r"r1-txn-[0-9a-f]{32}", path_parts[-4]) is None
+            or path_parts[-3:] != ("payload", "tool_results", f"{result.result_id}.input.json")
         ):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
@@ -904,10 +921,8 @@ def _validate_confirmed_report_projection(report: FinalReport) -> None:
     role_names = {record.agent_role for record in report.agent_execution_records}
     budget_codes = {code.value for code in BudgetFailureCode}
 
-    def allowed_data_quality(item: str) -> bool:
-        if item in tool_messages or item in _CONFIRMED_RUNTIME_DATA_QUALITY:
-            return True
-        if item == _CONFIRMED_UNVERIFIED_CLAIM_WARNING:
+    def runtime_data_quality(item: str) -> bool:
+        if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
             return True
         for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
             if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
@@ -923,12 +938,23 @@ def _validate_confirmed_report_projection(report: FinalReport) -> None:
             for role in role_names
         )
 
+    def allowed_data_quality(item: str) -> bool:
+        return (
+            item in tool_messages
+            or item == _CONFIRMED_UNVERIFIED_CLAIM_WARNING
+            or runtime_data_quality(item)
+        )
+
     expected_limitations = list(dict.fromkeys([*report.data_quality, _CONFIRMED_SOLVER_LIMITATION]))
     if (
         report.data_quality != unique_data_quality
         or report.limitations != unique_limitations
         or not all(allowed_data_quality(item) for item in report.data_quality)
         or report.limitations != expected_limitations
+        or (
+            report.run_status == "completed"
+            and any(runtime_data_quality(item) for item in report.data_quality)
+        )
     ):
         _fail(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
@@ -1207,7 +1233,9 @@ def build_confirmed_review_provenance(
                     ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
                     "agent_reports",
                 )
-        corrections = [claim for claim in report.claim_assessments if "訂正が必要" in claim.text]
+        corrections = [
+            claim for claim in report.claim_assessments if is_verified_claim_correction(claim)
+        ]
         failed_tools = [
             result for result in report.tool_results if result.status is ToolStatus.FAILED
         ]
@@ -1364,6 +1392,11 @@ def build_confirmed_review_provenance(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
                 "report.agent_execution_records",
             )
+    if assignments is None or agent_reports is None:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.authority_artifacts",
+        )
     provisional = ConfirmedReviewProvenanceV1(
         run_id=report.run_id,
         intake_id=admission.candidate.projection.candidate_input.intake_id,

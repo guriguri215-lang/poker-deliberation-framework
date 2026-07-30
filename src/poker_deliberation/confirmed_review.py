@@ -1326,15 +1326,20 @@ def _validate_confirmed_report_projection(
         or (provider_output_record_present and len(provider_output_terminal_evidence) != 1)
         or (
             provider_output_record_present
-            and provider_output_additional_strict_budget_codes
             and (
-                len(provider_output_additional_strict_budget_codes) != 1
-                or provider_output_additional_strict_budget_codes[0]
-                not in {
-                    BudgetFailureCode.RUNTIME_EXCEEDED.value,
-                    BudgetFailureCode.CLOCK_ROLLBACK.value,
-                }
-                or not provider_output_followup_runtime_stage_present
+                bool(provider_output_additional_strict_budget_codes)
+                != provider_output_followup_runtime_stage_present
+                or (
+                    provider_output_additional_strict_budget_codes
+                    and (
+                        len(provider_output_additional_strict_budget_codes) != 1
+                        or provider_output_additional_strict_budget_codes[0]
+                        not in {
+                            BudgetFailureCode.RUNTIME_EXCEEDED.value,
+                            BudgetFailureCode.CLOCK_ROLLBACK.value,
+                        }
+                    )
+                )
             )
         )
         or sum(item in primary_runtime_stages for item in report.data_quality) > 1

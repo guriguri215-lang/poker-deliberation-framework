@@ -969,32 +969,73 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
             )
         assert impossible_followup.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
-    followup_runtime_report = staged_failure_report(
-        canonical_provider_output,
-        records=[provider_output_record],
-        analysis_sections=report.analysis_sections[:1],
-    )
-    exact_data_quality = [
-        *followup_runtime_report.data_quality,
-        provider_output_terminal_sources[0],
+    for missing_followup_budget_stage in (
         "maximum runtime exceeded during final synthesis",
-        "strict budget failure: runtime_exceeded",
-    ]
-    followup_runtime_report = followup_runtime_report.model_copy(
-        update={
-            "data_quality": exact_data_quality,
-            "limitations": [*exact_data_quality, report.limitations[-1]],
-        },
-        deep=True,
-    )
-    followup_provenance = build_confirmed_review_provenance(
-        admission,
-        followup_runtime_report,
-        assignments=assignments,
-        agent_reports=[provider_output_agent_report],
-        **storage_authority,
-    )
-    assert followup_provenance.terminal_status == "failed_with_limitations"
+        "maximum runtime exceeded during final artifact writes",
+    ):
+        missing_followup_budget_report = staged_failure_report(
+            canonical_provider_output,
+            records=[provider_output_record],
+            analysis_sections=report.analysis_sections[:1],
+        )
+        exact_data_quality = [
+            *missing_followup_budget_report.data_quality,
+            provider_output_terminal_sources[0],
+            missing_followup_budget_stage,
+        ]
+        missing_followup_budget_report = missing_followup_budget_report.model_copy(
+            update={
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as missing_followup_budget:
+            build_confirmed_review_provenance(
+                admission,
+                missing_followup_budget_report,
+                assignments=assignments,
+                agent_reports=[provider_output_agent_report],
+                **storage_authority,
+            )
+        assert missing_followup_budget.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    for followup_runtime_stage, followup_budget in (
+        (
+            "maximum runtime exceeded during final synthesis",
+            "strict budget failure: runtime_exceeded",
+        ),
+        (
+            "maximum runtime exceeded during final artifact writes",
+            "strict budget failure: clock_rollback",
+        ),
+    ):
+        followup_runtime_report = staged_failure_report(
+            canonical_provider_output,
+            records=[provider_output_record],
+            analysis_sections=report.analysis_sections[:1],
+        )
+        exact_data_quality = [
+            *followup_runtime_report.data_quality,
+            provider_output_terminal_sources[0],
+            followup_runtime_stage,
+            followup_budget,
+        ]
+        followup_runtime_report = followup_runtime_report.model_copy(
+            update={
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+        followup_provenance = build_confirmed_review_provenance(
+            admission,
+            followup_runtime_report,
+            assignments=assignments,
+            agent_reports=[provider_output_agent_report],
+            **storage_authority,
+        )
+        assert followup_provenance.terminal_status == "failed_with_limitations"
 
     continued_after_failure = forged_failure_report(
         status=AgentExecutionStatus.FAILED,

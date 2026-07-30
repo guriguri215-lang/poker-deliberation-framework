@@ -109,6 +109,23 @@ def test_assignment_ledger_mutation_fails_terminal_replay(tmp_path, mutation: st
         )
 
 
+def test_agent_report_mutation_fails_terminal_replay(tmp_path) -> None:
+    run_id, payloads = _published_payloads(tmp_path)
+    report_name = next(
+        logical_name for logical_name in payloads if logical_name.startswith("agent_reports/")
+    )
+    agent_report = json.loads(payloads[report_name])
+    agent_report["conclusions"] = ["forged independent conclusion"]
+    payloads[report_name] = canonical_json_bytes(agent_report)
+
+    with pytest.raises(CanonicalStorageError):
+        product_payload_commitments(
+            payloads,
+            run_id=run_id,
+            status="succeeded",
+        )
+
+
 def test_structural_revision_rejects_confirmed_artifacts_without_core_chain(tmp_path) -> None:
     run_id, payloads = _published_payloads(tmp_path)
     evidence = ClassificationEvidence(

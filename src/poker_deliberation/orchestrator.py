@@ -1660,15 +1660,22 @@ class Orchestrator:
                     "confirmation.idempotency_key",
                 )
             return self.load_report(run_id)
-        hand_validation = self.registry.execute(
-            "hand_validator",
-            admission.case.hand.model_dump(mode="json") if admission.case.hand is not None else {},
-            contract_version=self.tool_contract_versions.get("hand_validator"),
+        hand_payload = (
+            admission.case.hand.model_dump(mode="json") if admission.case.hand is not None else {}
         )
-        if (
-            hand_validation.status is not ToolStatus.SUCCESS
-            or hand_validation.output.get("valid") is not True
-        ):
+        hand_definition = self.registry._tools.get("hand_validator")
+        hand_contract = hand_definition.contract if hand_definition is not None else None
+        try:
+            if hand_definition is None or hand_contract is None:
+                raise ValueError("hand validator contract is unavailable")
+            validated_hand = hand_contract.input_model.model_validate(hand_payload)
+            hand_output = hand_definition.function(
+                validated_hand.model_dump(mode="python", exclude_unset=True)
+            )
+            hand_contract.output_model.model_validate(hand_output)
+        except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
+            hand_output = {}
+        if hand_output.get("valid") is not True:
             raise ConfirmedReviewError(
                 ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING,
                 "candidate.hand",
@@ -1894,6 +1901,8 @@ class Orchestrator:
             "assumptions.json",
             redact_sensitive(case.assumptions, enabled=not self.config.record_sensitive_data),
         )
+        assignments = list(select_roles(case))
+        self.store.write_json(actual_run_id, "assignments.json", assignments)
 
         machine.transition(RunState.DATA_VALIDATION, "canonical schema validation completed")
         security_events = screen_case(case)
@@ -2054,7 +2063,7 @@ class Orchestrator:
             policy_snapshot_hash=self.phase_policy_snapshot_hash,
             input_value=RoutingInput(
                 case_kind=case.kind,
-                role_snapshot=tuple(select_roles(case)),
+                role_snapshot=tuple(assignments),
                 registered_tools=registered_tools,
             ),
         )
@@ -2066,7 +2075,6 @@ class Orchestrator:
         if routing_outcome.output is None:
             raise PhaseContractError("routing returned no output")
         assignments = list(routing_outcome.output.assignments)
-        self.store.write_json(actual_run_id, "assignments.json", assignments)
         reports: list[AgentReport] = []
         if case.kind != "calculation":
             machine.transition(RunState.INDEPENDENT_ANALYSIS, "selected roles run independently")
@@ -3047,6 +3055,7 @@ class Orchestrator:
                 confirmed_admission,
                 report,
                 assignments=assignments,
+                agent_reports=reports,
             )
             self.store.write_json(
                 run_id,

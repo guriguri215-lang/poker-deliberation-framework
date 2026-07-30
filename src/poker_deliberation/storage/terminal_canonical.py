@@ -114,6 +114,9 @@ _CONFIRMED_REVIEW_ARTIFACTS = frozenset(
         "confirmed_review_provenance.json",
     }
 )
+_AGENT_REPORT_ARTIFACT = re.compile(
+    r"^agent_reports/(?P<identifier>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$"
+)
 _TERMINAL_ONLY_ARTIFACT_TABLE: dict[str, tuple[str, str, str]] = {
     "state.json": (
         "application/json",
@@ -385,6 +388,19 @@ def product_payload_commitments(
         payloads.get("agent_execution_records.json", b"[]")
     )
     validate_assignment_execution_correlation(assignments, execution_records)
+    agent_reports: list[AgentReport] = []
+    for logical_name in sorted(payloads, key=lambda item: item.encode("utf-8")):
+        report_match = _AGENT_REPORT_ARTIFACT.fullmatch(logical_name)
+        if report_match is None:
+            continue
+        agent_report = _parse_json_model(payloads[logical_name], AgentReport)
+        if agent_report.report_id != report_match.group("identifier"):
+            raise CanonicalStorageError("agent report ID does not match its path")
+        agent_reports.append(agent_report)
+    report_ids = [agent_report.report_id for agent_report in agent_reports]
+    report_roles = [agent_report.agent_role for agent_report in agent_reports]
+    if len(set(report_ids)) != len(report_ids) or len(set(report_roles)) != len(report_roles):
+        raise CanonicalStorageError("agent report IDs and roles must be unique")
     security_events = TypeAdapter(list[SecurityEvent]).validate_json(
         payloads.get("security_events.json", b"[]")
     )
@@ -470,6 +486,16 @@ def product_payload_commitments(
         )
         if confirmation.run_id != run_id or provenance.run_id != run_id:
             raise CanonicalStorageError("confirmed-review run ID correlation mismatch")
+        reports_by_role = {agent_report.agent_role: agent_report for agent_report in agent_reports}
+        ordered_agent_reports = [
+            reports_by_role[record.agent_role]
+            for record in execution_records
+            if record.agent_role in reports_by_role
+        ]
+        if len(ordered_agent_reports) != len(execution_records) or len(agent_reports) != len(
+            execution_records
+        ):
+            raise CanonicalStorageError("confirmed-review agent reports do not match executions")
         try:
             # Delayed to preserve the storage package's import direction:
             # confirmed_review uses canonical storage helpers, while terminal
@@ -486,6 +512,7 @@ def product_payload_commitments(
                 report=report,
                 provenance=provenance,
                 assignments=assignments,
+                agent_reports=ordered_agent_reports,
             )
         except ValueError as exc:
             raise CanonicalStorageError("confirmed-review source-to-report replay failed") from exc
@@ -501,6 +528,9 @@ def product_payload_commitments(
     execution_bindings: list[object] = [
         record.model_dump(mode="json") for record in execution_records
     ]
+    execution_bindings.extend(
+        agent_report.model_dump(mode="json") for agent_report in agent_reports
+    )
     execution_bindings.extend(item.model_dump(mode="json") for item in report.tool_results)
     return (
         sha256_bytes(payloads["input.json"]),

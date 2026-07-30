@@ -27,7 +27,13 @@ from poker_deliberation.context_lifecycle import (
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases.services import build_agent_context
 from poker_deliberation.providers import LocalProvider
-from poker_deliberation.schemas import ConfidenceGrade, EpistemicLabel
+from poker_deliberation.schemas import (
+    AgentAssignment,
+    AgentExecutionStatus,
+    AgentReport,
+    ConfidenceGrade,
+    EpistemicLabel,
+)
 from poker_deliberation.storage.revision_canonical import parse_canonical_model
 from poker_deliberation.storage.terminal_models import RunReadStatus
 from poker_deliberation.tools import default_registry
@@ -374,6 +380,143 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
     with pytest.raises(ConfirmedReviewError) as completed_error:
         build_confirmed_review_provenance(admission, completed_with_error_report)
     assert completed_error.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        AgentExecutionStatus.FAILED,
+        AgentExecutionStatus.REFUSED,
+        AgentExecutionStatus.FALLBACK,
+    ],
+)
+def test_noncompleted_execution_requires_safe_nonempty_error(
+    tmp_path,
+    status: AgentExecutionStatus,
+) -> None:
+    admission = confirmed_admission(
+        run_id=f"run-confirmed-execution-error-{status.value}",
+        now=datetime.now(UTC),
+    )
+    report = Orchestrator(
+        app_config(tmp_path / status.value),
+        provider=LocalProvider(),
+    ).run_confirmed_review(admission)
+    first = report.agent_execution_records[0]
+
+    missing_error = first.model_copy(
+        update={"status": status, "error": None},
+        deep=True,
+    )
+    missing_error_report = report.model_copy(
+        update={
+            "run_status": "failed_with_limitations",
+            "agent_execution_records": [
+                missing_error,
+                *report.agent_execution_records[1:],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as missing:
+        build_confirmed_review_provenance(admission, missing_error_report)
+    assert missing.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    secret_error = first.model_copy(
+        update={"status": status, "error": "api_key=sk_test_never_store"},
+        deep=True,
+    )
+    secret_error_report = report.model_copy(
+        update={
+            "run_status": "failed_with_limitations",
+            "agent_execution_records": [
+                secret_error,
+                *report.agent_execution_records[1:],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as secret:
+        build_confirmed_review_provenance(admission, secret_error_report)
+    assert secret.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
+def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> None:
+    admission = confirmed_admission(
+        run_id="run-confirmed-agent-report-authority-1",
+        now=datetime.now(UTC),
+    )
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    )
+    report = orchestrator.run_confirmed_review(admission)
+    read = orchestrator.product_store.read_current(report.run_id)
+    assignments = [
+        AgentAssignment.model_validate(item)
+        for item in orchestrator.store.read_json(report.run_id, "assignments.json")
+    ]
+    reports_by_role: dict[str, AgentReport] = {}
+    for payload in read.payloads:
+        if payload.inventory.logical_name.startswith("agent_reports/"):
+            agent_report = AgentReport.model_validate_json(payload.exact_bytes)
+            reports_by_role[agent_report.agent_role] = agent_report
+    agent_reports = [
+        reports_by_role[record.agent_role] for record in report.agent_execution_records
+    ]
+
+    forged_agent_reports = [
+        agent_report.model_copy(
+            update={"conclusions": ["FACT: Hero has exactly 100% equity."]},
+            deep=True,
+        )
+        for agent_report in agent_reports
+    ]
+    forged_sections = [
+        {
+            "title": agent_report.agent_role,
+            "epistemic_status": "UNKNOWN",
+            "unverified_conclusions": agent_report.conclusions,
+            "unverified_claims": [claim.text for claim in agent_report.claims],
+            "uncertainties": agent_report.uncertainties,
+            "objections": agent_report.objections,
+            "unresolved_questions": agent_report.unresolved_questions,
+        }
+        for agent_report in forged_agent_reports
+    ]
+    forged_report = report.model_copy(
+        update={
+            "conclusion": "FACT: Hero has exactly 100% equity and this is proven GTO.",
+            "analysis_sections": forged_sections,
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as forged:
+        build_confirmed_review_provenance(
+            admission,
+            forged_report,
+            assignments=assignments,
+            agent_reports=forged_agent_reports,
+        )
+    assert forged.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
+def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> None:
+    config = app_config(tmp_path)
+    config.budgets = BudgetConfig(max_runtime_seconds=0.000_000_001)
+    orchestrator = Orchestrator(config, provider=LocalProvider())
+
+    for ordinal in range(5):
+        admission = confirmed_admission(
+            run_id=f"run-confirmed-tiny-runtime-{ordinal}",
+            now=datetime.now(UTC),
+        )
+        report = orchestrator.run_confirmed_review(admission)
+
+        assert report.run_status == "failed_with_limitations"
+        read = orchestrator.product_store.read_current(report.run_id, verify_budget=False)
+        assert read.read_status is RunReadStatus.FAILED
+        assert orchestrator.store.read_json(report.run_id, "assignments.json")
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:

@@ -34,9 +34,12 @@ _SECRET_PATTERNS = (
     ),
 )
 _SECURITY_IGNORABLES = re.compile(
-    "[\u0300-\u036f\u1ab0-\u1aff\u1dc0-\u1dff\u200b-\u200f"
-    "\u202a-\u202e\u2060-\u206f\u20d0-\u20ff\ufe00-\ufe0f"
-    "\ufe20-\ufe2f\ufeff\U000e0100-\U000e01ef]"
+    "[\u00ad\u0300-\u036f\u034f\u061c\u115f-\u1160\u17b4-\u17b5"
+    "\u180b-\u180f\u1ab0-\u1aff\u1dc0-\u1dff\u200b-\u200f"
+    "\u202a-\u202e\u2060-\u206f\u20d0-\u20ff\u3164"
+    "\ufe00-\ufe0f\ufe20-\ufe2f\ufeff\uffa0"
+    "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
+    "\U000e0000-\U000e0fff]"
 )
 _SECURITY_DASH_TRANSLATION = str.maketrans(
     {
@@ -163,6 +166,48 @@ _ACTIVE_LIVE_STATUS = re.compile(
     r"(?:私|自分)?(?:は)?(?:まだ|現在).{0,12}(?:参加|出場|プレイ)して(?:い|おり)ます)",
     re.IGNORECASE,
 )
+_EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
+    r"(?:\b(?:"
+    r"(?:(?:this|the)\s+)?(?:online\s+)?"
+    r"(?:mtt|sng|contest|event|game|tournament|table|hand|session|play)\s+"
+    r"(?:"
+    r"(?:(?:is|remains)\s+(?:still\s+|currently\s+)?"
+    r"(?:in\s+progress|underway|ongoing|active|live|running|not\s+over))|"
+    r"(?:is(?:n't|n\u2019t|\s+not)\s+(?:over|ended|finished|completed|concluded))|"
+    r"(?:has(?:n't|n\u2019t|\s+not)\s+(?:ended|finished|completed|concluded)"
+    r"(?:\s+yet)?)|"
+    r"(?:continues?|keeps\s+going)(?:\s+(?:today|now))?"
+    r")|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+"
+    r"(?:(?:playing|competing|participating)(?:\s+(?:in\s+)?(?:it|this\s+"
+    r"(?:mtt|sng|contest|event|game|tournament|hand)))?|in\s+(?:it|this\s+"
+    r"(?:mtt|sng|contest|event|game|tournament|hand))|seated|on\s+the\s+bubble)|"
+    r"i\s+still\s+have\s+chips(?:\s+in\s+(?:it|the\s+"
+    r"(?:mtt|sng|contest|event|game|tournament)))?|"
+    r"i\s+have(?:n't|n\u2019t|\s+not)\s+busted(?:\s+yet)?|"
+    r"(?:the\s+)?action\s+is\s+(?:still\s+)?on\s+me|"
+    r"(?:my\s+)?(?:decision|action)\s+(?:clock|timer)\s+is\s+(?:still\s+)?running|"
+    r"(?:before|until)\s+(?:my\s+|the\s+)?"
+    r"(?:decision|action)?\s*(?:clock|timer|time\s*bank)\s+expires|"
+    r"cards\s+are\s+still\s+being\s+dealt|play\s+is\s+(?:still\s+)?ongoing"
+    r")\b|"
+    r"(?:\u3053\u306e|\u305d\u306e)?"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|"
+    r"\u30a4\u30d9\u30f3\u30c8|\u30b2\u30fc\u30e0|\u30cf\u30f3\u30c9|"
+    r"\u30bb\u30c3\u30b7\u30e7\u30f3)"
+    r"(?:\u306f)?\s*(?:\u307e\u3060|\u73fe\u5728)"
+    r".{0,12}(?:\u7d9a\u3044\u3066|\u9032\u884c\u4e2d|"
+    r"\u7d42\u308f\u3063\u3066\u3044\u306a\u3044|"
+    r"\u7d42\u4e86\u3057\u3066\u3044\u306a\u3044)|"
+    r"\u30a2\u30af\u30b7\u30e7\u30f3(?:\u306f|\u304c)?"
+    r"(?:\u307e\u3060|\u73fe\u5728)?.{0,8}"
+    r"(?:\u79c1|\u81ea\u5206)(?:\u306b|\u306e\u756a)|"
+    r"(?:\u30bf\u30a4\u30e0\u30d0\u30f3\u30af|\u6301\u3061\u6642\u9593|"
+    r"\u6b8b\u308a\u6642\u9593).{0,12}(?:\u5207\u308c\u308b|\u5c3d\u304d\u308b)"
+    r")",
+    re.IGNORECASE,
+)
+
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
     r"(?:オンライン(?:ポーカー|卓)?|ポーカー|ハンド|ゲーム|卓).{0,20}"
@@ -417,7 +462,7 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     if (
         _LIVE_CONTRADICTION.search(combined) is not None
         or _ACTIVE_LIVE_STATUS.search(combined) is not None
-        or _has_retrospective_reversal(combined)
+        or _EXPLICIT_ACTIVE_LIVE_STATUS.search(combined) is not None
     ):
         live_context_present = True
     return (

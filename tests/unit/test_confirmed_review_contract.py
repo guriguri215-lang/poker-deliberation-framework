@@ -96,6 +96,10 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            "api\u180b_key=sk_test_never_store\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             "api\u0332_key: ABCDEFGHIJKLMNOP123456\n".encode(),
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
@@ -273,10 +277,27 @@ def _prepare_source(source: bytes):
                 "we are still on the bubble",
                 "play is ongoing",
                 "this tournament remains active",
+                "this contest is still underway",
+                "the tournament continues today",
+                "I still have chips in the event",
+                "the tournament is not over",
+                "the action is on me",
+                "my decision timer is still running",
             )
         ],
         (
+            b"I am playing an online MTT replay from yesterday. "
+            + b"Historical stack details. " * 40
+            + b"But the tournament is not over. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
             "昨日のMTTリプレイを見ていますが、この大会は現在進行中です。"
+            "コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "昨日のMTTリプレイを見ています。この大会はまだ続いています。"
             "コールかフォールドか教えてください。\n".encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -343,6 +364,26 @@ def test_source_contract_fails_closed_with_stable_codes(
             b"the session ended. Should I have called or folded?\n"
         ),
         (
+            b"I am playing an online MTT replay from yesterday, but I do not "
+            b"understand the river. Should I call or fold in that spot?\n"
+        ),
+        (
+            b"I am playing an online MTT replay from last week; however, the "
+            b"river decision is unclear. Should I call or fold in that spot?\n"
+        ),
+        (
+            b"I am playing an online MTT replay from yesterday, but only for study. "
+            b"What should I do at the river node?\n"
+        ),
+        (
+            b"I am playing an online MTT replay from last week, but the hand "
+            b"completed last week. Should I have called or folded?\n"
+        ),
+        (
+            b"I am playing an online MTT replay from yesterday; nevertheless, "
+            b"the session ended. Should I have called or folded?\n"
+        ),
+        (
             b"I am playing an online MTT recording saved last Monday for review. "
             b"Should I have called or folded?\n"
         ),
@@ -371,6 +412,14 @@ def test_source_size_limit_is_exact() -> None:
         (
             b"I am playing an online MTT replay from yesterday.",
             "This is actually a live tournament. Should I call or fold?",
+        ),
+        (
+            b"My current online MTT table is still running and the action is on me.",
+            "Should I call or fold?",
+        ),
+        (
+            b"I am reviewing a completed hand from yesterday.",
+            "Action is on me before the decision timer expires. Should I call or fold?",
         ),
         (
             "オンラインMTTに出場しています。\n".encode(),
@@ -665,6 +714,7 @@ def test_legacy_range_shape_cannot_enter_candidate_contract() -> None:
         "AWS_SECRET_ACCESS_KEY=ABCDEFGHIJKLMNOP123456",
         "GITHUB_TOKEN=ABCDEFGHIJKLMNOP123456",
         "api\u034f_key: ABCDEFGHIJKLMNOP123456",
+        "api\u180b_key=sk_test_never_store",
         "api\u0332_key: ABCDEFGHIJKLMNOP123456",
     ],
 )

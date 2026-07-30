@@ -1033,6 +1033,10 @@ def _validate_source_graph(
             if isinstance(binding, binding_type)
         )
 
+    report_names = sorted(
+        (name for name in by_name if _VARIABLE_AGENT_REPORT.fullmatch(name)),
+        key=lambda item: item.encode("utf-8"),
+    )
     if confirmed_marker:
         require_payload_sources(
             "confirmed_review_candidate.json",
@@ -1061,6 +1065,29 @@ def _validate_source_graph(
                 verify_confirmed_review_provenance,
             )
 
+            agent_reports = [
+                cast(AgentReport, parsed[logical_name]) for logical_name in report_names
+            ]
+            reports_by_role = {
+                agent_report.agent_role: agent_report for agent_report in agent_reports
+            }
+            execution_records = cast(
+                Sequence[AgentExecutionRecord],
+                parsed["agent_execution_records.json"],
+            )
+            ordered_agent_reports = [
+                reports_by_role[record.agent_role]
+                for record in execution_records
+                if record.agent_role in reports_by_role
+            ]
+            if (
+                len(reports_by_role) != len(agent_reports)
+                or len(ordered_agent_reports) != len(execution_records)
+                or len(agent_reports) != len(execution_records)
+            ):
+                raise CanonicalStorageError(
+                    "confirmed-review agent reports do not match executions"
+                )
             verify_confirmed_review_provenance(
                 source_bytes=cast(str, parsed["confirmed_review_source.txt"]).encode("utf-8"),
                 candidate=cast(
@@ -1081,8 +1108,9 @@ def _validate_source_graph(
                     Sequence[AgentAssignment],
                     parsed["assignments.json"],
                 ),
+                agent_reports=ordered_agent_reports,
             )
-        except ValueError as exc:
+        except (KeyError, ValueError) as exc:
             raise CanonicalStorageError(
                 "confirmed-review structural source-to-report replay failed"
             ) from exc
@@ -1155,10 +1183,6 @@ def _validate_source_graph(
         except ValueError as exc:
             raise CanonicalStorageError("normalization artifact binding mismatch") from exc
 
-    report_names = sorted(
-        (name for name in by_name if _VARIABLE_AGENT_REPORT.fullmatch(name)),
-        key=lambda item: item.encode("utf-8"),
-    )
     tool_input_names = sorted(
         (name for name in by_name if _VARIABLE_TOOL_INPUT.fullmatch(name)),
         key=lambda item: item.encode("utf-8"),

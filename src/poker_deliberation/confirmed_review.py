@@ -51,6 +51,7 @@ from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
+    AgentReport,
     CanonicalHand,
     CaseInput,
     Claim,
@@ -851,6 +852,7 @@ def build_confirmed_review_provenance(
     report: FinalReport,
     *,
     assignments: Sequence[AgentAssignment] | None = None,
+    agent_reports: Sequence[AgentReport] | None = None,
 ) -> ConfirmedReviewProvenanceV1:
     """Build the typed authority wrapper after the ordinary report is complete."""
 
@@ -905,7 +907,10 @@ def build_confirmed_review_provenance(
     expected_tool_results = _expected_tool_results(admission)
     expected_tool_names = list(expected_tool_results)
     actual_tool_names = [result.tool_name for result in report.tool_results]
-    if actual_tool_names != expected_tool_names:
+    if (report.run_status == "completed" and actual_tool_names != expected_tool_names) or (
+        report.run_status == "failed_with_limitations"
+        and actual_tool_names != expected_tool_names[: len(actual_tool_names)]
+    ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
     result_ids = [result.result_id for result in report.tool_results]
     if len(set(result_ids)) != len(result_ids):
@@ -914,7 +919,8 @@ def build_confirmed_review_provenance(
     validator_results = [
         result for result in report.tool_results if result.tool_name == "hand_validator"
     ]
-    if (
+    validator_required = report.run_status == "completed" or bool(report.tool_results)
+    if validator_required and (
         len(validator_results) != 1
         or validator_results[0].status is not ToolStatus.SUCCESS
         or validator_results[0].output.get("valid") is not True
@@ -1008,10 +1014,90 @@ def build_confirmed_review_provenance(
         assignment_by_id = {
             assignment.assignment_id: assignment for assignment in assignment_ledger
         }
+    if assignments is not None and agent_reports is None:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "agent_reports",
+        )
+    report_sequence = tuple(agent_reports or ())
+    report_ids = [agent_report.report_id for agent_report in report_sequence]
+    if agent_reports is not None and (
+        len(report_sequence) != len(report.agent_execution_records)
+        or len(set(report_ids)) != len(report_ids)
+        or [agent_report.agent_role for agent_report in report_sequence] != actual_roles
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "agent_reports",
+        )
+    if agent_reports is not None:
+        for agent_report, record in zip(
+            report_sequence,
+            report.agent_execution_records,
+            strict=True,
+        ):
+            assignment = assignment_by_id.get(record.assignment_id)
+            if (
+                assignment is None
+                or agent_report.agent_role != assignment.agent_role
+                or agent_report.task != assignment.task
+            ):
+                _fail(
+                    ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                    "agent_reports",
+                )
+        corrections = [claim for claim in report.claim_assessments if "訂正が必要" in claim.text]
+        failed_tools = [
+            result for result in report.tool_results if result.status is ToolStatus.FAILED
+        ]
+        successful_tools = [
+            result for result in report.tool_results if result.status is ToolStatus.SUCCESS
+        ]
+        if any(event.blocked for event in report.security_events):
+            projected_conclusion = (
+                "このフレームワークは事後検討専用です。"
+                "禁止用途に該当するため分析を実行しませんでした。"
+            )
+        elif report.run_status == "failed_with_limitations":
+            projected_conclusion = (
+                "実行予算または安全上の制限に達したため、制限付きで終了しました。"
+            )
+        elif corrections:
+            projected_conclusion = "ユーザー主張に、再現可能なローカル計算に基づく訂正が必要です。"
+        elif admission.case.kind == "hand" and report.data_quality:
+            projected_conclusion = "ハンド入力に矛盾または不足があるため、戦略結論を断定しません。"
+        elif failed_tools:
+            projected_conclusion = "一部の計算が失敗したため、利用可能な結果と制限だけを返します。"
+        elif successful_tools:
+            projected_conclusion = "指定されたローカル検証・計算を完了しました。"
+        else:
+            projected_conclusion = (
+                "正確な結論に必要な検証入力が不足しているため、断定を保留します。"
+            )
+        projected_sections = [
+            {
+                "title": agent_report.agent_role,
+                "epistemic_status": EpistemicLabel.UNKNOWN.value,
+                "unverified_conclusions": agent_report.conclusions,
+                "unverified_claims": [claim.text for claim in agent_report.claims],
+                "uncertainties": agent_report.uncertainties,
+                "objections": agent_report.objections,
+                "unresolved_questions": agent_report.unresolved_questions,
+            }
+            for agent_report in report_sequence
+        ]
+        if (
+            report.conclusion != projected_conclusion
+            or report.analysis_sections != projected_sections
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.conclusion",
+            )
     assignment_is_authoritative = assignments is not None
     registered_tools = frozenset(default_registry().names())
     previous_completed_at: datetime | None = None
-    for record in report.agent_execution_records:
+    for record_index, record in enumerate(report.agent_execution_records):
         expected_allowed_tools = (
             list(admission.case.requested_tools) if record.agent_role == "math-auditor" else []
         )
@@ -1080,6 +1166,21 @@ def build_confirmed_review_provenance(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
                 "report.agent_execution_records",
             )
+        if (record.status.value == "completed") != (record.error is None) or (
+            record.error is not None
+            and (not record.error.strip() or redact_sensitive(record.error) != record.error)
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.agent_execution_records",
+            )
+        record_commitment: dict[str, Any] = {
+            "execution_record": record.model_dump(mode="json"),
+        }
+        if agent_reports is not None:
+            record_commitment["agent_report"] = report_sequence[record_index].model_dump(
+                mode="json"
+            )
         agents.append(
             ConfirmedReviewAgentSupportV1(
                 execution_id=record.execution_id,
@@ -1089,16 +1190,11 @@ def build_confirmed_review_provenance(
                 status=record.status.value,
                 record_sha256=_domain_sha256(
                     PROVENANCE_CANONICALIZATION_ID + ":agent-record",
-                    record.model_dump(mode="json"),
+                    record_commitment,
                 ),
             )
         )
         previous_completed_at = record.completed_at
-        if record.status.value == "completed" and record.error is not None:
-            _fail(
-                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
-                "report.agent_execution_records",
-            )
         if report.run_status == "completed" and record.status.value != "completed":
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
@@ -1136,6 +1232,7 @@ def verify_confirmed_review_provenance(
     report: FinalReport,
     provenance: ConfirmedReviewProvenanceV1,
     assignments: Sequence[AgentAssignment],
+    agent_reports: Sequence[AgentReport],
 ) -> None:
     """Replay every durable source-to-report binding without provider execution."""
 
@@ -1152,6 +1249,7 @@ def verify_confirmed_review_provenance(
         admission,
         report,
         assignments=assignments,
+        agent_reports=agent_reports,
     )
     if provenance != expected:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")

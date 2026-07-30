@@ -471,6 +471,46 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             ).encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u30ea\u30d7\u30ec\u30a4\u753b\u9762\u3067\u306f\u7d50\u679c\u3092"
+                "\u78ba\u8a8d\u3067\u304d\u307e\u3059\u306e\u3067\u79c1\u306f\u5225\u306e"
+                "\u5353\u3067\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u753b\u9762\u3067\u306f\u7d50\u679c\u304c\u898b\u3048\u308b"
+                "\u3051\u3069\u79c1\u306f\u5225\u306e\u5353\u3067"
+                "\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u753b\u9762\u3067\u306f\u7d50\u679c\u304c\u898b\u3048\u308b"
+                "\u306e\u306b\u79c1\u306f\u5225\u306e\u5353\u3067"
+                "\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u753b\u9762\u3067\u306f\u7d50\u679c\u304c\u898b\u3048\u308b"
+                "\u306b\u3082\u304b\u304b\u308f\u3089\u305a\u79c1\u306f\u5225\u306e"
+                "\u5353\u3067\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(

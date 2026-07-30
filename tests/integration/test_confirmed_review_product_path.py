@@ -817,6 +817,25 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
         )
     assert provider_output_dq_alias.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    canonical_provider_output = f"provider {first.agent_role} output exceeded the hard byte limit"
+    provider_output_without_terminal = staged_failure_report(
+        canonical_provider_output,
+        records=[provider_output_record],
+        analysis_sections=report.analysis_sections[:1],
+    )
+    with pytest.raises(ConfirmedReviewError) as missing_provider_output_terminal:
+        build_confirmed_review_provenance(
+            admission,
+            provider_output_without_terminal,
+            assignments=assignments,
+            agent_reports=[provider_output_agent_report],
+            **storage_authority,
+        )
+    assert (
+        missing_provider_output_terminal.value.code
+        is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+    )
+
     continued_after_failure = forged_failure_report(
         status=AgentExecutionStatus.FAILED,
         error="context envelope has expired",

@@ -537,6 +537,12 @@ _JAPANESE_ARCHIVED_ATTRIBUTION_NEGATION = re.compile(
     r"(?:\u306a\u304f|\u306a\u3044|\u3042\u308a\u307e\u305b\u3093|"
     r"\u3054\u3056\u3044\u307e\u305b\u3093)",
 )
+_JAPANESE_ARCHIVED_STATUS_BRIDGE = re.compile(
+    r"\s*(?:(?:\u307e\u3060|\u3053\u306e\u6642\u70b9\u3067|"
+    r"\u76f8\u624b(?:\u304c|\u306f)|hero(?:\u304c|\u306f)|"
+    r"\u30d2\u30fc\u30ed\u30fc(?:\u304c|\u306f))\s*)?",
+    re.IGNORECASE,
+)
 
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
@@ -940,6 +946,37 @@ def _has_active_live_status(cleaned: str) -> bool:
     return False
 
 
+def _first_japanese_active_status_start(clause: str) -> int | None:
+    starts = [match.start() for match in _ACTIVE_JAPANESE_PLAYER_STATUS.finditer(clause)]
+    for subject in _ACTIVE_JAPANESE_EVENT_SUBJECT.finditer(clause):
+        if _ACTIVE_JAPANESE_EVENT_PREDICATE.search(clause, subject.end()) is not None:
+            starts.append(subject.start())
+    for subject in _ACTIVE_JAPANESE_PLAYER_SUBJECT.finditer(clause):
+        if (
+            _ACTIVE_JAPANESE_EVENT_SUBJECT.search(clause, subject.end()) is not None
+            and _ACTIVE_JAPANESE_PLAYER_PREDICATE.search(clause, subject.end()) is not None
+        ):
+            starts.append(subject.start())
+    for subject in _ACTIVE_JAPANESE_TIMER_SUBJECT.finditer(clause):
+        if _ACTIVE_JAPANESE_TIMER_PREDICATE.search(clause, subject.end()) is not None:
+            starts.append(subject.start())
+    return min(starts) if starts else None
+
+
+def _has_clear_japanese_archived_status_attribution(subclause: str) -> bool:
+    attribution = _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION.search(subclause)
+    if attribution is None:
+        return False
+    active_start = _first_japanese_active_status_start(subclause)
+    if active_start is None or active_start < attribution.end():
+        return False
+    bridge = subclause[attribution.end() : active_start]
+    return (
+        _JAPANESE_ARCHIVED_ATTRIBUTION_NEGATION.search(bridge) is None
+        and _JAPANESE_ARCHIVED_STATUS_BRIDGE.fullmatch(bridge) is not None
+    )
+
+
 def _strip_japanese_retrospective_clauses(cleaned: str) -> str:
     def replacement(match: re.Match[str]) -> str:
         clause = match.group(0)
@@ -947,14 +984,7 @@ def _strip_japanese_retrospective_clauses(cleaned: str) -> str:
         for subclause in _JAPANESE_RETROSPECTIVE_SUBCLAUSE_BOUNDARY.split(clause):
             if not _has_active_live_status(subclause):
                 continue
-            attribution = _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION.search(subclause)
-            if attribution is not None and (
-                _JAPANESE_ARCHIVED_ATTRIBUTION_NEGATION.search(
-                    subclause,
-                    attribution.end(),
-                )
-                is None
-            ):
+            if _has_clear_japanese_archived_status_attribution(subclause):
                 continue
             preserved.append(subclause)
         return " ".join(preserved)

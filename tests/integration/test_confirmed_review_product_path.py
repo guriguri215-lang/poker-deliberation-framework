@@ -38,6 +38,7 @@ from poker_deliberation.schemas import (
 )
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
+    canonical_json_bytes,
     parse_canonical_model,
 )
 from poker_deliberation.storage.terminal_canonical import product_payload_commitments
@@ -88,6 +89,21 @@ def test_confirmed_review_publishes_complete_bound_artifact_chain(tmp_path) -> N
     assert provenance.confirmation_sha256 == admission.confirmation.confirmation_sha256
     assert provenance.provider_narrative_epistemic_label == "UNKNOWN"
     assert {item.epistemic_label for item in provenance.tool_support} == {"CALCULATED"}
+
+    payloads = {payload.inventory.logical_name: payload.exact_bytes for payload in read.payloads}
+    forged_state = json.loads(payloads["state.json"])
+    assert forged_state["events"][-1]["target"] == "COMPLETED"
+    forged_state["events"][-1]["target"] = "FAILED_WITH_LIMITATIONS"
+    payloads["state.json"] = canonical_json_bytes(forged_state)
+    with pytest.raises(CanonicalStorageError, match="terminal event"):
+        product_payload_commitments(
+            payloads,
+            run_id=report.run_id,
+            status="succeeded",
+            revision=read.revision,
+            revision_root=orchestrator.product_store.revision_root,
+            transaction_id=read.transaction_id,
+        )
 
 
 def test_report_confirmed_marker_must_match_admitted_case(tmp_path) -> None:
@@ -622,6 +638,34 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
         )
     assert mismatched_runtime.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    silent_record = report.agent_execution_records[0].model_copy(
+        update={
+            "status": AgentExecutionStatus.FAILED,
+            "error": "forged silent provider failure",
+        },
+        deep=True,
+    )
+    silent_failure_report = report.model_copy(
+        update={
+            "run_status": "failed_with_limitations",
+            "conclusion": ("実行予算または安全上の制限に達したため、制限付きで終了しました。"),
+            "agent_execution_records": [
+                silent_record,
+                *report.agent_execution_records[1:],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as silent_failure:
+        build_confirmed_review_provenance(
+            admission,
+            silent_failure_report,
+            assignments=assignments,
+            agent_reports=agent_reports,
+            **storage_authority,
+        )
+    assert silent_failure.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
     forged_steps = [
         step.replace(report.run_id, "run-confirmed-forged-other")
         for step in report.reproduction_steps
@@ -732,7 +776,9 @@ def test_all_final_report_authority_fields_are_fail_closed(tmp_path) -> None:
         assert captured.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
-def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> None:
+def test_tiny_runtime_confirmed_review_persists_but_never_returns_unverified_failure(
+    tmp_path,
+) -> None:
     config = app_config(tmp_path)
     config.budgets = BudgetConfig(max_runtime_seconds=0.000_000_001)
     orchestrator = Orchestrator(config, provider=LocalProvider())
@@ -742,12 +788,13 @@ def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> No
             run_id=f"run-confirmed-tiny-runtime-{ordinal}",
             now=datetime.now(UTC),
         )
-        report = orchestrator.run_confirmed_review(admission)
-
-        assert report.run_status == "failed_with_limitations"
-        read = orchestrator.product_store.read_current(report.run_id, verify_budget=False)
+        with pytest.raises(ProductRunError) as failure:
+            orchestrator.run_confirmed_review(admission)
+        assert failure.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+        run_id = admission.confirmation.run_id
+        read = orchestrator.product_store.read_current(run_id, verify_budget=False)
         assert read.read_status is RunReadStatus.FAILED
-        assert orchestrator.store.read_json(report.run_id, "assignments.json")
+        assert orchestrator.store.read_json(run_id, "assignments.json")
         payloads = {
             payload.inventory.logical_name: payload.exact_bytes
             for payload in read.payloads
@@ -760,7 +807,7 @@ def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> No
         }
         commitments = product_payload_commitments(
             payloads,
-            run_id=report.run_id,
+            run_id=run_id,
             status="failed",
             **authority,
         )
@@ -773,7 +820,7 @@ def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> No
             with pytest.raises(CanonicalStorageError):
                 product_payload_commitments(
                     payloads,
-                    run_id=report.run_id,
+                    run_id=run_id,
                     status="failed",
                     **{**authority, **mutation},
                 )
@@ -794,12 +841,13 @@ def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> No
                 agent_reports=[],
             )
         assert missing_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
-        replay = orchestrator.run_confirmed_review(admission)
+        with pytest.raises(ProductRunError) as replay:
+            orchestrator.run_confirmed_review(admission)
+        assert replay.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
         replay_read = orchestrator.product_store.read_current(
-            report.run_id,
+            run_id,
             verify_budget=False,
         )
-        assert replay == report
         assert replay_read.revision == read.revision
         assert replay_read.manifest_sha256 == read.manifest_sha256
         assert replay_read.current_pointer_sha256 == read.current_pointer_sha256
@@ -815,13 +863,29 @@ def test_runtime_boundary_never_diverges_api_and_durable_terminal_status(tmp_pat
             run_id=f"run-confirmed-runtime-boundary-{ordinal}",
             now=datetime.now(UTC),
         )
-        report = orchestrator.run_confirmed_review(admission)
-        read = orchestrator.product_store.read_current(report.run_id, verify_budget=False)
+        report: FinalReport | None = None
+        try:
+            report = orchestrator.run_confirmed_review(admission)
+        except ProductRunError as failure:
+            assert failure.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+            read = orchestrator.product_store.read_current(
+                admission.confirmation.run_id,
+                verify_budget=False,
+            )
+            with pytest.raises(ProductRunError) as verified_failure:
+                orchestrator.product_store.read_current(admission.confirmation.run_id)
+            assert (
+                verified_failure.value.failure.code
+                is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+            )
+        else:
+            read = orchestrator.product_store.read_current(report.run_id)
         durable_report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
 
-        assert report.run_status == "failed_with_limitations"
         assert read.read_status is RunReadStatus.FAILED
-        assert durable_report == report
+        assert durable_report.run_status == "failed_with_limitations"
+        if report is not None:
+            assert durable_report == report
 
 
 @pytest.mark.parametrize("runtime_seconds", [0.4, 0.5, 0.75])

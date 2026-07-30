@@ -567,6 +567,23 @@ def _case_from_candidate(candidate: ReviewIntakeCandidateV1) -> CaseInput:
     )
 
 
+def _candidate_free_text(candidate: ReviewIntakeCandidateV1) -> list[str]:
+    """Return every ordered durable free-text field in the confirmed candidate."""
+
+    candidate_input = candidate.projection.candidate_input
+    values: list[str] = []
+    if candidate_input.hand.tournament is not None:
+        values.extend(candidate_input.hand.tournament.notes)
+    values.extend(candidate_input.hand.opponent_observations)
+    for ambiguity in candidate_input.ambiguities:
+        values.append(ambiguity.description)
+        values.extend(ambiguity.candidates)
+        if ambiguity.selected is not None:
+            values.append(ambiguity.selected)
+    values.extend(claim.text for claim in candidate_input.claims)
+    return values
+
+
 def _validate_combined_security_scope(
     source_bytes: bytes,
     candidate: ReviewIntakeCandidateV1,
@@ -575,25 +592,25 @@ def _validate_combined_security_scope(
     if screen_case(case):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     source_text = source_bytes.decode("utf-8", errors="strict")
-    candidate_claims = [claim.text for claim in case.claims]
+    candidate_texts = _candidate_free_text(candidate)
     boundary_tail = ""
-    for fragment in (source_text, *candidate_claims):
+    for fragment in (source_text, *candidate_texts):
         boundary_probe = boundary_tail + fragment[:512]
         if redact_sensitive(boundary_probe) != boundary_probe:
             _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY, "candidate")
         boundary_tail = (boundary_tail + fragment)[-512:]
     candidate_live, candidate_decision, candidate_explicit = real_time_assistance_signals(
-        candidate_claims
+        candidate_texts
     )
     if candidate_explicit:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     combined_live, combined_decision, combined_explicit = real_time_assistance_signals(
-        [source_text, *candidate_claims]
+        [source_text, *candidate_texts]
     )
     if combined_explicit or (combined_live and combined_decision):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     joined_live, joined_decision, joined_explicit = real_time_assistance_signals(
-        "".join((source_text, *candidate_claims))
+        "".join((source_text, *candidate_texts))
     )
     if joined_explicit or (joined_live and joined_decision):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
@@ -994,7 +1011,6 @@ def _validate_confirmed_report_projection(
             ),
         )
     }
-    records_by_role = {record.agent_role: record for record in report.agent_execution_records}
     budget_codes = {code.value for code in BudgetFailureCode}
     budget_error_by_code = {
         BudgetFailureCode.RUNTIME_EXCEEDED.value: {
@@ -1025,45 +1041,44 @@ def _validate_confirmed_report_projection(
         },
     }
 
-    def runtime_data_quality(item: str) -> bool:
-        if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
+    def record_data_quality(record: AgentExecutionRecord, item: str) -> bool:
+        role = record.agent_role
+        if record.status.value == "completed" or record.error is None:
+            return False
+        if (
+            item == f"provider {role} context expired"
+            and record.status.value == "failed"
+            and record.error == "provider context expired before output acceptance"
+        ):
             return True
-        for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
-            if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
+        for prefix in (
+            f"provider {role} context rejected: ",
+            f"provider {role} handoff refused: ",
+            f"provider {role} report ID rejected: ",
+        ):
+            if item.startswith(prefix) and item.removeprefix(prefix) == record.error:
                 return True
-        for role, record in records_by_role.items():
-            if record.status.value == "completed" or record.error is None:
-                continue
-            if (
-                item == f"provider {role} context expired"
-                and record.status.value == "failed"
-                and record.error == "provider context expired before output acceptance"
-            ):
+        failure_prefix = f"provider {role} failed: "
+        if item.startswith(failure_prefix):
+            error_type = item.removeprefix(failure_prefix)
+            if record.error == f"{error_type}: provider analyze failed":
                 return True
-            context_prefix = f"provider {role} context rejected: "
-            if (
-                item.startswith(context_prefix)
-                and record.status.value == "failed"
-                and item.removeprefix(context_prefix) == record.error
-                and record.error == "context envelope has expired"
-            ):
+        if (
+            item == f"provider {role} output exceeded the hard byte limit"
+            and record.status.value in {"failed", "refused"}
+            and record.error
+            in {
+                "provider output exceeded the hard byte limit",
+                "provider_output_bytes exceeded its strict budget",
+            }
+        ):
+            return True
+        budget_prefix = f"provider {role} budget refused: "
+        if item.startswith(budget_prefix) and record.status.value == "refused":
+            code = item.removeprefix(budget_prefix)
+            if record.error in budget_error_by_code.get(code, set()):
                 return True
-            if (
-                item == f"provider {role} output exceeded the hard byte limit"
-                and record.status.value in {"failed", "refused"}
-                and record.error
-                in {
-                    "provider output exceeded the hard byte limit",
-                    "provider_output_bytes exceeded its strict budget",
-                }
-            ):
-                return True
-            budget_prefix = f"provider {role} budget refused: "
-            if item.startswith(budget_prefix) and record.status.value == "refused":
-                code = item.removeprefix(budget_prefix)
-                if record.error in budget_error_by_code.get(code, set()):
-                    return True
-        return any(
+        return (
             record.status.value == "failed"
             and record.error == item
             and (
@@ -1075,8 +1090,15 @@ def _validate_confirmed_report_projection(
                 )
                 is not None
             )
-            for record in report.agent_execution_records
         )
+
+    def runtime_data_quality(item: str) -> bool:
+        if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
+            return True
+        for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
+            if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
+                return True
+        return any(record_data_quality(record, item) for record in report.agent_execution_records)
 
     def allowed_data_quality(item: str) -> bool:
         return (
@@ -1090,6 +1112,11 @@ def _validate_confirmed_report_projection(
         report.data_quality != unique_data_quality
         or report.limitations != unique_limitations
         or not all(allowed_data_quality(item) for item in report.data_quality)
+        or any(
+            record.status.value != "completed"
+            and not any(record_data_quality(record, item) for item in report.data_quality)
+            for record in report.agent_execution_records
+        )
         or report.limitations != expected_limitations
         or (
             report.run_status == "completed"

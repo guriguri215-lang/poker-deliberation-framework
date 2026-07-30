@@ -1647,14 +1647,7 @@ class Orchestrator:
                     ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
                     "confirmation.run_id",
                 )
-            try:
-                current = self.product_store.read_current(run_id)
-            except ProductRunError as exc:
-                if exc.failure.code is not ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED:
-                    raise
-                current = self.product_store.read_current(run_id, verify_budget=False)
-                if current.read_status is not RunReadStatus.FAILED:
-                    raise exc
+            current = self.product_store.read_current(run_id)
             expected = {
                 "confirmed_review_source.txt": admission.source_bytes,
                 "confirmed_review_candidate.json": canonical_storage_json_bytes(
@@ -3193,12 +3186,8 @@ class Orchestrator:
             if (
                 confirmed_admission is not None
                 and exc.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-                and exc.failure.domain_effect == "current_advanced"
             ):
-                durable = self.product_store.read_current(run_id, verify_budget=False)
-                if durable.read_status is not RunReadStatus.FAILED:
-                    raise
-                return self._exact_terminal_report(durable)
+                raise
             allowed_ephemeral_failure = (
                 exc.failure.stage == "preflight"
                 and exc.failure.code is ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR

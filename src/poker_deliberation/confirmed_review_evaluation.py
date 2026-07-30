@@ -10,14 +10,17 @@ from tempfile import mkdtemp
 from types import MappingProxyType
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from poker_deliberation.config import AppConfig
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewAdmission,
     ConfirmedReviewError,
     _admit_confirmed_review_at,
+    authority_snapshot_sha256,
     build_confirmed_review_provenance,
+    candidate_sha256,
+    confirmation_sha256,
     create_review_confirmation,
     prepare_review_intake,
 )
@@ -38,6 +41,10 @@ from poker_deliberation.storage.revision_canonical import (
     canonical_domain_sha256,
 )
 from poker_deliberation.storage.terminal_canonical import product_payload_commitments
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+)
 
 EVALUATION_FAMILY_ID: Literal["poker-confirmed-review-evaluation-json-v1"] = (
     "poker-confirmed-review-evaluation-json-v1"
@@ -481,11 +488,40 @@ def _candidate_mutation(_context: _EvaluationContext) -> tuple[str, ...]:
 
 
 def _missing_confirmation(_context: _EvaluationContext) -> tuple[str, ...]:
+    prepared = _prepare(_candidate_payload(intake_id="intake-missing-confirmation"))
+    if prepared.candidate is None:
+        return ()
+    reference_time = datetime.now(UTC)
     try:
-        ReviewIntakeConfirmationV1.model_validate(None, strict=True)
-    except ValidationError:
-        return ("missing-confirmation-rejected",)
-    return ()
+        _admit_confirmed_review_at(
+            _SOURCE,
+            prepared.candidate,
+            None,  # type: ignore[arg-type]
+            admitted_at=reference_time,
+        )
+    except ConfirmedReviewError as exc:
+        missing_rejected = exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING
+    else:
+        missing_rejected = False
+    confirmation = _confirmation(
+        prepared.candidate,
+        run_id="run-evaluation-invalid-confirmation",
+        confirmed_at=reference_time,
+    )
+    invalid = confirmation.model_copy(update={"confirmed": False})
+    invalid = invalid.model_copy(update={"confirmation_sha256": confirmation_sha256(invalid)})
+    try:
+        _admit_confirmed_review_at(
+            _SOURCE,
+            prepared.candidate,
+            invalid,
+            admitted_at=reference_time,
+        )
+    except ConfirmedReviewError as exc:
+        invalid_rejected = exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING
+    else:
+        invalid_rejected = False
+    return ("missing-confirmation-rejected",) if missing_rejected and invalid_rejected else ()
 
 
 def _expired(_context: _EvaluationContext) -> tuple[str, ...]:
@@ -513,18 +549,38 @@ def _expired(_context: _EvaluationContext) -> tuple[str, ...]:
 
 
 def _authority_scope(_context: _EvaluationContext) -> tuple[str, ...]:
+    prepared = _prepare(_candidate_payload(intake_id="intake-authority-scope"))
+    if prepared.candidate is None:
+        return ()
+    reference_time = datetime.now(UTC)
+    confirmation = _confirmation(
+        prepared.candidate,
+        run_id="run-evaluation-authority-scope",
+        confirmed_at=reference_time,
+    )
+    invalid_authority = confirmation.authority.model_copy(
+        update={
+            "authority_kind": "local_user",
+            "authentication": "verified",
+        }
+    )
+    forged = confirmation.model_copy(
+        update={
+            "authority": invalid_authority,
+            "authority_snapshot_sha256": authority_snapshot_sha256(invalid_authority),
+        }
+    )
+    forged = forged.model_copy(update={"confirmation_sha256": confirmation_sha256(forged)})
     try:
-        ReviewConfirmationAuthorityV1.model_validate(
-            {
-                "authority_id": "evaluation-authority",
-                "authority_kind": "verified_application",
-                "authentication": "verified",
-                "scope": "approve_external_effect",
-            },
-            strict=True,
+        _admit_confirmed_review_at(
+            _SOURCE,
+            prepared.candidate,
+            forged,
+            admitted_at=reference_time,
         )
-    except ValidationError:
-        return ("authority-scope-rejected",)
+    except ConfirmedReviewError as exc:
+        if exc.code is ConfirmedReviewDiagnosticCode.CONFIRMATION_AUTHORITY:
+            return ("authority-scope-rejected",)
     return ()
 
 
@@ -619,18 +675,34 @@ def _overreach(context: _EvaluationContext) -> tuple[str, ...]:
 
 
 def _storage_tamper(context: _EvaluationContext) -> tuple[str, ...]:
-    _admission_value, report, _orchestrator, payloads = context.base()
-    tampered = dict(payloads)
-    del tampered["confirmed_review_provenance.json"]
+    _admission_value, report, orchestrator, payloads = context.base()
+    missing = dict(payloads)
+    del missing["confirmed_review_provenance.json"]
     try:
         product_payload_commitments(
-            tampered,
+            missing,
             run_id=report.run_id,
             status="succeeded",
         )
     except CanonicalStorageError:
-        return ("storage-tamper-rejected",)
-    return ()
+        missing_rejected = True
+    else:
+        missing_rejected = False
+    read = orchestrator.product_store.read_current(report.run_id)
+    provenance_path = orchestrator.product_store.planned_payload_path(
+        report.run_id,
+        revision=read.revision,
+        transaction_id=read.transaction_id,
+        logical_name="confirmed_review_provenance.json",
+    )
+    provenance_path.write_bytes(b"{}")
+    try:
+        orchestrator.product_store.read_current(report.run_id)
+    except ProductRunError as exc:
+        tamper_rejected = exc.failure.code is ProductRunFailureCode.RUN_CORRUPT
+    else:
+        tamper_rejected = False
+    return ("storage-tamper-rejected",) if missing_rejected and tamper_rejected else ()
 
 
 def _boundaries(_context: _EvaluationContext) -> tuple[str, ...]:
@@ -660,10 +732,54 @@ def _boundaries(_context: _EvaluationContext) -> tuple[str, ...]:
         source=b"api_key=sk-abcdefgh\n",
         source_id="source-boundary-secret",
     )
-    if (
+    secret_rejected = (
         secret.diagnostics
         and secret.diagnostics[0].code is ConfirmedReviewDiagnosticCode.SOURCE_SECRET
-    ):
+    )
+    live = _prepare(
+        _candidate_payload(intake_id="intake-boundary-live"),
+        source=b"I am still in. Should I call?\n",
+        source_id="source-boundary-live",
+    )
+    live_rejected = (
+        live.diagnostics
+        and live.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+    )
+    split_payload = _candidate_payload(intake_id="intake-boundary-split-live")
+    split_payload["claims"][0]["text"] = "Review this spot."
+    split = _prepare(
+        split_payload,
+        source=b"I am still in.\n",
+        source_id="source-boundary-split-live",
+    )
+    admission_rejected = False
+    if split.candidate is not None:
+        candidate_input = split.candidate.projection.candidate_input
+        changed_claim = candidate_input.claims[0].model_copy(update={"text": "Should I call?"})
+        changed_input = candidate_input.model_copy(update={"claims": (changed_claim,)})
+        changed_projection = split.candidate.projection.model_copy(
+            update={"candidate_input": changed_input}
+        )
+        changed_candidate = split.candidate.model_copy(
+            update={
+                "projection": changed_projection,
+                "candidate_sha256": candidate_sha256(changed_projection),
+            }
+        )
+        confirmation = _confirmation(
+            changed_candidate,
+            run_id="run-evaluation-boundary-split-live",
+        )
+        try:
+            _admit_confirmed_review_at(
+                b"I am still in.\n",
+                changed_candidate,
+                confirmation,
+                admitted_at=confirmation.confirmed_at,
+            )
+        except ConfirmedReviewError as exc:
+            admission_rejected = exc.code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+    if secret_rejected and live_rejected and admission_rejected:
         evidence.append("security-boundary-rejected")
     return tuple(evidence)
 

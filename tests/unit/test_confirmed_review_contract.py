@@ -23,6 +23,7 @@ from poker_deliberation.confirmed_review_models import (
     ReviewConfirmationAuthorityV1,
     ReviewIntakePreparationResultV1,
 )
+from poker_deliberation.security import _contains_secret_shape
 from tests.confirmed_review_support import (
     SOURCE_BYTES,
     candidate_payload,
@@ -31,9 +32,13 @@ from tests.confirmed_review_support import (
 
 
 def _prepare_source(source: bytes):
+    return _prepare_source_with_payload(source, candidate_payload())
+
+
+def _prepare_source_with_payload(source: bytes, payload: object):
     return prepare_review_intake(
         source,
-        candidate_payload(),
+        payload,
         source_id="source-unit-1",
         source_kind="user_supplied",
         license_classification="user_supplied_private_analysis",
@@ -113,6 +118,38 @@ def _prepare_source(source: bytes):
         (
             "api\u0332_key: ABCDEFGHIJKLMNOP123456\n".encode(),
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "\u0430pi_key=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "ap\u0456_key=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "api_k\u0435y=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            b"I am mid-hand at the moment. What should I do?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"My time bank has 12 seconds remaining. Should I shove?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I am facing a bet at this moment. Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "今トナメ中です。コールかフォールドか教えて。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "トーナメントでプレイしてる。コールかフォールドか教えて。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
         (
             b"I am currently playing poker right now. What should I do?\n",
@@ -453,6 +490,7 @@ def test_source_contract_fails_closed_with_stable_codes(
             b"For retrospective review under current theory, the hand-history note says "
             b'"the action is on me." Should I have called or folded?\n'
         ),
+        (b'The phrase "the event is not done yet" is terminology, and "call" is a poker term.\n'),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -498,6 +536,10 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "I reviewed a completed hand yesterday, while the MTT is ongoing",
         "The event is in full swing",
         "We're not out of the tournament yet",
+        "I am still in",
+        "We are still alive",
+        "We still have chips",
+        "I have not been knocked out yet",
         (
             'For retrospective review, the hand-history note says "the action is on me." '
             "The stream is live"
@@ -518,6 +560,10 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "大会はまだやっています",
         "私はまだ勝ち残っています",
         "今は私の手番です",
+        "まだトーナメントに残っています",
+        "アクションが回ってきました",
+        "手番が回ってきました",
+        "残り10秒です",
         "あと10秒で決めないといけません",
         "タイムバンクがカウントダウン中です",
     ],
@@ -546,6 +592,15 @@ def test_repeated_live_subject_scan_stays_linear_enough_for_bounded_input() -> N
     result = _prepare_source(source)
     elapsed = perf_counter() - started
     assert result.status == "ready"
+    assert elapsed < 2.0
+
+
+def test_secret_assignment_scan_is_linear_enough_at_source_limit() -> None:
+    source = ":" * MAX_CONFIRMED_REVIEW_SOURCE_BYTES
+    started = perf_counter()
+    contains_secret = _contains_secret_shape(source)
+    elapsed = perf_counter() - started
+    assert contains_secret is False
     assert elapsed < 2.0
 
 
@@ -634,6 +689,53 @@ def test_live_context_and_decision_cannot_be_split_across_artifacts(
     assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
 
 
+@pytest.mark.parametrize("field", ["description", "candidates", "selected"])
+def test_resolved_ambiguity_free_text_is_in_the_live_security_envelope(field: str) -> None:
+    payload = candidate_payload()
+    ambiguity = {
+        "ambiguity_id": "ambiguity-live-1",
+        "field_path": "hand.actions.2.amount",
+        "description": "Resolved amount.",
+        "status": "resolved",
+        "candidates": ["5"],
+        "selected": "5",
+    }
+    live_text = "I am currently playing poker. Should I call or fold?"
+    ambiguity[field] = [live_text] if field == "candidates" else live_text
+    payload["ambiguities"] = [ambiguity]
+    result = _prepare_source_with_payload(SOURCE_BYTES, payload)
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+
+
+def test_secret_shape_cannot_be_split_into_resolved_ambiguity_text() -> None:
+    payload = candidate_payload()
+    payload["ambiguities"] = [
+        {
+            "ambiguity_id": "ambiguity-secret-1",
+            "field_path": "hand.actions.2.amount",
+            "description": "_key=ABCDEFGHIJKLMNOP123456",
+            "status": "resolved",
+            "candidates": ["5"],
+            "selected": "5",
+        }
+    ]
+    result = _prepare_source_with_payload(b"api", payload)
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+
+
+def test_hand_observation_free_text_is_in_the_live_security_envelope() -> None:
+    payload = candidate_payload()
+    payload["hand"]["opponent_observations"] = ["I am mid-hand at the moment. Should I call?"]
+    result = _prepare_source_with_payload(SOURCE_BYTES, payload)
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+
+
 @pytest.mark.parametrize(
     ("source", "claim"),
     [
@@ -699,6 +801,18 @@ def test_secret_shape_cannot_be_split_across_adjacent_claims(prefix: str) -> Non
     [
         b'The live video subtitle says "the action is on me." Should I call or fold?\n',
         (b'The video caption says "the action is on me." It is live. Should I call or fold?\n'),
+        (
+            b"Yesterday's hand ended. Today's livestream transcript says "
+            b'"The action is back on me. Should I call?"\n'
+        ),
+        (
+            b"For retrospective review of yesterday's completed hand, "
+            b'the live table caption says "The action is on me. Should I call?"\n'
+        ),
+        (
+            b"For retrospective review of yesterday's completed hand, "
+            b'the currently broadcasting caption says "The action is on me. Should I call?"\n'
+        ),
     ],
 )
 def test_live_quotation_is_not_treated_as_archived(source: bytes) -> None:

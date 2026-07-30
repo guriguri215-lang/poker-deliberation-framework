@@ -57,6 +57,7 @@ from poker_deliberation.schemas import (
     SecurityEvent,
     ToolResult,
 )
+from poker_deliberation.state_machine import ALLOWED_TRANSITIONS, RunState
 from poker_deliberation.storage.revision_canonical import (
     CONTROL_CANONICALIZATION,
     JSONL_SERIALIZATION,
@@ -236,6 +237,31 @@ def _lineage_head(kind: str, value: Sequence[object]) -> str:
     )
 
 
+def _validate_state_event_chain(
+    state: Mapping[str, object], events: list[dict[str, object]]
+) -> None:
+    current = RunState.INTAKE
+    for event in events:
+        if set(event) != {"source", "target", "reason"}:
+            raise CanonicalStorageError("state checkpoint event shape mismatch")
+        try:
+            source = RunState(str(event["source"]))
+            target = RunState(str(event["target"]))
+        except ValueError as exc:
+            raise CanonicalStorageError("state checkpoint event state mismatch") from exc
+        reason = event["reason"]
+        if (
+            source is not current
+            or target not in ALLOWED_TRANSITIONS[source]
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
+            raise CanonicalStorageError("state checkpoint event chain mismatch")
+        current = target
+    if state.get("state") != current.value:
+        raise CanonicalStorageError("state checkpoint terminal event mismatch")
+
+
 def product_payload_commitments(
     payloads: Mapping[str, bytes],
     *,
@@ -269,6 +295,7 @@ def product_payload_commitments(
     events = state.get("events")
     if not isinstance(events, list) or any(not isinstance(item, dict) for item in events):
         raise CanonicalStorageError("state checkpoint events must be an object list")
+    _validate_state_event_chain(state, events)
     if report.run_id != run_id:
         raise CanonicalStorageError("final report run ID mismatch")
 

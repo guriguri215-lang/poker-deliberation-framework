@@ -836,6 +836,72 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
         is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
     )
 
+    provider_output_terminal_sources = (
+        "strict budget failure: provider_output_exceeded",
+        "strict usage settlement failed: runtime_exceeded",
+        "strict usage settlement failed: clock_rollback",
+        "strict usage settlement failed: usage_malformed",
+    )
+    for terminal_source in provider_output_terminal_sources:
+        exact_report = staged_failure_report(
+            canonical_provider_output,
+            records=[provider_output_record],
+            analysis_sections=report.analysis_sections[:1],
+        )
+        exact_data_quality = [*exact_report.data_quality, terminal_source]
+        exact_report = exact_report.model_copy(
+            update={
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+        provenance = build_confirmed_review_provenance(
+            admission,
+            exact_report,
+            assignments=assignments,
+            agent_reports=[provider_output_agent_report],
+            **storage_authority,
+        )
+        assert provenance.terminal_status == "failed_with_limitations"
+
+    for conflicting_terminal_sources in (
+        provider_output_terminal_sources[:2],
+        (
+            provider_output_terminal_sources[0],
+            provider_output_terminal_sources[2],
+        ),
+        (
+            provider_output_terminal_sources[1],
+            provider_output_terminal_sources[2],
+        ),
+    ):
+        conflicting_report = staged_failure_report(
+            canonical_provider_output,
+            records=[provider_output_record],
+            analysis_sections=report.analysis_sections[:1],
+        )
+        exact_data_quality = [
+            *conflicting_report.data_quality,
+            *conflicting_terminal_sources,
+        ]
+        conflicting_report = conflicting_report.model_copy(
+            update={
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as conflicting_terminal:
+            build_confirmed_review_provenance(
+                admission,
+                conflicting_report,
+                assignments=assignments,
+                agent_reports=[provider_output_agent_report],
+                **storage_authority,
+            )
+        assert conflicting_terminal.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
     continued_after_failure = forged_failure_report(
         status=AgentExecutionStatus.FAILED,
         error="context envelope has expired",

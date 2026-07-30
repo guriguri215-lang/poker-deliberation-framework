@@ -1292,13 +1292,12 @@ def _validate_confirmed_report_projection(
         and record_data_quality(record, canonical_item)
         for record in report.agent_execution_records
     )
-    provider_output_terminal_evidence_present = (
-        "strict budget failure: provider_output_exceeded" in report.data_quality
-        or any(
-            item.startswith("strict usage settlement failed: ") and runtime_data_quality(item)
-            for item in report.data_quality
-        )
-    )
+    provider_output_terminal_evidence = [
+        item
+        for item in report.data_quality
+        if item == "strict budget failure: provider_output_exceeded"
+        or (item.startswith("strict usage settlement failed: ") and runtime_data_quality(item))
+    ]
     if (
         report.data_quality != unique_data_quality
         or report.limitations != unique_limitations
@@ -1309,7 +1308,7 @@ def _validate_confirmed_report_projection(
             for record in report.agent_execution_records
         )
         or any(record.status.value != "completed" for record in report.agent_execution_records[:-1])
-        or (provider_output_record_present and not provider_output_terminal_evidence_present)
+        or (provider_output_record_present and len(provider_output_terminal_evidence) != 1)
         or sum(item in primary_runtime_stages for item in report.data_quality) > 1
         or report.limitations != expected_limitations
         or (

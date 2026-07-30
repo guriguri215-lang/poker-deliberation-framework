@@ -946,30 +946,31 @@ def _has_active_live_status(cleaned: str) -> bool:
     return False
 
 
-def _first_japanese_active_status_start(clause: str) -> int | None:
-    starts = [match.start() for match in _ACTIVE_JAPANESE_PLAYER_STATUS.finditer(clause)]
+def _japanese_active_status_starts(clause: str) -> tuple[int, ...]:
+    starts = {match.start() for match in _ACTIVE_JAPANESE_PLAYER_STATUS.finditer(clause)}
     for subject in _ACTIVE_JAPANESE_EVENT_SUBJECT.finditer(clause):
         if _ACTIVE_JAPANESE_EVENT_PREDICATE.search(clause, subject.end()) is not None:
-            starts.append(subject.start())
+            starts.add(subject.start())
     for subject in _ACTIVE_JAPANESE_PLAYER_SUBJECT.finditer(clause):
         if (
             _ACTIVE_JAPANESE_EVENT_SUBJECT.search(clause, subject.end()) is not None
             and _ACTIVE_JAPANESE_PLAYER_PREDICATE.search(clause, subject.end()) is not None
         ):
-            starts.append(subject.start())
+            starts.add(subject.start())
     for subject in _ACTIVE_JAPANESE_TIMER_SUBJECT.finditer(clause):
         if _ACTIVE_JAPANESE_TIMER_PREDICATE.search(clause, subject.end()) is not None:
-            starts.append(subject.start())
-    return min(starts) if starts else None
+            starts.add(subject.start())
+    return tuple(sorted(starts))
 
 
 def _has_clear_japanese_archived_status_attribution(subclause: str) -> bool:
     attribution = _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION.search(subclause)
     if attribution is None:
         return False
-    active_start = _first_japanese_active_status_start(subclause)
-    if active_start is None or active_start < attribution.end():
+    active_starts = _japanese_active_status_starts(subclause)
+    if len(active_starts) != 1 or active_starts[0] < attribution.end():
         return False
+    active_start = active_starts[0]
     bridge = subclause[attribution.end() : active_start]
     return (
         _JAPANESE_ARCHIVED_ATTRIBUTION_NEGATION.search(bridge) is None

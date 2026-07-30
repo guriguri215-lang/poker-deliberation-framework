@@ -152,6 +152,35 @@ def _request(
         run_status=report_status,
         conclusion=f"{status} fixture",
     )
+    event_targets = {
+        "approval_required": [
+            "NORMALIZE",
+            "DATA_VALIDATION",
+            "HUMAN_REVIEW_REQUIRED",
+        ],
+        "succeeded": [
+            "NORMALIZE",
+            "DATA_VALIDATION",
+            "TASK_ROUTING",
+            "TOOL_AND_RESEARCH",
+            "CRITIQUE",
+            "ADJUDICATION",
+            "FINAL_SYNTHESIS",
+            "COMPLETED",
+        ],
+        "failed": ["FAILED_WITH_LIMITATIONS"],
+    }.get(status, ["FAILED_WITH_LIMITATIONS"])
+    event_source = "INTAKE"
+    events: list[dict[str, str]] = []
+    for event_target in event_targets:
+        events.append(
+            {
+                "source": event_source,
+                "target": event_target,
+                "reason": "terminal store fixture",
+            }
+        )
+        event_source = event_target
     state = canonical_json_bytes(
         {
             "state": {
@@ -159,7 +188,7 @@ def _request(
                 "succeeded": "COMPLETED",
                 "failed": "FAILED_WITH_LIMITATIONS",
             }.get(status, "FAILED_WITH_LIMITATIONS"),
-            "events": [],
+            "events": events,
             "deliberation_rounds": 0,
             "tool_retries": {},
             "elapsed_seconds": 0.0,

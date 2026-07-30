@@ -62,6 +62,8 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["local_data_cleanup_executor"] == "implemented"
     assert states["offline_evaluation_harness"] == "implemented"
     assert states["versioned_nlhe_range_grammar"] == "implemented"
+    assert states["confirmed_natural_language_review_intake"] == "implemented"
+    assert states["natural_language_or_site_parser"] == "unavailable"
 
 
 def test_codex_and_python_are_documented_as_separate_execution_surfaces() -> None:

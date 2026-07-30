@@ -67,6 +67,10 @@ from poker_deliberation.security import isolate_prompt_injection, redact_sensiti
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
+_UNVERIFIED_CLAIM_WARNING = (
+    "ユーザー主張は入力として保存しましたが、検証条件がないため真偽未判定です。"
+)
+
 
 def _constant_clock(value: datetime) -> Callable[[], datetime]:
     def read() -> datetime:
@@ -79,6 +83,17 @@ def _approval_json_default(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"unsupported approval proposal value: {type(value).__name__}")
+
+
+def is_verified_claim_correction(claim: Claim) -> bool:
+    """Return whether adjudication produced an exact, high-confidence correction."""
+
+    return (
+        claim.claim_id.startswith("adjudication-")
+        and claim.label is EpistemicLabel.CALCULATED
+        and claim.confidence is ConfidenceGrade.A
+        and "訂正が必要" in claim.text
+    )
 
 
 class PurePhaseService(Generic[InputT, OutputT]):
@@ -262,12 +277,14 @@ class RoutingService(PurePhaseService[RoutingInput, RoutingOutput]):
         return successful_outcome(isolated, output)
 
 
-def _agent_context(
+def build_agent_context(
     case: CaseInput,
     role: str,
     registered_tools: frozenset[str],
-    blind_context_builder: Callable[[CaseInput], Any],
+    blind_context_builder: Callable[[CaseInput], Any] = build_blind_decision_context,
 ) -> AgentContext:
+    """Build the canonical provider context for one routed role."""
+
     if role not in {
         "intake",
         "strategy-analyst",
@@ -338,7 +355,7 @@ class ContextBuildService(PurePhaseService[ContextBuildInput, ContextBuildOutput
         value = isolated.input
         if isolated.context_ids != (value.context_id,):
             raise ValueError("context build request does not match its context ID")
-        context = _agent_context(
+        context = build_agent_context(
             value.case,
             value.assignment.agent_role,
             frozenset(value.registered_tools),
@@ -651,9 +668,7 @@ class AdjudicationService(PurePhaseService[AdjudicationInput, AdjudicationOutput
                 )
             )
         if value.case.claims and not checks:
-            warnings.append(
-                "ユーザー主張は入力として保存しましたが、検証条件がないため真偽未判定です。"
-            )
+            warnings.append(_UNVERIFIED_CLAIM_WARNING)
         output = AdjudicationOutput(
             claim_assessments=tuple(assessments), data_quality=tuple(warnings)
         )
@@ -669,9 +684,14 @@ class SynthesisService(PurePhaseService[SynthesisInput, SynthesisOutput]):
         value = isolated.input
         if value.run_id != isolated.run_id:
             raise ValueError("synthesis input run ID does not match its request")
-        corrections = [claim for claim in value.claim_assessments if "訂正が必要" in claim.text]
+        corrections = [
+            claim for claim in value.claim_assessments if is_verified_claim_correction(claim)
+        ]
         failed = [result for result in value.tool_results if result.status is ToolStatus.FAILED]
         successes = [result for result in value.tool_results if result.status is ToolStatus.SUCCESS]
+        hand_input_quality_issues = [
+            item for item in value.data_quality if item != _UNVERIFIED_CLAIM_WARNING
+        ]
         if any(event.blocked for event in value.security_events):
             conclusion = (
                 "このフレームワークは事後検討専用です。"
@@ -683,7 +703,7 @@ class SynthesisService(PurePhaseService[SynthesisInput, SynthesisOutput]):
             conclusion = "実行予算または安全上の制限に達したため、制限付きで終了しました。"
         elif corrections:
             conclusion = "ユーザー主張に、再現可能なローカル計算に基づく訂正が必要です。"
-        elif value.case.kind == "hand" and value.data_quality:
+        elif value.case.kind == "hand" and hand_input_quality_issues:
             conclusion = "ハンド入力に矛盾または不足があるため、戦略結論を断定しません。"
         elif failed:
             conclusion = "一部の計算が失敗したため、利用可能な結果と制限だけを返します。"

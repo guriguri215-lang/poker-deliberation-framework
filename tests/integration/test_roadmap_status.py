@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "8.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "9.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -190,6 +190,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P3-015A",
         "P3-016A",
         "P3-017A",
+        "P3-030A",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -243,6 +244,37 @@ def test_p3_017a_registration_is_offline_and_bounded() -> None:
     assert "subjective strategy metrics" in items["RM-017"]["decision_gate"]["rationale"][-1]  # type: ignore[index]
 
 
+def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
+    items = _by_id()
+    milestones = _milestones(load_roadmap())
+
+    assert items["RM-030"]["status"] == "in_progress"
+    assert items["RM-030"]["capabilities"] == [
+        "confirmed_natural_language_review_intake",
+        "natural_language_or_site_parser",
+        "versioned_nlhe_range_grammar",
+    ]
+    assert items["RM-030"]["milestones"] == {
+        "entry": "P3-030A",
+        "completion": None,
+    }
+    assert items["RM-030"]["dependencies"] == ["RM-014"]
+    assert milestones["P3-030A"]["status"] == "completed"
+    assert milestones["P3-030A"]["dependencies"] == [
+        "P3-014A",
+        "P3-016A",
+        "P3-017A",
+    ]
+    scope = milestones["P3-030A"]["scope"]
+    assert "LocalProvider-only adjudication" in scope
+    assert "no general natural-language or site parser" in scope
+    assert items["RM-030"]["decision_gate"]["required"] is True  # type: ignore[index]
+    rationale = items["RM-030"]["decision_gate"]["rationale"]  # type: ignore[index]
+    assert any("P3-030B" in item for item in rationale)
+    assert any("P2-025B" in item for item in rationale)
+    assert any("P3-030C" in item for item in rationale)
+
+
 def test_p3_014a_registration_is_versioned_bounded_and_site_independent() -> None:
     items = _by_id()
     milestones = _milestones(load_roadmap())
@@ -292,8 +324,8 @@ def test_p3_016a_registration_is_versioned_provenance_bound_and_additive() -> No
     assert "poker-deliberation.nlhe-range grammar version 1.0.0" in (milestones["P3-016A"]["scope"])
     assert "no plus, intervals, exclusions" in milestones["P3-016A"]["scope"]
     assert items["RM-016"]["decision_gate"]["required"] is True  # type: ignore[index]
-    assert items["RM-030"]["status"] == "proposed"
-    assert items["RM-030"]["dependencies"] == ["RM-014", "RM-016", "RM-017"]
+    assert items["RM-030"]["status"] == "in_progress"
+    assert items["RM-030"]["dependencies"] == ["RM-014"]
     assert "natural-language" in str(items["RM-030"]["objective"])
 
 
@@ -526,16 +558,16 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "8.0.0"
+    assert summary["schema_version"] == "9.0.0"
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
-        "in_progress": 4,
+        "in_progress": 5,
         "planned": 6,
-        "proposed": 3,
+        "proposed": 2,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 17,
+        "completed": 18,
         "not_started": 1,
     }
     assert summary["milestone_ready_ids"] == []

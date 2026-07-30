@@ -21,6 +21,15 @@ from poker_deliberation.budgets.durable_models import (
     DURABLE_BUDGET_PRODUCER_VERSION,
     DurableBudgetStateV1,
 )
+from poker_deliberation.confirmed_review_models import (
+    CANDIDATE_ARTIFACT_SCHEMA,
+    CONFIRMATION_ARTIFACT_SCHEMA,
+    PROVENANCE_ARTIFACT_SCHEMA,
+    SOURCE_ARTIFACT_SCHEMA,
+    ConfirmedReviewProvenanceV1,
+    ReviewIntakeCandidateV1,
+    ReviewIntakeConfirmationV1,
+)
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
     DEFAULT_LOCAL_DATA_POLICY,
@@ -116,6 +125,24 @@ _WINDOWS_RESERVED = frozenset(
 
 _ArtifactTableValue = tuple[str, str, str, str]
 _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
+    "confirmed_review_source.txt": (
+        "text/plain",
+        TEXT_SERIALIZATION,
+        SOURCE_ARTIFACT_SCHEMA,
+        "confirmed_review_source",
+    ),
+    "confirmed_review_candidate.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        CANDIDATE_ARTIFACT_SCHEMA,
+        "confirmed_review_candidate",
+    ),
+    "confirmed_review_confirmation.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        CONFIRMATION_ARTIFACT_SCHEMA,
+        "confirmed_review_confirmation",
+    ),
     "input.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -188,6 +215,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         "poker-final-report-markdown-artifact-v1",
         "final_report_markdown",
     ),
+    "confirmed_review_provenance.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        PROVENANCE_ARTIFACT_SCHEMA,
+        "confirmed_review_provenance",
+    ),
     "budget_state.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -196,7 +229,19 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
     ),
 }
 
+_CONFIRMED_REVIEW_ARTIFACTS = frozenset(
+    {
+        "confirmed_review_source.txt",
+        "confirmed_review_candidate.json",
+        "confirmed_review_confirmation.json",
+        "confirmed_review_provenance.json",
+    }
+)
+
 _PAYLOAD_ORDER_PREFIX = (
+    "confirmed_review_source.txt",
+    "confirmed_review_candidate.json",
+    "confirmed_review_confirmation.json",
     "input.json",
     "normalization.json",
     "normalized_case.json",
@@ -516,19 +561,21 @@ def payload_order_key(logical_name: str) -> tuple[int, bytes]:
     if logical_name in _PAYLOAD_ORDER_PREFIX:
         return (_PAYLOAD_ORDER_PREFIX.index(logical_name), b"")
     if logical_name.endswith(".input.json") and logical_name.startswith("tool_results/"):
-        return (8, logical_name.encode("utf-8"))
+        return (12, logical_name.encode("utf-8"))
     if logical_name.startswith("tool_results/"):
-        return (9, logical_name.encode("utf-8"))
+        return (13, logical_name.encode("utf-8"))
     if logical_name.startswith("agent_reports/"):
-        return (10, logical_name.encode("utf-8"))
+        return (14, logical_name.encode("utf-8"))
     if logical_name == "disputes.json":
-        return (11, b"")
+        return (15, b"")
     if logical_name == "final_report.json":
-        return (12, b"")
+        return (16, b"")
     if logical_name == "final_report.md":
-        return (13, b"")
+        return (17, b"")
+    if logical_name == "confirmed_review_provenance.json":
+        return (18, b"")
     if logical_name == "budget_state.json":
-        return (14, b"")
+        return (19, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -727,6 +774,15 @@ def _local_data_binding(artifact: RevisionArtifactV1) -> LocalDataBindingV1:
 def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
     logical_name = artifact.logical_name
     data = artifact.exact_bytes
+    if logical_name == "confirmed_review_source.txt":
+        return validate_canonical_text(data)
+    if logical_name == "confirmed_review_candidate.json":
+        return parse_canonical_model(data, ReviewIntakeCandidateV1)
+    if logical_name == "confirmed_review_confirmation.json":
+        confirmation = parse_canonical_model(data, ReviewIntakeConfirmationV1)
+        if confirmation.run_id != run_id:
+            raise CanonicalStorageError("confirmed-review confirmation run ID mismatch")
+        return confirmation
     if logical_name in {"input.json", "normalized_case.json"}:
         return parse_canonical_model(data, CaseInput)
     if logical_name == "normalization.json":
@@ -769,6 +825,11 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         return final_report
     if logical_name == "final_report.md":
         return validate_canonical_text(data)
+    if logical_name == "confirmed_review_provenance.json":
+        provenance = parse_canonical_model(data, ConfirmedReviewProvenanceV1)
+        if provenance.run_id != run_id:
+            raise CanonicalStorageError("confirmed-review provenance run ID mismatch")
+        return provenance
     if logical_name == "budget_state.json":
         state = parse_canonical_model(data, DurableBudgetStateV1)
         if state.run_id != run_id:
@@ -805,6 +866,24 @@ def validate_artifact(
     return _validated_payload(artifact, run_id)
 
 
+def validate_assignment_execution_correlation(
+    assignments: Sequence[AgentAssignment],
+    execution_records: Sequence[AgentExecutionRecord],
+) -> None:
+    """Require every execution to resolve to one same-role durable assignment."""
+
+    assignment_ids = [assignment.assignment_id for assignment in assignments]
+    if len(set(assignment_ids)) != len(assignment_ids):
+        raise CanonicalStorageError("assignment ledger IDs must be unique")
+    assignment_by_id = {assignment.assignment_id: assignment for assignment in assignments}
+    for record in execution_records:
+        assignment = assignment_by_id.get(record.assignment_id)
+        if assignment is None or assignment.agent_role != record.agent_role:
+            raise CanonicalStorageError(
+                "agent execution does not correlate to its assignment ledger"
+            )
+
+
 def _validate_source_graph(
     inventories: Sequence[PayloadInventoryEntryV1],
     parsed: Mapping[str, Any],
@@ -819,6 +898,52 @@ def _validate_source_graph(
         else None
     )
     final_report_v2 = final_report_schema_version == FINAL_REPORT_ARTIFACT_V2
+    confirmed_names = set(by_name) & _CONFIRMED_REVIEW_ARTIFACTS
+    input_case = parsed.get("input.json")
+    final_report = parsed.get("final_report.json")
+    input_marker_present = isinstance(input_case, CaseInput) and (
+        "confirmed_review" in input_case.metadata
+    )
+    input_marker = (
+        input_case.metadata.get("confirmed_review") if isinstance(input_case, CaseInput) else None
+    )
+    report_metadata = (
+        final_report.reconstructed_input.get("metadata")
+        if isinstance(final_report, FinalReport)
+        else None
+    )
+    report_marker_present = isinstance(report_metadata, dict) and (
+        "confirmed_review" in report_metadata
+    )
+    report_marker = (
+        report_metadata.get("confirmed_review") if isinstance(report_metadata, dict) else None
+    )
+    if input_marker_present != report_marker_present or (
+        input_marker_present and report_marker != input_marker
+    ):
+        raise CanonicalStorageError("confirmed-review input and report markers must match exactly")
+    confirmed_marker = input_marker_present or report_marker_present
+    if confirmed_marker != bool(confirmed_names) or (
+        confirmed_names and confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS
+    ):
+        raise CanonicalStorageError(
+            "confirmed-review marker and complete artifact set must appear together"
+        )
+    if confirmed_marker and not {"input.json", "final_report.json"} <= set(by_name):
+        raise CanonicalStorageError(
+            "confirmed-review structural revision requires input and final report"
+        )
+    if confirmed_marker and "assignments.json" not in parsed:
+        raise CanonicalStorageError(
+            "confirmed-review structural revision requires the assignment ledger"
+        )
+    validate_assignment_execution_correlation(
+        cast(Sequence[AgentAssignment], parsed.get("assignments.json", ())),
+        cast(
+            Sequence[AgentExecutionRecord],
+            parsed.get("agent_execution_records.json", ()),
+        ),
+    )
     for entry in inventories:
         allowed_binding_kinds = {"local_data", "source"}
         if entry.logical_name == "approvals.json":
@@ -908,6 +1033,88 @@ def _validate_source_graph(
             if isinstance(binding, binding_type)
         )
 
+    report_names = sorted(
+        (name for name in by_name if _VARIABLE_AGENT_REPORT.fullmatch(name)),
+        key=lambda item: item.encode("utf-8"),
+    )
+    if confirmed_marker:
+        require_payload_sources(
+            "confirmed_review_candidate.json",
+            {"confirmed_review_source.txt"},
+        )
+        require_payload_sources(
+            "confirmed_review_confirmation.json",
+            {
+                "confirmed_review_source.txt",
+                "confirmed_review_candidate.json",
+            },
+        )
+        require_payload_sources(
+            "confirmed_review_provenance.json",
+            {
+                "confirmed_review_source.txt",
+                "confirmed_review_candidate.json",
+                "confirmed_review_confirmation.json",
+                "input.json",
+                "final_report.json",
+            },
+        )
+        try:
+            # Delayed import preserves the canonical-storage dependency direction.
+            from poker_deliberation.confirmed_review import (
+                verify_confirmed_review_structural_provenance,
+            )
+
+            agent_reports = [
+                cast(AgentReport, parsed[logical_name]) for logical_name in report_names
+            ]
+            reports_by_role = {
+                agent_report.agent_role: agent_report for agent_report in agent_reports
+            }
+            execution_records = cast(
+                Sequence[AgentExecutionRecord],
+                parsed["agent_execution_records.json"],
+            )
+            ordered_agent_reports = [
+                reports_by_role[record.agent_role]
+                for record in execution_records
+                if record.agent_role in reports_by_role
+            ]
+            if (
+                len(reports_by_role) != len(agent_reports)
+                or len(ordered_agent_reports) != len(execution_records)
+                or len(agent_reports) != len(execution_records)
+            ):
+                raise CanonicalStorageError(
+                    "confirmed-review agent reports do not match executions"
+                )
+            verify_confirmed_review_structural_provenance(
+                source_bytes=cast(str, parsed["confirmed_review_source.txt"]).encode("utf-8"),
+                candidate=cast(
+                    ReviewIntakeCandidateV1,
+                    parsed["confirmed_review_candidate.json"],
+                ),
+                confirmation=cast(
+                    ReviewIntakeConfirmationV1,
+                    parsed["confirmed_review_confirmation.json"],
+                ),
+                case=cast(CaseInput, parsed["input.json"]),
+                report=cast(FinalReport, parsed["final_report.json"]),
+                provenance=cast(
+                    ConfirmedReviewProvenanceV1,
+                    parsed["confirmed_review_provenance.json"],
+                ),
+                assignments=cast(
+                    Sequence[AgentAssignment],
+                    parsed["assignments.json"],
+                ),
+                agent_reports=ordered_agent_reports,
+            )
+        except (KeyError, ValueError) as exc:
+            raise CanonicalStorageError(
+                "confirmed-review structural source-to-report replay failed"
+            ) from exc
+
     for entry in inventories:
         phase_bindings = bindings_of_type(entry.logical_name, PhaseBindingV1)
         for phase in phase_bindings:
@@ -976,10 +1183,6 @@ def _validate_source_graph(
         except ValueError as exc:
             raise CanonicalStorageError("normalization artifact binding mismatch") from exc
 
-    report_names = sorted(
-        (name for name in by_name if _VARIABLE_AGENT_REPORT.fullmatch(name)),
-        key=lambda item: item.encode("utf-8"),
-    )
     tool_input_names = sorted(
         (name for name in by_name if _VARIABLE_TOOL_INPUT.fullmatch(name)),
         key=lambda item: item.encode("utf-8"),

@@ -75,6 +75,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         "Natural-language and site-specific hand histories are not parsed.",
     ),
     Capability(
+        "confirmed_natural_language_review_intake",
+        "implemented",
+        "A caller-supplied complete projection can be explicitly hash-confirmed, admitted to "
+        "the exact local-only review path, and bound to a verified durable report; no semantic "
+        "natural-language parser is implied.",
+    ),
+    Capability(
         "process_sandbox",
         "unavailable",
         "Local tools have structural caps but no OS-level CPU or memory sandbox.",

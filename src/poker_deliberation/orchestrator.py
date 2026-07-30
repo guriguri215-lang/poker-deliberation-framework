@@ -6,7 +6,8 @@ import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import ClassVar, Literal, NoReturn, cast
+from types import FunctionType
+from typing import Any, ClassVar, Literal, NoReturn, cast
 
 from poker_deliberation import __version__
 from poker_deliberation.agents import select_roles
@@ -69,6 +70,17 @@ from poker_deliberation.budgets.durable_store import (
     initialize_durable_budget_root,
 )
 from poker_deliberation.config import AppConfig, migrate_budget_config
+from poker_deliberation.confirmed_review import (
+    ConfirmedReviewAdmission,
+    ConfirmedReviewError,
+    admit_confirmed_review,
+    build_confirmed_review_provenance,
+)
+from poker_deliberation.confirmed_review_models import (
+    MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
+    MAX_CONFIRMED_REVIEW_RUN_BYTES,
+    ConfirmedReviewDiagnosticCode,
+)
 from poker_deliberation.context_lifecycle import (
     new_attempt_id,
     new_context_id,
@@ -152,13 +164,16 @@ from poker_deliberation.phases.revision_coordinator import (
     _is_issued_plan,
     _issue_transition_plan,
 )
+from poker_deliberation.phases.services import PurePhaseService
 from poker_deliberation.providers import AgentProvider, LocalProvider
 from poker_deliberation.range_grammar import validate_versioned_range
 from poker_deliberation.range_models import RangeValidationResultV1, VersionedRangeDefinitionV1
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.research import EvidenceLedger
 from poker_deliberation.schemas import (
+    AgentAssignment,
     AgentExecutionRecord,
+    AgentExecutionStatus,
     AgentReport,
     ApprovalRequest,
     ApprovalStatus,
@@ -198,7 +213,7 @@ from poker_deliberation.storage.revision_canonical import (
     canonical_json_bytes as canonical_storage_json_bytes,
 )
 from poker_deliberation.storage.revision_models import RunStorageError
-from poker_deliberation.storage.revision_store import inspect_root_initialization
+from poker_deliberation.storage.revision_store import RunRevisionStore, inspect_root_initialization
 from poker_deliberation.storage.run_store import BufferedRunStore
 from poker_deliberation.storage.terminal_canonical import (
     empty_lineage_head_sha256,
@@ -223,6 +238,159 @@ from poker_deliberation.storage.terminal_store import (
     provisional_budget_binding,
 )
 from poker_deliberation.tools import ToolRegistry, default_registry
+
+_CONFIRMED_LOCAL_PROVIDER_AVAILABILITY = LocalProvider.availability
+_CONFIRMED_LOCAL_PROVIDER_ANALYZE = LocalProvider.analyze
+_CONFIRMED_ANALYSIS_EXECUTOR_RUN = AnalysisExecutor.run
+_CONFIRMED_TOOL_EXECUTOR_RUN = ToolResearchExecutor.run
+_CONFIRMED_REGISTRY_DESCRIBE = ToolRegistry.describe
+_CONFIRMED_REGISTRY_EXECUTE = ToolRegistry.execute
+_CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE = ToolRegistry.execute_for_phase
+_CONFIRMED_REGISTRY_NAMES = ToolRegistry.names
+_CONFIRMED_REGISTRY_RUNTIME_IDENTITY = ToolRegistry.runtime_identity_snapshot
+_CONFIRMED_SYSTEM_MONOTONIC_NOW = SystemMonotonicClock.now_ns
+_CONFIRMED_PURE_PHASE_ISOLATE = PurePhaseService.isolate
+_CONFIRMED_INTAKE_RUN = IntakeValidationService.run
+_CONFIRMED_NORMALIZATION_RUN = NormalizationService.run
+_CONFIRMED_ROUTING_RUN = RoutingService.run
+_CONFIRMED_CONTEXT_BUILD_RUN = ContextBuildService.run
+_CONFIRMED_CRITIQUE_RUN = CritiqueService.run
+_CONFIRMED_ADJUDICATION_RUN = AdjudicationService.run
+_CONFIRMED_SYNTHESIS_RUN = SynthesisService.run
+
+
+def _callable_execution_token(value: object) -> str:
+    target = getattr(value, "__func__", value)
+    if not isinstance(target, FunctionType):
+        return ""
+    kwdefaults = target.__kwdefaults__ or {}
+    closure = target.__closure__ or ()
+    closure_tokens: list[str] = []
+    for cell in closure:
+        try:
+            cell_value = cell.cell_contents
+        except ValueError:
+            closure_tokens.append(f"{id(cell)}:empty")
+        else:
+            closure_tokens.append(f"{id(cell)}:{id(cell_value)}")
+    kwdefault_tokens = ",".join(f"{name}:{id(item)}" for name, item in sorted(kwdefaults.items()))
+    return "|".join(
+        (
+            str(id(target.__code__)),
+            str(id(target.__defaults__)),
+            str(id(target.__kwdefaults__)),
+            kwdefault_tokens,
+            ",".join(closure_tokens),
+        )
+    )
+
+
+def _class_callable_snapshot(
+    cls: type[Any],
+) -> tuple[tuple[type[Any], str, object, str], ...]:
+    snapshot: list[tuple[type[Any], str, object, str]] = []
+    for owner in cls.__mro__:
+        for name, raw_value in vars(owner).items():
+            value = (
+                raw_value.__func__
+                if isinstance(raw_value, (classmethod, staticmethod))
+                else raw_value
+            )
+            if callable(value):
+                snapshot.append((owner, name, value, _callable_execution_token(value)))
+            if isinstance(raw_value, property):
+                for suffix, accessor in (
+                    ("fget", raw_value.fget),
+                    ("fset", raw_value.fset),
+                    ("fdel", raw_value.fdel),
+                ):
+                    if accessor is not None:
+                        snapshot.append(
+                            (
+                                owner,
+                                f"{name}.{suffix}",
+                                accessor,
+                                _callable_execution_token(accessor),
+                            )
+                        )
+    return tuple(
+        sorted(
+            snapshot,
+            key=lambda item: (item[0].__module__, item[0].__qualname__, item[1]),
+        )
+    )
+
+
+def _instance_callable_snapshot(instance: object) -> tuple[tuple[str, object, str], ...]:
+    return tuple(
+        sorted(
+            (
+                (name, value, _callable_execution_token(value))
+                for name, value in vars(instance).items()
+                if callable(value)
+            ),
+            key=lambda item: item[0],
+        )
+    )
+
+
+def _module_callable_snapshot() -> tuple[tuple[str, object, str], ...]:
+    return tuple(
+        sorted(
+            (
+                (name, value, _callable_execution_token(value))
+                for name, value in globals().items()
+                if callable(value)
+            ),
+            key=lambda item: item[0],
+        )
+    )
+
+
+def _callable_snapshot_is_exact(
+    current: tuple[tuple[Any, ...], ...],
+    expected: tuple[tuple[Any, ...], ...],
+) -> bool:
+    return len(current) == len(expected) and all(
+        len(current_item) == len(expected_item)
+        and all(
+            current_part == expected_part
+            if isinstance(current_part, str)
+            else (current_part is expected_part)
+            for current_part, expected_part in zip(
+                current_item,
+                expected_item,
+                strict=True,
+            )
+        )
+        for current_item, expected_item in zip(current, expected, strict=True)
+    )
+
+
+_CONFIRMED_RUNTIME_CLASS_CALLABLES = tuple(
+    (cls, _class_callable_snapshot(cls))
+    for cls in (
+        LocalProvider,
+        AnalysisExecutor,
+        ToolResearchExecutor,
+        ToolRegistry,
+        SystemMonotonicClock,
+        PurePhaseService,
+        IntakeValidationService,
+        NormalizationService,
+        RoutingService,
+        ContextBuildService,
+        CritiqueService,
+        AdjudicationService,
+        SynthesisService,
+        TerminalRunStore,
+        DurableBudgetCoordinator,
+        DurableBudgetStore,
+        RunRevisionStore,
+        BufferedRunStore,
+        LegacyRunAdapter,
+    )
+)
 
 
 def new_run_id() -> str:
@@ -302,6 +470,18 @@ class Orchestrator:
         terminal_id_factory: Callable[[str], str] | None = None,
         decision_authority_provider: DecisionAuthorityProvider | None = None,
     ) -> None:
+        self._confirmed_review_persistence_was_injected = any(
+            dependency is not None
+            for dependency in (
+                product_store,
+                budget_store,
+                terminal_clock,
+                terminal_id_factory,
+            )
+        )
+        self._confirmed_review_clock_was_injected = (
+            context_clock is not None or monotonic_clock is not None
+        )
         self.config = config or AppConfig.from_env()
         self.budget_migration: V1BudgetMigrationResult | None
         if budget_policy is None:
@@ -317,6 +497,7 @@ class Orchestrator:
             if registry is not None
             else (tool_research_executor.registry if tool_research_executor is not None else None)
         )
+        self._registry_was_injected = injected_registry is not None
         injected_clocks = [
             clock
             for clock in (
@@ -370,6 +551,7 @@ class Orchestrator:
             context_clock=self.context_clock,
             record_clock=lambda: datetime.now(UTC),
             monotonic_clock=self.monotonic_clock,
+            enforce_context_expiry=context_clock is None,
         )
         if tool_research_executor is not None and (
             tool_research_executor.registry is not self.registry
@@ -461,6 +643,103 @@ class Orchestrator:
         self._product_storage_initialized = False
         self._publication_plans: dict[str, tuple[int, str]] = {}
         self._approval_v2_payloads: dict[str, dict[str, bytes]] = {}
+        self._confirmed_review_admissions: dict[str, ConfirmedReviewAdmission] = {}
+        self._confirmed_review_provider = self.provider
+        self._confirmed_review_registry = self.registry
+        self._confirmed_review_registry_sha256 = canonical_domain_sha256(
+            "poker-confirmed-review-registry-v1",
+            self.registry.describe(),
+        )
+        self._confirmed_review_registry_runtime_snapshot = ToolRegistry.runtime_identity_snapshot(
+            self.registry
+        )
+        self._confirmed_review_registry_mapping = self.registry._tools
+        self._confirmed_review_registry_limits = (
+            self.registry.max_payload_bytes,
+            self.registry.max_output_bytes,
+            self.registry.max_duration_seconds,
+        )
+        self._confirmed_review_analysis_context_clock = self.analysis_executor.context_clock
+        self._confirmed_review_analysis_record_clock = self.analysis_executor.record_clock
+        self._confirmed_review_product_store = self.product_store
+        self._confirmed_review_product_foundation = self.product_store.foundation
+        self._confirmed_review_durable_budget = self.durable_budget
+        self._confirmed_review_durable_budget_store = self.durable_budget_store
+        self._confirmed_review_buffer_store = self.store
+        self._confirmed_review_terminal_clock = self.terminal_clock
+        self._confirmed_review_terminal_id_factory = self.terminal_id_factory
+        self._confirmed_review_product_store_snapshot = (
+            self.product_store.revision_root,
+            self.product_store.legacy_runs_root,
+            self.product_store.max_artifact_bytes,
+            self.product_store.max_run_bytes,
+            self.product_store.framework_version,
+            self.product_store.source_commit_id,
+        )
+        self._confirmed_review_persistence_objects = (
+            self.product_store,
+            self.product_store.foundation,
+            self.durable_budget,
+            self.durable_budget_store,
+            self.durable_budget_store.revisions,
+            self.store,
+            self.legacy_adapter,
+        )
+        self._confirmed_review_persistence_types = tuple(
+            type(instance) for instance in self._confirmed_review_persistence_objects
+        )
+        self._confirmed_review_persistence_instance_callables = tuple(
+            _instance_callable_snapshot(instance)
+            for instance in self._confirmed_review_persistence_objects
+        )
+        self._confirmed_review_boundary_callables = (
+            (
+                "analysis_context_clock",
+                self.analysis_executor.context_clock,
+                _callable_execution_token(self.analysis_executor.context_clock),
+            ),
+            (
+                "analysis_record_clock",
+                self.analysis_executor.record_clock,
+                _callable_execution_token(self.analysis_executor.record_clock),
+            ),
+            (
+                "terminal_clock",
+                self.terminal_clock,
+                _callable_execution_token(self.terminal_clock),
+            ),
+            (
+                "terminal_id_factory",
+                self.terminal_id_factory,
+                _callable_execution_token(self.terminal_id_factory),
+            ),
+        )
+        self._confirmed_review_durable_budget_policy = self.durable_budget.policy
+        self._confirmed_review_persistence_configuration = (
+            self.legacy_runs_root,
+            self.revision_runs_root,
+            self.durable_budget_runs_root,
+            self.legacy_adapter.root,
+            self.legacy_adapter.max_artifact_bytes,
+            self.legacy_adapter.max_run_bytes,
+            self.product_store.foundation.revision_root,
+            self.product_store.foundation.legacy_runs_root,
+            self.product_store.foundation.max_artifact_bytes,
+            self.product_store.foundation.max_run_bytes,
+            self.product_store.foundation.fault_injector,
+            self.product_store.foundation.producer_id,
+            self.product_store.foundation.producer_version,
+            self.durable_budget_store.revisions.revision_root,
+            self.durable_budget_store.revisions.legacy_runs_root,
+            self.durable_budget_store.revisions.max_artifact_bytes,
+            self.durable_budget_store.revisions.max_run_bytes,
+            self.durable_budget_store.revisions.fault_injector,
+            self.durable_budget_store.revisions.producer_id,
+            self.durable_budget_store.revisions.producer_version,
+            self.store.root,
+            self.store.max_artifact_bytes,
+            self.store.max_run_bytes,
+        )
 
     def _observe_storage_usage(self, run_id: str, artifact_bytes: int, run_bytes: int) -> None:
         machine = self._run_machines.get(run_id)
@@ -870,6 +1149,8 @@ class Orchestrator:
             run_id=run_id,
             status=status,
             revision=revision,
+            revision_root=self.product_store.revision_root,
+            transaction_id=transaction_id,
             previous_manifest_sha256=(None if previous is None else previous.manifest_sha256),
             previous_pointer_sha256=(None if previous is None else previous.current_pointer_sha256),
         )
@@ -1045,6 +1326,11 @@ class Orchestrator:
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
+        if "confirmed_review" in case.metadata:
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.CONFIRMATION_MISSING,
+                "case.metadata.confirmed_review",
+            )
         case, normalization = extract_normalization_result(case)
         actual_run_id = run_id or new_run_id()
         try:
@@ -1078,6 +1364,366 @@ class Orchestrator:
                 confidence=ConfidenceGrade.D,
             )
 
+    def _confirmed_review_runtime_is_exact(self) -> bool:
+        phase_services = (
+            (self.intake_service, IntakeValidationService, _CONFIRMED_INTAKE_RUN),
+            (
+                self.normalization_service,
+                NormalizationService,
+                _CONFIRMED_NORMALIZATION_RUN,
+            ),
+            (self.routing_service, RoutingService, _CONFIRMED_ROUTING_RUN),
+            (
+                self.context_build_service,
+                ContextBuildService,
+                _CONFIRMED_CONTEXT_BUILD_RUN,
+            ),
+            (self.critique_service, CritiqueService, _CONFIRMED_CRITIQUE_RUN),
+            (
+                self.adjudication_service,
+                AdjudicationService,
+                _CONFIRMED_ADJUDICATION_RUN,
+            ),
+            (self.synthesis_service, SynthesisService, _CONFIRMED_SYNTHESIS_RUN),
+        )
+        persistence_objects = (
+            self.product_store,
+            self.product_store.foundation,
+            self.durable_budget,
+            self.durable_budget_store,
+            self.durable_budget_store.revisions,
+            self.store,
+            self.legacy_adapter,
+        )
+        if (
+            not _callable_snapshot_is_exact(
+                _module_callable_snapshot(),
+                _CONFIRMED_ORCHESTRATOR_MODULE_CALLABLES,
+            )
+            or LocalProvider.availability is not _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY
+            or LocalProvider.analyze is not _CONFIRMED_LOCAL_PROVIDER_ANALYZE
+            or AnalysisExecutor.run is not _CONFIRMED_ANALYSIS_EXECUTOR_RUN
+            or ToolResearchExecutor.run is not _CONFIRMED_TOOL_EXECUTOR_RUN
+            or ToolRegistry.describe is not _CONFIRMED_REGISTRY_DESCRIBE
+            or ToolRegistry.execute is not _CONFIRMED_REGISTRY_EXECUTE
+            or ToolRegistry.execute_for_phase is not _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE
+            or ToolRegistry.names is not _CONFIRMED_REGISTRY_NAMES
+            or ToolRegistry.runtime_identity_snapshot is not _CONFIRMED_REGISTRY_RUNTIME_IDENTITY
+            or SystemMonotonicClock.now_ns is not _CONFIRMED_SYSTEM_MONOTONIC_NOW
+            or PurePhaseService.isolate is not _CONFIRMED_PURE_PHASE_ISOLATE
+            or type(self.monotonic_clock) is not SystemMonotonicClock
+            or "now_ns" in getattr(self.monotonic_clock, "__dict__", {})
+            or any(name in vars(self.provider) for name in ("availability", "analyze"))
+            or "run" in vars(self.analysis_executor)
+            or "run" in vars(self.tool_research_executor)
+            or any(
+                name in vars(self.registry)
+                for name in (
+                    "describe",
+                    "execute",
+                    "execute_for_phase",
+                    "names",
+                    "runtime_identity_snapshot",
+                )
+            )
+            or self.analysis_executor.context_clock
+            is not self._confirmed_review_analysis_context_clock
+            or self.analysis_executor.record_clock
+            is not self._confirmed_review_analysis_record_clock
+            or not self.analysis_executor.enforce_context_expiry
+            or self.registry.monotonic_clock is not self.monotonic_clock
+            or type(self.registry._tools) is not dict
+            or self.registry._tools is not self._confirmed_review_registry_mapping
+            or (
+                self.registry.max_payload_bytes,
+                self.registry.max_output_bytes,
+                self.registry.max_duration_seconds,
+            )
+            != self._confirmed_review_registry_limits
+            or any(
+                type(service) is not expected_type
+                or expected_type.run is not expected_run
+                or "run" in vars(service)
+                or "isolate" in vars(service)
+                for service, expected_type, expected_run in phase_services
+            )
+            or self.context_build_service.blind_context_builder is not build_blind_decision_context
+            or self._confirmed_review_clock_was_injected
+            or self._confirmed_review_persistence_was_injected
+            or self.terminal_clock is not self._confirmed_review_terminal_clock
+            or self.terminal_id_factory is not self._confirmed_review_terminal_id_factory
+            or any(
+                current is not expected
+                for current, expected in zip(
+                    persistence_objects,
+                    self._confirmed_review_persistence_objects,
+                    strict=True,
+                )
+            )
+            or tuple(type(instance) for instance in persistence_objects)
+            != self._confirmed_review_persistence_types
+            or any(
+                not _callable_snapshot_is_exact(
+                    _instance_callable_snapshot(instance),
+                    expected,
+                )
+                for instance, expected in zip(
+                    persistence_objects,
+                    self._confirmed_review_persistence_instance_callables,
+                    strict=True,
+                )
+            )
+            or any(
+                not _callable_snapshot_is_exact(
+                    _class_callable_snapshot(cls),
+                    expected,
+                )
+                for cls, expected in _CONFIRMED_RUNTIME_CLASS_CALLABLES
+            )
+            or not _callable_snapshot_is_exact(
+                (
+                    (
+                        "analysis_context_clock",
+                        self.analysis_executor.context_clock,
+                        _callable_execution_token(self.analysis_executor.context_clock),
+                    ),
+                    (
+                        "analysis_record_clock",
+                        self.analysis_executor.record_clock,
+                        _callable_execution_token(self.analysis_executor.record_clock),
+                    ),
+                    (
+                        "terminal_clock",
+                        self.terminal_clock,
+                        _callable_execution_token(self.terminal_clock),
+                    ),
+                    (
+                        "terminal_id_factory",
+                        self.terminal_id_factory,
+                        _callable_execution_token(self.terminal_id_factory),
+                    ),
+                ),
+                self._confirmed_review_boundary_callables,
+            )
+            or self.durable_budget.policy is not self._confirmed_review_durable_budget_policy
+            or (
+                self.legacy_runs_root,
+                self.revision_runs_root,
+                self.durable_budget_runs_root,
+                self.legacy_adapter.root,
+                self.legacy_adapter.max_artifact_bytes,
+                self.legacy_adapter.max_run_bytes,
+                self.product_store.foundation.revision_root,
+                self.product_store.foundation.legacy_runs_root,
+                self.product_store.foundation.max_artifact_bytes,
+                self.product_store.foundation.max_run_bytes,
+                self.product_store.foundation.fault_injector,
+                self.product_store.foundation.producer_id,
+                self.product_store.foundation.producer_version,
+                self.durable_budget_store.revisions.revision_root,
+                self.durable_budget_store.revisions.legacy_runs_root,
+                self.durable_budget_store.revisions.max_artifact_bytes,
+                self.durable_budget_store.revisions.max_run_bytes,
+                self.durable_budget_store.revisions.fault_injector,
+                self.durable_budget_store.revisions.producer_id,
+                self.durable_budget_store.revisions.producer_version,
+                self.store.root,
+                self.store.max_artifact_bytes,
+                self.store.max_run_bytes,
+            )
+            != self._confirmed_review_persistence_configuration
+            or type(self.product_store) is not TerminalRunStore
+            or self.product_store is not self._confirmed_review_product_store
+            or self.product_store.foundation is not self._confirmed_review_product_foundation
+            or type(self.product_store.foundation) is not RunRevisionStore
+            or self.product_store.budget is not self._confirmed_review_durable_budget
+            or self.product_store.clock is not self._confirmed_review_terminal_clock
+            or self.product_store.id_factory is not self._confirmed_review_terminal_id_factory
+            or self.product_store.fault_injector is not None
+            or (
+                self.product_store.revision_root,
+                self.product_store.legacy_runs_root,
+                self.product_store.max_artifact_bytes,
+                self.product_store.max_run_bytes,
+                self.product_store.framework_version,
+                self.product_store.source_commit_id,
+            )
+            != self._confirmed_review_product_store_snapshot
+            or type(self.durable_budget) is not DurableBudgetCoordinator
+            or self.durable_budget is not self._confirmed_review_durable_budget
+            or self.durable_budget.store is not self._confirmed_review_durable_budget_store
+            or type(self.durable_budget_store) is not DurableBudgetStore
+            or self.durable_budget_store is not self._confirmed_review_durable_budget_store
+            or type(self.store) is not BufferedRunStore
+            or self.store is not self._confirmed_review_buffer_store
+        ):
+            return False
+        current = ToolRegistry.runtime_identity_snapshot(self.registry)
+        expected = self._confirmed_review_registry_runtime_snapshot
+        return len(current) == len(expected) and all(
+            current_name == expected_name
+            and current_definition is expected_definition
+            and current_function is expected_function
+            and current_contract is expected_contract
+            for (
+                current_name,
+                current_definition,
+                current_function,
+                current_contract,
+            ), (
+                expected_name,
+                expected_definition,
+                expected_function,
+                expected_contract,
+            ) in zip(current, expected, strict=True)
+        )
+
+    def run_confirmed_review(
+        self,
+        admission: ConfirmedReviewAdmission,
+    ) -> FinalReport:
+        """Execute a pre-admitted review with exact local runtime dependencies."""
+
+        verified_admission = admit_confirmed_review(
+            admission.source_bytes,
+            admission.candidate,
+            admission.confirmation,
+        )
+        if (
+            verified_admission.source_bytes != admission.source_bytes
+            or verified_admission.candidate != admission.candidate
+            or verified_admission.confirmation != admission.confirmation
+            or verified_admission.case != admission.case
+        ):
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING,
+                "admission",
+            )
+        admission = verified_admission
+        run_id = admission.confirmation.run_id
+        if not self._confirmed_review_runtime_is_exact():
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        provider_availability = self.provider.availability()
+        if (
+            type(self.provider) is not LocalProvider
+            or self.provider is not self._confirmed_review_provider
+            or provider_availability.provider != "local"
+            or provider_availability.version != "1.0.0"
+            or self._registry_was_injected
+            or type(self.registry) is not ToolRegistry
+            or self.registry is not self._confirmed_review_registry
+            or type(self.analysis_executor) is not AnalysisExecutor
+            or self.analysis_executor.provider is not self.provider
+            or self.analysis_executor.monotonic_clock is not self.monotonic_clock
+            or type(self.tool_research_executor) is not ToolResearchExecutor
+            or self.tool_research_executor.registry is not self.registry
+            or self.tool_research_executor.record_sensitive_data
+            != self.config.record_sensitive_data
+            or canonical_domain_sha256(
+                "poker-confirmed-review-registry-v1",
+                self.registry.describe(),
+            )
+            != self._confirmed_review_registry_sha256
+        ):
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        if (
+            self.budget_policy.max_artifact_bytes > MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES
+            or self.budget_policy.max_run_bytes > MAX_CONFIRMED_REVIEW_RUN_BYTES
+        ):
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.RUNTIME_BUDGET,
+                "runtime.budget",
+            )
+        namespace = self._namespace_kind(run_id)
+        if namespace is not None:
+            if namespace != "product":
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
+                    "confirmation.run_id",
+                )
+            current = self.product_store.read_current(run_id)
+            expected = {
+                "confirmed_review_source.txt": admission.source_bytes,
+                "confirmed_review_candidate.json": canonical_storage_json_bytes(
+                    admission.candidate
+                ),
+                "confirmed_review_confirmation.json": canonical_storage_json_bytes(
+                    admission.confirmation
+                ),
+            }
+            try:
+                exact_replay = all(
+                    current.payload_bytes(name) == payload for name, payload in expected.items()
+                )
+            except KeyError:
+                exact_replay = False
+            if not exact_replay:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
+                    "confirmation.idempotency_key",
+                )
+            return self._exact_terminal_report(current)
+        hand_payload = (
+            admission.case.hand.model_dump(mode="json") if admission.case.hand is not None else {}
+        )
+        hand_definition = self.registry._tools.get("hand_validator")
+        hand_contract = hand_definition.contract if hand_definition is not None else None
+        try:
+            if hand_definition is None or hand_contract is None:
+                raise ValueError("hand validator contract is unavailable")
+            validated_hand = hand_contract.input_model.model_validate(hand_payload)
+            hand_output = hand_definition.function(
+                validated_hand.model_dump(mode="python", exclude_unset=True)
+            )
+            hand_contract.output_model.model_validate(hand_output)
+        except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
+            hand_output = {}
+        if hand_output.get("valid") is not True:
+            raise ConfirmedReviewError(
+                ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING,
+                "candidate.hand",
+            )
+        if "hand_pot_ledger" in admission.case.requested_tools:
+            raw_tool_inputs = admission.case.metadata.get("tool_inputs", {})
+            ledger_payload = (
+                raw_tool_inputs.get("hand_pot_ledger", {})
+                if isinstance(raw_tool_inputs, dict)
+                else {}
+            )
+            if not isinstance(ledger_payload, dict) or admission.case.hand is None:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                    "candidate.ledger_profile",
+                )
+            ledger_validation = self.registry.execute(
+                "hand_pot_ledger",
+                {
+                    **ledger_payload,
+                    "hand": admission.case.hand.model_dump(mode="json"),
+                },
+                contract_version=self.tool_contract_versions.get("hand_pot_ledger"),
+            )
+            if ledger_validation.status is not ToolStatus.SUCCESS:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                    "candidate.ledger_profile",
+                )
+        self._confirmed_review_admissions[run_id] = admission
+        try:
+            return self._run(
+                CaseInput.model_validate(admission.case.model_dump(mode="python")),
+                run_id,
+                normalization=None,
+            )
+        finally:
+            self._confirmed_review_admissions.pop(run_id, None)
+
     def _run(
         self,
         case: CaseInput,
@@ -1109,6 +1755,28 @@ class Orchestrator:
                 read_status=status,
             )
         self.store.create_run(actual_run_id)
+        confirmed_admission = self._confirmed_review_admissions.get(actual_run_id)
+        if confirmed_admission is not None:
+            if confirmed_admission.confirmation.run_id != actual_run_id:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING,
+                    "confirmation.run_id",
+                )
+            self.store.write_text(
+                actual_run_id,
+                "confirmed_review_source.txt",
+                confirmed_admission.source_bytes.decode("utf-8", errors="strict"),
+            )
+            self.store.write_json(
+                actual_run_id,
+                "confirmed_review_candidate.json",
+                confirmed_admission.candidate,
+            )
+            self.store.write_json(
+                actual_run_id,
+                "confirmed_review_confirmation.json",
+                confirmed_admission.confirmation,
+            )
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         self._run_machines[actual_run_id] = machine
         approvals = ApprovalLedger()
@@ -1242,6 +1910,8 @@ class Orchestrator:
             "assumptions.json",
             redact_sensitive(case.assumptions, enabled=not self.config.record_sensitive_data),
         )
+        assignments = list(select_roles(case))
+        self.store.write_json(actual_run_id, "assignments.json", assignments)
 
         machine.transition(RunState.DATA_VALIDATION, "canonical schema validation completed")
         security_events = screen_case(case)
@@ -1402,7 +2072,7 @@ class Orchestrator:
             policy_snapshot_hash=self.phase_policy_snapshot_hash,
             input_value=RoutingInput(
                 case_kind=case.kind,
-                role_snapshot=tuple(select_roles(case)),
+                role_snapshot=tuple(assignments),
                 registered_tools=registered_tools,
             ),
         )
@@ -1414,7 +2084,6 @@ class Orchestrator:
         if routing_outcome.output is None:
             raise PhaseContractError("routing returned no output")
         assignments = list(routing_outcome.output.assignments)
-        self.store.write_json(actual_run_id, "assignments.json", assignments)
         reports: list[AgentReport] = []
         if case.kind != "calculation":
             machine.transition(RunState.INDEPENDENT_ANALYSIS, "selected roles run independently")
@@ -1483,9 +2152,9 @@ class Orchestrator:
                         machine=machine,
                     )
                 remaining_runtime = remaining_ns / 1_000_000_000
-                started_at = datetime.now(UTC)
                 provider_timeout = min(30.0, remaining_runtime)
                 lifecycle_now = self.context_clock()
+                started_at = lifecycle_now
                 expected_context_id = new_context_id()
                 expected_attempt_id = new_attempt_id()
                 context_request = make_phase_request(
@@ -1664,6 +2333,13 @@ class Orchestrator:
                 analysis = analysis_outcome.output
                 execution_records.append(analysis.execution_record)
                 data_quality.extend(analysis.data_quality)
+                reports.append(analysis.report)
+                report_ids.add(analysis.report.report_id)
+                self.store.write_json(
+                    actual_run_id,
+                    f"agent_reports/{analysis.report.report_id}.json",
+                    analysis.report,
+                )
                 try:
                     machine.apply_usage_at(
                         analysis.usage_delta,
@@ -1695,6 +2371,29 @@ class Orchestrator:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
                         "provider execution budget refused",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                if (
+                    confirmed_admission is not None
+                    and analysis.execution_record.status is not AgentExecutionStatus.COMPLETED
+                ):
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "confirmed local analysis did not complete within its context",
                     )
                     return self._synthesize(
                         actual_run_id,
@@ -1752,13 +2451,6 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                reports.append(analysis.report)
-                report_ids.add(analysis.report.report_id)
-                self.store.write_json(
-                    actual_run_id,
-                    f"agent_reports/{analysis.report.report_id}.json",
-                    analysis.report,
-                )
                 objection_request = make_phase_request(
                     run_id=actual_run_id,
                     phase_id=PhaseId.CRITIQUE,
@@ -2257,8 +2949,9 @@ class Orchestrator:
         )
         self.store.write_json(run_id, "disputes.json", disputes)
 
-    def _synthesize(
+    def _run_synthesis_service(
         self,
+        *,
         run_id: str,
         case: CaseInput,
         data_quality: list[str],
@@ -2270,17 +2963,12 @@ class Orchestrator:
         evidence_records: list[EvidenceRecord],
         approvals: ApprovalLedger,
         security_events: list[SecurityEvent],
-        *,
         completed: bool,
         machine: WorkflowStateMachine,
-        pause_before_return: bool = False,
+        planned_revision: int,
+        transaction_id: str,
     ) -> FinalReport:
-        namespace = self._namespace_kind(run_id)
-        previous = self.product_store.read_current(run_id) if namespace == "product" else None
-        planned_revision = 1 if previous is None else previous.revision + 1
-        transaction_id = self.terminal_id_factory("txn")
         provider_info = self.provider.availability()
-        provider_reason = provider_info.reason
         synthesis_request = make_phase_request(
             run_id=run_id,
             phase_id=PhaseId.SYNTHESIS,
@@ -2302,7 +2990,7 @@ class Orchestrator:
                 security_events=tuple(security_events),
                 provider_snapshot=ProviderSnapshot(
                     available=provider_info.available,
-                    reason=provider_reason,
+                    reason=provider_info.reason,
                 ),
                 tool_input_artifact_paths=tuple(
                     str(
@@ -2310,7 +2998,7 @@ class Orchestrator:
                             run_id,
                             revision=planned_revision,
                             transaction_id=transaction_id,
-                            logical_name=(f"tool_results/{result.result_id}.input.json"),
+                            logical_name=f"tool_results/{result.result_id}.input.json",
                         )
                     )
                     for result in tool_results
@@ -2344,18 +3032,91 @@ class Orchestrator:
         expected_next_state = "completed" if completed else None
         if synthesis_outcome.requested_next_state != expected_next_state:
             raise PhaseContractError("synthesis requested an illegal next state")
-        report = synthesis_outcome.output.report
+        return synthesis_outcome.output.report
+
+    def _synthesize(
+        self,
+        run_id: str,
+        case: CaseInput,
+        data_quality: list[str],
+        claim_assessments: list[Claim],
+        reports: list[AgentReport],
+        execution_records: list[AgentExecutionRecord],
+        tool_results: list[ToolResult],
+        disputes: list[Dispute],
+        evidence_records: list[EvidenceRecord],
+        approvals: ApprovalLedger,
+        security_events: list[SecurityEvent],
+        *,
+        completed: bool,
+        machine: WorkflowStateMachine,
+        pause_before_return: bool = False,
+    ) -> FinalReport:
+        namespace = self._namespace_kind(run_id)
+        previous = self.product_store.read_current(run_id) if namespace == "product" else None
+        planned_revision = 1 if previous is None else previous.revision + 1
+        transaction_id = self.terminal_id_factory("txn")
+        confirmed_admission = self._confirmed_review_admissions.get(run_id)
+        if completed and confirmed_admission is not None:
+            try:
+                _, observed_at_ns, deadline_ns = machine.runtime_window()
+            except BudgetLimitError:
+                machine.enforce_runtime()
+                observed_at_ns = 0
+                deadline_ns = 0
+            if deadline_ns - observed_at_ns < 250_000_000:
+                if machine.state is not RunState.FAILED_WITH_LIMITATIONS:
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "confirmed terminal publication safety reserve was exhausted",
+                    )
+                data_quality.append(
+                    "confirmed terminal publication refused with less than 0.25 seconds remaining"
+                )
+                _append_observed_budget_failure(data_quality, machine)
+                completed = False
+                pause_before_return = False
+        report = self._run_synthesis_service(
+            run_id=run_id,
+            case=case,
+            data_quality=data_quality,
+            claim_assessments=claim_assessments,
+            reports=reports,
+            execution_records=execution_records,
+            tool_results=tool_results,
+            disputes=disputes,
+            evidence_records=evidence_records,
+            approvals=approvals,
+            security_events=security_events,
+            completed=completed,
+            machine=machine,
+            planned_revision=planned_revision,
+            transaction_id=transaction_id,
+        )
         if not machine.enforce_runtime():
             runtime_message = "maximum runtime exceeded during final synthesis"
-            if runtime_message not in report.data_quality:
-                report.data_quality.append(runtime_message)
-            if runtime_message not in report.limitations:
-                report.limitations.append(runtime_message)
-            _append_observed_budget_failure(report.data_quality, machine)
-            _append_observed_budget_failure(report.limitations, machine)
-            report.run_status = "failed_with_limitations"
+            if runtime_message not in data_quality:
+                data_quality.append(runtime_message)
+            _append_observed_budget_failure(data_quality, machine)
             completed = False
             pause_before_return = False
+            report = self._run_synthesis_service(
+                run_id=run_id,
+                case=case,
+                data_quality=data_quality,
+                claim_assessments=claim_assessments,
+                reports=reports,
+                execution_records=execution_records,
+                tool_results=tool_results,
+                disputes=disputes,
+                evidence_records=evidence_records,
+                approvals=approvals,
+                security_events=security_events,
+                completed=False,
+                machine=machine,
+                planned_revision=planned_revision,
+                transaction_id=transaction_id,
+            )
         self.store.write_json(run_id, "agent_execution_records.json", execution_records)
         self.store.write_json(run_id, "security_events.json", security_events)
         if completed and not machine.terminal:
@@ -2365,24 +3126,68 @@ class Orchestrator:
         self.store.write_text(run_id, "final_report.md", render_markdown(report))
         if not machine.enforce_runtime():
             runtime_message = "maximum runtime exceeded during final artifact writes"
-            if runtime_message not in report.data_quality:
-                report.data_quality.append(runtime_message)
-            if runtime_message not in report.limitations:
-                report.limitations.append(runtime_message)
-            _append_observed_budget_failure(report.data_quality, machine)
-            _append_observed_budget_failure(report.limitations, machine)
-            report.run_status = "failed_with_limitations"
+            if runtime_message not in data_quality:
+                data_quality.append(runtime_message)
+            _append_observed_budget_failure(data_quality, machine)
+            completed = False
             pause_before_return = False
+            report = self._run_synthesis_service(
+                run_id=run_id,
+                case=case,
+                data_quality=data_quality,
+                claim_assessments=claim_assessments,
+                reports=reports,
+                execution_records=execution_records,
+                tool_results=tool_results,
+                disputes=disputes,
+                evidence_records=evidence_records,
+                approvals=approvals,
+                security_events=security_events,
+                completed=False,
+                machine=machine,
+                planned_revision=planned_revision,
+                transaction_id=transaction_id,
+            )
             self.store.write_json(run_id, "state.json", machine.snapshot())
             self.store.write_json(run_id, "final_report.json", report)
             self.store.write_text(run_id, "final_report.md", render_markdown(report))
         if pause_before_return:
             machine.pause_active_runtime()
             self.store.write_json(run_id, "state.json", machine.snapshot())
+        if confirmed_admission is not None:
+            raw_assignments = self.store.read_json(run_id, "assignments.json")
+            if not isinstance(raw_assignments, list):
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR,
+                    stage="confirmed_review_provenance",
+                )
+            assignments = [
+                AgentAssignment.model_validate(assignment) for assignment in raw_assignments
+            ]
+            provenance = build_confirmed_review_provenance(
+                confirmed_admission,
+                report,
+                assignments=assignments,
+                agent_reports=reports,
+                storage_root=self.product_store.revision_root,
+                storage_revision=planned_revision,
+                storage_transaction_id=transaction_id,
+            )
+            self.store.write_json(
+                run_id,
+                "confirmed_review_provenance.json",
+                provenance,
+            )
         self._publication_plans[run_id] = (planned_revision, transaction_id)
         try:
             verified = self._publish_buffer(run_id, report)
         except ProductRunError as exc:
+            if (
+                confirmed_admission is not None
+                and exc.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+            ):
+                raise
             allowed_ephemeral_failure = (
                 exc.failure.stage == "preflight"
                 and exc.failure.code is ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR
@@ -2413,6 +3218,24 @@ class Orchestrator:
                 run_id,
                 ProductRunFailureCode.INTERNAL_INVARIANT_ERROR,
                 stage="product_status_projection",
+            )
+        return report
+
+    def _exact_terminal_report(self, read: VerifiedRunReadV2) -> FinalReport:
+        report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+        expected_status = {
+            RunReadStatus.SUCCEEDED: "completed",
+            RunReadStatus.APPROVAL_REQUIRED: "approval_required",
+            RunReadStatus.FAILED: "failed_with_limitations",
+            RunReadStatus.CANCELLED: "failed_with_limitations",
+            RunReadStatus.CANCEL_UNCONFIRMED: "failed_with_limitations",
+        }.get(read.read_status)
+        if expected_status is None or report.run_status != expected_status:
+            raise self._product_error(
+                read.run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="load_report_status",
+                read_status=RunReadStatus.CORRUPT,
             )
         return report
 
@@ -3407,3 +4230,6 @@ class Orchestrator:
                 stage="report_path",
             )
         return self.product_store.report_path(read, format_name)
+
+
+_CONFIRMED_ORCHESTRATOR_MODULE_CALLABLES = _module_callable_snapshot()

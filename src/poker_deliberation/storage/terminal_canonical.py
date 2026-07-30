@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -23,6 +24,11 @@ from poker_deliberation.approval_models import (
 from poker_deliberation.approvals import (
     project_v1_approvals,
     read_approval_state_v2,
+)
+from poker_deliberation.confirmed_review_models import (
+    ConfirmedReviewProvenanceV1,
+    ReviewIntakeCandidateV1,
+    ReviewIntakeConfirmationV1,
 )
 from poker_deliberation.context_lifecycle import ContextClassification
 from poker_deliberation.local_data_policy import (
@@ -51,11 +57,13 @@ from poker_deliberation.schemas import (
     SecurityEvent,
     ToolResult,
 )
+from poker_deliberation.state_machine import ALLOWED_TRANSITIONS, RunState
 from poker_deliberation.storage.revision_canonical import (
     CONTROL_CANONICALIZATION,
     JSONL_SERIALIZATION,
     TEXT_SERIALIZATION,
     CanonicalStorageError,
+    artifact_table_entry,
     canonical_domain_sha256,
     canonical_json_bytes,
     canonicalize_bindings,
@@ -66,6 +74,7 @@ from poker_deliberation.storage.revision_canonical import (
     parse_canonical_model,
     sha256_bytes,
     upstream_source_sha256,
+    validate_assignment_execution_correlation,
     validate_canonical_text,
     validate_logical_name,
 )
@@ -99,6 +108,49 @@ APPROVAL_V2_CORE_ARTIFACTS = frozenset(
 )
 APPROVAL_REISSUE_ARTIFACT = "approval_reissues_v2.jsonl"
 APPROVAL_V2_ARTIFACTS = APPROVAL_V2_CORE_ARTIFACTS | {APPROVAL_REISSUE_ARTIFACT}
+_CONFIRMED_REVIEW_ARTIFACTS = frozenset(
+    {
+        "confirmed_review_source.txt",
+        "confirmed_review_candidate.json",
+        "confirmed_review_confirmation.json",
+        "confirmed_review_provenance.json",
+    }
+)
+_AGENT_REPORT_ARTIFACT = re.compile(
+    r"^agent_reports/(?P<identifier>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$"
+)
+_TERMINAL_ONLY_ARTIFACT_TABLE: dict[str, tuple[str, str, str]] = {
+    "state.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-workflow-state-artifact-v1",
+    ),
+    "lifecycle_audit.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-lifecycle-audit-artifact-v1",
+    ),
+    "approval_ledger_v2.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-approval-ledger-artifact-v2",
+    ),
+    "approval_decisions_v2.jsonl": (
+        "application/x-ndjson",
+        JSONL_SERIALIZATION,
+        "poker-approval-decision-log-artifact-v2",
+    ),
+    "approval_audit_v2.jsonl": (
+        "application/x-ndjson",
+        JSONL_SERIALIZATION,
+        "poker-approval-domain-audit-log-artifact-v2",
+    ),
+    APPROVAL_REISSUE_ARTIFACT: (
+        "application/x-ndjson",
+        JSONL_SERIALIZATION,
+        "poker-approval-reissue-log-artifact-v2",
+    ),
+}
 
 _SUPPORTED_VERSION = TERMINAL_SCHEMA_VERSION
 _VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}$")
@@ -185,12 +237,39 @@ def _lineage_head(kind: str, value: Sequence[object]) -> str:
     )
 
 
+def _validate_state_event_chain(
+    state: Mapping[str, object], events: list[dict[str, object]]
+) -> None:
+    current = RunState.INTAKE
+    for event in events:
+        if set(event) != {"source", "target", "reason"}:
+            raise CanonicalStorageError("state checkpoint event shape mismatch")
+        try:
+            source = RunState(str(event["source"]))
+            target = RunState(str(event["target"]))
+        except ValueError as exc:
+            raise CanonicalStorageError("state checkpoint event state mismatch") from exc
+        reason = event["reason"]
+        if (
+            source is not current
+            or target not in ALLOWED_TRANSITIONS[source]
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
+            raise CanonicalStorageError("state checkpoint event chain mismatch")
+        current = target
+    if state.get("state") != current.value:
+        raise CanonicalStorageError("state checkpoint terminal event mismatch")
+
+
 def product_payload_commitments(
     payloads: Mapping[str, bytes],
     *,
     run_id: str,
     status: str,
     revision: int | None = None,
+    revision_root: Path | str | None = None,
+    transaction_id: str | None = None,
     previous_manifest_sha256: str | None = None,
     previous_pointer_sha256: str | None = None,
 ) -> tuple[str, str, str, str, str, str]:
@@ -216,6 +295,7 @@ def product_payload_commitments(
     events = state.get("events")
     if not isinstance(events, list) or any(not isinstance(item, dict) for item in events):
         raise CanonicalStorageError("state checkpoint events must be an object list")
+    _validate_state_event_chain(state, events)
     if report.run_id != run_id:
         raise CanonicalStorageError("final report run ID mismatch")
 
@@ -331,9 +411,26 @@ def product_payload_commitments(
             APPROVAL_AUTHORITY_LINEAGE_DOMAIN,
             authority_commitment,
         )
+    assignments = TypeAdapter(list[AgentAssignment]).validate_json(
+        payloads.get("assignments.json", b"[]")
+    )
     execution_records = TypeAdapter(list[AgentExecutionRecord]).validate_json(
         payloads.get("agent_execution_records.json", b"[]")
     )
+    validate_assignment_execution_correlation(assignments, execution_records)
+    agent_reports: list[AgentReport] = []
+    for logical_name in sorted(payloads, key=lambda item: item.encode("utf-8")):
+        report_match = _AGENT_REPORT_ARTIFACT.fullmatch(logical_name)
+        if report_match is None:
+            continue
+        agent_report = _parse_json_model(payloads[logical_name], AgentReport)
+        if agent_report.report_id != report_match.group("identifier"):
+            raise CanonicalStorageError("agent report ID does not match its path")
+        agent_reports.append(agent_report)
+    report_ids = [agent_report.report_id for agent_report in agent_reports]
+    report_roles = [agent_report.agent_role for agent_report in agent_reports]
+    if len(set(report_ids)) != len(report_ids) or len(set(report_roles)) != len(report_roles):
+        raise CanonicalStorageError("agent report IDs and roles must be unique")
     security_events = TypeAdapter(list[SecurityEvent]).validate_json(
         payloads.get("security_events.json", b"[]")
     )
@@ -381,6 +478,81 @@ def product_payload_commitments(
         )
     except ValueError as exc:
         raise CanonicalStorageError("versioned range tool chain replay failed") from exc
+    confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS
+    input_marker_present = "confirmed_review" in input_case.metadata
+    report_metadata = report.reconstructed_input.get("metadata")
+    report_marker_present = isinstance(report_metadata, dict) and (
+        "confirmed_review" in report_metadata
+    )
+    report_marker = (
+        report_metadata.get("confirmed_review") if isinstance(report_metadata, dict) else None
+    )
+    if input_marker_present != report_marker_present or (
+        input_marker_present and report_marker != input_case.metadata["confirmed_review"]
+    ):
+        raise CanonicalStorageError("confirmed-review input and report markers must match exactly")
+    confirmed_marker = input_marker_present or report_marker_present
+    if confirmed_marker != bool(confirmed_names) or (
+        confirmed_names and confirmed_names != _CONFIRMED_REVIEW_ARTIFACTS
+    ):
+        raise CanonicalStorageError(
+            "confirmed-review marker and complete artifact set must appear together"
+        )
+    if confirmed_marker:
+        if "assignments.json" not in payloads:
+            raise CanonicalStorageError("confirmed-review payload requires the assignment ledger")
+        if revision_root is None or revision is None or transaction_id is None:
+            raise CanonicalStorageError(
+                "confirmed-review payload requires exact terminal storage authority"
+            )
+        source_bytes = payloads["confirmed_review_source.txt"]
+        candidate = _parse_json_model(
+            payloads["confirmed_review_candidate.json"],
+            ReviewIntakeCandidateV1,
+        )
+        confirmation = _parse_json_model(
+            payloads["confirmed_review_confirmation.json"],
+            ReviewIntakeConfirmationV1,
+        )
+        provenance = _parse_json_model(
+            payloads["confirmed_review_provenance.json"],
+            ConfirmedReviewProvenanceV1,
+        )
+        if confirmation.run_id != run_id or provenance.run_id != run_id:
+            raise CanonicalStorageError("confirmed-review run ID correlation mismatch")
+        reports_by_role = {agent_report.agent_role: agent_report for agent_report in agent_reports}
+        ordered_agent_reports = [
+            reports_by_role[record.agent_role]
+            for record in execution_records
+            if record.agent_role in reports_by_role
+        ]
+        if len(ordered_agent_reports) != len(execution_records) or len(agent_reports) != len(
+            execution_records
+        ):
+            raise CanonicalStorageError("confirmed-review agent reports do not match executions")
+        try:
+            # Delayed to preserve the storage package's import direction:
+            # confirmed_review uses canonical storage helpers, while terminal
+            # replay is the only path that needs the higher-level verifier.
+            from poker_deliberation.confirmed_review import (
+                verify_confirmed_review_provenance,
+            )
+
+            verify_confirmed_review_provenance(
+                source_bytes=source_bytes,
+                candidate=candidate,
+                confirmation=confirmation,
+                case=input_case,
+                report=report,
+                provenance=provenance,
+                assignments=assignments,
+                agent_reports=ordered_agent_reports,
+                storage_root=revision_root,
+                storage_revision=revision,
+                storage_transaction_id=transaction_id,
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError("confirmed-review source-to-report replay failed") from exc
 
     context_bindings = [
         {
@@ -393,6 +565,9 @@ def product_payload_commitments(
     execution_bindings: list[object] = [
         record.model_dump(mode="json") for record in execution_records
     ]
+    execution_bindings.extend(
+        agent_report.model_dump(mode="json") for agent_report in agent_reports
+    )
     execution_bindings.extend(item.model_dump(mode="json") for item in report.tool_results)
     return (
         sha256_bytes(payloads["input.json"]),
@@ -459,6 +634,38 @@ def required_inventory_sha256(
     return canonical_domain_sha256(REQUIRED_INVENTORY_DOMAIN, required)
 
 
+def _validate_inventory_contract(entry: PayloadInventoryEntryV1) -> None:
+    logical_name = entry.logical_name
+    terminal_only = _TERMINAL_ONLY_ARTIFACT_TABLE.get(logical_name)
+    if terminal_only is None:
+        try:
+            media_type, serialization, schema, _origin = artifact_table_entry(
+                logical_name,
+                (entry.artifact_schema_version if logical_name == "final_report.json" else None),
+            )
+            expected_tuple = (media_type, serialization, schema)
+        except CanonicalStorageError as exc:
+            raise CanonicalStorageError(
+                "terminal inventory logical artifact is not admitted"
+            ) from exc
+    else:
+        expected_tuple = terminal_only
+    actual_tuple = (
+        entry.media_type,
+        entry.serialization,
+        entry.artifact_schema_version,
+    )
+    legacy_lifecycle_tuple = (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        "poker-lifecycle-audit-list-artifact-v1",
+    )
+    if actual_tuple != expected_tuple and not (
+        logical_name == "lifecycle_audit.json" and actual_tuple == legacy_lifecycle_tuple
+    ):
+        raise CanonicalStorageError("terminal inventory media/schema/serialization mismatch")
+
+
 def verify_payload_inventory(
     inventory: Sequence[PayloadInventoryEntryV1],
     payloads: Mapping[str, bytes],
@@ -470,6 +677,8 @@ def verify_payload_inventory(
     if set(payloads) != expected:
         raise CanonicalStorageError("terminal payload inventory membership mismatch")
     for entry in entries:
+        if not allow_opaque:
+            _validate_inventory_contract(entry)
         data = payloads[entry.logical_name]
         if (
             not isinstance(data, bytes)
@@ -528,6 +737,9 @@ def _parse_normalization_result(data: bytes) -> NormalizationResultV1:
 
 def _validate_json_value(logical_name: str, data: bytes) -> None:
     single_models: dict[str, type[BaseModel]] = {
+        "confirmed_review_candidate.json": ReviewIntakeCandidateV1,
+        "confirmed_review_confirmation.json": ReviewIntakeConfirmationV1,
+        "confirmed_review_provenance.json": ConfirmedReviewProvenanceV1,
         "input.json": CaseInput,
         "normalized_case.json": CaseInput,
         "final_report.json": FinalReport,

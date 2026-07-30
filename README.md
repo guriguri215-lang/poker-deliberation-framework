@@ -16,6 +16,11 @@ deterministic exact-evidence scoringを使うoffline integrated evaluation harne
 network、provider、external solver、runtime bridge、product run storageを起動・変更しません。
 詳細は[`docs/evaluation-contract.md`](docs/evaluation-contract.md)を参照してください。
 
+P3-030Aは、caller-suppliedの完全なhand/range候補をsource/candidate hashで明示確認した場合だけ、
+固定LocalProviderと限定toolを使うoffline adjudicationへ接続します。一般自然言語parser、
+site parser、外部model/solverではなく、入力claimは確認後も`USER_CLAIM`です。詳細は
+[`docs/confirmed-review-intake.md`](docs/confirmed-review-intake.md)を参照してください。
+
 P3-015Aの`hand_pot_ledger`は、明示した`generic_nlhe_cash_no_rake_v1`だけを対象に、
 caller-declared chip unitの整数ledger、uncalled return、side pot、fold eligibility、
 full-raise reopeningを独立`Fraction` oracle付きで計算します。rake、straddle、site profile、
@@ -61,7 +66,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 7.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 9.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
@@ -133,6 +138,9 @@ poker-deliberate audit-claim "この主張は検証条件なしでは真偽不�
 poker-deliberate calculate pot_odds --analysis-scope retrospective --input examples\pot_odds_input.json
 poker-deliberate calculate icm --analysis-scope retrospective --input examples\icm_input.json
 poker-deliberate calculate fixed_strategy_best_response --analysis-scope retrospective --input examples\best_response_input.json
+poker-deliberate prepare-review-intake --source hand.txt --candidate candidate.json --output preparation.json --source-id review-1
+poker-deliberate confirm-review-intake --preparation preparation.json --output confirmation.json --run-id RUN_ID --authority-id local-user --confirmation-id CONFIRMATION_ID --idempotency-key IDEMPOTENCY_KEY --expected-source-sha256 SOURCE_SHA256 --expected-candidate-sha256 CANDIDATE_SHA256
+poker-deliberate review-confirmed-intake --source hand.txt --preparation preparation.json --confirmation confirmation.json --format summary
 poker-deliberate show RUN_ID
 poker-deliberate show RUN_ID --format summary
 poker-deliberate resume RUN_ID --reject APPROVAL_ID --reason "外部実行を許可しない"
@@ -370,6 +378,7 @@ ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実�
 
 - [Architecture](docs/architecture.md)
 - [Capabilities](docs/capabilities.md)
+- [Confirmed review intake](docs/confirmed-review-intake.md)
 - [Agent protocol](docs/agent-protocol.md)
 - [Calculation policy](docs/calculation-policy.md)
 - [Source policy](docs/source-policy.md)

@@ -61,7 +61,7 @@ class CorruptRoutingService(RoutingService):
         return outcome.model_copy(update={"attempt_id": "phase-forged"})
 
 
-def test_malformed_phase_outcome_fails_before_assignment_materialization(tmp_path: Path) -> None:
+def test_malformed_routing_preserves_pre_routing_assignment_ledger(tmp_path: Path) -> None:
     run_id = "run-corrupt-routing"
     orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
@@ -72,8 +72,17 @@ def test_malformed_phase_outcome_fails_before_assignment_materialization(tmp_pat
             CaseInput(kind="strategy", raw_text="review", analysis_scope="retrospective"),
             run_id=run_id,
         )
-    with pytest.raises(FileNotFoundError):
-        orchestrator.store.read_json(run_id, "assignments.json")
+    assignments = [
+        AgentAssignment.model_validate(item)
+        for item in orchestrator.store.read_json(run_id, "assignments.json")
+    ]
+    assert [assignment.agent_role for assignment in assignments] == [
+        "strategy-analyst",
+        "math-auditor",
+        "skeptic",
+        "adjudicator",
+    ]
+    assert all(not assignment.context_keys for assignment in assignments)
     assert not any(
         payload.inventory.logical_name.startswith("agent_reports/")
         for payload in orchestrator.store.verified_payloads(run_id)

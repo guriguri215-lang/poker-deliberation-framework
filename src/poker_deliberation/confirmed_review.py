@@ -1296,7 +1296,19 @@ def _validate_confirmed_report_projection(
         item
         for item in report.data_quality
         if item == "strict budget failure: provider_output_exceeded"
-        or (item.startswith("strict usage settlement failed: ") and runtime_data_quality(item))
+        or (
+            item
+            in {
+                "strict usage settlement failed: runtime_exceeded",
+                "strict usage settlement failed: clock_rollback",
+            }
+            and runtime_data_quality(item)
+        )
+    ]
+    provider_output_strict_usage_terminal_codes = [
+        item.removeprefix("strict usage settlement failed: ")
+        for item in provider_output_terminal_evidence
+        if item.startswith("strict usage settlement failed: ")
     ]
     provider_output_additional_strict_budget_codes = [
         item.removeprefix("strict budget failure: ")
@@ -1339,6 +1351,12 @@ def _validate_confirmed_report_projection(
                             BudgetFailureCode.CLOCK_ROLLBACK.value,
                         }
                     )
+                )
+                or (
+                    provider_output_strict_usage_terminal_codes
+                    and provider_output_additional_strict_budget_codes
+                    and provider_output_strict_usage_terminal_codes[0]
+                    != provider_output_additional_strict_budget_codes[0]
                 )
             )
         )

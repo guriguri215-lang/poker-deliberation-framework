@@ -840,7 +840,6 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
         "strict budget failure: provider_output_exceeded",
         "strict usage settlement failed: runtime_exceeded",
         "strict usage settlement failed: clock_rollback",
-        "strict usage settlement failed: usage_malformed",
     )
     for terminal_source in provider_output_terminal_sources:
         exact_report = staged_failure_report(
@@ -864,6 +863,32 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
             **storage_authority,
         )
         assert provenance.terminal_status == "failed_with_limitations"
+
+    impossible_usage_terminal_report = staged_failure_report(
+        canonical_provider_output,
+        records=[provider_output_record],
+        analysis_sections=report.analysis_sections[:1],
+    )
+    exact_data_quality = [
+        *impossible_usage_terminal_report.data_quality,
+        "strict usage settlement failed: usage_malformed",
+    ]
+    impossible_usage_terminal_report = impossible_usage_terminal_report.model_copy(
+        update={
+            "data_quality": exact_data_quality,
+            "limitations": [*exact_data_quality, report.limitations[-1]],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as impossible_usage_terminal:
+        build_confirmed_review_provenance(
+            admission,
+            impossible_usage_terminal_report,
+            assignments=assignments,
+            agent_reports=[provider_output_agent_report],
+            **storage_authority,
+        )
+    assert impossible_usage_terminal.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
     for conflicting_terminal_sources in (
         provider_output_terminal_sources[:2],
@@ -1036,6 +1061,83 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
             **storage_authority,
         )
         assert followup_provenance.terminal_status == "failed_with_limitations"
+
+    for strict_usage_terminal, followup_runtime_stage, followup_budget in (
+        (
+            "strict usage settlement failed: runtime_exceeded",
+            "maximum runtime exceeded during final synthesis",
+            "strict budget failure: runtime_exceeded",
+        ),
+        (
+            "strict usage settlement failed: clock_rollback",
+            "maximum runtime exceeded during final artifact writes",
+            "strict budget failure: clock_rollback",
+        ),
+    ):
+        matching_followup_report = staged_failure_report(
+            canonical_provider_output,
+            records=[provider_output_record],
+            analysis_sections=report.analysis_sections[:1],
+        )
+        exact_data_quality = [
+            *matching_followup_report.data_quality,
+            strict_usage_terminal,
+            followup_runtime_stage,
+            followup_budget,
+        ]
+        matching_followup_report = matching_followup_report.model_copy(
+            update={
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+        matching_followup_provenance = build_confirmed_review_provenance(
+            admission,
+            matching_followup_report,
+            assignments=assignments,
+            agent_reports=[provider_output_agent_report],
+            **storage_authority,
+        )
+        assert matching_followup_provenance.terminal_status == "failed_with_limitations"
+
+    for strict_usage_terminal, mismatched_followup_budget in (
+        (
+            "strict usage settlement failed: runtime_exceeded",
+            "strict budget failure: clock_rollback",
+        ),
+        (
+            "strict usage settlement failed: clock_rollback",
+            "strict budget failure: runtime_exceeded",
+        ),
+    ):
+        mismatched_followup_report = staged_failure_report(
+            canonical_provider_output,
+            records=[provider_output_record],
+            analysis_sections=report.analysis_sections[:1],
+        )
+        exact_data_quality = [
+            *mismatched_followup_report.data_quality,
+            strict_usage_terminal,
+            "maximum runtime exceeded during final synthesis",
+            mismatched_followup_budget,
+        ]
+        mismatched_followup_report = mismatched_followup_report.model_copy(
+            update={
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as mismatched_followup:
+            build_confirmed_review_provenance(
+                admission,
+                mismatched_followup_report,
+                assignments=assignments,
+                agent_reports=[provider_output_agent_report],
+                **storage_authority,
+            )
+        assert mismatched_followup.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
     continued_after_failure = forged_failure_report(
         status=AgentExecutionStatus.FAILED,

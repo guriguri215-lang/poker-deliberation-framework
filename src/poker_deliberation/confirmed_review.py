@@ -1298,6 +1298,21 @@ def _validate_confirmed_report_projection(
         if item == "strict budget failure: provider_output_exceeded"
         or (item.startswith("strict usage settlement failed: ") and runtime_data_quality(item))
     ]
+    provider_output_additional_strict_budget_codes = [
+        item.removeprefix("strict budget failure: ")
+        for item in report.data_quality
+        if item.startswith("strict budget failure: ")
+        and item != "strict budget failure: provider_output_exceeded"
+    ]
+    provider_output_followup_runtime_stage_present = any(
+        item
+        in {
+            "maximum runtime exceeded during final synthesis",
+            "maximum runtime exceeded during final artifact writes",
+        }
+        and runtime_stage_consistent(item)
+        for item in report.data_quality
+    )
     if (
         report.data_quality != unique_data_quality
         or report.limitations != unique_limitations
@@ -1309,6 +1324,19 @@ def _validate_confirmed_report_projection(
         )
         or any(record.status.value != "completed" for record in report.agent_execution_records[:-1])
         or (provider_output_record_present and len(provider_output_terminal_evidence) != 1)
+        or (
+            provider_output_record_present
+            and provider_output_additional_strict_budget_codes
+            and (
+                len(provider_output_additional_strict_budget_codes) != 1
+                or provider_output_additional_strict_budget_codes[0]
+                not in {
+                    BudgetFailureCode.RUNTIME_EXCEEDED.value,
+                    BudgetFailureCode.CLOCK_ROLLBACK.value,
+                }
+                or not provider_output_followup_runtime_stage_present
+            )
+        )
         or sum(item in primary_runtime_stages for item in report.data_quality) > 1
         or report.limitations != expected_limitations
         or (

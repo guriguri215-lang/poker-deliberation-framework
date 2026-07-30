@@ -573,6 +573,26 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             ).encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            (
+                "昨日の完了ハンドの録画では相手が対戦中で "
+                "I am midway through a hand. Should I call?\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "昨日の完了ハンドの録画では相手が対戦中で "
+                "I have 10 seconds to act. Should I call?\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "昨日の完了ハンドの録画では相手が対戦中で It is my action now. Should I call?\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(

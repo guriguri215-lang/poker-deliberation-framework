@@ -140,6 +140,18 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            "\u0455\u0435\u0441\u0433\u0435\u0442=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            ("\u0440\u0430\u0455\u0455\u051d\u043e\u0433\u0501=ABCDEFGHIJKLMNOP123456\n").encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
+            "\u0442\u043e\u043a\u0435\u043f=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             b"I am mid-hand at the moment. What should I do?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
@@ -392,6 +404,20 @@ def test_source_contract_fails_closed_with_stable_codes(
 @pytest.mark.parametrize(
     "source",
     [
+        "player\u03b1=Alexander123\n",
+        "\u0442\u0435\u0441\u0442Var=Example123\n",
+    ],
+)
+def test_nonsecret_mixed_script_assignments_are_not_misclassified(source: str) -> None:
+    result = _prepare_source(source.encode())
+    assert result.status == "ready"
+    assert result.candidate is not None
+    assert result.diagnostics == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
         (
             b"Currently, poker theory discusses blockers. "
             b"For the completed hand from yesterday, should I call or fold?\n"
@@ -504,6 +530,22 @@ def test_source_contract_fails_closed_with_stable_codes(
             b'The expression "the event is not done yet" is terminology, '
             b'and "call" is a poker term.\n'
         ),
+        (
+            b'The example sentence "The event is not done yet. Should I call?" '
+            b"illustrates present tense.\n"
+        ),
+        (
+            "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+            "\u30ea\u30d7\u30ec\u30a4\u753b\u9762\u3067\u306f"
+            "\u6b8b\u308a\u6642\u9593\u306f10\u79d2\u3067\u3059\u3002"
+            "\u30b3\u30fc\u30eb\u3059\u3079\u304d\u3060\u3063\u305f\uff1f\n"
+        ).encode(),
+        (
+            "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+            "\u753b\u9762\u3067\u306f\u307e\u3060"
+            "\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+            "\u30b3\u30fc\u30eb\u3059\u3079\u304d\u3060\u3063\u305f\uff1f\n"
+        ).encode(),
     ],
 )
 def test_explicit_retrospective_source_is_not_misclassified_as_live(source: bytes) -> None:
@@ -554,11 +596,28 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "We still have chips",
         "I have not been knocked out yet",
         "We are in the middle of a hand",
+        "We are in a hand at the moment",
+        "We are halfway through a hand",
+        "I am partway through a hand",
+        "We are playing this hand at the moment",
         "The tournament is still on",
         "We are currently heads-up in the tournament",
+        "We are heads-up now",
+        "I am heads-up at the moment",
+        "We are on the bubble",
+        "I am tanking",
         "Cards are being dealt",
         "There are 10 seconds left to act",
         "The timer says 10 seconds",
+        "The action clock shows 10 seconds",
+        "The clock reads 10 seconds",
+        "Only 10 seconds remain to act",
+        "I need to act within 10 seconds",
+        "The action has come to me",
+        "My turn is now",
+        "\u30d7\u30ec\u30a4\u4e2d\u3067\u3059",
+        "\u5353\u306b\u3064\u3044\u3066\u3044\u307e\u3059",
+        "10\u79d2\u3057\u304b\u306a\u3044",
         "まだプレイ中です",
         "まだ卓にいます",
         "ハンドの途中です",
@@ -912,6 +971,22 @@ def test_secret_shape_cannot_be_split_across_adjacent_claims(prefix: str) -> Non
         (
             b"For retrospective review of yesterday's completed hand, "
             b'the currently broadcasting caption says "The action is on me. Should I call?"\n'
+        ),
+        (
+            b"Yesterday's hand ended. The real-time feed transcript says "
+            b'"The action is on me. Should I call?"\n'
+        ),
+        (
+            b"Yesterday's hand ended. The active livestream caption says "
+            b'"The action is on me. Should I call?"\n'
+        ),
+        (
+            b"Yesterday's hand ended. The in-progress feed caption says "
+            b'"The action is on me. Should I call?"\n'
+        ),
+        (
+            b"Yesterday's hand ended. The streaming feed caption says "
+            b'"The action is on me. Should I call?"\n'
         ),
     ],
 )

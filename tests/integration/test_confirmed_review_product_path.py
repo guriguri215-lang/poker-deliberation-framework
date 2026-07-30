@@ -10,10 +10,14 @@ import poker_deliberation.orchestrator as orchestrator_module
 from poker_deliberation.agents import select_roles
 from poker_deliberation.config import BudgetConfig
 from poker_deliberation.confirmed_review import (
+    _CONFIRMED_RUNTIME_DATA_QUALITY,
+    PROVENANCE_CANONICALIZATION_ID,
     ConfirmedReviewError,
+    _domain_sha256,
     admit_confirmed_review,
     build_confirmed_review_provenance,
     create_review_confirmation,
+    provenance_sha256,
 )
 from poker_deliberation.confirmed_review_models import (
     ConfirmedReviewDiagnosticCode,
@@ -627,6 +631,92 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
         )
     assert runtime_stage.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    failed_conclusion = forged_failure_report(
+        status=AgentExecutionStatus.FAILED,
+        error="context envelope has expired",
+        data_quality=["provider intake context rejected: context envelope has expired"],
+    ).conclusion
+
+    def staged_failure_report(
+        message: str,
+        *,
+        records=report.agent_execution_records,
+        tool_results=report.tool_results,
+        analysis_sections=report.analysis_sections,
+        reproduction_steps=report.reproduction_steps,
+    ) -> FinalReport:
+        exact_data_quality = [*report.data_quality, message]
+        return report.model_copy(
+            update={
+                "run_status": "failed_with_limitations",
+                "conclusion": failed_conclusion,
+                "agent_execution_records": list(records),
+                "tool_results": list(tool_results),
+                "analysis_sections": list(analysis_sections),
+                "reproduction_steps": list(reproduction_steps),
+                "data_quality": exact_data_quality,
+                "limitations": [*exact_data_quality, report.limitations[-1]],
+            },
+            deep=True,
+        )
+
+    for legitimate_stage, records, sections, exact_agent_reports in (
+        (
+            "provider analysis skipped because round budget is zero",
+            [],
+            [],
+            [],
+        ),
+        (
+            "maximum runtime reached before provider analysis",
+            [],
+            [],
+            [],
+        ),
+        (
+            "maximum runtime exceeded after provider analysis",
+            report.agent_execution_records,
+            report.analysis_sections,
+            agent_reports,
+        ),
+    ):
+        provenance = build_confirmed_review_provenance(
+            admission,
+            staged_failure_report(
+                legitimate_stage,
+                records=records,
+                analysis_sections=sections,
+            ),
+            assignments=assignments,
+            agent_reports=exact_agent_reports,
+            **storage_authority,
+        )
+        assert provenance.terminal_status == "failed_with_limitations"
+
+    impossible_after_tool = staged_failure_report(
+        "maximum runtime exceeded after tool execution",
+        tool_results=[],
+        reproduction_steps=[],
+    )
+    with pytest.raises(ConfirmedReviewError) as missing_tool_artifacts:
+        build_confirmed_review_provenance(
+            admission,
+            impossible_after_tool,
+            **provenance_authority,
+        )
+    assert missing_tool_artifacts.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    impossible_external_budget = staged_failure_report(
+        "strict budget failure: external_cost_exceeded"
+    )
+    with pytest.raises(ConfirmedReviewError) as external_budget:
+        build_confirmed_review_provenance(
+            admission,
+            impossible_external_budget,
+            **provenance_authority,
+        )
+    assert external_budget.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
 
 def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> None:
     admission = confirmed_admission(
@@ -959,6 +1049,11 @@ def test_tiny_runtime_confirmed_review_persists_but_never_returns_unverified_fai
             "revision": read.revision,
             "transaction_id": read.transaction_id,
         }
+        provenance_authority = {
+            "storage_root": authority["revision_root"],
+            "storage_revision": authority["revision"],
+            "storage_transaction_id": authority["transaction_id"],
+        }
         commitments = product_payload_commitments(
             payloads,
             run_id=run_id,
@@ -987,6 +1082,56 @@ def test_tiny_runtime_confirmed_review_persists_but_never_returns_unverified_fai
             AgentAssignment.model_validate(item)
             for item in json.loads(read.payload_bytes("assignments.json"))
         ]
+        forged_data_quality = [
+            item
+            for item in durable_report.data_quality
+            if not (
+                item.startswith(("strict usage settlement failed: ", "strict budget failure: "))
+                or item in _CONFIRMED_RUNTIME_DATA_QUALITY
+            )
+        ]
+        forged_report = durable_report.model_copy(
+            update={
+                "data_quality": forged_data_quality,
+                "limitations": [*forged_data_quality, durable_report.limitations[-1]],
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as missing_failure_evidence:
+            build_confirmed_review_provenance(
+                replay_admission,
+                forged_report,
+                assignments=assignments,
+                agent_reports=[],
+                **provenance_authority,
+            )
+        assert missing_failure_evidence.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+        provisional_forged_provenance = durable_provenance.model_copy(
+            update={
+                "final_report_sha256": _domain_sha256(
+                    PROVENANCE_CANONICALIZATION_ID + ":final-report",
+                    forged_report.model_dump(mode="json"),
+                ),
+                "provenance_sha256": "0" * 64,
+            },
+            deep=True,
+        )
+        forged_provenance = provisional_forged_provenance.model_copy(
+            update={"provenance_sha256": provenance_sha256(provisional_forged_provenance)}
+        )
+        forged_payloads = {
+            **payloads,
+            "final_report.json": canonical_json_bytes(forged_report),
+            "confirmed_review_provenance.json": canonical_json_bytes(forged_provenance),
+        }
+        with pytest.raises(CanonicalStorageError, match="source-to-report replay"):
+            product_payload_commitments(
+                forged_payloads,
+                run_id=run_id,
+                status="failed",
+                **authority,
+            )
         with pytest.raises(ConfirmedReviewError) as missing_authority:
             build_confirmed_review_provenance(
                 replay_admission,

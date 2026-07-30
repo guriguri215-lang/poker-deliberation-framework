@@ -62,11 +62,15 @@ _SECRET_CONFUSABLE_TRANSLATION = str.maketrans(
         "\u043a": "k",  # Cyrillic ka
         "\u043e": "o",  # Cyrillic o
         "\u0440": "p",  # Cyrillic er
+        "\u0433": "r",  # Cyrillic ge
         "\u0441": "c",  # Cyrillic es
         "\u0442": "t",  # Cyrillic te
         "\u0445": "x",  # Cyrillic ha
         "\u0443": "y",  # Cyrillic u
         "\u0455": "s",  # Cyrillic dze
+        "\u043f": "n",  # Cyrillic pe
+        "\u0501": "d",  # Cyrillic komi de
+        "\u051d": "w",  # Cyrillic we
         "\u03b1": "a",  # Greek alpha
         "\u03b5": "e",  # Greek epsilon
         "\u03b9": "i",  # Greek iota
@@ -77,13 +81,6 @@ _SECRET_CONFUSABLE_TRANSLATION = str.maketrans(
         "\u03c7": "x",  # Greek chi
         "\u03c5": "y",  # Greek upsilon
     }
-)
-_MIXED_SCRIPT_SECRET_ASSIGNMENT = re.compile(
-    r"(?<![\w.-])"
-    r"(?=[^\s:=]{2,64}\s*[:=])"
-    r"(?=[^\s:=]*[A-Za-z])"
-    r"(?=[^\s:=]*[\u0370-\u052f])"
-    r"[^\s:=]{2,64}\s*[:=]\s*[^\s,;]{8,}",
 )
 
 _REAL_TIME_ASSISTANCE = re.compile(
@@ -187,8 +184,8 @@ _ARCHIVED_CONTEXT = re.compile(
     re.IGNORECASE,
 )
 _LIVE_ATTRIBUTION = re.compile(
-    r"\b(?:current(?:ly)?|live|ongoing|right\s+now|today(?:'s)?|"
-    r"currently\s+broadcasting)\b"
+    r"\b(?:current(?:ly)?|live|ongoing|active|in[- ]progress|real[- ]time|"
+    r"streaming|right\s+now|today(?:'s)?|currently\s+broadcasting)\b"
     r"[^.!?\r\n\"'“”]{0,64}"
     r"\b(?:video|feed|stream|livestream|broadcast|broadcasting|subtitle|caption|"
     r"transcript|recording)\b|"
@@ -205,6 +202,10 @@ _INERT_LANGUAGE_EXAMPLE = re.compile(
     r"(?:the\s+)?(?:phrase|sentence|expression)\s+"
     r"[\"'][^\"'\r\n]{1,256}[\"']\s+is\s+"
     r"(?:a\s+)?(?:term|terminology|language\s+example)\b|"
+    r"(?:the\s+)?(?:example\s+)?(?:phrase|sentence|expression)\s+"
+    r"[\"'][^\"'\r\n]{1,256}[\"']\s+"
+    r"(?:illustrates?|demonstrates?)\s+(?:the\s+)?"
+    r"(?:present[- ]tense|grammar|language)\b|"
     r"[「『][^」』\r\n]{1,128}[」』](?:は|が)"
     r"[^.!?\r\n\u3002\uff01\uff1f]{0,48}(?:文法例|用語)(?:です|である)?"
     r")[^.!?\r\n\u3002\uff01\uff1f]{0,96}(?=$|[.!?\r\n\u3002\uff01\uff1f]))",
@@ -365,9 +366,18 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"i(?:['\u2019]m| am)\s+mid[- ]hand"
     r"(?:\s+(?:right\s+now|at\s+the\s+moment))?|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
+    r"(?:in\s+(?:a|the)\s+hand|(?:half|part)way\s+through\s+(?:a|the)\s+hand)"
+    r"(?:\s+(?:right\s+now|at\s+the\s+moment))?|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
+    r"playing\s+(?:this|the)\s+hand\s+(?:right\s+now|at\s+the\s+moment)|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
     r"in\s+the\s+middle\s+of\s+(?:a|the)\s+hand|"
-    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+currently\s+"
-    r"heads[- ]up(?:\s+in\s+(?:the|this)\s+(?:event|game|tourney|tournament))?|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+"
+    r"(?:currently\s+)?heads[- ]up"
+    r"(?:\s+(?:now|right\s+now|at\s+the\s+moment)|"
+    r"\s+in\s+(?:the|this)\s+(?:event|game|tourney|tournament))?|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+on\s+the\s+bubble|"
+    r"i(?:['\u2019]m| am)\s+tanking|"
     r"i(?:['\u2019]m| am)\s+facing\s+(?:a\s+)?bet\s+"
     r"(?:right\s+now|at\s+this\s+moment)|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+(?:in|alive)|"
@@ -387,8 +397,10 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"(?:contest|event|game|match|mtt|sng|tourney|tournament)|"
     r"playing|competing|participating)|"
     r"(?:the\s+)?action\s+has\s+reached\s+me|"
+    r"(?:the\s+)?action\s+has\s+come\s+to\s+me|"
     r"(?:the\s+)?action\s+is\s+back\s+on\s+me|"
     r"my\s+turn\s+has\s+come|"
+    r"my\s+turn\s+is\s+(?:now|current)|"
     r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+not\s+out\s+of\s+"
     r"(?:the\s+)?(?:mtt|sng|event|tourney|tournament)(?:\s+yet)?|"
     r"(?:my\s+)?(?:time\s*bank|clock|decision\s+(?:clock|timer)|"
@@ -401,7 +413,14 @@ _ACTIVE_PLAYER_STATUS = re.compile(
     r"(?:there\s+(?:are|is)\s+)?(?:\d+|one|two|three|four|five|six|seven|"
     r"eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|"
     r"forty|fifty|sixty)\s+seconds?\s+left\s+to\s+(?:act|decide)|"
-    r"(?:the\s+)?(?:decision\s+|action\s+)?(?:clock|timer)\s+says\s+"
+    r"i\s+need\s+to\s+(?:act|decide)\s+within\s+"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    r"thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)\s+seconds?|"
+    r"only\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|"
+    r"twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)"
+    r"\s+seconds?\s+remain(?:s)?(?:\s+to\s+(?:act|decide))?|"
+    r"(?:the\s+)?(?:decision\s+|action\s+)?(?:clock|timer)\s+"
+    r"(?:says|shows|reads)\s+"
     r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
     r"thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty)\s+seconds?"
     r")\b",
@@ -447,6 +466,9 @@ _ACTIVE_JAPANESE_PLAYER_STATUS = re.compile(
     r"(?:\u3067\u3059|[^.!?\r\n\u3002\uff01\uff1f]{0,64}"
     r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))|"
     r"\u6b8b\u308a\u6642\u9593(?:\u306f|\u304c)?\s*\d+\s*\u79d2(?:\u3067\u3059)?|"
+    r"\u30d7\u30ec\u30a4\u4e2d(?:\u3067\u3059|\u3067\u3059\u3002)?|"
+    r"\u5353\u306b\u3064\u3044\u3066\u3044\u307e\u3059|"
+    r"\d+\s*\u79d2\u3057\u304b\u306a\u3044|"
     r"\u307e\u3060(?:\u30d7\u30ec\u30a4\u4e2d|"
     r"(?:\u3053\u306e|\u305d\u306e)?\u5353\u306b\u3044(?:\u307e\u3059|\u308b))|"
     r"\u30cf\u30f3\u30c9\u306e\u9014\u4e2d(?:\u3067\u3059)?|"
@@ -469,6 +491,20 @@ _ACTIVE_JAPANESE_TIMER_PREDICATE = re.compile(
     r"\u6b8b\u308a\s*\d+\s*\u79d2)",
 )
 _SENTENCE_BOUNDARY = re.compile(r"[.!?\r\n\u3002\uff01\uff1f]+")
+_JAPANESE_RETROSPECTIVE_CLAUSE = re.compile(
+    r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])\s*"
+    r"(?![^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:\u3057\u304b\u3057|\u3060\u304c|\u3067\u3082|\u4e00\u65b9|"
+    r"\u73fe\u5728|\u4eca(?:\u306f|\u3082)))"
+    r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:\u6628\u65e5|\u904e\u53bb|\u5b8c\u4e86|\u7d42\u4e86))"
+    r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:\u30ea\u30d7\u30ec\u30a4|\u9332\u753b|\u753b\u9762|"
+    r"\u30cf\u30f3\u30c9\u5c65\u6b74))"
+    r"[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?=$|[.!?\r\n\u3002\uff01\uff1f]))",
+    re.IGNORECASE,
+)
 
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
@@ -613,8 +649,6 @@ def _secret_probe(value: str) -> str:
 
 
 def _contains_secret_shape(value: str) -> bool:
-    if _MIXED_SCRIPT_SECRET_ASSIGNMENT.search(unicodedata.normalize("NFKC", value)):
-        return True
     probes = (_security_probe(value), _secret_probe(value))
     if any(pattern.search(probe) is not None for probe in probes for pattern in _SECRET_PATTERNS):
         return True
@@ -882,6 +916,7 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
         cleaned = _strip_archived_quotations(cleaned)
         cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
         cleaned = _INERT_LANGUAGE_EXAMPLE.sub("", cleaned)
+        cleaned = _JAPANESE_RETROSPECTIVE_CLAUSE.sub("", cleaned)
         cleaned = _HISTORICAL_STATUS_CLAUSE.sub("", cleaned)
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
         cleaned_texts.append(cleaned)

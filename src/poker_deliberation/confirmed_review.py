@@ -1072,58 +1072,84 @@ def _validate_confirmed_report_projection(
         },
     }
     actual_tool_names = [result.tool_name for result in report.tool_results]
+    pre_provider_tool_names = (
+        ["hand_validator"] if expected_tool_names[:1] == ["hand_validator"] else []
+    )
+    pre_requested_tool_names = [
+        tool_name
+        for tool_name in expected_tool_names
+        if tool_name in {"hand_validator", "range_validate"}
+    ]
+    all_records_completed = len(report.agent_execution_records) == expected_agent_count and all(
+        record.status.value == "completed" for record in report.agent_execution_records
+    )
+    provider_failure_prefix_is_consistent = (
+        0 < len(report.agent_execution_records) <= expected_agent_count
+        and all(
+            record.status.value == "completed" for record in report.agent_execution_records[:-1]
+        )
+        and report.agent_execution_records[-1].status.value != "completed"
+        and actual_tool_names == pre_provider_tool_names
+    )
 
     def runtime_stage_consistent(item: str) -> bool:
         record_count = len(report.agent_execution_records)
         if item == "strict runtime refused before hand validation":
             return record_count == 0 and not actual_tool_names
         if item == "provider analysis skipped because round budget is zero":
-            return record_count == 0
+            return record_count == 0 and actual_tool_names == pre_provider_tool_names
         if item in {
             "maximum runtime reached before provider analysis",
             "maximum runtime reached during context build",
             "maximum runtime reached during provider preflight",
         }:
-            return record_count < expected_agent_count
+            return (
+                record_count < expected_agent_count
+                and all(
+                    record.status.value == "completed" for record in report.agent_execution_records
+                )
+                and actual_tool_names == pre_provider_tool_names
+            )
         if item in {
             "maximum runtime exceeded after provider analysis",
             "strict runtime refused before versioned range validation",
-            "strict runtime refused before requested tool execution",
-            "maximum runtime exceeded after tool execution",
         }:
-            return record_count == expected_agent_count
+            return all_records_completed and actual_tool_names == pre_provider_tool_names
+        if item == "strict runtime refused before requested tool execution":
+            return all_records_completed and actual_tool_names == pre_requested_tool_names
+        if item == "maximum runtime exceeded after tool execution":
+            return all_records_completed and actual_tool_names == list(expected_tool_names)
         if item == "confirmed terminal publication refused with less than 0.25 seconds remaining":
-            return record_count == expected_agent_count and actual_tool_names == list(
-                expected_tool_names
-            )
+            return all_records_completed and actual_tool_names == list(expected_tool_names)
         if item in {
             "maximum runtime exceeded during final synthesis",
             "maximum runtime exceeded during final artifact writes",
         }:
+            prior_runtime_stage = any(
+                other != item
+                and other
+                in {
+                    "strict runtime refused before hand validation",
+                    "provider analysis skipped because round budget is zero",
+                    "maximum runtime reached before provider analysis",
+                    "maximum runtime reached during context build",
+                    "maximum runtime reached during provider preflight",
+                    "maximum runtime exceeded after provider analysis",
+                    "strict runtime refused before versioned range validation",
+                    "strict runtime refused before requested tool execution",
+                    "maximum runtime exceeded after tool execution",
+                    (
+                        "confirmed terminal publication refused with less than "
+                        "0.25 seconds remaining"
+                    ),
+                }
+                and runtime_stage_consistent(other)
+                for other in report.data_quality
+            )
             return (
-                (
-                    record_count == expected_agent_count
-                    and actual_tool_names == list(expected_tool_names)
-                )
-                or any(
-                    record.status.value != "completed" for record in report.agent_execution_records
-                )
-                or any(
-                    other != item
-                    and other
-                    in {
-                        "strict runtime refused before hand validation",
-                        "provider analysis skipped because round budget is zero",
-                        "maximum runtime reached before provider analysis",
-                        "maximum runtime reached during context build",
-                        "maximum runtime reached during provider preflight",
-                        "maximum runtime exceeded after provider analysis",
-                        "strict runtime refused before versioned range validation",
-                        "strict runtime refused before requested tool execution",
-                        "maximum runtime exceeded after tool execution",
-                    }
-                    for other in report.data_quality
-                )
+                (all_records_completed and actual_tool_names == list(expected_tool_names))
+                or provider_failure_prefix_is_consistent
+                or prior_runtime_stage
                 or any(
                     other.startswith(
                         ("strict usage settlement failed: ", "strict budget failure: ")
@@ -1203,8 +1229,17 @@ def _validate_confirmed_report_projection(
         if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
             return runtime_stage_consistent(item)
         for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
-            if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
-                return True
+            if item.startswith(prefix):
+                code = item.removeprefix(prefix)
+                return code in budget_codes and code not in {
+                    BudgetFailureCode.INVALID_POLICY.value,
+                    BudgetFailureCode.UNSUPPORTED_CONCURRENCY.value,
+                    BudgetFailureCode.UNSUPPORTED_LEGACY_FIELD.value,
+                    BudgetFailureCode.EXTERNAL_EXECUTION_UNKNOWN.value,
+                    BudgetFailureCode.EXTERNAL_COST_UNKNOWN.value,
+                    BudgetFailureCode.EXTERNAL_COST_DISABLED.value,
+                    BudgetFailureCode.EXTERNAL_COST_EXCEEDED.value,
+                }
         return any(record_data_quality(record, item) for record in report.agent_execution_records)
 
     def cancellation_data_quality(item: str) -> bool:
@@ -1248,6 +1283,13 @@ def _validate_confirmed_report_projection(
         or (
             report.run_status == "completed"
             and any(runtime_data_quality(item) for item in report.data_quality)
+        )
+        or (
+            report.run_status == "failed_with_limitations"
+            and not any(
+                runtime_data_quality(item) or cancellation_data_quality(item)
+                for item in report.data_quality
+            )
         )
     ):
         _fail(

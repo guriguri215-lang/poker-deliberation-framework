@@ -1204,7 +1204,6 @@ def _validate_confirmed_report_projection(
             code = item.removeprefix(budget_prefix)
             if code in {
                 BudgetFailureCode.RUNTIME_EXCEEDED.value,
-                BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED.value,
                 BudgetFailureCode.CLOCK_ROLLBACK.value,
                 BudgetFailureCode.USAGE_MALFORMED.value,
             } and record.error in budget_error_by_code.get(code, set()):
@@ -1254,9 +1253,12 @@ def _validate_confirmed_report_projection(
                     ):
                         return False
                     final_record = report.agent_execution_records[-1]
-                    return record_data_quality(
-                        final_record,
-                        (f"provider {final_record.agent_role} output exceeded the hard byte limit"),
+                    canonical_record_data_quality = (
+                        f"provider {final_record.agent_role} output exceeded the hard byte limit"
+                    )
+                    return (
+                        canonical_record_data_quality in report.data_quality
+                        and record_data_quality(final_record, canonical_record_data_quality)
                     )
                 if code in {
                     BudgetFailureCode.TOOL_INPUT_EXCEEDED.value,

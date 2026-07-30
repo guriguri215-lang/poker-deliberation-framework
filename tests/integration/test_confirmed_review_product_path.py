@@ -779,6 +779,44 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
         )
     assert local_external_record.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    provider_output_record = first.model_copy(
+        update={
+            "status": AgentExecutionStatus.REFUSED,
+            "error": "provider_output_bytes exceeded its strict budget",
+        },
+        deep=True,
+    )
+    provider_output_alias = f"provider {first.agent_role} budget refused: provider_output_exceeded"
+    provider_output_alias_report = staged_failure_report(
+        provider_output_alias,
+        records=[provider_output_record],
+        analysis_sections=report.analysis_sections[:1],
+    )
+    exact_data_quality = [
+        *provider_output_alias_report.data_quality,
+        "strict budget failure: provider_output_exceeded",
+    ]
+    provider_output_alias_report = provider_output_alias_report.model_copy(
+        update={
+            "data_quality": exact_data_quality,
+            "limitations": [*exact_data_quality, report.limitations[-1]],
+        },
+        deep=True,
+    )
+    provider_output_agent_report = agent_reports[0].model_copy(
+        update={"confidence": ConfidenceGrade.D},
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as provider_output_dq_alias:
+        build_confirmed_review_provenance(
+            admission,
+            provider_output_alias_report,
+            assignments=assignments,
+            agent_reports=[provider_output_agent_report],
+            **storage_authority,
+        )
+    assert provider_output_dq_alias.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
     continued_after_failure = forged_failure_report(
         status=AgentExecutionStatus.FAILED,
         error="context envelope has expired",

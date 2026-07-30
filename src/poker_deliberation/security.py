@@ -527,6 +527,16 @@ _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION = re.compile(
     r"\u30cf\u30f3\u30c9\u5c65\u6b74)(?:\u4e0a)?\u3067\u306f",
     re.IGNORECASE,
 )
+_JAPANESE_RETROSPECTIVE_SUBCLAUSE_BOUNDARY = re.compile(
+    r"[\u3001,;\uff1b]|"
+    r"(?:\u3057\u304b\u3057|\u4e00\u65b9\u3067?|\u3051\u308c\u3069\u3082?|"
+    r"\u3082\u306e\u306e|(?:\u3067\u3057\u305f|\u3067\u3059|\u307e\u3059|"
+    r"\u3060)\u304c)",
+)
+_JAPANESE_ARCHIVED_ATTRIBUTION_NEGATION = re.compile(
+    r"(?:\u306a\u304f|\u306a\u3044|\u3042\u308a\u307e\u305b\u3093|"
+    r"\u3054\u3056\u3044\u307e\u305b\u3093)",
+)
 
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
@@ -933,12 +943,21 @@ def _has_active_live_status(cleaned: str) -> bool:
 def _strip_japanese_retrospective_clauses(cleaned: str) -> str:
     def replacement(match: re.Match[str]) -> str:
         clause = match.group(0)
-        if (
-            _has_active_live_status(clause)
-            and _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION.search(clause) is None
-        ):
-            return clause
-        return ""
+        preserved: list[str] = []
+        for subclause in _JAPANESE_RETROSPECTIVE_SUBCLAUSE_BOUNDARY.split(clause):
+            if not _has_active_live_status(subclause):
+                continue
+            attribution = _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION.search(subclause)
+            if attribution is not None and (
+                _JAPANESE_ARCHIVED_ATTRIBUTION_NEGATION.search(
+                    subclause,
+                    attribution.end(),
+                )
+                is None
+            ):
+                continue
+            preserved.append(subclause)
+        return " ".join(preserved)
 
     return _JAPANESE_RETROSPECTIVE_CLAUSE.sub(replacement, cleaned)
 

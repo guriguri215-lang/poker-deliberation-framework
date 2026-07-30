@@ -415,6 +415,24 @@ def _prepare_source_with_payload(source: bytes, payload: object):
             ).encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u30ea\u30d7\u30ec\u30a4\u753b\u9762\u306e\u6a2a\u3067"
+                "\u30d7\u30ec\u30a4\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            (
+                "\u6628\u65e5\u306e\u5b8c\u4e86\u30cf\u30f3\u30c9\u306e"
+                "\u30ea\u30d7\u30ec\u30a4\u753b\u9762\u3068\u306f\u5225\u306b"
+                "\u5bfe\u6226\u4e2d\u3067\u3059\u3002"
+                "\u30b3\u30fc\u30eb\u3059\u3079\u304d\uff1f\n"
+            ).encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(

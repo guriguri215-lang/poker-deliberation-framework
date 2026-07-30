@@ -522,6 +522,11 @@ _JAPANESE_RETROSPECTIVE_CLAUSE = re.compile(
     r"(?=$|[.!?\r\n\u3002\uff01\uff1f]))",
     re.IGNORECASE,
 )
+_JAPANESE_ARCHIVED_STATUS_ATTRIBUTION = re.compile(
+    r"(?:\u30ea\u30d7\u30ec\u30a4|\u9332\u753b|\u753b\u9762|"
+    r"\u30cf\u30f3\u30c9\u5c65\u6b74)(?:\u4e0a)?\u3067\u306f",
+    re.IGNORECASE,
+)
 
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
     r"(?:(?:ただいま|いま|今|現在)(?:は)?.{0,24}"
@@ -925,6 +930,19 @@ def _has_active_live_status(cleaned: str) -> bool:
     return False
 
 
+def _strip_japanese_retrospective_clauses(cleaned: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        clause = match.group(0)
+        if (
+            _has_active_live_status(clause)
+            and _JAPANESE_ARCHIVED_STATUS_ATTRIBUTION.search(clause) is None
+        ):
+            return clause
+        return ""
+
+    return _JAPANESE_RETROSPECTIVE_CLAUSE.sub(replacement, cleaned)
+
+
 def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     """Return live-context, decision-request, and explicit-assistance signals."""
 
@@ -935,7 +953,7 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
         cleaned = _strip_archived_quotations(cleaned)
         cleaned = _ARCHIVED_QUOTATION.sub("", cleaned)
         cleaned = _INERT_LANGUAGE_EXAMPLE.sub("", cleaned)
-        cleaned = _JAPANESE_RETROSPECTIVE_CLAUSE.sub("", cleaned)
+        cleaned = _strip_japanese_retrospective_clauses(cleaned)
         cleaned = _HISTORICAL_STATUS_CLAUSE.sub("", cleaned)
         cleaned = _NEGATED_REAL_TIME_CONTEXT.sub("", cleaned)
         cleaned_texts.append(cleaned)

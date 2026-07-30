@@ -800,18 +800,7 @@ def _expected_tool_results(
     hand_payload = hand.model_dump(mode="json")
     expected_inputs: dict[str, dict[str, Any]] = {"hand_validator": hand_payload}
     candidate_input = admission.candidate.projection.candidate_input
-    if candidate_input.ledger_profile is not None:
-        raw_tool_inputs = admission.case.metadata.get("tool_inputs")
-        ledger_payload = (
-            raw_tool_inputs.get("hand_pot_ledger") if isinstance(raw_tool_inputs, dict) else None
-        )
-        if not isinstance(ledger_payload, dict):
-            _fail(
-                ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
-                "candidate.ledger_profile",
-            )
-        exact_ledger_payload = {**ledger_payload, "hand": hand_payload}
-        expected_inputs["hand_pot_ledger"] = exact_ledger_payload
+    combo_payload: dict[str, Any] | None = None
     if candidate_input.hand.known_ranges:
         range_definition = candidate_input.hand.known_ranges[0]
         if not isinstance(range_definition, VersionedRangeDefinitionV1):
@@ -832,10 +821,24 @@ def _expected_tool_results(
             "range_definition": range_definition.model_dump(mode="json"),
         }
         expected_inputs["range_validate"] = range_payload
-        expected_inputs["combos"] = {
+        combo_payload = {
             "range": canonical_notation,
             "dead_cards": [],
         }
+    if candidate_input.ledger_profile is not None:
+        raw_tool_inputs = admission.case.metadata.get("tool_inputs")
+        ledger_payload = (
+            raw_tool_inputs.get("hand_pot_ledger") if isinstance(raw_tool_inputs, dict) else None
+        )
+        if not isinstance(ledger_payload, dict):
+            _fail(
+                ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                "candidate.ledger_profile",
+            )
+        exact_ledger_payload = {**ledger_payload, "hand": hand_payload}
+        expected_inputs["hand_pot_ledger"] = exact_ledger_payload
+    if combo_payload is not None:
+        expected_inputs["combos"] = combo_payload
     registry = default_registry()
     expected: dict[str, ToolResult] = {}
     for tool_name, payload in expected_inputs.items():
@@ -1245,9 +1248,15 @@ def _validate_confirmed_report_projection(
                 }:
                     return True
                 if code == BudgetFailureCode.PROVIDER_OUTPUT_EXCEEDED.value:
-                    return (
-                        bool(report.agent_execution_records)
-                        and actual_tool_names == pre_provider_tool_names
+                    if (
+                        prefix != "strict budget failure: "
+                        or not provider_failure_prefix_is_consistent
+                    ):
+                        return False
+                    final_record = report.agent_execution_records[-1]
+                    return record_data_quality(
+                        final_record,
+                        (f"provider {final_record.agent_role} output exceeded the hard byte limit"),
                     )
                 if code in {
                     BudgetFailureCode.TOOL_INPUT_EXCEEDED.value,

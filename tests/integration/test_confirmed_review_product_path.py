@@ -32,10 +32,12 @@ from poker_deliberation.context_lifecycle import (
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases.services import build_agent_context
 from poker_deliberation.providers import LocalProvider
+from poker_deliberation.range_grammar import action_prefix_sha256
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionStatus,
     AgentReport,
+    CanonicalHand,
     ConfidenceGrade,
     EpistemicLabel,
     FinalReport,
@@ -793,6 +795,8 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
     for impossible_budget_message in (
         "strict usage settlement failed: tool_output_exceeded",
         "strict budget failure: artifact_exceeded",
+        "strict usage settlement failed: provider_output_exceeded",
+        "strict budget failure: provider_output_exceeded",
     ):
         with pytest.raises(ConfirmedReviewError) as impossible_budget_stage:
             build_confirmed_review_provenance(
@@ -1700,4 +1704,45 @@ def test_supported_ledger_profile_is_the_only_optional_ledger_path(tmp_path) -> 
     assert [item.tool_name for item in report.tool_results] == [
         "hand_validator",
         "hand_pot_ledger",
+    ]
+
+
+def test_versioned_range_and_ledger_follow_the_runtime_tool_order(tmp_path) -> None:
+    payload = base_candidate_payload(intake_id="intake-confirmed-range-ledger-1")
+    payload["hand"]["rake"] = 0
+    base_hand = CanonicalHand.model_validate(payload["hand"])
+    _hand, definition = versioned_range_hand()
+    game_conditions = definition.game_conditions.model_copy(
+        update={
+            "action_prefix_sha256": action_prefix_sha256(base_hand, 2),
+        },
+        deep=True,
+    )
+    definition = definition.model_copy(
+        update={"game_conditions": game_conditions},
+        deep=True,
+    )
+    payload["hand"]["known_ranges"] = [definition.model_dump(mode="json")]
+    payload["ledger_profile"] = {
+        "schema_version": "1.0.0",
+        "profile_id": "generic_nlhe_cash_no_rake_v1",
+        "profile_version": "1.0.0",
+        "supported_site": "none",
+        "chip_unit": "1",
+    }
+    admission = confirmed_admission(
+        run_id="run-confirmed-range-ledger-1",
+        payload=payload,
+        now=datetime.now(UTC),
+    )
+    report = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    ).run_confirmed_review(admission)
+    assert report.run_status == "completed"
+    assert [item.tool_name for item in report.tool_results] == [
+        "hand_validator",
+        "range_validate",
+        "hand_pot_ledger",
+        "combos",
     ]

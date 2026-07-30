@@ -171,6 +171,7 @@ from poker_deliberation.range_models import RangeValidationResultV1, VersionedRa
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.research import EvidenceLedger
 from poker_deliberation.schemas import (
+    AgentAssignment,
     AgentExecutionRecord,
     AgentReport,
     ApprovalRequest,
@@ -3032,9 +3033,20 @@ class Orchestrator:
             self.store.write_json(run_id, "state.json", machine.snapshot())
         confirmed_admission = self._confirmed_review_admissions.get(run_id)
         if confirmed_admission is not None:
+            raw_assignments = self.store.read_json(run_id, "assignments.json")
+            if not isinstance(raw_assignments, list):
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR,
+                    stage="confirmed_review_provenance",
+                )
+            assignments = [
+                AgentAssignment.model_validate(assignment) for assignment in raw_assignments
+            ]
             provenance = build_confirmed_review_provenance(
                 confirmed_admission,
                 report,
+                assignments=assignments,
             )
             self.store.write_json(
                 run_id,

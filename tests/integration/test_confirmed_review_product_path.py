@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import poker_deliberation.orchestrator as orchestrator_module
+from poker_deliberation.agents import select_roles
 from poker_deliberation.config import BudgetConfig
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewError,
@@ -18,7 +19,13 @@ from poker_deliberation.confirmed_review_models import (
     ConfirmedReviewProvenanceV1,
     ReviewConfirmationAuthorityV1,
 )
+from poker_deliberation.context_lifecycle import (
+    build_context_envelope,
+    context_payload,
+    legacy_context_sha256,
+)
 from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.phases.services import build_agent_context
 from poker_deliberation.providers import LocalProvider
 from poker_deliberation.schemas import ConfidenceGrade, EpistemicLabel
 from poker_deliberation.storage.revision_canonical import parse_canonical_model
@@ -283,6 +290,90 @@ def test_report_input_and_claim_assessments_must_match_admitted_case(tmp_path) -
     with pytest.raises(ConfirmedReviewError) as duplicate_agent:
         build_confirmed_review_provenance(admission, duplicate_agent_report)
     assert duplicate_agent.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    reversed_agent_report = report.model_copy(
+        update={
+            "agent_execution_records": list(reversed(report.agent_execution_records)),
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as reversed_agent:
+        build_confirmed_review_provenance(admission, reversed_agent_report)
+    assert reversed_agent.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    second_agent = report.agent_execution_records[1]
+    overlapping_started_at = first_agent.completed_at - timedelta(microseconds=1)
+    assert admission.admitted_at <= overlapping_started_at < first_agent.completed_at
+    overlapping_expiry = overlapping_started_at + timedelta(seconds=30)
+    registered_tools = frozenset(default_registry().names())
+    overlapping_context = build_agent_context(
+        admission.case,
+        second_agent.agent_role,
+        registered_tools,
+    )
+    assignment_template = next(
+        assignment
+        for assignment in select_roles(admission.case)
+        if assignment.agent_role == second_agent.agent_role
+    )
+    overlapping_assignment = assignment_template.model_copy(
+        update={
+            "assignment_id": second_agent.assignment_id,
+            "context_keys": sorted(context_payload(overlapping_context)),
+        },
+        deep=True,
+    )
+    overlapping_envelope = build_context_envelope(
+        overlapping_context,
+        overlapping_assignment,
+        run_id=report.run_id,
+        expires_at=overlapping_expiry,
+        clock=lambda: overlapping_started_at,
+        context_id=second_agent.context_id,
+        attempt_id=second_agent.context_attempt_id,
+    )
+    overlapping_agent = second_agent.model_copy(
+        update={
+            "started_at": overlapping_started_at,
+            "context_sha256": legacy_context_sha256(overlapping_context),
+            "context_payload_sha256": overlapping_envelope.payload_sha256,
+            "context_source_sha256": overlapping_envelope.lineage.source_sha256,
+            "context_policy_sha256": overlapping_envelope.policy_sha256,
+            "context_envelope_sha256": overlapping_envelope.integrity_sha256,
+            "context_expires_at": overlapping_expiry,
+        },
+        deep=True,
+    )
+    overlapping_report = report.model_copy(
+        update={
+            "agent_execution_records": [
+                first_agent,
+                overlapping_agent,
+                *report.agent_execution_records[2:],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as overlapping_execution:
+        build_confirmed_review_provenance(admission, overlapping_report)
+    assert overlapping_execution.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    completed_with_error = first_agent.model_copy(
+        update={"error": "forged completed-record error"},
+        deep=True,
+    )
+    completed_with_error_report = report.model_copy(
+        update={
+            "agent_execution_records": [
+                completed_with_error,
+                *report.agent_execution_records[1:],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as completed_error:
+        build_confirmed_review_provenance(admission, completed_with_error_report)
+    assert completed_error.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:

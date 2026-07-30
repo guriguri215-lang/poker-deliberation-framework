@@ -72,6 +72,7 @@ from poker_deliberation.storage.revision_canonical import (
     parse_canonical_model,
     sha256_bytes,
     upstream_source_sha256,
+    validate_assignment_execution_correlation,
     validate_canonical_text,
     validate_logical_name,
 )
@@ -377,9 +378,13 @@ def product_payload_commitments(
             APPROVAL_AUTHORITY_LINEAGE_DOMAIN,
             authority_commitment,
         )
+    assignments = TypeAdapter(list[AgentAssignment]).validate_json(
+        payloads.get("assignments.json", b"[]")
+    )
     execution_records = TypeAdapter(list[AgentExecutionRecord]).validate_json(
         payloads.get("agent_execution_records.json", b"[]")
     )
+    validate_assignment_execution_correlation(assignments, execution_records)
     security_events = TypeAdapter(list[SecurityEvent]).validate_json(
         payloads.get("security_events.json", b"[]")
     )
@@ -448,6 +453,8 @@ def product_payload_commitments(
             "confirmed-review marker and complete artifact set must appear together"
         )
     if confirmed_marker:
+        if "assignments.json" not in payloads:
+            raise CanonicalStorageError("confirmed-review payload requires the assignment ledger")
         source_bytes = payloads["confirmed_review_source.txt"]
         candidate = _parse_json_model(
             payloads["confirmed_review_candidate.json"],
@@ -478,6 +485,7 @@ def product_payload_commitments(
                 case=input_case,
                 report=report,
                 provenance=provenance,
+                assignments=assignments,
             )
         except ValueError as exc:
             raise CanonicalStorageError("confirmed-review source-to-report replay failed") from exc

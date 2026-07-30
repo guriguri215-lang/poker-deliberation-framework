@@ -55,6 +55,7 @@ def _published_payloads(tmp_path):
         "confirmation",
         "provenance",
         "omit-provenance",
+        "omit-assignments",
         "omit-all-confirmed-artifacts",
         "report-marker-only",
     ],
@@ -65,6 +66,8 @@ def test_any_confirmed_review_chain_mutation_fails_replay(tmp_path, mutation: st
         payloads["confirmed_review_source.txt"] += b"tamper\n"
     elif mutation == "omit-provenance":
         del payloads["confirmed_review_provenance.json"]
+    elif mutation == "omit-assignments":
+        del payloads["assignments.json"]
     elif mutation in {"omit-all-confirmed-artifacts", "report-marker-only"}:
         for logical_name in tuple(payloads):
             if logical_name.startswith("confirmed_review_"):
@@ -78,6 +81,26 @@ def test_any_confirmed_review_chain_mutation_fails_replay(tmp_path, mutation: st
         data = bytearray(payloads[logical_name])
         data[-1] = ord(" ")
         payloads[logical_name] = bytes(data)
+    with pytest.raises(CanonicalStorageError):
+        product_payload_commitments(
+            payloads,
+            run_id=run_id,
+            status="succeeded",
+        )
+
+
+@pytest.mark.parametrize("mutation", ["assignment_id", "task", "context_keys"])
+def test_assignment_ledger_mutation_fails_terminal_replay(tmp_path, mutation: str) -> None:
+    run_id, payloads = _published_payloads(tmp_path)
+    assignments = json.loads(payloads["assignments.json"])
+    if mutation == "assignment_id":
+        assignments[0]["assignment_id"] = "assignment-aaaaaaaaaaaa"
+    elif mutation == "task":
+        assignments[0]["task"] = "forged assignment task"
+    else:
+        assignments[0]["context_keys"] = ["forged_context_key"]
+    payloads["assignments.json"] = canonical_json_bytes(assignments)
+
     with pytest.raises(CanonicalStorageError):
         product_payload_commitments(
             payloads,

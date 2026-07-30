@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from collections import Counter
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, NoReturn, cast
@@ -790,7 +790,9 @@ def _expected_agent_context_fields(
     admission: ConfirmedReviewAdmission,
     report: FinalReport,
     record: AgentExecutionRecord,
+    assignment: AgentAssignment,
     assignment_template: AgentAssignment,
+    assignment_is_authoritative: bool,
     registered_tools: frozenset[str],
 ) -> dict[str, Any]:
     try:
@@ -799,15 +801,18 @@ def _expected_agent_context_fields(
             record.agent_role,
             registered_tools,
         )
-        assignment = AgentAssignment.model_validate(
+        expected_assignment = AgentAssignment.model_validate(
             assignment_template.model_copy(
                 update={
-                    "assignment_id": record.assignment_id,
+                    "assignment_id": assignment.assignment_id,
                     "context_keys": sorted(context_payload(context)),
                 },
                 deep=True,
             ).model_dump(mode="python")
         )
+        if assignment_is_authoritative and assignment != expected_assignment:
+            raise ValueError("assignment ledger does not match the canonical context")
+        assignment = expected_assignment
         envelope = build_context_envelope(
             context,
             assignment,
@@ -844,6 +849,8 @@ def _expected_agent_context_fields(
 def build_confirmed_review_provenance(
     admission: ConfirmedReviewAdmission,
     report: FinalReport,
+    *,
+    assignments: Sequence[AgentAssignment] | None = None,
 ) -> ConfirmedReviewProvenanceV1:
     """Build the typed authority wrapper after the ordinary report is complete."""
 
@@ -945,25 +952,75 @@ def build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.agent_execution_records",
         )
+    assignment_template_sequence = tuple(select_roles(admission.case))
     assignment_templates = {
-        assignment.agent_role: assignment for assignment in select_roles(admission.case)
+        assignment.agent_role: assignment for assignment in assignment_template_sequence
     }
-    registered_tools = frozenset(default_registry().names())
-    if report.run_status == "completed":
-        expected_roles = list(assignment_templates)
-        actual_roles = [record.agent_role for record in report.agent_execution_records]
-        if Counter(actual_roles) != Counter(expected_roles):
+    expected_roles = [assignment.agent_role for assignment in assignment_template_sequence]
+    actual_roles = [record.agent_role for record in report.agent_execution_records]
+    if report.run_status not in {"completed", "failed_with_limitations"}:
+        _fail(ConfirmedReviewDiagnosticCode.REPORT_OVERREACH, "report.run_status")
+    if (report.run_status == "completed" and actual_roles != expected_roles) or (
+        report.run_status == "failed_with_limitations"
+        and actual_roles != expected_roles[: len(actual_roles)]
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.agent_execution_records",
+        )
+    if assignments is None:
+        assignment_by_id = {
+            record.assignment_id: AgentAssignment.model_validate(
+                assignment_templates[record.agent_role]
+                .model_copy(
+                    update={"assignment_id": record.assignment_id},
+                    deep=True,
+                )
+                .model_dump(mode="python")
+            )
+            for record in report.agent_execution_records
+            if record.agent_role in assignment_templates
+        }
+    else:
+        assignment_ledger = tuple(assignments)
+        ledger_ids = [assignment.assignment_id for assignment in assignment_ledger]
+        ledger_roles = [assignment.agent_role for assignment in assignment_ledger]
+        if (
+            len(assignment_ledger) != len(assignment_template_sequence)
+            or len(set(ledger_ids)) != len(ledger_ids)
+            or ledger_roles != expected_roles
+            or any(
+                _CONFIRMED_REVIEW_ASSIGNMENT_ID.fullmatch(assignment.assignment_id) is None
+                or assignment.agent_role != template.agent_role
+                or assignment.task != template.task
+                or assignment.read_only != template.read_only
+                for assignment, template in zip(
+                    assignment_ledger,
+                    assignment_template_sequence,
+                    strict=True,
+                )
+            )
+        ):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
-                "report.agent_execution_records",
+                "assignments.json",
             )
+        assignment_by_id = {
+            assignment.assignment_id: assignment for assignment in assignment_ledger
+        }
+    assignment_is_authoritative = assignments is not None
+    registered_tools = frozenset(default_registry().names())
+    previous_completed_at: datetime | None = None
     for record in report.agent_execution_records:
         expected_allowed_tools = (
             list(admission.case.requested_tools) if record.agent_role == "math-auditor" else []
         )
         assignment_template = assignment_templates.get(record.agent_role)
+        assignment = assignment_by_id.get(record.assignment_id)
         if (
             assignment_template is None
+            or assignment is None
+            or assignment.agent_role != record.agent_role
             or _CONFIRMED_REVIEW_EXECUTION_ID.fullmatch(record.execution_id) is None
             or _CONFIRMED_REVIEW_ASSIGNMENT_ID.fullmatch(record.assignment_id) is None
             or record.context_id is None
@@ -1000,6 +1057,7 @@ def build_confirmed_review_provenance(
             or record.context_expires_at - record.started_at
             > timedelta(seconds=_CONFIRMED_REVIEW_CONTEXT_MAX_DURATION_SECONDS)
             or record.completed_at > record.context_expires_at
+            or (previous_completed_at is not None and record.started_at < previous_completed_at)
         ):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
@@ -1009,7 +1067,9 @@ def build_confirmed_review_provenance(
             admission=admission,
             report=report,
             record=record,
+            assignment=assignment,
             assignment_template=assignment_template,
+            assignment_is_authoritative=assignment_is_authoritative,
             registered_tools=registered_tools,
         )
         if any(
@@ -1033,13 +1093,17 @@ def build_confirmed_review_provenance(
                 ),
             )
         )
+        previous_completed_at = record.completed_at
+        if record.status.value == "completed" and record.error is not None:
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.agent_execution_records",
+            )
         if report.run_status == "completed" and record.status.value != "completed":
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
                 "report.agent_execution_records",
             )
-    if report.run_status not in {"completed", "failed_with_limitations"}:
-        _fail(ConfirmedReviewDiagnosticCode.REPORT_OVERREACH, "report.run_status")
     provisional = ConfirmedReviewProvenanceV1(
         run_id=report.run_id,
         intake_id=admission.candidate.projection.candidate_input.intake_id,
@@ -1071,6 +1135,7 @@ def verify_confirmed_review_provenance(
     case: CaseInput,
     report: FinalReport,
     provenance: ConfirmedReviewProvenanceV1,
+    assignments: Sequence[AgentAssignment],
 ) -> None:
     """Replay every durable source-to-report binding without provider execution."""
 
@@ -1083,7 +1148,11 @@ def verify_confirmed_review_provenance(
     )
     if admission.case != case:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "input.json")
-    expected = build_confirmed_review_provenance(admission, report)
+    expected = build_confirmed_review_provenance(
+        admission,
+        report,
+        assignments=assignments,
+    )
     if provenance != expected:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")
 

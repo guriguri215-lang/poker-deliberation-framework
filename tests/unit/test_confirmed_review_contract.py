@@ -255,6 +255,31 @@ def _prepare_source(source: bytes):
             b"now. Should I call or fold?\n",
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        *[
+            (
+                (
+                    "I am playing an online MTT replay from yesterday, but "
+                    f"{active_status}. Should I call or fold?\n"
+                ).encode(),
+                ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+            )
+            for active_status in (
+                "the event is ongoing",
+                "I am still competing in it",
+                "this tournament has not ended yet",
+                "I am still in this tournament",
+                "the tournament hasn't ended yet",
+                "cards are still being dealt",
+                "we are still on the bubble",
+                "play is ongoing",
+                "this tournament remains active",
+            )
+        ],
+        (
+            "昨日のMTTリプレイを見ていますが、この大会は現在進行中です。"
+            "コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(
@@ -308,6 +333,18 @@ def test_source_contract_fails_closed_with_stable_codes(
         (
             b"For retrospective review, archived quote: "
             b"'I am in an online poker tournament.' Should I have called or folded?\n"
+        ),
+        (
+            b"I am playing an online MTT video replay from last week to study the "
+            b"finished hand. Should I have called or folded?\n"
+        ),
+        (
+            b"I am in an online poker tournament archive from two days ago; "
+            b"the session ended. Should I have called or folded?\n"
+        ),
+        (
+            b"I am playing an online MTT recording saved last Monday for review. "
+            b"Should I have called or folded?\n"
         ),
     ],
 )

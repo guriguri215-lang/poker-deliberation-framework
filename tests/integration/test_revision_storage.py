@@ -38,6 +38,7 @@ from poker_deliberation.storage.revision_canonical import (
     run_lock_key_sha256,
     sha256_bytes,
     transaction_sha256,
+    validate_assignment_execution_correlation,
 )
 from poker_deliberation.storage.revision_models import (
     APPROVED_LOCAL_DATA_POLICY_SHA256,
@@ -604,6 +605,36 @@ def test_final_report_v2_context_presence_is_exactly_provider_trace_sensitive() 
         include_provider_record=True,
     )
     build_inventory(provider, max_artifact_bytes=1_000_000)
+
+
+def test_revision_rejects_execution_with_stale_assignment_ledger() -> None:
+    request = _final_report_request(
+        report_schema="poker-final-report-artifact-v2",
+        include_provider_record=True,
+    )
+    assignment_artifact = next(
+        artifact for artifact in request.artifacts if artifact.logical_name == "assignments.json"
+    )
+    execution_artifact = next(
+        artifact
+        for artifact in request.artifacts
+        if artifact.logical_name == "agent_execution_records.json"
+    )
+    assignments = [
+        AgentAssignment.model_validate(item)
+        for item in parse_canonical_json(assignment_artifact.exact_bytes)
+    ]
+    assignments[0] = assignments[0].model_copy(update={"assignment_id": "assignment-stale-ledger"})
+    execution_records = [
+        AgentExecutionRecord.model_validate(item)
+        for item in parse_canonical_json(execution_artifact.exact_bytes)
+    ]
+
+    with pytest.raises(
+        CanonicalStorageError,
+        match="does not correlate to its assignment ledger",
+    ):
+        validate_assignment_execution_correlation(assignments, execution_records)
 
 
 def test_final_report_v2_publishes_and_reads_from_matching_dedicated_root(

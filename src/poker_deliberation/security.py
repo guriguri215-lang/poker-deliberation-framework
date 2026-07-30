@@ -122,8 +122,18 @@ _ARCHIVED_QUOTATION = re.compile(
 _RETROSPECTIVE_LIVE_SUFFIX = re.compile(
     r"\s+(?:(?:(?:video\s+)?(?:replay|recording|review|simulation|trainer|viewer)"
     r"|archive(?:\s+review)?|hand[- ]?history(?:\s+viewer)?)\b"
-    r"(?=[^.\r\n]{0,160}\b(?:yesterday(?:'s)?|completed|historical|archived|"
-    r"recorded)\b)|from\s+yesterday\b|of\s+(?:an?|the)\s+completed\b)",
+    r"(?=[^.\r\n]{0,160}\b(?:yesterday(?:'s)?|completed|finished|historical|"
+    r"archived|recorded|last\s+(?:week|month|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)|(?:one|two|three|four|five|six|seven|\d+)\s+"
+    r"days?\s+ago|session\s+(?:has\s+)?ended|saved\s+last)\b)|"
+    r"from\s+(?:yesterday|last\s+(?:week|month|monday|tuesday|wednesday|thursday|"
+    r"friday|saturday|sunday)|(?:one|two|three|four|five|six|seven|\d+)\s+"
+    r"days?\s+ago)\b|of\s+(?:an?|the)\s+(?:completed|finished)\b)",
+    re.IGNORECASE,
+)
+_RETROSPECTIVE_REVERSAL = re.compile(
+    r"\b(?:but|however|yet|although|nevertheless)\b|"
+    r"(?:ですが|しかし|ただし|けれども|にもかかわらず)",
     re.IGNORECASE,
 )
 _LIVE_CONTRADICTION = re.compile(
@@ -135,6 +145,22 @@ _LIVE_CONTRADICTION = re.compile(
     r"this\s+is\s+my\s+current\s+(?:game|tournament|hand)|"
     r"(?:this|the)\s+(?:game|tournament|hand)\s+is\s+"
     r"(?:(?:currently\s+)?(?:in\s+progress|underway)|happening\s+now))\b",
+    re.IGNORECASE,
+)
+_ACTIVE_LIVE_STATUS = re.compile(
+    r"(?:\b(?:(?:this|the)\s+(?:mtt|sng|event|game|tournament|hand|session|play)"
+    r"\s+(?:(?:is|remains)\s+(?:currently\s+)?(?:in\s+progress|underway|ongoing|"
+    r"live|active|running)|has(?:n't|n\u2019t| not)\s+(?:ended|finished|completed|"
+    r"concluded)(?:\s+yet)?)|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+"
+    r"(?:(?:playing|competing|participating)(?:\s+(?:in\s+)?(?:it|this\s+"
+    r"(?:mtt|sng|event|game|tournament|hand)))?|in\s+(?:it|this\s+"
+    r"(?:mtt|sng|event|game|tournament|hand))|on\s+the\s+bubble)|"
+    r"cards\s+are\s+still\s+being\s+dealt|play\s+is\s+(?:still\s+)?ongoing)\b|"
+    r"(?:この|その)?(?:大会|トーナメント|MTT|SNG|イベント|ハンド|ゲーム|プレイ)"
+    r".{0,16}(?:現在進行中|進行中|継続中|まだ終わっていません|終了していません|"
+    r"まだ参加中|まだ出場中)|"
+    r"(?:私|自分)?(?:は)?(?:まだ|現在).{0,12}(?:参加|出場|プレイ)して(?:い|おり)ます)",
     re.IGNORECASE,
 )
 _NEGATED_REAL_TIME_CONTEXT = re.compile(
@@ -354,6 +380,20 @@ def _has_unqualified_partial_live_context(cleaned: str) -> bool:
     return False
 
 
+def _has_retrospective_reversal(cleaned: str) -> bool:
+    for live_match in _LIVE_PLAY_CONTEXT.finditer(cleaned):
+        suffix = _RETROSPECTIVE_LIVE_SUFFIX.match(cleaned, live_match.end())
+        if suffix is None:
+            continue
+        if _RETROSPECTIVE_REVERSAL.search(
+            cleaned,
+            suffix.end(),
+            min(len(cleaned), suffix.end() + 512),
+        ):
+            return True
+    return False
+
+
 def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     """Return live-context, decision-request, and explicit-assistance signals."""
 
@@ -374,7 +414,11 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
         _RETROSPECTIVE_LIVE_SUFFIX.match(combined, match.end()) is None
         for match in _LIVE_PLAY_CONTEXT.finditer(combined)
     )
-    if _LIVE_CONTRADICTION.search(combined) is not None:
+    if (
+        _LIVE_CONTRADICTION.search(combined) is not None
+        or _ACTIVE_LIVE_STATUS.search(combined) is not None
+        or _has_retrospective_reversal(combined)
+    ):
         live_context_present = True
     return (
         live_context_present,

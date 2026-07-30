@@ -866,6 +866,24 @@ def validate_artifact(
     return _validated_payload(artifact, run_id)
 
 
+def validate_assignment_execution_correlation(
+    assignments: Sequence[AgentAssignment],
+    execution_records: Sequence[AgentExecutionRecord],
+) -> None:
+    """Require every execution to resolve to one same-role durable assignment."""
+
+    assignment_ids = [assignment.assignment_id for assignment in assignments]
+    if len(set(assignment_ids)) != len(assignment_ids):
+        raise CanonicalStorageError("assignment ledger IDs must be unique")
+    assignment_by_id = {assignment.assignment_id: assignment for assignment in assignments}
+    for record in execution_records:
+        assignment = assignment_by_id.get(record.assignment_id)
+        if assignment is None or assignment.agent_role != record.agent_role:
+            raise CanonicalStorageError(
+                "agent execution does not correlate to its assignment ledger"
+            )
+
+
 def _validate_source_graph(
     inventories: Sequence[PayloadInventoryEntryV1],
     parsed: Mapping[str, Any],
@@ -915,6 +933,17 @@ def _validate_source_graph(
         raise CanonicalStorageError(
             "confirmed-review structural revision requires input and final report"
         )
+    if confirmed_marker and "assignments.json" not in parsed:
+        raise CanonicalStorageError(
+            "confirmed-review structural revision requires the assignment ledger"
+        )
+    validate_assignment_execution_correlation(
+        cast(Sequence[AgentAssignment], parsed.get("assignments.json", ())),
+        cast(
+            Sequence[AgentExecutionRecord],
+            parsed.get("agent_execution_records.json", ()),
+        ),
+    )
     for entry in inventories:
         allowed_binding_kinds = {"local_data", "source"}
         if entry.logical_name == "approvals.json":
@@ -1047,6 +1076,10 @@ def _validate_source_graph(
                 provenance=cast(
                     ConfirmedReviewProvenanceV1,
                     parsed["confirmed_review_provenance.json"],
+                ),
+                assignments=cast(
+                    Sequence[AgentAssignment],
+                    parsed["assignments.json"],
                 ),
             )
         except ValueError as exc:

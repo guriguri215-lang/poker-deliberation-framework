@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -241,6 +242,8 @@ def product_payload_commitments(
     run_id: str,
     status: str,
     revision: int | None = None,
+    revision_root: Path | str | None = None,
+    transaction_id: str | None = None,
     previous_manifest_sha256: str | None = None,
     previous_pointer_sha256: str | None = None,
 ) -> tuple[str, str, str, str, str, str]:
@@ -471,6 +474,10 @@ def product_payload_commitments(
     if confirmed_marker:
         if "assignments.json" not in payloads:
             raise CanonicalStorageError("confirmed-review payload requires the assignment ledger")
+        if revision_root is None or revision is None or transaction_id is None:
+            raise CanonicalStorageError(
+                "confirmed-review payload requires exact terminal storage authority"
+            )
         source_bytes = payloads["confirmed_review_source.txt"]
         candidate = _parse_json_model(
             payloads["confirmed_review_candidate.json"],
@@ -513,6 +520,9 @@ def product_payload_commitments(
                 provenance=provenance,
                 assignments=assignments,
                 agent_reports=ordered_agent_reports,
+                storage_root=revision_root,
+                storage_revision=revision,
+                storage_transaction_id=transaction_id,
             )
         except ValueError as exc:
             raise CanonicalStorageError("confirmed-review source-to-report replay failed") from exc

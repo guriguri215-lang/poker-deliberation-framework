@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -58,6 +59,7 @@ def test_confirmed_review_publishes_complete_bound_artifact_chain(tmp_path) -> N
     )
     report = orchestrator.run_confirmed_review(admission)
     assert report.run_status == "completed"
+    assert report.conclusion == "指定されたローカル検証・計算を完了しました。"
     assert [item.tool_name for item in report.tool_results] == ["hand_validator"]
     assert all(item.provider == "local" for item in report.agent_execution_records)
 
@@ -465,16 +467,36 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
     read = orchestrator.product_store.read_current(report.run_id)
     assignments = [
         AgentAssignment.model_validate(item)
-        for item in orchestrator.store.read_json(report.run_id, "assignments.json")
+        for item in json.loads(read.payload_bytes("assignments.json"))
     ]
     reports_by_role: dict[str, AgentReport] = {}
     for payload in read.payloads:
         if payload.inventory.logical_name.startswith("agent_reports/"):
             agent_report = AgentReport.model_validate_json(payload.exact_bytes)
             reports_by_role[agent_report.agent_role] = agent_report
+    durable_report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
     agent_reports = [
-        reports_by_role[record.agent_role] for record in report.agent_execution_records
+        reports_by_role[record.agent_role] for record in durable_report.agent_execution_records
     ]
+    storage_authority = {
+        "storage_root": orchestrator.product_store.revision_root,
+        "storage_revision": read.revision,
+        "storage_transaction_id": read.transaction_id,
+    }
+    durable_provenance = ConfirmedReviewProvenanceV1.model_validate_json(
+        read.payload_bytes("confirmed_review_provenance.json")
+    )
+    replay_admission = replace(admission, admitted_at=durable_provenance.admitted_at)
+    rebuilt_provenance = build_confirmed_review_provenance(
+        replay_admission,
+        durable_report,
+        assignments=assignments,
+        agent_reports=agent_reports,
+        **storage_authority,
+    )
+    assert rebuilt_provenance.model_dump(
+        exclude={"provenance_sha256"}
+    ) == durable_provenance.model_dump(exclude={"provenance_sha256"})
 
     forged_agent_reports = [
         agent_report.model_copy(
@@ -508,6 +530,7 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
             forged_report,
             assignments=assignments,
             agent_reports=forged_agent_reports,
+            **storage_authority,
         )
     assert forged.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
@@ -533,8 +556,33 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
             forged_runtime_report,
             assignments=assignments,
             agent_reports=agent_reports,
+            **storage_authority,
         )
     assert forged_runtime.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    provider_runtime_message = "provider intake context expired"
+    completed_records_with_provider_failure = report.model_copy(
+        update={
+            "run_status": "failed_with_limitations",
+            "conclusion": ("実行予算または安全上の制限に達したため、制限付きで終了しました。"),
+            "data_quality": [*report.data_quality, provider_runtime_message],
+            "limitations": [
+                *report.data_quality,
+                provider_runtime_message,
+                report.limitations[-1],
+            ],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as provider_runtime:
+        build_confirmed_review_provenance(
+            admission,
+            completed_records_with_provider_failure,
+            assignments=assignments,
+            agent_reports=agent_reports,
+            **storage_authority,
+        )
+    assert provider_runtime.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
     forged_steps = [
         step.replace(report.run_id, "run-confirmed-forged-other")
@@ -551,8 +599,47 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
             forged_path_report,
             assignments=assignments,
             agent_reports=agent_reports,
+            **storage_authority,
         )
     assert forged_path.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    def mutate_reproduction_paths(mutator):
+        mutated: list[str] = []
+        for step in report.reproduction_steps:
+            prefix = "argv-json: "
+            argv = json.loads(step.removeprefix(prefix))
+            argv[-1] = mutator(argv[-1])
+            mutated.append(prefix + json.dumps(argv, ensure_ascii=False))
+        return mutated
+
+    forged_transaction_report = report.model_copy(
+        update={
+            "reproduction_steps": mutate_reproduction_paths(
+                lambda path: path.replace(read.transaction_id, f"txn-{'a' * 32}")
+            )
+        },
+        deep=True,
+    )
+    forged_root_report = report.model_copy(
+        update={
+            "reproduction_steps": mutate_reproduction_paths(
+                lambda path: (
+                    "C:/forged-root/runs/" + path.replace("\\", "/").split("/runs/", maxsplit=1)[1]
+                )
+            )
+        },
+        deep=True,
+    )
+    for forged_authority_report in (forged_transaction_report, forged_root_report):
+        with pytest.raises(ConfirmedReviewError) as forged_authority:
+            build_confirmed_review_provenance(
+                admission,
+                forged_authority_report,
+                assignments=assignments,
+                agent_reports=agent_reports,
+                **storage_authority,
+            )
+        assert forged_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_user_claim_wording_cannot_create_a_calculated_correction(tmp_path) -> None:

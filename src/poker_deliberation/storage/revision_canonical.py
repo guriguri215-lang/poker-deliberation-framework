@@ -1062,7 +1062,7 @@ def _validate_source_graph(
         try:
             # Delayed import preserves the canonical-storage dependency direction.
             from poker_deliberation.confirmed_review import (
-                verify_confirmed_review_provenance,
+                verify_confirmed_review_structural_provenance,
             )
 
             agent_reports = [
@@ -1088,7 +1088,7 @@ def _validate_source_graph(
                 raise CanonicalStorageError(
                     "confirmed-review agent reports do not match executions"
                 )
-            verify_confirmed_review_provenance(
+            verify_confirmed_review_structural_provenance(
                 source_bytes=cast(str, parsed["confirmed_review_source.txt"]).encode("utf-8"),
                 candidate=cast(
                     ReviewIntakeCandidateV1,

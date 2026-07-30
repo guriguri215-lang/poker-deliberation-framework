@@ -1149,6 +1149,8 @@ class Orchestrator:
             run_id=run_id,
             status=status,
             revision=revision,
+            revision_root=self.product_store.revision_root,
+            transaction_id=transaction_id,
             previous_manifest_sha256=(None if previous is None else previous.manifest_sha256),
             previous_pointer_sha256=(None if previous is None else previous.current_pointer_sha256),
         )
@@ -3175,6 +3177,9 @@ class Orchestrator:
                 report,
                 assignments=assignments,
                 agent_reports=reports,
+                storage_root=self.product_store.revision_root,
+                storage_revision=planned_revision,
+                storage_transaction_id=transaction_id,
             )
             self.store.write_json(
                 run_id,

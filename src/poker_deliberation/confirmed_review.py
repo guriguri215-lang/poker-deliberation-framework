@@ -9,6 +9,7 @@ import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
 from uuid import uuid4
 
@@ -562,12 +563,12 @@ def _validate_combined_security_scope(
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     source_text = source_bytes.decode("utf-8", errors="strict")
     candidate_claims = [claim.text for claim in case.claims]
-    source_boundary = source_text[-512:]
-    if any(
-        redact_sensitive(source_boundary + claim[:512]) != source_boundary + claim[:512]
-        for claim in candidate_claims
-    ):
-        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY, "candidate")
+    boundary_tail = ""
+    for fragment in (source_text, *candidate_claims):
+        boundary_probe = boundary_tail + fragment[:512]
+        if redact_sensitive(boundary_probe) != boundary_probe:
+            _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY, "candidate")
+        boundary_tail = (boundary_tail + fragment)[-512:]
     candidate_live, candidate_decision, candidate_explicit = real_time_assistance_signals(
         candidate_claims
     )
@@ -824,11 +825,54 @@ _CONFIRMED_RUNTIME_DATA_QUALITY = frozenset(
 )
 
 
-def _validate_reproduction_steps(report: FinalReport) -> None:
+def _validate_reproduction_steps(
+    report: FinalReport,
+    *,
+    storage_root: Path | str | None,
+    storage_revision: int | None,
+    storage_transaction_id: str | None,
+    require_storage_authority: bool,
+) -> None:
     expected_results = [
         result for result in report.tool_results if result.reproduce_command is not None
     ]
     if len(report.reproduction_steps) != len(expected_results):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reproduction_steps",
+        )
+    authority_values = (storage_root, storage_revision, storage_transaction_id)
+    if (
+        require_storage_authority
+        and expected_results
+        and any(value is None for value in authority_values)
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reproduction_steps",
+        )
+    if any(value is None for value in authority_values) and not all(
+        value is None for value in authority_values
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reproduction_steps",
+        )
+    authoritative_root = None if storage_root is None else Path(storage_root)
+    if authoritative_root is not None and not authoritative_root.is_absolute():
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reproduction_steps",
+        )
+    if storage_revision is not None and storage_revision < 1:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reproduction_steps",
+        )
+    if (
+        storage_transaction_id is not None
+        and re.fullmatch(r"txn-[0-9a-f]{32}", storage_transaction_id) is None
+    ):
         _fail(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.reproduction_steps",
@@ -867,6 +911,23 @@ def _validate_reproduction_steps(report: FinalReport) -> None:
             )
         normalized_path = argv[6].replace("\\", "/")
         path_parts = tuple(part for part in normalized_path.split("/") if part)
+        expected_authoritative_path = (
+            None
+            if authoritative_root is None
+            or storage_revision is None
+            or storage_transaction_id is None
+            else str(
+                authoritative_root
+                / "runs"
+                / report.run_id
+                / ".terminal-store"
+                / "revisions"
+                / f"r{storage_revision}-{storage_transaction_id}"
+                / "payload"
+                / "tool_results"
+                / f"{result.result_id}.input.json"
+            ).replace("\\", "/")
+        )
         if (
             re.match(r"^(?:[A-Za-z]:/|/)", normalized_path) is None
             or any(part in {".", ".."} for part in path_parts)
@@ -874,6 +935,10 @@ def _validate_reproduction_steps(report: FinalReport) -> None:
             or path_parts[-8:-4] != ("runs", report.run_id, ".terminal-store", "revisions")
             or re.fullmatch(r"r1-txn-[0-9a-f]{32}", path_parts[-4]) is None
             or path_parts[-3:] != ("payload", "tool_results", f"{result.result_id}.input.json")
+            or (
+                expected_authoritative_path is not None
+                and normalized_path != expected_authoritative_path
+            )
         ):
             _fail(
                 ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
@@ -881,7 +946,14 @@ def _validate_reproduction_steps(report: FinalReport) -> None:
             )
 
 
-def _validate_confirmed_report_projection(report: FinalReport) -> None:
+def _validate_confirmed_report_projection(
+    report: FinalReport,
+    *,
+    storage_root: Path | str | None,
+    storage_revision: int | None,
+    storage_transaction_id: str | None,
+    require_storage_authority: bool,
+) -> None:
     if (
         report.alternatives
         or report.sensitivity
@@ -918,7 +990,11 @@ def _validate_confirmed_report_projection(report: FinalReport) -> None:
             ),
         )
     }
-    role_names = {record.agent_role for record in report.agent_execution_records}
+    noncompleted_roles = {
+        record.agent_role
+        for record in report.agent_execution_records
+        if record.status.value != "completed"
+    }
     budget_codes = {code.value for code in BudgetFailureCode}
 
     def runtime_data_quality(item: str) -> bool:
@@ -935,7 +1011,7 @@ def _validate_confirmed_report_projection(report: FinalReport) -> None:
                 item.startswith(f"provider {role} budget refused: ")
                 and item.removeprefix(f"provider {role} budget refused: ") in budget_codes
             )
-            for role in role_names
+            for role in noncompleted_roles
         )
 
     def allowed_data_quality(item: str) -> bool:
@@ -960,7 +1036,13 @@ def _validate_confirmed_report_projection(report: FinalReport) -> None:
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.limitations",
         )
-    _validate_reproduction_steps(report)
+    _validate_reproduction_steps(
+        report,
+        storage_root=storage_root,
+        storage_revision=storage_revision,
+        storage_transaction_id=storage_transaction_id,
+        require_storage_authority=require_storage_authority,
+    )
 
 
 def _expected_agent_context_fields(
@@ -1024,12 +1106,16 @@ def _expected_agent_context_fields(
     }
 
 
-def build_confirmed_review_provenance(
+def _build_confirmed_review_provenance(
     admission: ConfirmedReviewAdmission,
     report: FinalReport,
     *,
     assignments: Sequence[AgentAssignment] | None = None,
     agent_reports: Sequence[AgentReport] | None = None,
+    storage_root: Path | str | None = None,
+    storage_revision: int | None = None,
+    storage_transaction_id: str | None = None,
+    require_storage_authority: bool,
 ) -> ConfirmedReviewProvenanceV1:
     """Build the typed authority wrapper after the ordinary report is complete."""
 
@@ -1089,7 +1175,13 @@ def build_confirmed_review_provenance(
         and actual_tool_names != expected_tool_names[: len(actual_tool_names)]
     ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
-    _validate_confirmed_report_projection(report)
+    _validate_confirmed_report_projection(
+        report,
+        storage_root=storage_root,
+        storage_revision=storage_revision,
+        storage_transaction_id=storage_transaction_id,
+        require_storage_authority=require_storage_authority,
+    )
     result_ids = [result.result_id for result in report.tool_results]
     if len(set(result_ids)) != len(result_ids):
         _fail(ConfirmedReviewDiagnosticCode.REPORT_OVERREACH, "report.tool_results")
@@ -1253,7 +1345,9 @@ def build_confirmed_review_provenance(
             )
         elif corrections:
             projected_conclusion = "ユーザー主張に、再現可能なローカル計算に基づく訂正が必要です。"
-        elif admission.case.kind == "hand" and report.data_quality:
+        elif admission.case.kind == "hand" and any(
+            item != _CONFIRMED_UNVERIFIED_CLAIM_WARNING for item in report.data_quality
+        ):
             projected_conclusion = "ハンド入力に矛盾または不足があるため、戦略結論を断定しません。"
         elif failed_tools:
             projected_conclusion = "一部の計算が失敗したため、利用可能な結果と制限だけを返します。"
@@ -1420,6 +1514,30 @@ def build_confirmed_review_provenance(
     return provisional.model_copy(update={"provenance_sha256": provenance_sha256(provisional)})
 
 
+def build_confirmed_review_provenance(
+    admission: ConfirmedReviewAdmission,
+    report: FinalReport,
+    *,
+    assignments: Sequence[AgentAssignment] | None = None,
+    agent_reports: Sequence[AgentReport] | None = None,
+    storage_root: Path | str | None = None,
+    storage_revision: int | None = None,
+    storage_transaction_id: str | None = None,
+) -> ConfirmedReviewProvenanceV1:
+    """Build provenance bound to the planned immutable terminal storage authority."""
+
+    return _build_confirmed_review_provenance(
+        admission,
+        report,
+        assignments=assignments,
+        agent_reports=agent_reports,
+        storage_root=storage_root,
+        storage_revision=storage_revision,
+        storage_transaction_id=storage_transaction_id,
+        require_storage_authority=True,
+    )
+
+
 def verify_confirmed_review_provenance(
     *,
     source_bytes: bytes,
@@ -1430,6 +1548,9 @@ def verify_confirmed_review_provenance(
     provenance: ConfirmedReviewProvenanceV1,
     assignments: Sequence[AgentAssignment],
     agent_reports: Sequence[AgentReport],
+    storage_root: Path | str,
+    storage_revision: int,
+    storage_transaction_id: str,
 ) -> None:
     """Replay every durable source-to-report binding without provider execution."""
 
@@ -1447,6 +1568,42 @@ def verify_confirmed_review_provenance(
         report,
         assignments=assignments,
         agent_reports=agent_reports,
+        storage_root=storage_root,
+        storage_revision=storage_revision,
+        storage_transaction_id=storage_transaction_id,
+    )
+    if provenance != expected:
+        _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")
+
+
+def verify_confirmed_review_structural_provenance(
+    *,
+    source_bytes: bytes,
+    candidate: ReviewIntakeCandidateV1,
+    confirmation: ReviewIntakeConfirmationV1,
+    case: CaseInput,
+    report: FinalReport,
+    provenance: ConfirmedReviewProvenanceV1,
+    assignments: Sequence[AgentAssignment],
+    agent_reports: Sequence[AgentReport],
+) -> None:
+    """Replay a nonterminal buffer without treating its path as terminal authority."""
+
+    provenance = _strict_provenance(provenance)
+    admission = _admit_confirmed_review_at(
+        source_bytes,
+        candidate,
+        confirmation,
+        admitted_at=provenance.admitted_at,
+    )
+    if admission.case != case:
+        _fail(ConfirmedReviewDiagnosticCode.STORAGE, "input.json")
+    expected = _build_confirmed_review_provenance(
+        admission,
+        report,
+        assignments=assignments,
+        agent_reports=agent_reports,
+        require_storage_authority=False,
     )
     if provenance != expected:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")

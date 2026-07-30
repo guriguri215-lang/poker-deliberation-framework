@@ -60,6 +60,8 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (b"api.key: ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
+        (b"api:_key=ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
+        (b"api=_key=ABCDEFGHIJKLMNOP123456\n", ConfirmedReviewDiagnosticCode.SOURCE_SECRET),
         (
             "api\u2010key: ABCDEFGHIJKLMNOP123456\n".encode(),
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
@@ -310,6 +312,26 @@ def _prepare_source(source: bytes):
             "コールかフォールドか教えてください。\n".encode(),
             ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
         ),
+        (
+            b"Yesterday's hand ended, but my current tournament is still running. "
+            b"Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"I reviewed a completed hand yesterday, while my current MTT is ongoing. "
+            b"Should I call or fold?\n",
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            "昨日のハンドは終了しましたが、現在のMTTは進行中です。"
+            "コールかフォールドか教えてください。\n".encode(),
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
+        (
+            b"For retrospective review, the live video subtitle says "
+            b'"the action is on me." Should I call or fold?\n',
+            ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE,
+        ),
     ],
 )
 def test_source_contract_fails_closed_with_stable_codes(
@@ -363,6 +385,10 @@ def test_source_contract_fails_closed_with_stable_codes(
         (
             b"For retrospective review, archived quote: "
             b"'I am in an online poker tournament.' Should I have called or folded?\n"
+        ),
+        (
+            b"For retrospective review, the hand-history note says "
+            b'"the action is on me." Should I have called or folded?\n'
         ),
         (
             b"I am playing an online MTT video replay from last week to study the "
@@ -429,6 +455,11 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "I remain alive in the tournament",
         "The competition is underway",
         "The tournament is unfinished",
+        "The tourney is underway",
+        "The event has yet to finish",
+        "Tournament is underway",
+        "Event is live",
+        "Table is still running",
         "My clock is ticking",
         "I've not been eliminated yet",
         "It is my turn in this MTT",
@@ -439,6 +470,8 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
         "MTTはまだ続行中",
         "私はまだこの大会に残っています",
         "私はまだ生き残っています",
+        "大会はまだやっています",
+        "私はまだ勝ち残っています",
         "今は私の手番です",
         "あと10秒で決めないといけません",
         "タイムバンクがカウントダウン中です",
@@ -573,6 +606,36 @@ def test_secret_shape_cannot_be_split_across_artifacts(
         source,
         payload,
         source_id="source-split-secret-1",
+        source_kind="user_supplied",
+        license_classification="user_supplied_private_analysis",
+        usage_classification="local_analysis_only",
+        classification="internal",
+    )
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SECURITY
+
+
+def test_secret_shape_cannot_be_split_across_adjacent_claims() -> None:
+    payload = candidate_payload()
+    payload["claims"] = [
+        {
+            "claim_id": "claim-secret-prefix",
+            "text": "api",
+            "label": "USER_CLAIM",
+            "confidence": "C",
+        },
+        {
+            "claim_id": "claim-secret-suffix",
+            "text": "_key=ABCDEFGHIJKLMNOP123456",
+            "label": "USER_CLAIM",
+            "confidence": "C",
+        },
+    ]
+    result = prepare_review_intake(
+        SOURCE_BYTES,
+        payload,
+        source_id="source-split-claim-secret-1",
         source_kind="user_supplied",
         license_classification="user_supplied_private_analysis",
         usage_classification="local_analysis_only",

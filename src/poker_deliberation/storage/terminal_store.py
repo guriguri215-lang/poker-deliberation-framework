@@ -954,6 +954,8 @@ class TerminalRunStore:
                     run_id=request.run_id,
                     status=request.status,
                     revision=request.proposed_revision,
+                    revision_root=self.revision_root,
+                    transaction_id=request.transaction_id,
                     previous_manifest_sha256=request.expected_manifest_sha256,
                     previous_pointer_sha256=request.expected_pointer_sha256,
                 )
@@ -1189,6 +1191,8 @@ class TerminalRunStore:
                 run_id=run_id,
                 status=manifest.status,
                 revision=manifest.revision,
+                revision_root=self.revision_root,
+                transaction_id=manifest.transaction_id,
                 previous_manifest_sha256=manifest.previous_manifest_sha256,
                 previous_pointer_sha256=manifest.expected_pointer_sha256,
             )

@@ -118,15 +118,18 @@ _DECISION_REQUEST = re.compile(
 )
 _ARCHIVED_QUOTATION = re.compile(
     r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])"
+    r"(?![^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:\b(?:current|live|right\s+now)\b|(?:現在|ライブ)))"
     r"[^.!?\r\n\u3002\uff01\uff1f]{0,512}?"
     r"(?:\b(?:retrospective|archived|historical|recorded|replay|recording|"
+    r"hand[- ]?history|"
     r"yesterday(?:'s)?|completed|finished|last\s+(?:week|month)|"
     r"\d+\s+days?\s+ago)\b|(?:事後|過去|履歴|昨日|完了|終了))"
     r"[^.!?\r\n\u3002\uff01\uff1f]{0,512}?"
     r"(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}"
     r"(?::|\breads?\s+)|"
-    r"(?:(?:the\s+)?(?:video|replay|recording)\s+)?"
-    r"(?:subtitle|caption|quote)\s+(?:says?|reads?)\s+|"
+    r"(?:(?:the\s+)?(?:video|replay|recording|hand[- ]?history)\s+)?"
+    r"(?:subtitle|caption|quote|note)\s+(?:says?|reads?)\s+|"
     r"(?:the\s+)?(?:video|replay|recording)\s+(?:says?|reads?)\s+|"
     r"(?:アーカイブ|過去|履歴)(?:の)?(?:引用|記録|メモ)[^\uFF1A\r\n]{0,48}"
     r"[\uFF1A:])\s*"
@@ -135,6 +138,8 @@ _ARCHIVED_QUOTATION = re.compile(
 )
 _HISTORICAL_STATUS_CLAUSE = re.compile(
     r"(?:(?:^|[.!?\r\n\u3002\uff01\uff1f])"
+    r"(?![^.!?\r\n\u3002\uff01\uff1f]{0,512}"
+    r"(?:\b(?:current|live|right\s+now)\b|(?:現在|ライブ)))"
     r"(?=[^.!?\r\n\u3002\uff01\uff1f]{0,512}"
     r"(?:\b(?:replay|recording|archive|historical|retrospective|yesterday)\b|"
     r"(?:リプレイ|録画|記録|過去|昨日|事後)))"
@@ -233,8 +238,13 @@ _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
 
 _ACTIVE_GAME_SUBJECT = re.compile(
     r"\b(?:(?:my|this|the|that|current)\s+"
-    r"(?:mtt|sng|pko|competition|contest|event|game|match|tournament|table|hand|"
+    r"(?:mtt|sng|pko|competition|contest|event|game|match|tourney|tournament|table|hand|"
     r"session|play|one|field)|(?:mtt|sng|pko))\b",
+    re.IGNORECASE,
+)
+_BARE_ACTIVE_GAME_SUBJECT = re.compile(
+    r"^\s*(?:competition|contest|event|game|match|tourney|tournament|table|hand|"
+    r"session|play)\b",
     re.IGNORECASE,
 )
 _ACTIVE_GAME_PREDICATE = re.compile(
@@ -242,6 +252,7 @@ _ACTIVE_GAME_PREDICATE = re.compile(
     r"(?:is|remains)\s+(?:still\s+|currently\s+)?"
     r"(?:in\s+progress|underway|ongoing|active|live|going|running|playing|"
     r"not\s+over|unfinished)|"
+    r"has\s+yet\s+to\s+(?:end|finish|conclude)|"
     r"(?:is(?:n't|n\u2019t|\s+not)|has(?:n't|n\u2019t|\s+not))\s+"
     r"(?:over|ended|finished|completed|concluded|wrapped\s+up)(?:\s+yet)?|"
     r"(?:has|have)\s+not\s+wrapped\s+up|"
@@ -281,12 +292,14 @@ _ACTIVE_JAPANESE_EVENT_SUBJECT = re.compile(
 )
 _ACTIVE_JAPANESE_EVENT_PREDICATE = re.compile(
     r"(?:\u958b\u50ac\u4e2d|\u7d9a\u884c\u4e2d|\u9032\u884c\u4e2d|"
+    r"\u307e\u3060\u3084\u3063\u3066(?:\u3044)?(?:\u307e\u3059|\u3044\u308b)|"
     r"\u4eca\u3082\u7d9a\u3044\u3066|\u307e\u3060\u7d42\u308f\u3063\u3066\u3044\u306a|"
     r"\u307e\u3060\u7d42\u4e86\u3057\u3066\u3044\u306a|\u672a\u7d42\u4e86)",
     re.IGNORECASE,
 )
 _ACTIVE_JAPANESE_PLAYER_STATUS = re.compile(
     r"(?:(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060\u751f\u304d\u6b8b\u3063\u3066|"
+    r"(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060\u52dd\u3061\u6b8b\u3063\u3066|"
     r"(?:\u4eca\u306f)?(?:\u79c1|\u81ea\u5206)\u306e\u624b\u756a|"
     r"\u3042\u3068\s*\d+\s*\u79d2[^.!?\r\n\u3002\uff01\uff1f]{0,64}"
     r"(?:\u6c7a\u3081|\u30a2\u30af\u30b7\u30e7\u30f3))",
@@ -448,11 +461,36 @@ def _secret_probe(value: str) -> str:
 
 
 def _contains_secret_shape(value: str) -> bool:
-    return any(
-        pattern.search(probe) is not None
-        for probe in (_security_probe(value), _secret_probe(value))
-        for pattern in _SECRET_PATTERNS
+    probes = (_security_probe(value), _secret_probe(value))
+    if any(pattern.search(probe) is not None for probe in probes for pattern in _SECRET_PATTERNS):
+        return True
+    sensitive_assignment_suffixes = (
+        "apikey",
+        "authorization",
+        "cookie",
+        "password",
+        "passwd",
+        "secret",
+        "secretaccesskey",
+        "sessiontoken",
+        "accesstoken",
+        "clientsecret",
+        "token",
     )
+    for line in probes[1].splitlines():
+        for separator in (match.start() for match in re.finditer(r"[:=]", line)):
+            identifier = "".join(
+                character
+                for character in line[:separator]
+                if character.isascii() and character.isalnum()
+            )
+            if (
+                identifier
+                and any(identifier.endswith(suffix) for suffix in sensitive_assignment_suffixes)
+                and line[separator + 1 :].strip()
+            ):
+                return True
+    return False
 
 
 def _redact_text(value: str) -> str:
@@ -588,7 +626,10 @@ def _has_active_live_status(cleaned: str) -> bool:
     for clause in _SENTENCE_BOUNDARY.split(cleaned):
         if (
             (
-                _ACTIVE_GAME_SUBJECT.search(clause) is not None
+                (
+                    _ACTIVE_GAME_SUBJECT.search(clause) is not None
+                    or _BARE_ACTIVE_GAME_SUBJECT.search(clause) is not None
+                )
                 and _ACTIVE_GAME_PREDICATE.search(clause) is not None
             )
             or (

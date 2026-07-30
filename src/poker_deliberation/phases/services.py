@@ -67,6 +67,10 @@ from poker_deliberation.security import isolate_prompt_injection, redact_sensiti
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
 
+_UNVERIFIED_CLAIM_WARNING = (
+    "ユーザー主張は入力として保存しましたが、検証条件がないため真偽未判定です。"
+)
+
 
 def _constant_clock(value: datetime) -> Callable[[], datetime]:
     def read() -> datetime:
@@ -664,9 +668,7 @@ class AdjudicationService(PurePhaseService[AdjudicationInput, AdjudicationOutput
                 )
             )
         if value.case.claims and not checks:
-            warnings.append(
-                "ユーザー主張は入力として保存しましたが、検証条件がないため真偽未判定です。"
-            )
+            warnings.append(_UNVERIFIED_CLAIM_WARNING)
         output = AdjudicationOutput(
             claim_assessments=tuple(assessments), data_quality=tuple(warnings)
         )
@@ -687,6 +689,9 @@ class SynthesisService(PurePhaseService[SynthesisInput, SynthesisOutput]):
         ]
         failed = [result for result in value.tool_results if result.status is ToolStatus.FAILED]
         successes = [result for result in value.tool_results if result.status is ToolStatus.SUCCESS]
+        hand_input_quality_issues = [
+            item for item in value.data_quality if item != _UNVERIFIED_CLAIM_WARNING
+        ]
         if any(event.blocked for event in value.security_events):
             conclusion = (
                 "このフレームワークは事後検討専用です。"
@@ -698,7 +703,7 @@ class SynthesisService(PurePhaseService[SynthesisInput, SynthesisOutput]):
             conclusion = "実行予算または安全上の制限に達したため、制限付きで終了しました。"
         elif corrections:
             conclusion = "ユーザー主張に、再現可能なローカル計算に基づく訂正が必要です。"
-        elif value.case.kind == "hand" and value.data_quality:
+        elif value.case.kind == "hand" and hand_input_quality_issues:
             conclusion = "ハンド入力に矛盾または不足があるため、戦略結論を断定しません。"
         elif failed:
             conclusion = "一部の計算が失敗したため、利用可能な結果と制限だけを返します。"

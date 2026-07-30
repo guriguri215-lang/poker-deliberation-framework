@@ -173,6 +173,7 @@ from poker_deliberation.research import EvidenceLedger
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
+    AgentExecutionStatus,
     AgentReport,
     ApprovalRequest,
     ApprovalStatus,
@@ -478,6 +479,9 @@ class Orchestrator:
                 terminal_id_factory,
             )
         )
+        self._confirmed_review_clock_was_injected = (
+            context_clock is not None or monotonic_clock is not None
+        )
         self.config = config or AppConfig.from_env()
         self.budget_migration: V1BudgetMigrationResult | None
         if budget_policy is None:
@@ -547,6 +551,7 @@ class Orchestrator:
             context_clock=self.context_clock,
             record_clock=lambda: datetime.now(UTC),
             monotonic_clock=self.monotonic_clock,
+            enforce_context_expiry=context_clock is None,
         )
         if tool_research_executor is not None and (
             tool_research_executor.registry is not self.registry
@@ -1423,6 +1428,7 @@ class Orchestrator:
             is not self._confirmed_review_analysis_context_clock
             or self.analysis_executor.record_clock
             is not self._confirmed_review_analysis_record_clock
+            or not self.analysis_executor.enforce_context_expiry
             or self.registry.monotonic_clock is not self.monotonic_clock
             or type(self.registry._tools) is not dict
             or self.registry._tools is not self._confirmed_review_registry_mapping
@@ -1440,6 +1446,7 @@ class Orchestrator:
                 for service, expected_type, expected_run in phase_services
             )
             or self.context_build_service.blind_context_builder is not build_blind_decision_context
+            or self._confirmed_review_clock_was_injected
             or self._confirmed_review_persistence_was_injected
             or self.terminal_clock is not self._confirmed_review_terminal_clock
             or self.terminal_id_factory is not self._confirmed_review_terminal_id_factory
@@ -1638,7 +1645,14 @@ class Orchestrator:
                     ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
                     "confirmation.run_id",
                 )
-            current = self.product_store.read_current(run_id)
+            try:
+                current = self.product_store.read_current(run_id)
+            except ProductRunError as exc:
+                if exc.failure.code is not ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED:
+                    raise
+                current = self.product_store.read_current(run_id, verify_budget=False)
+                if current.read_status is not RunReadStatus.FAILED:
+                    raise exc
             expected = {
                 "confirmed_review_source.txt": admission.source_bytes,
                 "confirmed_review_candidate.json": canonical_storage_json_bytes(
@@ -1659,7 +1673,7 @@ class Orchestrator:
                     ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
                     "confirmation.idempotency_key",
                 )
-            return self.load_report(run_id)
+            return self._exact_terminal_report(current)
         hand_payload = (
             admission.case.hand.model_dump(mode="json") if admission.case.hand is not None else {}
         )
@@ -2324,6 +2338,13 @@ class Orchestrator:
                 analysis = analysis_outcome.output
                 execution_records.append(analysis.execution_record)
                 data_quality.extend(analysis.data_quality)
+                reports.append(analysis.report)
+                report_ids.add(analysis.report.report_id)
+                self.store.write_json(
+                    actual_run_id,
+                    f"agent_reports/{analysis.report.report_id}.json",
+                    analysis.report,
+                )
                 try:
                     machine.apply_usage_at(
                         analysis.usage_delta,
@@ -2355,6 +2376,29 @@ class Orchestrator:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
                         "provider execution budget refused",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                if (
+                    confirmed_admission is not None
+                    and analysis.execution_record.status is not AgentExecutionStatus.COMPLETED
+                ):
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "confirmed local analysis did not complete within its context",
                     )
                     return self._synthesize(
                         actual_run_id,
@@ -2412,13 +2456,6 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                reports.append(analysis.report)
-                report_ids.add(analysis.report.report_id)
-                self.store.write_json(
-                    actual_run_id,
-                    f"agent_reports/{analysis.report.report_id}.json",
-                    analysis.report,
-                )
                 objection_request = make_phase_request(
                     run_id=actual_run_id,
                     phase_id=PhaseId.CRITIQUE,
@@ -2917,8 +2954,9 @@ class Orchestrator:
         )
         self.store.write_json(run_id, "disputes.json", disputes)
 
-    def _synthesize(
+    def _run_synthesis_service(
         self,
+        *,
         run_id: str,
         case: CaseInput,
         data_quality: list[str],
@@ -2930,17 +2968,12 @@ class Orchestrator:
         evidence_records: list[EvidenceRecord],
         approvals: ApprovalLedger,
         security_events: list[SecurityEvent],
-        *,
         completed: bool,
         machine: WorkflowStateMachine,
-        pause_before_return: bool = False,
+        planned_revision: int,
+        transaction_id: str,
     ) -> FinalReport:
-        namespace = self._namespace_kind(run_id)
-        previous = self.product_store.read_current(run_id) if namespace == "product" else None
-        planned_revision = 1 if previous is None else previous.revision + 1
-        transaction_id = self.terminal_id_factory("txn")
         provider_info = self.provider.availability()
-        provider_reason = provider_info.reason
         synthesis_request = make_phase_request(
             run_id=run_id,
             phase_id=PhaseId.SYNTHESIS,
@@ -2962,7 +2995,7 @@ class Orchestrator:
                 security_events=tuple(security_events),
                 provider_snapshot=ProviderSnapshot(
                     available=provider_info.available,
-                    reason=provider_reason,
+                    reason=provider_info.reason,
                 ),
                 tool_input_artifact_paths=tuple(
                     str(
@@ -2970,7 +3003,7 @@ class Orchestrator:
                             run_id,
                             revision=planned_revision,
                             transaction_id=transaction_id,
-                            logical_name=(f"tool_results/{result.result_id}.input.json"),
+                            logical_name=f"tool_results/{result.result_id}.input.json",
                         )
                     )
                     for result in tool_results
@@ -3004,18 +3037,91 @@ class Orchestrator:
         expected_next_state = "completed" if completed else None
         if synthesis_outcome.requested_next_state != expected_next_state:
             raise PhaseContractError("synthesis requested an illegal next state")
-        report = synthesis_outcome.output.report
+        return synthesis_outcome.output.report
+
+    def _synthesize(
+        self,
+        run_id: str,
+        case: CaseInput,
+        data_quality: list[str],
+        claim_assessments: list[Claim],
+        reports: list[AgentReport],
+        execution_records: list[AgentExecutionRecord],
+        tool_results: list[ToolResult],
+        disputes: list[Dispute],
+        evidence_records: list[EvidenceRecord],
+        approvals: ApprovalLedger,
+        security_events: list[SecurityEvent],
+        *,
+        completed: bool,
+        machine: WorkflowStateMachine,
+        pause_before_return: bool = False,
+    ) -> FinalReport:
+        namespace = self._namespace_kind(run_id)
+        previous = self.product_store.read_current(run_id) if namespace == "product" else None
+        planned_revision = 1 if previous is None else previous.revision + 1
+        transaction_id = self.terminal_id_factory("txn")
+        confirmed_admission = self._confirmed_review_admissions.get(run_id)
+        if completed and confirmed_admission is not None:
+            try:
+                _, observed_at_ns, deadline_ns = machine.runtime_window()
+            except BudgetLimitError:
+                machine.enforce_runtime()
+                observed_at_ns = 0
+                deadline_ns = 0
+            if deadline_ns - observed_at_ns < 250_000_000:
+                if machine.state is not RunState.FAILED_WITH_LIMITATIONS:
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        "confirmed terminal publication safety reserve was exhausted",
+                    )
+                data_quality.append(
+                    "confirmed terminal publication refused with less than 0.25 seconds remaining"
+                )
+                _append_observed_budget_failure(data_quality, machine)
+                completed = False
+                pause_before_return = False
+        report = self._run_synthesis_service(
+            run_id=run_id,
+            case=case,
+            data_quality=data_quality,
+            claim_assessments=claim_assessments,
+            reports=reports,
+            execution_records=execution_records,
+            tool_results=tool_results,
+            disputes=disputes,
+            evidence_records=evidence_records,
+            approvals=approvals,
+            security_events=security_events,
+            completed=completed,
+            machine=machine,
+            planned_revision=planned_revision,
+            transaction_id=transaction_id,
+        )
         if not machine.enforce_runtime():
             runtime_message = "maximum runtime exceeded during final synthesis"
-            if runtime_message not in report.data_quality:
-                report.data_quality.append(runtime_message)
-            if runtime_message not in report.limitations:
-                report.limitations.append(runtime_message)
-            _append_observed_budget_failure(report.data_quality, machine)
-            _append_observed_budget_failure(report.limitations, machine)
-            report.run_status = "failed_with_limitations"
+            if runtime_message not in data_quality:
+                data_quality.append(runtime_message)
+            _append_observed_budget_failure(data_quality, machine)
             completed = False
             pause_before_return = False
+            report = self._run_synthesis_service(
+                run_id=run_id,
+                case=case,
+                data_quality=data_quality,
+                claim_assessments=claim_assessments,
+                reports=reports,
+                execution_records=execution_records,
+                tool_results=tool_results,
+                disputes=disputes,
+                evidence_records=evidence_records,
+                approvals=approvals,
+                security_events=security_events,
+                completed=False,
+                machine=machine,
+                planned_revision=planned_revision,
+                transaction_id=transaction_id,
+            )
         self.store.write_json(run_id, "agent_execution_records.json", execution_records)
         self.store.write_json(run_id, "security_events.json", security_events)
         if completed and not machine.terminal:
@@ -3025,21 +3131,34 @@ class Orchestrator:
         self.store.write_text(run_id, "final_report.md", render_markdown(report))
         if not machine.enforce_runtime():
             runtime_message = "maximum runtime exceeded during final artifact writes"
-            if runtime_message not in report.data_quality:
-                report.data_quality.append(runtime_message)
-            if runtime_message not in report.limitations:
-                report.limitations.append(runtime_message)
-            _append_observed_budget_failure(report.data_quality, machine)
-            _append_observed_budget_failure(report.limitations, machine)
-            report.run_status = "failed_with_limitations"
+            if runtime_message not in data_quality:
+                data_quality.append(runtime_message)
+            _append_observed_budget_failure(data_quality, machine)
+            completed = False
             pause_before_return = False
+            report = self._run_synthesis_service(
+                run_id=run_id,
+                case=case,
+                data_quality=data_quality,
+                claim_assessments=claim_assessments,
+                reports=reports,
+                execution_records=execution_records,
+                tool_results=tool_results,
+                disputes=disputes,
+                evidence_records=evidence_records,
+                approvals=approvals,
+                security_events=security_events,
+                completed=False,
+                machine=machine,
+                planned_revision=planned_revision,
+                transaction_id=transaction_id,
+            )
             self.store.write_json(run_id, "state.json", machine.snapshot())
             self.store.write_json(run_id, "final_report.json", report)
             self.store.write_text(run_id, "final_report.md", render_markdown(report))
         if pause_before_return:
             machine.pause_active_runtime()
             self.store.write_json(run_id, "state.json", machine.snapshot())
-        confirmed_admission = self._confirmed_review_admissions.get(run_id)
         if confirmed_admission is not None:
             raw_assignments = self.store.read_json(run_id, "assignments.json")
             if not isinstance(raw_assignments, list):
@@ -3066,6 +3185,13 @@ class Orchestrator:
         try:
             verified = self._publish_buffer(run_id, report)
         except ProductRunError as exc:
+            if (
+                confirmed_admission is not None
+                and exc.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
+                and exc.failure.domain_effect == "current_advanced"
+            ):
+                durable = self.product_store.read_current(run_id, verify_budget=False)
+                return self._exact_terminal_report(durable)
             allowed_ephemeral_failure = (
                 exc.failure.stage == "preflight"
                 and exc.failure.code is ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR
@@ -3096,6 +3222,24 @@ class Orchestrator:
                 run_id,
                 ProductRunFailureCode.INTERNAL_INVARIANT_ERROR,
                 stage="product_status_projection",
+            )
+        return report
+
+    def _exact_terminal_report(self, read: VerifiedRunReadV2) -> FinalReport:
+        report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+        expected_status = {
+            RunReadStatus.SUCCEEDED: "completed",
+            RunReadStatus.APPROVAL_REQUIRED: "approval_required",
+            RunReadStatus.FAILED: "failed_with_limitations",
+            RunReadStatus.CANCELLED: "failed_with_limitations",
+            RunReadStatus.CANCEL_UNCONFIRMED: "failed_with_limitations",
+        }.get(read.read_status)
+        if expected_status is None or report.run_status != expected_status:
+            raise self._product_error(
+                read.run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="load_report_status",
+                read_status=RunReadStatus.CORRUPT,
             )
         return report
 

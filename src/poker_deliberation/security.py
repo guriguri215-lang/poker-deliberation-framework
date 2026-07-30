@@ -38,9 +38,11 @@ _SECURITY_IGNORABLES = re.compile(
     "\u180b-\u180f\u1ab0-\u1aff\u1dc0-\u1dff\u200b-\u200f"
     "\u202a-\u202e\u2060-\u206f\u20d0-\u20ff\u3164"
     "\ufe00-\ufe0f\ufe20-\ufe2f\ufeff\uffa0"
+    "\ufff0-\ufff8"
     "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a"
     "\U000e0000-\U000e0fff]"
 )
+_SECURITY_IGNORABLE_CATEGORIES = frozenset({"Cf", "Mn", "Me"})
 _SECURITY_DASH_TRANSLATION = str.maketrans(
     {
         "\u2010": "-",
@@ -117,6 +119,9 @@ _DECISION_REQUEST = re.compile(
 _ARCHIVED_QUOTATION = re.compile(
     r"(?:(?:(?:archived|historical|recorded)\b[^:\r\n]{0,96}"
     r"(?::|\breads?\s+)|"
+    r"(?:(?:the\s+)?(?:video|replay|recording)\s+)?"
+    r"(?:subtitle|caption|quote)\s+(?:says?|reads?)\s+|"
+    r"(?:the\s+)?(?:video|replay|recording)\s+(?:says?|reads?)\s+|"
     r"(?:アーカイブ|過去|履歴)(?:の)?(?:引用|記録|メモ)[^\uFF1A\r\n]{0,48}"
     r"[\uFF1A:])\s*"
     r"(?:[\"“][^\"”]*[\"”]|'[^']*'|[「『][^」』]*[」』]))",
@@ -125,7 +130,7 @@ _ARCHIVED_QUOTATION = re.compile(
 _RETROSPECTIVE_LIVE_SUFFIX = re.compile(
     r"\s+(?:(?:(?:video\s+)?(?:replay|recording|review|simulation|trainer|viewer)"
     r"|archive(?:\s+review)?|hand[- ]?history(?:\s+viewer)?)\b"
-    r"(?=[^.\r\n]{0,160}\b(?:yesterday(?:'s)?|completed|finished|historical|"
+    r"(?=[^.!?\r\n]*\b(?:yesterday(?:'s)?|completed|finished|historical|"
     r"archived|recorded|last\s+(?:week|month|monday|tuesday|wednesday|thursday|"
     r"friday|saturday|sunday)|(?:one|two|three|four|five|six|seven|\d+)\s+"
     r"days?\s+ago|session\s+(?:has\s+)?ended|saved\s+last)\b)|"
@@ -205,6 +210,62 @@ _EXPLICIT_ACTIVE_LIVE_STATUS = re.compile(
     r"(?:\u30bf\u30a4\u30e0\u30d0\u30f3\u30af|\u6301\u3061\u6642\u9593|"
     r"\u6b8b\u308a\u6642\u9593).{0,12}(?:\u5207\u308c\u308b|\u5c3d\u304d\u308b)"
     r")",
+    re.IGNORECASE,
+)
+
+_ACTIVE_GAME_SUBJECT = re.compile(
+    r"\b(?:(?:my|this|the)\s+)?"
+    r"(?:mtt|sng|contest|event|game|match|tournament|table|hand|session|play|one|field)\b",
+    re.IGNORECASE,
+)
+_ACTIVE_GAME_PREDICATE = re.compile(
+    r"\b(?:"
+    r"(?:is|remains)\s+(?:still\s+|currently\s+)?"
+    r"(?:in\s+progress|underway|ongoing|active|live|going|running|playing|not\s+over)|"
+    r"(?:is(?:n't|n\u2019t|\s+not)|has(?:n't|n\u2019t|\s+not))\s+"
+    r"(?:over|ended|finished|completed|concluded|wrapped\s+up)(?:\s+yet)?|"
+    r"(?:has|have)\s+not\s+wrapped\s+up|"
+    r"(?:continues?|keeps\s+going)(?:\s+(?:today|now))?"
+    r")\b",
+    re.IGNORECASE,
+)
+_ACTIVE_GAME_CLAUSE = re.compile(
+    _ACTIVE_GAME_SUBJECT.pattern
+    + r"[^.!?\r\n\u3002\uff01\uff1f]*?"
+    + _ACTIVE_GAME_PREDICATE.pattern,
+    re.IGNORECASE,
+)
+_ACTIVE_PLAYER_STATUS = re.compile(
+    r"\b(?:"
+    r"(?:i|we)\s+remain(?:s)?\s+in\s+(?:the\s+)?"
+    r"(?:contest|event|game|match|tournament)|"
+    r"(?:i|we)\s+have\s+not\s+been\s+eliminated(?:\s+yet)?|"
+    r"(?:i(?:['\u2019]m| am)|we(?:['\u2019]re| are))\s+still\s+"
+    r"(?:at\s+(?:the\s+)?table|in\s+(?:the\s+)?"
+    r"(?:contest|event|game|match|tournament)|playing|competing|participating)|"
+    r"(?:the\s+)?action\s+has\s+reached\s+me|"
+    r"(?:my\s+)?(?:time\s*bank|decision\s+(?:clock|timer)|action\s+(?:clock|timer))"
+    r"\s+(?:is\s+)?(?:still\s+)?(?:counting\s+down|running)|"
+    r"(?:my\s+)?time\s*bank\s+has\s+\d+\s+seconds?\s+left"
+    r")\b",
+    re.IGNORECASE,
+)
+_ACTIVE_JAPANESE_STATUS = re.compile(
+    r"(?:(?:\u3053\u306e|\u305d\u306e|\u73fe\u5728\u306e)?"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|MTT|SNG|"
+    r"\u30a4\u30d9\u30f3\u30c8|\u30b2\u30fc\u30e0|\u30cf\u30f3\u30c9)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]*"
+    r"(?:\u958b\u50ac\u4e2d|\u7d9a\u884c\u4e2d|\u9032\u884c\u4e2d|"
+    r"\u4eca\u3082\u7d9a\u3044\u3066|\u307e\u3060\u7d42\u308f\u3063\u3066\u3044\u306a|"
+    r"\u307e\u3060\u7d42\u4e86\u3057\u3066\u3044\u306a)|"
+    r"(?:\u79c1|\u81ea\u5206)\u306f\u307e\u3060"
+    r"[^.!?\r\n\u3002\uff01\uff1f]*"
+    r"(?:\u5927\u4f1a|\u30c8\u30fc\u30ca\u30e1\u30f3\u30c8|MTT|SNG)"
+    r"[^.!?\r\n\u3002\uff01\uff1f]*(?:\u6b8b\u3063\u3066|\u53c2\u52a0\u4e2d)|"
+    r"(?:\u30bf\u30a4\u30e0\u30d0\u30f3\u30af|\u6301\u3061\u6642\u9593|"
+    r"\u6b8b\u308a\u6642\u9593)[^.!?\r\n\u3002\uff01\uff1f]*"
+    r"(?:\u6e1b\u3063\u3066|\u6e1b\u5c11|\u30ab\u30a6\u30f3\u30c8\u30c0\u30a6\u30f3|"
+    r"\u6b8b\u308a\s*\d+\s*\u79d2))",
     re.IGNORECASE,
 )
 
@@ -310,7 +371,17 @@ _INJECTION_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 def _security_probe(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
-    without_ignorables = _SECURITY_IGNORABLES.sub("", normalized)
+    without_categories = normalized
+    if any(
+        unicodedata.category(character) in _SECURITY_IGNORABLE_CATEGORIES
+        for character in normalized
+    ):
+        without_categories = "".join(
+            character
+            for character in normalized
+            if unicodedata.category(character) not in _SECURITY_IGNORABLE_CATEGORIES
+        )
+    without_ignorables = _SECURITY_IGNORABLES.sub("", without_categories)
     return without_ignorables.translate(_SECURITY_DASH_TRANSLATION).casefold()
 
 
@@ -318,10 +389,9 @@ def _redact_text(value: str) -> str:
     redacted = value
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
-    if redacted == value:
-        security_probe = _security_probe(value)
-        if any(pattern.search(security_probe) for pattern in _SECRET_PATTERNS):
-            return "[REDACTED]"
+    security_probe = _security_probe(redacted)
+    if any(pattern.search(security_probe) for pattern in _SECRET_PATTERNS):
+        return "[REDACTED]"
     return redacted
 
 
@@ -439,6 +509,14 @@ def _has_retrospective_reversal(cleaned: str) -> bool:
     return False
 
 
+def _has_active_live_status(cleaned: str) -> bool:
+    return (
+        _ACTIVE_PLAYER_STATUS.search(cleaned) is not None
+        or _ACTIVE_JAPANESE_STATUS.search(cleaned) is not None
+        or _ACTIVE_GAME_CLAUSE.search(cleaned) is not None
+    )
+
+
 def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
     """Return live-context, decision-request, and explicit-assistance signals."""
 
@@ -463,6 +541,7 @@ def real_time_assistance_signals(value: Any) -> tuple[bool, bool, bool]:
         _LIVE_CONTRADICTION.search(combined) is not None
         or _ACTIVE_LIVE_STATUS.search(combined) is not None
         or _EXPLICIT_ACTIVE_LIVE_STATUS.search(combined) is not None
+        or _has_active_live_status(combined)
     ):
         live_context_present = True
     return (

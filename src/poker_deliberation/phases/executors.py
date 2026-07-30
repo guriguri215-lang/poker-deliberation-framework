@@ -316,11 +316,13 @@ class AnalysisExecutor:
         context_clock: Callable[[], datetime],
         record_clock: Callable[[], datetime],
         monotonic_clock: MonotonicClock | None = None,
+        enforce_context_expiry: bool = True,
     ) -> None:
         self.provider = provider
         self.context_clock = context_clock
         self.record_clock = record_clock
         self.monotonic_clock = monotonic_clock or SystemMonotonicClock()
+        self.enforce_context_expiry = enforce_context_expiry
 
     def run(self, request: PhaseRequest[AnalysisInput]) -> PhaseOutcome[AnalysisOutput]:
         isolated = revalidate_request(
@@ -607,6 +609,26 @@ class AnalysisExecutor:
                 )
             else:
                 usage_delta = usage_delta.combine(UsageDelta(provider_output_bytes=report_size))
+        completed_at = self.record_clock()
+        if (
+            self.enforce_context_expiry
+            and execution_status is AgentExecutionStatus.COMPLETED
+            and completed_at > envelope.policy.expires_at
+        ):
+            report = AgentReport(
+                report_id=value.fallback_report_id,
+                agent_role=assignment.agent_role,
+                task=assignment.task,
+                uncertainties=["Provider context expired before its output could be accepted."],
+                confidence=ConfidenceGrade.D,
+            )
+            execution_status = AgentExecutionStatus.FAILED
+            execution_error = "provider context expired before output acceptance"
+            warnings.append(f"provider {assignment.agent_role} context expired")
+            retry_classification = classify_retry(
+                FailureCategory.VALIDATION,
+                max_retries=0,
+            )
         execution_record = AgentExecutionRecord(
             execution_id=value.execution_id,
             assignment_id=assignment.assignment_id,
@@ -621,7 +643,7 @@ class AnalysisExecutor:
             **_context_record_fields(envelope, context),
             status=execution_status,
             started_at=value.started_at,
-            completed_at=self.record_clock(),
+            completed_at=completed_at,
             error=execution_error,
         )
         output = AnalysisOutput(

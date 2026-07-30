@@ -100,6 +100,14 @@ def _prepare_source(source: bytes):
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
         (
+            "api\u0600_key=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_CONTROL,
+        ),
+        (
+            "api\ufff0_key=ABCDEFGHIJKLMNOP123456\n".encode(),
+            ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
+        ),
+        (
             "api\u0332_key: ABCDEFGHIJKLMNOP123456\n".encode(),
             ConfirmedReviewDiagnosticCode.SOURCE_SECRET,
         ),
@@ -396,6 +404,64 @@ def test_explicit_retrospective_source_is_not_misclassified_as_live(source: byte
     assert result.diagnostics == ()
 
 
+@pytest.mark.parametrize(
+    "active_status",
+    [
+        "I remain in the contest",
+        "The tournament has not wrapped up",
+        "The match is underway",
+        "We have not been eliminated yet",
+        "My time bank is counting down",
+        "This one is still running",
+        "We're still at the table and the action has reached me",
+        "Meanwhile, the field is still playing",
+        "この大会はまだ開催中です",
+        "大会は今も続いています",
+        "MTTはまだ続行中",
+        "私はまだこの大会に残っています",
+        "タイムバンクがカウントダウン中です",
+    ],
+)
+def test_present_active_status_is_refused(active_status: str) -> None:
+    result = _prepare_source(f"{active_status}. Should I call or fold?\n".encode())
+    assert result.status == "blocked"
+    assert result.candidate is None
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+
+
+def test_long_active_clause_is_refused_without_a_distance_window() -> None:
+    source = (
+        "I am reviewing a replay from yesterday. This tournament, "
+        + "according to the currently visible lobby details, " * 20
+        + "is still running. Should I call or fold?\n"
+    ).encode()
+    result = _prepare_source(source)
+    assert result.status == "blocked"
+    assert result.diagnostics[0].code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "I am playing an online MTT replay called "
+            + "X" * 240
+            + " from yesterday to review a finished hand. "
+            "Should I have called or folded?\n"
+        ).encode(),
+        (
+            b"For retrospective review of yesterday's completed hand, "
+            b'the video subtitle says "the action is on me." '
+            b"Should I have called or folded?\n"
+        ),
+    ],
+)
+def test_long_replay_title_and_archived_subtitle_remain_retrospective(source: bytes) -> None:
+    result = _prepare_source(source)
+    assert result.status == "ready"
+    assert result.candidate is not None
+
+
 def test_source_size_limit_is_exact() -> None:
     accepted = _prepare_source(b"x" * MAX_CONFIRMED_REVIEW_SOURCE_BYTES)
     rejected = _prepare_source(b"x" * (MAX_CONFIRMED_REVIEW_SOURCE_BYTES + 1))
@@ -416,6 +482,10 @@ def test_source_size_limit_is_exact() -> None:
         (
             b"My current online MTT table is still running and the action is on me.",
             "Should I call or fold?",
+        ),
+        (
+            b"This tournament is still",
+            "running. Should I call or fold?",
         ),
         (
             b"I am reviewing a completed hand from yesterday.",
@@ -715,6 +785,8 @@ def test_legacy_range_shape_cannot_enter_candidate_contract() -> None:
         "GITHUB_TOKEN=ABCDEFGHIJKLMNOP123456",
         "api\u034f_key: ABCDEFGHIJKLMNOP123456",
         "api\u180b_key=sk_test_never_store",
+        "api\u0600_key=ABCDEFGHIJKLMNOP123456",
+        "api\ufff0_key=ABCDEFGHIJKLMNOP123456",
         "api\u0332_key: ABCDEFGHIJKLMNOP123456",
     ],
 )

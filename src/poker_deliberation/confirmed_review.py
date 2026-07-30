@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from collections.abc import Sequence
@@ -14,6 +15,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ValidationError
 
 from poker_deliberation.agents import select_roles
+from poker_deliberation.budgets import BudgetFailureCode
 from poker_deliberation.confirmed_review_models import (
     CANDIDATE_CANONICALIZATION_ID,
     CONFIRMATION_CANONICALIZATION_ID,
@@ -555,18 +557,20 @@ def _validate_combined_security_scope(
     case = _case_from_candidate(candidate)
     if screen_case(case):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    source_text = source_bytes.decode("utf-8", errors="strict")
+    candidate_claims = [claim.text for claim in case.claims]
     candidate_live, candidate_decision, candidate_explicit = real_time_assistance_signals(
-        [claim.text for claim in case.claims]
+        candidate_claims
     )
     if candidate_explicit:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
-    if candidate_live or candidate_decision:
-        source_text = source_bytes.decode("utf-8", errors="strict")
-        source_live, source_decision, source_explicit = real_time_assistance_signals(source_text)
-        if source_explicit or (
-            (source_live or candidate_live) and (source_decision or candidate_decision)
-        ):
-            _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    combined_live, combined_decision, combined_explicit = real_time_assistance_signals(
+        [source_text, *candidate_claims]
+    )
+    if combined_explicit or (combined_live and combined_decision):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
+    if candidate_live and candidate_decision:
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_SCOPE, "candidate.hand")
     return case
 
 
@@ -784,6 +788,153 @@ _CONFIRMED_REVIEW_ASSIGNMENT_ID = re.compile(r"assignment-[0-9a-f]{12}")
 _CONFIRMED_REVIEW_CONTEXT_ID = re.compile(r"context-[0-9a-f]{24}")
 _CONFIRMED_REVIEW_CONTEXT_ATTEMPT_ID = re.compile(r"attempt-[0-9a-f]{24}")
 _CONFIRMED_REVIEW_EXECUTION_ID = re.compile(r"execution-[0-9a-f]{24}")
+_CONFIRMED_UNVERIFIED_CLAIM_WARNING = (
+    "ユーザー主張は入力として保存しましたが、検証条件がないため真偽未判定です。"
+)
+_CONFIRMED_SOLVER_LIMITATION = "外部ソルバーの実行・収束確認なしにGTOまたは均衡を主張していません。"
+_CONFIRMED_RUNTIME_DATA_QUALITY = frozenset(
+    {
+        "strict runtime refused before hand validation",
+        "provider analysis skipped because round budget is zero",
+        "maximum runtime reached before provider analysis",
+        "maximum runtime reached during context build",
+        "maximum runtime reached during provider preflight",
+        "maximum runtime exceeded after provider analysis",
+        "strict runtime refused before versioned range validation",
+        "strict runtime refused before requested tool execution",
+        "maximum runtime exceeded after tool execution",
+        "confirmed terminal publication refused with less than 0.25 seconds remaining",
+        "maximum runtime exceeded during final synthesis",
+        "maximum runtime exceeded during final artifact writes",
+    }
+)
+
+
+def _validate_reproduction_steps(report: FinalReport) -> None:
+    expected_results = [
+        result for result in report.tool_results if result.reproduce_command is not None
+    ]
+    if len(report.reproduction_steps) != len(expected_results):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.reproduction_steps",
+        )
+    for step, result in zip(report.reproduction_steps, expected_results, strict=True):
+        prefix = "argv-json: "
+        if not step.startswith(prefix):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.reproduction_steps",
+            )
+        try:
+            argv = json.loads(step.removeprefix(prefix))
+        except (json.JSONDecodeError, TypeError):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.reproduction_steps",
+            )
+        if (
+            not isinstance(argv, list)
+            or len(argv) != 7
+            or argv[:6]
+            != [
+                "poker-deliberate",
+                "calculate",
+                result.tool_name,
+                "--analysis-scope",
+                "retrospective",
+                "--input",
+            ]
+            or not isinstance(argv[6], str)
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.reproduction_steps",
+            )
+        normalized_path = argv[6].replace("\\", "/")
+        expected_suffix = f"/payload/tool_results/{result.result_id}.input.json"
+        if (
+            not normalized_path.endswith(expected_suffix)
+            or not re.match(r"^(?:[A-Za-z]:/|/)", normalized_path)
+            or "/../" in normalized_path
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.reproduction_steps",
+            )
+
+
+def _validate_confirmed_report_projection(report: FinalReport) -> None:
+    if (
+        report.alternatives
+        or report.sensitivity
+        or report.disputes
+        or report.evidence
+        or report.approvals
+        or report.security_events
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.authoritative_fields",
+        )
+    if report.confidence is not ConfidenceGrade.C:
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.confidence",
+        )
+    unique_data_quality = list(dict.fromkeys(report.data_quality))
+    unique_limitations = list(dict.fromkeys(report.limitations))
+    tool_messages = {
+        str(message)
+        for result in report.tool_results
+        for message in (
+            *result.warnings,
+            *(
+                result.output.get("warnings", [])
+                if isinstance(result.output.get("warnings", []), list)
+                else []
+            ),
+            *(
+                result.output.get("errors", [])
+                if isinstance(result.output.get("errors", []), list)
+                else []
+            ),
+        )
+    }
+    role_names = {record.agent_role for record in report.agent_execution_records}
+    budget_codes = {code.value for code in BudgetFailureCode}
+
+    def allowed_data_quality(item: str) -> bool:
+        if item in tool_messages or item in _CONFIRMED_RUNTIME_DATA_QUALITY:
+            return True
+        if item == _CONFIRMED_UNVERIFIED_CLAIM_WARNING:
+            return True
+        for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
+            if item.startswith(prefix) and item.removeprefix(prefix) in budget_codes:
+                return True
+        return any(
+            item == f"provider {role} context expired"
+            or item == f"provider {role} context rejected: context envelope has expired"
+            or item == f"provider {role} output exceeded the hard byte limit"
+            or (
+                item.startswith(f"provider {role} budget refused: ")
+                and item.removeprefix(f"provider {role} budget refused: ") in budget_codes
+            )
+            for role in role_names
+        )
+
+    expected_limitations = list(dict.fromkeys([*report.data_quality, _CONFIRMED_SOLVER_LIMITATION]))
+    if (
+        report.data_quality != unique_data_quality
+        or report.limitations != unique_limitations
+        or not all(allowed_data_quality(item) for item in report.data_quality)
+        or report.limitations != expected_limitations
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.limitations",
+        )
+    _validate_reproduction_steps(report)
 
 
 def _expected_agent_context_fields(
@@ -912,6 +1063,7 @@ def build_confirmed_review_provenance(
         and actual_tool_names != expected_tool_names[: len(actual_tool_names)]
     ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
+    _validate_confirmed_report_projection(report)
     result_ids = [result.result_id for result in report.tool_results]
     if len(set(result_ids)) != len(result_ids):
         _fail(ConfirmedReviewDiagnosticCode.REPORT_OVERREACH, "report.tool_results")
@@ -1041,6 +1193,15 @@ def build_confirmed_review_provenance(
                 assignment is None
                 or agent_report.agent_role != assignment.agent_role
                 or agent_report.task != assignment.task
+                or agent_report.conclusions
+                or agent_report.claims
+                or agent_report.assumptions
+                or agent_report.evidence_ids
+                or agent_report.tool_result_ids
+                or agent_report.formulas
+                or agent_report.objections
+                or agent_report.falsification_conditions
+                or agent_report.confidence not in {ConfidenceGrade.C, ConfidenceGrade.D}
             ):
                 _fail(
                     ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
@@ -1142,7 +1303,10 @@ def build_confirmed_review_provenance(
             or record.started_at > record.context_expires_at
             or record.context_expires_at - record.started_at
             > timedelta(seconds=_CONFIRMED_REVIEW_CONTEXT_MAX_DURATION_SECONDS)
-            or record.completed_at > record.context_expires_at
+            or (
+                record.status.value == "completed"
+                and record.completed_at > record.context_expires_at
+            )
             or (previous_completed_at is not None and record.started_at < previous_completed_at)
         ):
             _fail(

@@ -260,6 +260,30 @@ def test_secret_canary_is_redacted_from_all_run_artifacts(tmp_path: Path) -> Non
     assert "[REDACTED]" in combined
 
 
+def test_multiple_secrets_with_ignorable_separator_are_all_redacted(
+    tmp_path: Path,
+) -> None:
+    first = "ABCDEFGHIJKLMNOP123456"
+    second = "QRSTUVWXYZABCDEFGHIJ"
+    text = f"api_key={first} api\u180b_key={second}"
+    assert redact_sensitive(text) == "[REDACTED]"
+
+    orchestrator = Orchestrator(AppConfig(runs_dir=tmp_path / "runs"))
+    report = orchestrator.run(
+        CaseInput(
+            kind="strategy",
+            raw_text=text,
+            analysis_scope="retrospective",
+        )
+    )
+    run_dir = orchestrator.product_store.runs_root / report.run_id
+    combined = report.model_dump_json() + "\n".join(
+        path.read_text(encoding="utf-8") for path in run_dir.rglob("*") if path.is_file()
+    )
+    assert first not in combined
+    assert second not in combined
+
+
 def test_redaction_preserves_deterministic_nested_mapping_collisions_without_digest() -> None:
     first_secret = "sk-collision111111"
     second_secret = "sk-collision222222"

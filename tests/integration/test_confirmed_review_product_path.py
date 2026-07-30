@@ -33,6 +33,7 @@ from poker_deliberation.schemas import (
     AgentReport,
     ConfidenceGrade,
     EpistemicLabel,
+    FinalReport,
 )
 from poker_deliberation.storage.revision_canonical import parse_canonical_model
 from poker_deliberation.storage.terminal_models import RunReadStatus
@@ -422,23 +423,29 @@ def test_noncompleted_execution_requires_safe_nonempty_error(
         build_confirmed_review_provenance(admission, missing_error_report)
     assert missing.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
-    secret_error = first.model_copy(
-        update={"status": status, "error": "api_key=sk_test_never_store"},
-        deep=True,
-    )
-    secret_error_report = report.model_copy(
-        update={
-            "run_status": "failed_with_limitations",
-            "agent_execution_records": [
-                secret_error,
-                *report.agent_execution_records[1:],
-            ],
-        },
-        deep=True,
-    )
-    with pytest.raises(ConfirmedReviewError) as secret:
-        build_confirmed_review_provenance(admission, secret_error_report)
-    assert secret.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+    for secret_text in (
+        "api_key=sk_test_never_store",
+        "api\u0600_key=ABCDEFGHIJKLMNOP123456",
+        "api\ufff0_key=ABCDEFGHIJKLMNOP123456",
+        "api_key=ABCDEFGHIJKLMNOP123456 api\u180b_key=QRSTUVWXYZABCDEFGHIJ",
+    ):
+        secret_error = first.model_copy(
+            update={"status": status, "error": secret_text},
+            deep=True,
+        )
+        secret_error_report = report.model_copy(
+            update={
+                "run_status": "failed_with_limitations",
+                "agent_execution_records": [
+                    secret_error,
+                    *report.agent_execution_records[1:],
+                ],
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as secret:
+            build_confirmed_review_provenance(admission, secret_error_report)
+        assert secret.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
 def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> None:
@@ -501,6 +508,38 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
     assert forged.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
+def test_all_final_report_authority_fields_are_fail_closed(tmp_path) -> None:
+    admission = confirmed_admission(
+        run_id="run-confirmed-full-report-authority-1",
+        now=datetime.now(UTC),
+    )
+    report = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    ).run_confirmed_review(admission)
+    mutations = (
+        {"confidence": ConfidenceGrade.A},
+        {"limitations": ["GTO is proven exactly."]},
+        {"alternatives": ["Guaranteed winning shove."]},
+        {"sensitivity": [{"equity": 1.0}]},
+        {"reproduction_steps": ["solver proof complete"]},
+        {"evidence": [{"forged": "evidence"}]},
+        {
+            "data_quality": [*report.data_quality, "GTO is proven exactly."],
+            "limitations": [
+                *report.data_quality,
+                "GTO is proven exactly.",
+                report.limitations[-1],
+            ],
+        },
+    )
+    for update in mutations:
+        forged = report.model_copy(update=update, deep=True)
+        with pytest.raises(ConfirmedReviewError) as captured:
+            build_confirmed_review_provenance(admission, forged)
+        assert captured.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+
 def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> None:
     config = app_config(tmp_path)
     config.budgets = BudgetConfig(max_runtime_seconds=0.000_000_001)
@@ -517,6 +556,34 @@ def test_tiny_runtime_confirmed_review_returns_auditable_failure(tmp_path) -> No
         read = orchestrator.product_store.read_current(report.run_id, verify_budget=False)
         assert read.read_status is RunReadStatus.FAILED
         assert orchestrator.store.read_json(report.run_id, "assignments.json")
+        replay = orchestrator.run_confirmed_review(admission)
+        replay_read = orchestrator.product_store.read_current(
+            report.run_id,
+            verify_budget=False,
+        )
+        assert replay == report
+        assert replay_read.revision == read.revision
+        assert replay_read.manifest_sha256 == read.manifest_sha256
+        assert replay_read.current_pointer_sha256 == read.current_pointer_sha256
+
+
+def test_runtime_boundary_never_diverges_api_and_durable_terminal_status(tmp_path) -> None:
+    config = app_config(tmp_path)
+    config.budgets = BudgetConfig(max_runtime_seconds=0.08)
+    orchestrator = Orchestrator(config, provider=LocalProvider())
+
+    for ordinal in range(6):
+        admission = confirmed_admission(
+            run_id=f"run-confirmed-runtime-boundary-{ordinal}",
+            now=datetime.now(UTC),
+        )
+        report = orchestrator.run_confirmed_review(admission)
+        read = orchestrator.product_store.read_current(report.run_id, verify_budget=False)
+        durable_report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+
+        assert report.run_status == "failed_with_limitations"
+        assert read.read_status is RunReadStatus.FAILED
+        assert durable_report == report
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
@@ -597,6 +664,16 @@ def test_forged_confirmed_metadata_and_injected_runtime_are_rejected(tmp_path) -
         over_permissive.run_confirmed_review(admission)
     assert runtime_budget.value.code is ConfirmedReviewDiagnosticCode.RUNTIME_BUDGET
     assert over_permissive._namespace_kind(admission.confirmation.run_id) is None
+
+    injected_clock = Orchestrator(
+        app_config(tmp_path / "clock-injected"),
+        provider=LocalProvider(),
+        context_clock=lambda: datetime.now(UTC),
+    )
+    with pytest.raises(ConfirmedReviewError) as clock_runtime:
+        injected_clock.run_confirmed_review(admission)
+    assert clock_runtime.value.code is ConfirmedReviewDiagnosticCode.LOCAL_PROVIDER
+    assert injected_clock._namespace_kind(admission.confirmation.run_id) is None
 
 
 def test_runtime_dependency_mutation_and_historical_admission_are_rejected(tmp_path) -> None:

@@ -19,6 +19,7 @@ from poker_deliberation.bounded_natural_language_models import (
     BoundedIntakeCandidateV1,
     BoundedNaturalLanguageDiagnosticCode,
 )
+from poker_deliberation.schemas import RangeDefinition
 from tests.bounded_natural_language_support import (
     SOURCE_BYTES,
     focal_call_source,
@@ -443,6 +444,81 @@ def test_nested_model_subclasses_are_rejected_without_silent_field_loss() -> Non
         confirmation_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
     )
     assert confirmation_warnings == []
+
+
+def test_primitive_subclasses_are_rejected_without_silent_attribute_loss() -> None:
+    class StringWithFuture(str):
+        future: str
+
+    prepared = ready_bounded_preparation()
+    assert prepared.candidate is not None
+    projection = prepared.candidate.projection
+    intake_id = StringWithFuture(projection.intake_id)
+    intake_id.future = "opaque-candidate-marker"
+    forged_projection = projection.model_copy(update={"intake_id": intake_id})
+    forged_candidate = prepared.candidate.model_copy(update={"projection": forged_projection})
+
+    with warnings.catch_warnings(record=True) as candidate_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as candidate_error:
+            verify_bounded_candidate(forged_candidate)
+    assert candidate_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+    assert candidate_warnings == []
+
+    confirmation = _confirmation(prepared)
+    run_id = StringWithFuture(confirmation.run_id)
+    run_id.future = "opaque-confirmation-marker"
+    forged_confirmation = confirmation.model_copy(update={"run_id": run_id})
+    with warnings.catch_warnings(record=True) as confirmation_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as confirmation_error:
+            admit_bounded_natural_language_review(
+                SOURCE_BYTES,
+                prepared.candidate,
+                forged_confirmation,
+            )
+    assert (
+        confirmation_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
+    )
+    assert confirmation_warnings == []
+
+
+def test_nested_scalar_tamper_and_any_cycle_are_rejected_before_serialization() -> None:
+    prepared = ready_bounded_preparation()
+    assert prepared.candidate is not None
+    candidate = prepared.candidate
+    secret = "sk-" + "h" * 26
+    forged_hand = candidate.projection.hand.model_copy(update={"small_blind": secret})
+    forged_projection = candidate.projection.model_copy(update={"hand": forged_hand})
+    forged_candidate = candidate.model_copy(update={"projection": forged_projection})
+
+    with warnings.catch_warnings(record=True) as scalar_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as scalar_error:
+            verify_bounded_candidate(forged_candidate)
+    assert scalar_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+    assert str(scalar_error.value) == "BNL_E_CONFLICT"
+    assert secret not in str(scalar_error.value)
+    assert scalar_warnings == []
+
+    cycle: dict[str, object] = {}
+    cycle["self"] = cycle
+    range_definition = RangeDefinition(
+        player_id="Villain",
+        notation="AA",
+        game_conditions=cycle,
+    )
+    cyclic_hand = candidate.projection.hand.model_copy(update={"known_ranges": [range_definition]})
+    cyclic_projection = candidate.projection.model_copy(update={"hand": cyclic_hand})
+    cyclic_candidate = candidate.model_copy(update={"projection": cyclic_projection})
+
+    with warnings.catch_warnings(record=True) as cycle_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as cycle_error:
+            verify_bounded_candidate(cyclic_candidate)
+    assert cycle_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+    assert str(cycle_error.value) == "BNL_E_CONFLICT"
+    assert cycle_warnings == []
 
 
 def test_stale_confirmation_and_cross_run_binding_are_rejected() -> None:

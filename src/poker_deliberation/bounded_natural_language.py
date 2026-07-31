@@ -219,6 +219,56 @@ def _has_exact_contract_shape(value: object, annotation: object) -> bool:
     active: set[int] = set()
     visited_nodes = 0
 
+    def visit_any(item: object, depth: int) -> bool:
+        if isinstance(item, BaseModel):
+            identity = id(item)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                declared = set(type(item).model_fields)
+                if set(item.__dict__) != declared or item.__pydantic_extra__:
+                    return False
+                if not all(
+                    visit(
+                        item.__dict__[field], type(item).model_fields[field].annotation, depth + 1
+                    )
+                    for field in declared
+                ):
+                    return False
+                try:
+                    type(item).model_validate(item.__dict__, strict=True)
+                except (ValidationError, RecursionError, TypeError):
+                    return False
+                return True
+            finally:
+                active.remove(identity)
+        if type(item) is dict:
+            identity = id(item)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                return all(
+                    visit(key, Any, depth + 1) and visit(entry, Any, depth + 1)
+                    for key, entry in cast(dict[object, object], item).items()
+                )
+            finally:
+                active.remove(identity)
+        if type(item) in {list, tuple, set, frozenset}:
+            identity = id(item)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                values = cast(
+                    list[object] | tuple[object, ...] | set[object] | frozenset[object], item
+                )
+                return all(visit(entry, Any, depth + 1) for entry in values)
+            finally:
+                active.remove(identity)
+        return type(item) in {str, int, float, bool, Decimal, datetime, type(None)}
+
     def visit(item: object, expected: object, depth: int) -> bool:
         nonlocal visited_nodes
         visited_nodes += 1
@@ -227,6 +277,8 @@ def _has_exact_contract_shape(value: object, annotation: object) -> bool:
 
         origin = get_origin(expected)
         arguments = get_args(expected)
+        if expected is Any:
+            return visit_any(item, depth)
         if origin is Annotated:
             return bool(arguments) and visit(item, arguments[0], depth + 1)
         if origin in {Union, types.UnionType}:
@@ -244,10 +296,16 @@ def _has_exact_contract_shape(value: object, annotation: object) -> bool:
                 return False
             active.add(identity)
             try:
-                return all(
+                if not all(
                     visit(model.__dict__[field], expected.model_fields[field].annotation, depth + 1)
                     for field in declared
-                )
+                ):
+                    return False
+                try:
+                    expected.model_validate(model.__dict__, strict=True)
+                except (ValidationError, RecursionError, TypeError):
+                    return False
+                return True
             finally:
                 active.remove(identity)
 
@@ -281,9 +339,13 @@ def _has_exact_contract_shape(value: object, annotation: object) -> bool:
             finally:
                 active.remove(identity)
 
+        if origin is Literal:
+            return any(type(item) is type(literal) and item == literal for literal in arguments)
         if expected is type(None):
             return item is None
-        return True
+        if isinstance(expected, type):
+            return type(item) is expected
+        return False
 
     return visit(value, annotation, 0)
 

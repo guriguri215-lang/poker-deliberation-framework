@@ -153,7 +153,9 @@ effect admission後またはresume成否不明のclosureではattempt 1、approv
 必ずactual usageへ含め、保存済みevidence/outputがあるrestart closureでは既知のoutput usageも含める。
 tree停止を確認できない場合はworker-liveの`effect_unknown`としてpermitをsettleしない。
 二度目のapproval拒否がpermit start前に確定した場合は`released_no_effect`、start後でも
-`ResumeThread`前のexpiry/identity拒否が確定した場合は`failed`として閉じ、effect不明とは記録しない。
+`ResumeThread`前のexpiry/identity拒否が確定した場合は、active process 0、tree停止、
+limit/identity再照合、complete output evidenceを全て確認できたときだけ`failed`として閉じる。
+いずれかが欠ける場合は`effect_unknown`とし、started permitをsettleしない。
 
 P2-011B自体はtyped RM-028 isolation requirement/evidence interfaceだけを提供する。P2-028Aは別の
 Windows backendとして、固定repository synthetic helperに限りprocess-tree kill、Job Object

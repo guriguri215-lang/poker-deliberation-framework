@@ -333,6 +333,7 @@ def _create_suspended_process_in_job(
         raise _last_error()
 
     process_information = _PROCESS_INFORMATION()
+    attribute_delete_attempted = False
     try:
         handle_list = (wintypes.HANDLE * len(inherited_handles))(*inherited_handles)
         if not _kernel32.UpdateProcThreadAttribute(
@@ -385,12 +386,15 @@ def _create_suspended_process_in_job(
             ctypes.byref(process_information),
         ):
             raise _last_error()
-        return (
+        result = (
             int(process_information.hProcess),
             int(process_information.hThread),
             int(process_information.dwProcessId),
             int(process_information.dwThreadId),
         )
+        attribute_delete_attempted = True
+        _kernel32.DeleteProcThreadAttributeList(attribute_list)
+        return result
     except BaseException:
         if process_information.hProcess:
             with suppress(BaseException):
@@ -416,7 +420,9 @@ def _create_suspended_process_in_job(
                 _kernel32.CloseHandle(process_information.hProcess)
         raise
     finally:
-        _kernel32.DeleteProcThreadAttributeList(attribute_list)
+        if not attribute_delete_attempted:
+            with suppress(BaseException):
+                _kernel32.DeleteProcThreadAttributeList(attribute_list)
 
 
 def _set_job_limits(job: int, policy: IsolatedJobPolicyV1) -> None:

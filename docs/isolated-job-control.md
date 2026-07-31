@@ -38,6 +38,7 @@
 - interpreterがloadし得る全OS DLLの完全な推移的attestation。
 - distributed filesystem、power-loss durability、exactly-once、writer authenticity、秘密性。
 - backend外で同時に行われる未調整のprocess creationに対するhandle inheritanceの完全排除。
+- 最終identity照合から`ResumeThread`までを一つのOS syscallとして原子的にする保証。
 
 ## Versioned contract
 
@@ -125,7 +126,9 @@ fail closedとなる。`current`置換後のstorage errorは、同じrevision、
 verified historyから完全一致で再読できた場合だけcommit済みとして扱う。
 
 approval拒否またはkernel-boundary expiryが`ResumeThread`前に確定した場合はno-effectの`failed`
-または`released_no_effect`として閉じ、`effect_unknown`へ偽装しない。effect admission後または
+または`released_no_effect`として閉じる。ただしactive process 0、tree停止、limit/identity再照合、
+complete output evidenceが全て揃う場合だけで、一つでも欠ければ`effect_unknown`かつstarted permit
+維持に留める。effect admission後または
 その成否が不明な経路は、成功outputが未取得でもattempt 1、approved input
 bytes、concurrency 1をactual usageに記録する。保存済みevidence/outputがあるrestart closureでは既知の
 output usageも再構成する。

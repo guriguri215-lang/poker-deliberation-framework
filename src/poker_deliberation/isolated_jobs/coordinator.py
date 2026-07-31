@@ -1122,6 +1122,9 @@ class IsolatedJobCoordinator:
                     termination_evidence is not None
                     and termination_evidence.active_processes == 0
                     and termination_evidence.process_tree_termination_confirmed
+                    and termination_evidence.job_limits_requeried
+                    and termination_evidence.executable_identity_rechecked
+                    and termination_evidence.output_complete
                 )
                 if termination_confirmed:
                     try:

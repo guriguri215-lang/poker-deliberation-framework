@@ -624,6 +624,17 @@ class DurableIsolatedJobStateV1(_JobModel):
             )
         ):
             raise ValueError("failed job lacks closed-process evidence")
+        if (
+            self.status is IsolatedJobStatus.FAILED
+            and self.events[-1].reason_code == "effect_admission_refused_no_effect"
+            and (
+                self.evidence is None
+                or not self.evidence.output_complete
+                or self.failure_code is None
+                or self.evidence.termination_reason != self.failure_code.value
+            )
+        ):
+            raise ValueError("known-no-effect failure lacks complete termination evidence")
         if self.status is IsolatedJobStatus.EFFECT_UNKNOWN and (
             self.failure_code is not JobFailureCode.EFFECT_UNKNOWN
             or self.reconciliation_evidence_sha256 is not None

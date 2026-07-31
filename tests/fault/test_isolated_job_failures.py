@@ -32,6 +32,7 @@ from poker_deliberation.isolated_jobs.models import (
     ISOLATED_JOB_PRODUCER_ID,
     ISOLATED_JOB_PRODUCER_VERSION,
     ApprovalJobReferenceV1,
+    DurableIsolatedJobStateV1,
     IsolatedJobError,
     IsolatedJobPolicyV1,
     IsolatedJobRequestV1,
@@ -670,6 +671,49 @@ def test_kernel_boundary_expiry_reports_approval_mismatch_before_resume(
     assert budget_state.settlements[-1].actual.tool_attempts == 1
     assert budget_state.settlements[-1].status.value == "failed"
     assert not budget_state.active_permits
+    invalid_payload = state.model_dump(mode="python")
+    invalid_payload["evidence"]["output_complete"] = False
+    with pytest.raises(ValueError, match="known-no-effect failure"):
+        DurableIsolatedJobStateV1.model_validate(invalid_payload)
+
+
+def test_kernel_expiry_with_incomplete_output_evidence_keeps_started_permit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="kernel-expiry-incomplete-output",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    clock_calls = 0
+    original_snapshot = backend_module._OutputBudget.snapshot
+
+    def expiring_clock():
+        nonlocal clock_calls
+        clock_calls += 1
+        return NOW if clock_calls < 4 else NOW + timedelta(minutes=30)
+
+    def incomplete_snapshot(output_budget: object):
+        stdout, stderr, overflow, _reader_error = original_snapshot(
+            output_budget  # type: ignore[arg-type]
+        )
+        return stdout, stderr, overflow, True
+
+    coordinator.clock = expiring_clock
+    monkeypatch.setattr(backend_module._OutputBudget, "snapshot", incomplete_snapshot)
+    with pytest.raises(ValueError, match=JobFailureCode.APPROVAL_MISMATCH.value):
+        coordinator.execute(value, policy, **kwargs)
+
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.failure_code is JobFailureCode.EFFECT_UNKNOWN
+    assert state.evidence is None
+    assert any(permit.permit_id == value.budget_permit_id for permit in budget_state.active_permits)
+    assert not budget_state.settlements
 
 
 def test_resume_rechecks_identity_after_second_approval(
@@ -1220,6 +1264,63 @@ def test_atomic_job_create_controller_abort_terminates_assigned_child(
         pass
 
     assert observed["active_processes"] == 1
+    assert (
+        WindowsJobBackend.process_identity_status(
+            observed["process_id"],
+            observed["creation_time"],
+        )
+        == "absent"
+    )
+
+
+def test_attribute_list_delete_abort_terminates_created_job_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="attribute-delete-controller-abort",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    observed: dict[str, int] = {}
+    original_create_process = backend_module._kernel32.CreateProcessW
+    original_delete = backend_module._kernel32.DeleteProcThreadAttributeList
+
+    def capture_process(*args: Any) -> bool:
+        created = bool(original_create_process(*args))
+        if created:
+            process_information = backend_module.ctypes.cast(
+                args[-1],
+                backend_module.ctypes.POINTER(
+                    backend_module._PROCESS_INFORMATION,
+                ),
+            ).contents
+            observed["process_id"] = int(process_information.dwProcessId)
+            observed["creation_time"] = backend_module._process_creation_time(
+                int(process_information.hProcess)
+            )
+        return created
+
+    def interrupt_after_delete(attribute_list: object) -> None:
+        original_delete(attribute_list)
+        raise KeyboardInterrupt("synthetic attribute-list delete abort")
+
+    monkeypatch.setattr(
+        backend_module._kernel32,
+        "CreateProcessW",
+        capture_process,
+    )
+    monkeypatch.setattr(
+        backend_module._kernel32,
+        "DeleteProcThreadAttributeList",
+        interrupt_after_delete,
+    )
+    with (
+        pytest.raises(KeyboardInterrupt),
+        WindowsJobBackend().prepare(value, policy_for(tmp_path)),
+    ):
+        pass
+
     assert (
         WindowsJobBackend.process_identity_status(
             observed["process_id"],

@@ -270,7 +270,9 @@ settlement前にtree停止証拠を独立に検証し、未確認ならworker-li
 `cpu_limit`であり、successにしない。ただしlocal Job
 terminationはremote provider、remote billing、remote cancellation、network isolationの証拠ではない。
 `ResumeThread`前に確定したapproval expiryまたはidentity mismatchはno-effectの`failed`として閉じ、
-effect有無が不明な経路と区別する。
+effect有無が不明な経路と区別する。ただしtree停止、limit/identity、complete output evidenceの
+いずれかが欠ける場合はFAILEDへ確定しない。最終identity照合と`ResumeThread`は連続するが、一つの
+OS syscallとして原子的ではない。
 `effect_unknown`はsuccess/failed/retryへ変換せず、保存済みPID/creation time不在と別のopaque
 reconciliation evidence digestを確認しても`reconciled`は非successのままである。
 

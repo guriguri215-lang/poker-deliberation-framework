@@ -1,5 +1,18 @@
 # Security
 
+- P3-030B bounded Japanese intakeは最大65,536-byteのUTF-8/NFC/LF sourceと有限の全行grammarだけを
+  受理する。BOM、invalid UTF-8、CR、control/format文字、credential形状、real-time助言、unknown行、
+  欠落、重複、矛盾、曖昧raise、action/resource超過、未対応scopeをstable codeでfail closedにし、
+  raw lexemeをerrorへechoしない。各抽出fieldは元bytesのexact half-open span、lexeme hash、value
+  hashへ束縛する。
+- source/candidate/source-bindings/focal/tool-plan/extractorの6 domain-separated SHA-256をすべて
+  明示確認するまでrun namespaceを作らない。SHA-256はcorruption/correlation検出用で、署名や
+  writer authenticityではない。confirmationはauthority、run ID、idempotency key、UTC期限へ束縛し、
+  最大24時間、cross-run replay拒否である。
+- bounded product pathはexact `LocalProvider`と`default_registry()`を再検証し、raw sourceを
+  contextへ渡さず、`hand_validator -> hand_pot_ledger -> pot_odds`以外のtool plan/resultを拒否する。
+  terminal readerはparser、ledger-derived integer inputs、tool/report evidence、4個のbounded artifact、
+  storage bindingを再計算し、欠落・byte改ざん・意味改ざんを拒否する。
 - P3-015A `hand_pot_ledger`はstrict/frozen schemaと明示profile/version/site/chip unitを要求し、
   unknown field/version、非整数unit、overflow、rake、straddle、PLO、tournament、run-it-twiceを
   fail closedにする。unknown profile値はclosed error codeで拒否し、caller contentをerrorへecho

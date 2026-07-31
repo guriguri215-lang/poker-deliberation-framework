@@ -21,6 +21,12 @@ P3-030Aは、caller-suppliedの完全なhand/range候補をsource/candidate hash
 site parser、外部model/solverではなく、入力claimは確認後も`USER_CLAIM`です。詳細は
 [`docs/confirmed-review-intake.md`](docs/confirmed-review-intake.md)を参照してください。
 
+P3-030Bは別capabilityとして、文書化した有限の日本語retrospective NLHE cash grammarだけを
+exact UTF-8 source span付きで決定的に抽出します。6 hashの明示確認後に限り、固定LocalProvider、
+`hand_validator -> hand_pot_ledger -> pot_odds`、durable provenance replayへ接続します。一般自然言語、
+site/OCR、tournament、range、外部model/solverではありません。詳細は
+[`docs/bounded-natural-language-intake.md`](docs/bounded-natural-language-intake.md)を参照してください。
+
 P3-015Aの`hand_pot_ledger`は、明示した`generic_nlhe_cash_no_rake_v1`だけを対象に、
 caller-declared chip unitの整数ledger、uncalled return、side pot、fold eligibility、
 full-raise reopeningを独立`Fraction` oracle付きで計算します。rake、straddle、site profile、

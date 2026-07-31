@@ -31,7 +31,8 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `documented_hand_parser` | **implemented** | version 1のstrictかつprovenance-boundなkey-value/player/action形式だけを保守的に正規化する。対応siteは`none`。 |
 | `versioned_nlhe_range_grammar` | **implemented** | provenance、game condition、blocker、整数millionth weightを検証し、1 opponent rangeをcanonical comboへ変換するbounded grammar v1。 |
 | `profiled_nlhe_side_pot_ledger` | **implemented** | `generic_nlhe_cash_no_rake_v1`に限り、整数単位のcontribution、uncalled return、side pot、eligibilityを独立oracle付きで計算する。 |
-| `natural_language_or_site_parser` | **unavailable** | 自然言語およびsite-specific hand history parserはない。 |
+| `natural_language_or_site_parser` | **unavailable** | 一般自然言語およびsite-specific hand history parserはない。独立したbounded Japanese grammarをこの能力へ拡張しない。 |
+| `bounded_japanese_nlhe_cash_parser` | **implemented** | version 1の文書化済み日本語retrospective NLHE cash grammarを、exact UTF-8 span、6 hash確認、固定LocalProvider、限定tool、durable replayに接続する。一般自然言語・site parserではない。 |
 | `confirmed_natural_language_review_intake` | **implemented** | 呼出側が作成した完全な候補を利用者がsource/candidate hashで明示確認した場合に限り、固定LocalProvider・限定tool・検証済みterminal reportへ接続する。自然言語の意味抽出やsite parserを実装したという意味ではない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
@@ -66,7 +67,9 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 
 - 主対象は事後のNLHE cash/tournament review。リアルタイム助言はfail-closedで拒否する。
 - equityはheads-up NLHEだけ。ICMは指定したpayout model、小規模gameは明示した有限modelだけを扱う。
-- free-text parserは文書化grammarだけを扱い、不明行を警告として保存する。
+- generic free-text parserは文書化key-value grammarだけを扱い、不明行を警告として保存する。
+- bounded Japanese parserはP3-030B version 1の有限文型だけをexact matchし、余分な行、曖昧性、
+  欠落、矛盾、未対応scopeをfail closedで拒否する。
 - toolはpayload/work/output capを持つが、in-process実行を強制停止するOS sandboxではない。
 - solver実行、収束、対象game/rake/stackの一致がない結果をGTO・均衡・正確なrangeと表示しない。
 

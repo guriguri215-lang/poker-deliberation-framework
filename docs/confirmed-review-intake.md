@@ -4,6 +4,10 @@ P3-030Aは、自然言語からポーカーハンドを推測するparserでは�
 完全な構造化候補を用意し、人間または検証済みapplication authorityが両者の対応を明示確認した
 場合だけ、既存のoffline adjudicationへ接続する境界です。
 
+文書化した有限の日本語NLHE cash grammarからcandidateを決定的に抽出する別経路は
+[P3-030B限定日本語入力](bounded-natural-language-intake.md)を参照してください。P3-030Aの
+caller-supplied candidate契約とartifact familyは変更せず、両経路を混在させません。
+
 ## 3段階の利用
 
 1. `prepare-review-intake`はsource bytesとcaller-supplied candidateを検証し、source hashと

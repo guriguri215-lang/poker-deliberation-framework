@@ -928,6 +928,9 @@ _FIXED_RUN_PAYLOAD_ARTIFACTS = frozenset(
         "confirmed_review_source.txt",
         "confirmed_review_candidate.json",
         "confirmed_review_confirmation.json",
+        "bounded_nl_source.txt",
+        "bounded_nl_candidate.json",
+        "bounded_nl_confirmation.json",
         "input.json",
         "normalization.json",
         "normalized_case.json",
@@ -955,6 +958,7 @@ _FIXED_RUN_REPORT_ARTIFACTS = frozenset(
         "final_report.json",
         "final_report.md",
         "confirmed_review_provenance.json",
+        "bounded_nl_provenance.json",
     }
 )
 

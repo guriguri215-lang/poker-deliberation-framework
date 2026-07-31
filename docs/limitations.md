@@ -1,5 +1,11 @@
 # Current limitations
 
+- P3-030Bは一般自然言語parserではない。version 1で列挙した日本語文型による、完了済み2～6人
+  NLHE cash、zero ante/rake、最大64 actions、単一の隣接facing-bet call/fold判断だけを扱う。
+  source/candidate/bindings/focal/tool-plan/extractorの6 hash確認が必須で、raw sourceはagent contextへ
+  渡さない。一般文章、site format、image/PDF/OCR、tournament、range、focal all-in/side pot、
+  external model/provider/solver、GTO/均衡は拒否する。12件のfixtureで5個のexact metricが`1.0`でも、
+  version 1 grammar contractへの適合だけを意味し、一般自然言語精度や戦略品質を示さない。
 - P3-030Aの確認済みレビュー入力は、一般自然言語parserではない。呼出側が完全な
   `CanonicalHand`と任意の単一`VersionedRangeDefinitionV1`を提示し、利用者または検証済み
   application authorityがsource/candidate hashを明示確認した場合だけ、retrospectiveかつ

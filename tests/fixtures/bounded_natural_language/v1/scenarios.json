@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "family_id": "poker-bounded-nl-evaluation-json-v1",
+  "fixture_id": "bounded-japanese-nlhe-cash-cases-v1",
+  "source_kind": "repository_fixture",
+  "license_classification": "repository_owned_mit",
+  "usage_classification": "redistribution_allowed",
+  "content_classification": "public",
+  "scoring": "exact-evidence-set-v1",
+  "threshold": "1.0",
+  "cases": [
+    {"case_id": "valid-extraction-and-spans", "expected_evidence": ["exact-field-extraction", "exact-source-span-binding"]},
+    {"case_id": "supported-notation-variation", "expected_evidence": ["explicit-variation-preserves-semantics"]},
+    {"case_id": "card-stack-street-conflicts", "expected_evidence": ["conflicts-rejected-with-exact-diagnostic"]},
+    {"case_id": "missing-required-fields", "expected_evidence": ["missing-fields-rejected-without-inference"]},
+    {"case_id": "raise-and-focal-ambiguity", "expected_evidence": ["ambiguity-rejected-without-selection"]},
+    {"case_id": "unsupported-scope", "expected_evidence": ["rake-ante-tournament-site-refused"]},
+    {"case_id": "security-and-unicode-boundary", "expected_evidence": ["encoding-secret-injection-live-assistance-refused"]},
+    {"case_id": "action-count-boundary", "expected_evidence": ["action-limit-rejected"]},
+    {"case_id": "declared-pot-mismatch", "expected_evidence": ["ledger-assertion-mismatch-rejected"]},
+    {"case_id": "hash-tamper", "expected_evidence": ["candidate-and-tool-plan-tamper-rejected"]},
+    {"case_id": "confirmation-replay", "expected_evidence": ["stale-and-cross-run-confirmation-rejected"]},
+    {"case_id": "confirmed-product-and-storage", "expected_evidence": ["exact-tool-evidence", "terminal-storage-replay", "missing-artifact-rejected"]}
+  ]
+}

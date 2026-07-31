@@ -72,7 +72,15 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "natural_language_or_site_parser",
         "unavailable",
-        "Natural-language and site-specific hand histories are not parsed.",
+        "General natural-language and site-specific hand histories are not parsed; the "
+        "separately named bounded Japanese grammar does not change this state.",
+    ),
+    Capability(
+        "bounded_japanese_nlhe_cash_parser",
+        "implemented",
+        "Version 1 deterministically parses one documented Japanese retrospective NLHE cash "
+        "grammar with exact UTF-8 source spans and six-hash confirmation; it is not a general "
+        "natural-language or site parser.",
     ),
     Capability(
         "confirmed_natural_language_review_intake",

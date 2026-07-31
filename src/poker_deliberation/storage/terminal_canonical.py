@@ -25,6 +25,11 @@ from poker_deliberation.approvals import (
     project_v1_approvals,
     read_approval_state_v2,
 )
+from poker_deliberation.bounded_natural_language_models import (
+    BoundedIntakeCandidateV1,
+    BoundedIntakeConfirmationV1,
+    BoundedNaturalLanguageProvenanceV1,
+)
 from poker_deliberation.confirmed_review_models import (
     ConfirmedReviewProvenanceV1,
     ReviewIntakeCandidateV1,
@@ -114,6 +119,14 @@ _CONFIRMED_REVIEW_ARTIFACTS = frozenset(
         "confirmed_review_candidate.json",
         "confirmed_review_confirmation.json",
         "confirmed_review_provenance.json",
+    }
+)
+_BOUNDED_NL_ARTIFACTS = frozenset(
+    {
+        "bounded_nl_source.txt",
+        "bounded_nl_candidate.json",
+        "bounded_nl_confirmation.json",
+        "bounded_nl_provenance.json",
     }
 )
 _AGENT_REPORT_ARTIFACT = re.compile(
@@ -479,6 +492,7 @@ def product_payload_commitments(
     except ValueError as exc:
         raise CanonicalStorageError("versioned range tool chain replay failed") from exc
     confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS
+    bounded_names = set(payloads) & _BOUNDED_NL_ARTIFACTS
     input_marker_present = "confirmed_review" in input_case.metadata
     report_metadata = report.reconstructed_input.get("metadata")
     report_marker_present = isinstance(report_metadata, dict) and (
@@ -553,6 +567,81 @@ def product_payload_commitments(
             )
         except ValueError as exc:
             raise CanonicalStorageError("confirmed-review source-to-report replay failed") from exc
+    bounded_input_marker_present = "bounded_natural_language_review" in input_case.metadata
+    bounded_report_marker_present = isinstance(report_metadata, dict) and (
+        "bounded_natural_language_review" in report_metadata
+    )
+    bounded_report_marker = (
+        report_metadata.get("bounded_natural_language_review")
+        if isinstance(report_metadata, dict)
+        else None
+    )
+    if bounded_input_marker_present != bounded_report_marker_present or (
+        bounded_input_marker_present
+        and bounded_report_marker != input_case.metadata["bounded_natural_language_review"]
+    ):
+        raise CanonicalStorageError("bounded-language input and report markers must match exactly")
+    bounded_marker = bounded_input_marker_present or bounded_report_marker_present
+    if bounded_marker != bool(bounded_names) or (
+        bounded_names and bounded_names != _BOUNDED_NL_ARTIFACTS
+    ):
+        raise CanonicalStorageError(
+            "bounded-language marker and complete artifact set must appear together"
+        )
+    if confirmed_marker and bounded_marker:
+        raise CanonicalStorageError("confirmed intake artifact contracts are mutually exclusive")
+    if bounded_marker:
+        if "assignments.json" not in payloads:
+            raise CanonicalStorageError("bounded-language payload requires the assignment ledger")
+        if revision_root is None or revision is None or transaction_id is None:
+            raise CanonicalStorageError(
+                "bounded-language payload requires exact terminal storage authority"
+            )
+        source_bytes = payloads["bounded_nl_source.txt"]
+        bounded_candidate = _parse_json_model(
+            payloads["bounded_nl_candidate.json"],
+            BoundedIntakeCandidateV1,
+        )
+        bounded_confirmation = _parse_json_model(
+            payloads["bounded_nl_confirmation.json"],
+            BoundedIntakeConfirmationV1,
+        )
+        bounded_provenance = _parse_json_model(
+            payloads["bounded_nl_provenance.json"],
+            BoundedNaturalLanguageProvenanceV1,
+        )
+        if bounded_confirmation.run_id != run_id or bounded_provenance.run_id != run_id:
+            raise CanonicalStorageError("bounded-language run ID correlation mismatch")
+        reports_by_role = {agent_report.agent_role: agent_report for agent_report in agent_reports}
+        ordered_agent_reports = [
+            reports_by_role[record.agent_role]
+            for record in execution_records
+            if record.agent_role in reports_by_role
+        ]
+        if len(ordered_agent_reports) != len(execution_records) or len(agent_reports) != len(
+            execution_records
+        ):
+            raise CanonicalStorageError("bounded-language agent reports do not match executions")
+        try:
+            from poker_deliberation.bounded_natural_language_provenance import (
+                verify_bounded_natural_language_provenance,
+            )
+
+            verify_bounded_natural_language_provenance(
+                source_bytes=source_bytes,
+                candidate=bounded_candidate,
+                confirmation=bounded_confirmation,
+                case=input_case,
+                report=report,
+                provenance=bounded_provenance,
+                assignments=assignments,
+                agent_reports=ordered_agent_reports,
+                storage_root=revision_root,
+                storage_revision=revision,
+                storage_transaction_id=transaction_id,
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError("bounded-language source-to-report replay failed") from exc
 
     context_bindings = [
         {
@@ -740,6 +829,9 @@ def _validate_json_value(logical_name: str, data: bytes) -> None:
         "confirmed_review_candidate.json": ReviewIntakeCandidateV1,
         "confirmed_review_confirmation.json": ReviewIntakeConfirmationV1,
         "confirmed_review_provenance.json": ConfirmedReviewProvenanceV1,
+        "bounded_nl_candidate.json": BoundedIntakeCandidateV1,
+        "bounded_nl_confirmation.json": BoundedIntakeConfirmationV1,
+        "bounded_nl_provenance.json": BoundedNaturalLanguageProvenanceV1,
         "input.json": CaseInput,
         "normalized_case.json": CaseInput,
         "final_report.json": FinalReport,

@@ -56,6 +56,20 @@ from poker_deliberation.approvals import (
     validate_approval_decision,
     validate_approval_reissue,
 )
+from poker_deliberation.bounded_natural_language import (
+    BoundedNaturalLanguageAdmission,
+    BoundedNaturalLanguageError,
+    admit_bounded_natural_language_review,
+)
+from poker_deliberation.bounded_natural_language_models import (
+    BOUNDED_NL_TOOL_ORDER,
+    MAX_BOUNDED_NL_ARTIFACT_BYTES,
+    MAX_BOUNDED_NL_RUN_BYTES,
+    BoundedNaturalLanguageDiagnosticCode,
+)
+from poker_deliberation.bounded_natural_language_provenance import (
+    build_bounded_natural_language_provenance,
+)
 from poker_deliberation.budgets import (
     BudgetLimitError,
     BudgetPolicyV2,
@@ -183,6 +197,7 @@ from poker_deliberation.schemas import (
     Dispute,
     EvidenceRecord,
     FinalReport,
+    NumericalExactness,
     SecurityEvent,
     ToolRequest,
     ToolResult,
@@ -644,6 +659,7 @@ class Orchestrator:
         self._publication_plans: dict[str, tuple[int, str]] = {}
         self._approval_v2_payloads: dict[str, dict[str, bytes]] = {}
         self._confirmed_review_admissions: dict[str, ConfirmedReviewAdmission] = {}
+        self._bounded_nl_admissions: dict[str, BoundedNaturalLanguageAdmission] = {}
         self._confirmed_review_provider = self.provider
         self._confirmed_review_registry = self.registry
         self._confirmed_review_registry_sha256 = canonical_domain_sha256(
@@ -1724,6 +1740,141 @@ class Orchestrator:
         finally:
             self._confirmed_review_admissions.pop(run_id, None)
 
+    def run_bounded_natural_language_review(
+        self,
+        admission: BoundedNaturalLanguageAdmission,
+    ) -> FinalReport:
+        """Execute a confirmed bounded-language review on the exact local runtime."""
+
+        verified = admit_bounded_natural_language_review(
+            admission.source_bytes,
+            admission.candidate,
+            admission.confirmation,
+        )
+        if (
+            verified.source_bytes != admission.source_bytes
+            or verified.candidate != admission.candidate
+            or verified.confirmation != admission.confirmation
+            or verified.case != admission.case
+        ):
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
+                "admission",
+            )
+        admission = verified
+        run_id = admission.confirmation.run_id
+        if not self._confirmed_review_runtime_is_exact():
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        availability = self.provider.availability()
+        if (
+            type(self.provider) is not LocalProvider
+            or self.provider is not self._confirmed_review_provider
+            or availability.provider != "local"
+            or availability.version != "1.0.0"
+            or self._registry_was_injected
+            or type(self.registry) is not ToolRegistry
+            or self.registry is not self._confirmed_review_registry
+            or type(self.analysis_executor) is not AnalysisExecutor
+            or self.analysis_executor.provider is not self.provider
+            or self.analysis_executor.monotonic_clock is not self.monotonic_clock
+            or type(self.tool_research_executor) is not ToolResearchExecutor
+            or self.tool_research_executor.registry is not self.registry
+            or self.tool_research_executor.record_sensitive_data
+            != self.config.record_sensitive_data
+            or canonical_domain_sha256(
+                "poker-confirmed-review-registry-v1",
+                self.registry.describe(),
+            )
+            != self._confirmed_review_registry_sha256
+        ):
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        if (
+            self.budget_policy.max_artifact_bytes > MAX_BOUNDED_NL_ARTIFACT_BYTES
+            or self.budget_policy.max_run_bytes > MAX_BOUNDED_NL_RUN_BYTES
+        ):
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.RUNTIME_BUDGET,
+                "runtime.budget",
+            )
+        namespace = self._namespace_kind(run_id)
+        if namespace is not None:
+            if namespace != "product":
+                raise BoundedNaturalLanguageError(
+                    BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_REPLAY,
+                    "confirmation.run_id",
+                )
+            current = self.product_store.read_current(run_id)
+            expected = {
+                "bounded_nl_source.txt": admission.source_bytes,
+                "bounded_nl_candidate.json": canonical_storage_json_bytes(admission.candidate),
+                "bounded_nl_confirmation.json": canonical_storage_json_bytes(
+                    admission.confirmation
+                ),
+            }
+            try:
+                exact_replay = all(
+                    current.payload_bytes(name) == payload for name, payload in expected.items()
+                )
+            except KeyError:
+                exact_replay = False
+            if not exact_replay:
+                raise BoundedNaturalLanguageError(
+                    BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_REPLAY,
+                    "confirmation.idempotency_key",
+                )
+            return self._exact_terminal_report(current)
+        hand = admission.case.hand
+        raw_inputs = admission.case.metadata.get("tool_inputs")
+        if hand is None or not isinstance(raw_inputs, dict):
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.TOOL,
+                "candidate.tool_plan",
+            )
+        ledger_input = raw_inputs.get("hand_pot_ledger")
+        pot_odds_input = raw_inputs.get("pot_odds")
+        if not isinstance(ledger_input, dict) or not isinstance(pot_odds_input, dict):
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.TOOL,
+                "candidate.tool_plan",
+            )
+        preflight_inputs = {
+            "hand_validator": hand.model_dump(mode="json"),
+            "hand_pot_ledger": {
+                **ledger_input,
+                "hand": hand.model_dump(mode="json"),
+            },
+            "pot_odds": pot_odds_input,
+        }
+        for tool_name in BOUNDED_NL_TOOL_ORDER:
+            result = self.registry.execute(
+                tool_name,
+                preflight_inputs[tool_name],
+                contract_version=self.tool_contract_versions.get(tool_name),
+            )
+            if result.status is not ToolStatus.SUCCESS or (
+                result.numeric_exactness is NumericalExactness.FLOATING_VERIFIED
+                and (result.verification is None or not result.verification.passed)
+            ):
+                raise BoundedNaturalLanguageError(
+                    BoundedNaturalLanguageDiagnosticCode.TOOL,
+                    f"candidate.tool_plan.{tool_name}",
+                )
+        self._bounded_nl_admissions[run_id] = admission
+        try:
+            return self._run(
+                CaseInput.model_validate(admission.case.model_dump(mode="python")),
+                run_id,
+                normalization=None,
+            )
+        finally:
+            self._bounded_nl_admissions.pop(run_id, None)
+
     def _run(
         self,
         case: CaseInput,
@@ -1756,6 +1907,9 @@ class Orchestrator:
             )
         self.store.create_run(actual_run_id)
         confirmed_admission = self._confirmed_review_admissions.get(actual_run_id)
+        bounded_admission = self._bounded_nl_admissions.get(actual_run_id)
+        if confirmed_admission is not None and bounded_admission is not None:
+            raise PhaseContractError("multiple confirmed intake contracts share one run")
         if confirmed_admission is not None:
             if confirmed_admission.confirmation.run_id != actual_run_id:
                 raise ConfirmedReviewError(
@@ -1776,6 +1930,27 @@ class Orchestrator:
                 actual_run_id,
                 "confirmed_review_confirmation.json",
                 confirmed_admission.confirmation,
+            )
+        if bounded_admission is not None:
+            if bounded_admission.confirmation.run_id != actual_run_id:
+                raise BoundedNaturalLanguageError(
+                    BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
+                    "confirmation.run_id",
+                )
+            self.store.write_text(
+                actual_run_id,
+                "bounded_nl_source.txt",
+                bounded_admission.source_bytes.decode("utf-8", errors="strict"),
+            )
+            self.store.write_json(
+                actual_run_id,
+                "bounded_nl_candidate.json",
+                bounded_admission.candidate,
+            )
+            self.store.write_json(
+                actual_run_id,
+                "bounded_nl_confirmation.json",
+                bounded_admission.confirmation,
             )
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         self._run_machines[actual_run_id] = machine
@@ -2388,9 +2563,8 @@ class Orchestrator:
                         machine=machine,
                     )
                 if (
-                    confirmed_admission is not None
-                    and analysis.execution_record.status is not AgentExecutionStatus.COMPLETED
-                ):
+                    confirmed_admission is not None or bounded_admission is not None
+                ) and analysis.execution_record.status is not AgentExecutionStatus.COMPLETED:
                     machine.transition(
                         RunState.FAILED_WITH_LIMITATIONS,
                         "confirmed local analysis did not complete within its context",
@@ -3057,7 +3231,11 @@ class Orchestrator:
         planned_revision = 1 if previous is None else previous.revision + 1
         transaction_id = self.terminal_id_factory("txn")
         confirmed_admission = self._confirmed_review_admissions.get(run_id)
-        if completed and confirmed_admission is not None:
+        bounded_admission = self._bounded_nl_admissions.get(run_id)
+        strict_admission_present = confirmed_admission is not None or bounded_admission is not None
+        if confirmed_admission is not None and bounded_admission is not None:
+            raise PhaseContractError("multiple confirmed intake contracts share one run")
+        if completed and strict_admission_present:
             try:
                 _, observed_at_ns, deadline_ns = machine.runtime_window()
             except BudgetLimitError:
@@ -3179,12 +3357,37 @@ class Orchestrator:
                 "confirmed_review_provenance.json",
                 provenance,
             )
+        if bounded_admission is not None:
+            raw_assignments = self.store.read_json(run_id, "assignments.json")
+            if not isinstance(raw_assignments, list):
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR,
+                    stage="bounded_nl_provenance",
+                )
+            assignments = [
+                AgentAssignment.model_validate(assignment) for assignment in raw_assignments
+            ]
+            bounded_provenance = build_bounded_natural_language_provenance(
+                bounded_admission,
+                report,
+                assignments=assignments,
+                agent_reports=reports,
+                storage_root=self.product_store.revision_root,
+                storage_revision=planned_revision,
+                storage_transaction_id=transaction_id,
+            )
+            self.store.write_json(
+                run_id,
+                "bounded_nl_provenance.json",
+                bounded_provenance,
+            )
         self._publication_plans[run_id] = (planned_revision, transaction_id)
         try:
             verified = self._publish_buffer(run_id, report)
         except ProductRunError as exc:
             if (
-                confirmed_admission is not None
+                strict_admission_present
                 and exc.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
             ):
                 raise

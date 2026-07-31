@@ -110,6 +110,12 @@ ITEM_FIELDS = {
     "decision_gate",
 }
 IMMUTABLE_ITEM_FIELDS = ITEM_FIELDS - {"status", "status_reason"}
+_RM030_STALE_P2_028A_RELATION = (
+    "P2-028A remains not started and is not activated by this local-only path."
+)
+_RM030_HISTORICAL_P2_028A_RELATION = (
+    "At P3-030A completion, P2-028A had not started and was not activated by that local-only path."
+)
 MILESTONE_FIELDS = {
     "id",
     "rm_id",
@@ -475,6 +481,17 @@ def validate_roadmap_update(
         new_item = new_items[item_id]
         for field in IMMUTABLE_ITEM_FIELDS:
             if old_item[field] != new_item[field]:
+                if (
+                    item_id == "RM-030"
+                    and field == "relations"
+                    and old_item[field].count(_RM030_STALE_P2_028A_RELATION) == 1
+                ):
+                    corrected = list(old_item[field])
+                    corrected[corrected.index(_RM030_STALE_P2_028A_RELATION)] = (
+                        _RM030_HISTORICAL_P2_028A_RELATION
+                    )
+                    if new_item[field] == corrected:
+                        continue
                 raise ValueError(f"public item contract changed: {item_id}.{field}")
         if old_item["status"] != new_item["status"]:
             validate_transition(str(old_item["status"]), str(new_item["status"]), transitions)

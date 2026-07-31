@@ -295,8 +295,10 @@ Windows Job Object、`store.py`はP2-012A revision/CAS上のfull snapshot、`coo
 approval/context/budget/effect順序を所有する。
 
 依存方向はcoordinator → P2-013B verified approval reader / P2-024A context validator /
-P2-011B durable budget / isolated-job store / Windows backendである。childはsuspendedで生成してJobへ
-割り当て、limitを再照合してeffect bindingなしの`launch_committed`をpublishする。permit start後に
+P2-011B durable budget / isolated-job store / Windows backendである。coordinatorはresource取得前から
+preparation leaseを保持し、非daemon workerが同一`STARTUPINFOEX`の`HANDLE_LIST`と`JOB_LIST`で
+生成時からJob所属のsuspended childを作る。leaseはbackend return handoffを越えてcleanup ownershipを
+維持する。limitを再照合してeffect bindingなしの`launch_committed`をpublishする。permit start後に
 approvalを再照合し、durable publicationを挟まずidentity recheckと`ResumeThread`を行い、そのbindingを
 `running`へ固定する。budget settlementをterminal job snapshotより先に確定する。
 

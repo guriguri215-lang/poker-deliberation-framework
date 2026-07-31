@@ -391,7 +391,7 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
     assert "milestone table remains authoritative for current status" in str(
         items["RM-030"]["status_reason"]
     )
-    assert "P2-028A remains not started" in str(items["RM-030"]["relations"])
+    assert "At P3-030A completion, P2-028A had not started" in str(items["RM-030"]["relations"])
     assert "Completion-time relations (historical; not current status assertions)" in rendered
     assert "- Relations:" in rendered
 
@@ -515,6 +515,27 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     _by_id(contract_change)["RM-011"]["targets"].append("new public target")  # type: ignore[union-attr]
     with pytest.raises(ValueError, match="public item contract changed"):
         validate_roadmap_update(previous, contract_change)
+
+    legacy_relation = deepcopy(previous)
+    legacy_rm030 = _by_id(legacy_relation)["RM-030"]["relations"]
+    historical = next(
+        relation
+        for relation in legacy_rm030  # type: ignore[union-attr]
+        if str(relation).startswith("At P3-030A completion, P2-028A")
+    )
+    legacy_rm030[legacy_rm030.index(historical)] = (  # type: ignore[union-attr]
+        "P2-028A remains not started and is not activated by this local-only path."
+    )
+    validate_roadmap_update(legacy_relation, previous)
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, legacy_relation)
+
+    arbitrary_relation = deepcopy(previous)
+    _by_id(arbitrary_relation)["RM-030"]["relations"].append(  # type: ignore[union-attr]
+        "Arbitrary relation mutation."
+    )
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, arbitrary_relation)
 
     transition_table_change = deepcopy(previous)
     transition_table_change["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]

@@ -7,7 +7,6 @@ import ctypes
 import hashlib
 import msvcrt
 import os
-import subprocess
 import sys
 import threading
 import time
@@ -50,7 +49,11 @@ from poker_deliberation.local_data_policy import contains_restricted_secret_shap
 
 _CREATE_SUSPENDED: Final = 0x00000004
 _CREATE_NO_WINDOW: Final = 0x08000000
+_CREATE_UNICODE_ENVIRONMENT: Final = 0x00000400
+_EXTENDED_STARTUPINFO_PRESENT: Final = 0x00080000
 _STARTF_USESTDHANDLES: Final = 0x00000100
+_PROC_THREAD_ATTRIBUTE_HANDLE_LIST: Final = 0x00020002
+_PROC_THREAD_ATTRIBUTE_JOB_LIST: Final = 0x0002000D
 _WAIT_OBJECT_0: Final = 0
 _WAIT_TIMEOUT: Final = 258
 _INFINITE: Final = 0xFFFFFFFF
@@ -79,6 +82,8 @@ _TERMINATION_EXIT_CODE: Final = 0xE0280001
 _POLL_INTERVAL_SECONDS: Final = 0.01
 _POST_TERMINATION_WAIT_MS: Final = 5_000
 _PROCESS_CREATION_LOCK: Final = threading.RLock()
+_PREPARATION_REGISTRY_LOCK: Final = threading.RLock()
+_PREPARATION_LEASES: dict[str, PreparationLease] = {}
 
 
 class _LARGE_INTEGER(ctypes.Structure):
@@ -148,6 +153,45 @@ class _FILETIME(ctypes.Structure):
     ]
 
 
+class _STARTUPINFOW(ctypes.Structure):
+    _fields_ = [
+        ("cb", wintypes.DWORD),
+        ("lpReserved", wintypes.LPWSTR),
+        ("lpDesktop", wintypes.LPWSTR),
+        ("lpTitle", wintypes.LPWSTR),
+        ("dwX", wintypes.DWORD),
+        ("dwY", wintypes.DWORD),
+        ("dwXSize", wintypes.DWORD),
+        ("dwYSize", wintypes.DWORD),
+        ("dwXCountChars", wintypes.DWORD),
+        ("dwYCountChars", wintypes.DWORD),
+        ("dwFillAttribute", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("wShowWindow", wintypes.WORD),
+        ("cbReserved2", wintypes.WORD),
+        ("lpReserved2", ctypes.POINTER(ctypes.c_ubyte)),
+        ("hStdInput", wintypes.HANDLE),
+        ("hStdOutput", wintypes.HANDLE),
+        ("hStdError", wintypes.HANDLE),
+    ]
+
+
+class _STARTUPINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("StartupInfo", _STARTUPINFOW),
+        ("lpAttributeList", ctypes.c_void_p),
+    ]
+
+
+class _PROCESS_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("hProcess", wintypes.HANDLE),
+        ("hThread", wintypes.HANDLE),
+        ("dwProcessId", wintypes.DWORD),
+        ("dwThreadId", wintypes.DWORD),
+    ]
+
+
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
 _kernel32.CreateJobObjectW.restype = wintypes.HANDLE
@@ -166,8 +210,6 @@ _kernel32.QueryInformationJobObject.argtypes = (
     ctypes.POINTER(wintypes.DWORD),
 )
 _kernel32.QueryInformationJobObject.restype = wintypes.BOOL
-_kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
-_kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
 _kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
 _kernel32.TerminateJobObject.restype = wintypes.BOOL
 _kernel32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
@@ -188,6 +230,38 @@ _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
 _kernel32.OpenProcess.restype = wintypes.HANDLE
 _kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
 _kernel32.WaitForSingleObject.restype = wintypes.DWORD
+_kernel32.InitializeProcThreadAttributeList.argtypes = (
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.POINTER(ctypes.c_size_t),
+)
+_kernel32.InitializeProcThreadAttributeList.restype = wintypes.BOOL
+_kernel32.UpdateProcThreadAttribute.argtypes = (
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    ctypes.c_size_t,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_size_t),
+)
+_kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
+_kernel32.DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
+_kernel32.DeleteProcThreadAttributeList.restype = None
+_kernel32.CreateProcessW.argtypes = (
+    wintypes.LPCWSTR,
+    wintypes.LPWSTR,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    wintypes.BOOL,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.LPCWSTR,
+    ctypes.POINTER(_STARTUPINFOEXW),
+    ctypes.POINTER(_PROCESS_INFORMATION),
+)
+_kernel32.CreateProcessW.restype = wintypes.BOOL
 
 
 def _last_error() -> OSError:
@@ -226,6 +300,125 @@ def _process_times(handle: int) -> tuple[int, int, int]:
         _filetime_value(kernel),
         _filetime_value(user),
     )
+
+
+def _create_suspended_process_in_job(
+    *,
+    application: str,
+    command_line: str,
+    current_directory: str,
+    inherited_handles: list[int],
+    stdin_handle: int,
+    stdout_handle: int,
+    stderr_handle: int,
+    job_handle: int,
+) -> tuple[int, int, int, int]:
+    """Atomically create the suspended child in its Job with an empty environment."""
+
+    attribute_size = ctypes.c_size_t()
+    _kernel32.InitializeProcThreadAttributeList(
+        None,
+        2,
+        0,
+        ctypes.byref(attribute_size),
+    )
+    if attribute_size.value == 0:
+        raise _last_error()
+    attribute_buffer = ctypes.create_string_buffer(attribute_size.value)
+    attribute_list = ctypes.cast(attribute_buffer, ctypes.c_void_p)
+    if not _kernel32.InitializeProcThreadAttributeList(
+        attribute_list,
+        2,
+        0,
+        ctypes.byref(attribute_size),
+    ):
+        raise _last_error()
+
+    process_information = _PROCESS_INFORMATION()
+    try:
+        handle_list = (wintypes.HANDLE * len(inherited_handles))(*inherited_handles)
+        if not _kernel32.UpdateProcThreadAttribute(
+            attribute_list,
+            0,
+            _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+            ctypes.cast(handle_list, ctypes.c_void_p),
+            ctypes.sizeof(handle_list),
+            None,
+            None,
+        ):
+            raise _last_error()
+        job_list = (wintypes.HANDLE * 1)(job_handle)
+        if not _kernel32.UpdateProcThreadAttribute(
+            attribute_list,
+            0,
+            _PROC_THREAD_ATTRIBUTE_JOB_LIST,
+            ctypes.cast(job_list, ctypes.c_void_p),
+            ctypes.sizeof(job_list),
+            None,
+            None,
+        ):
+            raise _last_error()
+
+        startup = _STARTUPINFOEXW()
+        startup.StartupInfo.cb = ctypes.sizeof(_STARTUPINFOEXW)
+        startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
+        startup.StartupInfo.hStdInput = stdin_handle
+        startup.StartupInfo.hStdOutput = stdout_handle
+        startup.StartupInfo.hStdError = stderr_handle
+        startup.lpAttributeList = attribute_list
+        writable_command_line = ctypes.create_unicode_buffer(command_line)
+        empty_environment = ctypes.create_unicode_buffer(2)
+        creation_flags = (
+            _CREATE_SUSPENDED
+            | _CREATE_NO_WINDOW
+            | _CREATE_UNICODE_ENVIRONMENT
+            | _EXTENDED_STARTUPINFO_PRESENT
+        )
+        if not _kernel32.CreateProcessW(
+            application,
+            writable_command_line,
+            None,
+            None,
+            True,
+            creation_flags,
+            ctypes.cast(empty_environment, ctypes.c_void_p),
+            current_directory,
+            ctypes.byref(startup),
+            ctypes.byref(process_information),
+        ):
+            raise _last_error()
+        return (
+            int(process_information.hProcess),
+            int(process_information.hThread),
+            int(process_information.dwProcessId),
+            int(process_information.dwThreadId),
+        )
+    except BaseException:
+        if process_information.hProcess:
+            with suppress(BaseException):
+                _kernel32.TerminateJobObject(
+                    wintypes.HANDLE(job_handle),
+                    _TERMINATION_EXIT_CODE,
+                )
+            with suppress(BaseException):
+                _kernel32.TerminateProcess(
+                    process_information.hProcess,
+                    _TERMINATION_EXIT_CODE,
+                )
+            with suppress(BaseException):
+                _kernel32.WaitForSingleObject(
+                    process_information.hProcess,
+                    _POST_TERMINATION_WAIT_MS,
+                )
+        if process_information.hThread:
+            with suppress(BaseException):
+                _kernel32.CloseHandle(process_information.hThread)
+        if process_information.hProcess:
+            with suppress(BaseException):
+                _kernel32.CloseHandle(process_information.hProcess)
+        raise
+    finally:
+        _kernel32.DeleteProcThreadAttributeList(attribute_list)
 
 
 def _set_job_limits(job: int, policy: IsolatedJobPolicyV1) -> None:
@@ -374,6 +567,92 @@ class WindowsJobOutcome:
     cancelled: bool
 
 
+class PreparationLease:
+    """Own preparation resources across the backend-to-caller return boundary."""
+
+    def __init__(self, execution_id: str) -> None:
+        self.execution_id = execution_id
+        self._lock = threading.RLock()
+        self._done = threading.Event()
+        self._worker: threading.Thread | None = None
+        self._prepared: PreparedWindowsJob | None = None
+        self._error: BaseException | None = None
+        self._abort_requested = False
+        self._released = False
+
+    def start(self, target: Callable[[], None]) -> None:
+        worker = threading.Thread(
+            target=target,
+            name="isolated-job-preparation",
+            daemon=False,
+        )
+        with self._lock:
+            if self._worker is not None or self._released:
+                raise RuntimeError("preparation lease cannot be started twice")
+            self._worker = worker
+        worker.start()
+
+    def publish_prepared(self, prepared: PreparedWindowsJob) -> None:
+        abort_requested = False
+        with self._lock:
+            if self._prepared is not None or self._error is not None:
+                raise RuntimeError("preparation lease already has a result")
+            abort_requested = self._abort_requested
+            if not abort_requested:
+                self._prepared = prepared
+        if abort_requested:
+            prepared.terminate_before_resume()
+        self._done.set()
+
+    def publish_error(self, error: BaseException) -> None:
+        with self._lock:
+            if self._prepared is not None or self._error is not None:
+                raise RuntimeError("preparation lease already has a result")
+            self._error = error
+        self._done.set()
+
+    def result(self) -> PreparedWindowsJob:
+        self._done.wait()
+        with self._lock:
+            if self._error is not None:
+                raise self._error
+            if self._abort_requested or self._prepared is None:
+                raise RuntimeError("preparation was aborted")
+            return self._prepared
+
+    def abort_and_join(self) -> None:
+        with self._lock:
+            self._abort_requested = True
+            worker = self._worker
+            prepared = self._prepared
+        if worker is not None and worker is not threading.current_thread():
+            while worker.is_alive():
+                try:
+                    worker.join(timeout=0.1)
+                except BaseException:
+                    # Preserve cleanup ownership even if another controller
+                    # interruption arrives while the first is being handled.
+                    continue
+        with self._lock:
+            if prepared is None:
+                prepared = self._prepared
+        if prepared is not None:
+            with suppress(BaseException):
+                prepared.terminate_before_resume()
+        self.release()
+
+    def release(self) -> None:
+        with self._lock:
+            if self._released:
+                return
+            self._released = True
+            self._prepared = None
+            self._error = None
+        with _PREPARATION_REGISTRY_LOCK:
+            if _PREPARATION_LEASES.get(self.execution_id) is self:
+                del _PREPARATION_LEASES[self.execution_id]
+
+
 class PreparedWindowsJob:
     """One suspended process already assigned to its configured Job Object."""
 
@@ -391,6 +670,7 @@ class PreparedWindowsJob:
         stdout_read_fd: int,
         stderr_read_fd: int,
         inherited_handle_count: int,
+        preparation_lease: PreparationLease,
     ) -> None:
         self.request = request
         self.policy = policy
@@ -403,6 +683,7 @@ class PreparedWindowsJob:
         self.stdout_read_fd = stdout_read_fd
         self.stderr_read_fd = stderr_read_fd
         self.inherited_handle_count = inherited_handle_count
+        self._preparation_lease = preparation_lease
         self._resumed = False
         self._closed = False
         self._identity_rechecked = False
@@ -415,7 +696,7 @@ class PreparedWindowsJob:
         )
         self._stdout_done = threading.Event()
         self._stderr_done = threading.Event()
-        self._threads: tuple[threading.Thread, threading.Thread] | None = None
+        self._threads: tuple[threading.Thread, ...] | None = None
 
     def _start_readers(self) -> None:
         stdout_thread = threading.Thread(
@@ -440,9 +721,24 @@ class PreparedWindowsJob:
             name=f"isolated-job-{self.process_id}-stderr",
             daemon=True,
         )
-        self._threads = (stdout_thread, stderr_thread)
-        stdout_thread.start()
-        stderr_thread.start()
+        readers = (
+            (stdout_thread, self.stdout_read_fd, self._stdout_done),
+            (stderr_thread, self.stderr_read_fd, self._stderr_done),
+        )
+        started: list[threading.Thread] = []
+        try:
+            for thread, _file_descriptor, _done in readers:
+                thread.start()
+                started.append(thread)
+        except BaseException:
+            for thread, file_descriptor, done in readers:
+                if thread not in started:
+                    with suppress(BaseException):
+                        os.close(file_descriptor)
+                    done.set()
+            self._threads = tuple(started)
+            raise
+        self._threads = tuple(started)
 
     def verify_identity_before_admission(self) -> None:
         if self._resumed or self._closed:
@@ -459,8 +755,8 @@ class PreparedWindowsJob:
         if self._resumed or self._closed:
             raise RuntimeError("isolated job cannot be resumed twice")
         try:
-            if not self._identity_rechecked:
-                self.verify_identity_before_admission()
+            verify_execution_identity(self.policy.execution_identity)
+            self._identity_rechecked = True
             self._start_readers()
             self._started_ns = time.monotonic_ns()
             if approval_valid_until is not None and (
@@ -678,6 +974,9 @@ class PreparedWindowsJob:
         extended = _query_extended(self.job_handle)
         _creation, process_kernel_time, process_user_time = _process_times(int(self.process_handle))
         active_processes = int(accounting.BasicInfo.ActiveProcesses)
+        if active_processes != 0:
+            stop_reason = JobFailureCode.EFFECT_UNKNOWN
+            cancelled_value = False
         if stop_reason is None:
             stop_reason = self._infer_exit_failure(
                 exit_code,
@@ -809,6 +1108,7 @@ class PreparedWindowsJob:
         _close_handle(self.job_handle)
         self.job_handle = 0
         self._closed = True
+        self._preparation_lease.release()
 
     def __enter__(self) -> PreparedWindowsJob:
         return self
@@ -828,6 +1128,20 @@ class WindowsJobBackend:
     """
 
     boundary_id = "windows-job-object-repository-synthetic-v1"
+
+    def new_preparation_lease(self, execution_id: str) -> PreparationLease:
+        lease = PreparationLease(execution_id)
+        with _PREPARATION_REGISTRY_LOCK:
+            if execution_id in _PREPARATION_LEASES:
+                raise IsolatedJobError(JobFailureCode.RUN_LOCKED)
+            _PREPARATION_LEASES[execution_id] = lease
+        return lease
+
+    def abort_preparation(self, execution_id: str) -> None:
+        with _PREPARATION_REGISTRY_LOCK:
+            lease = _PREPARATION_LEASES.get(execution_id)
+        if lease is not None:
+            lease.abort_and_join()
 
     def _open_input(
         self,
@@ -863,8 +1177,11 @@ class WindowsJobBackend:
                     raise IsolatedJobError(JobFailureCode.SECRET_REJECTED)
                 os.set_inheritable(file_descriptor, True)
                 return file_descriptor
-            except Exception:
-                os.close(file_descriptor)
+            except BaseException:
+                with suppress(BaseException):
+                    os.set_inheritable(file_descriptor, False)
+                with suppress(BaseException):
+                    os.close(file_descriptor)
                 raise
         if approved is not None:
             raise ValueError("only copy_handles may bind an approved input")
@@ -877,13 +1194,29 @@ class WindowsJobBackend:
     ) -> PreparedWindowsJob:
         if sys.platform != "win32":
             raise OSError("Windows Job Object backend is unavailable")
-        with _PROCESS_CREATION_LOCK:
-            return self._prepare_locked(request, policy)
+        lease = self.new_preparation_lease(request.execution_id)
+
+        def prepare_worker() -> None:
+            try:
+                with _PROCESS_CREATION_LOCK:
+                    prepared = self._prepare_locked(request, policy, lease)
+            except BaseException as exc:
+                lease.publish_error(exc)
+            else:
+                lease.publish_prepared(prepared)
+
+        try:
+            lease.start(prepare_worker)
+            return lease.result()
+        except BaseException:
+            lease.abort_and_join()
+            raise
 
     def _prepare_locked(
         self,
         request: IsolatedJobRequestV1,
         policy: IsolatedJobPolicyV1,
+        preparation_lease: PreparationLease,
     ) -> PreparedWindowsJob:
         verify_execution_identity(policy.execution_identity)
         verify_filesystem_policy(policy.filesystem)
@@ -914,28 +1247,23 @@ class WindowsJobBackend:
             handles = [stdin_handle, stdout_handle, stderr_handle]
             if input_handle is not None:
                 handles.append(input_handle)
-            startup = subprocess.STARTUPINFO()
-            startup.dwFlags |= _STARTF_USESTDHANDLES
-            startup.hStdInput = stdin_handle
-            startup.hStdOutput = stdout_handle
-            startup.hStdError = stderr_handle
-            startup.lpAttributeList = {"handle_list": handles}
             argv = canonical_child_argv(
                 request,
                 policy,
                 input_handle=input_handle,
             )
             command_line = canonical_windows_command_line(argv)
-            process_handle, thread_handle, process_id, _thread_id = _winapi.CreateProcess(
-                policy.execution_identity.interpreter.absolute_path,
-                command_line,
-                None,
-                None,
-                True,
-                _CREATE_SUSPENDED | _CREATE_NO_WINDOW,
-                {},
-                policy.filesystem.workspace_root.absolute_path,
-                startup,
+            process_handle, thread_handle, process_id, _thread_id = (
+                _create_suspended_process_in_job(
+                    application=policy.execution_identity.interpreter.absolute_path,
+                    command_line=command_line,
+                    current_directory=policy.filesystem.workspace_root.absolute_path,
+                    inherited_handles=handles,
+                    stdin_handle=stdin_handle,
+                    stdout_handle=stdout_handle,
+                    stderr_handle=stderr_handle,
+                    job_handle=job,
+                )
             )
             for child_descriptor in (stdin_fd, stdout_write, stderr_write, input_fd):
                 if child_descriptor is not None:
@@ -944,11 +1272,6 @@ class WindowsJobBackend:
             stdout_write = None
             stderr_write = None
             input_fd = None
-            if not _kernel32.AssignProcessToJobObject(
-                wintypes.HANDLE(job),
-                wintypes.HANDLE(int(process_handle)),
-            ):
-                raise _last_error()
             _verify_job_limits(job, policy)
             if int(_query_accounting(job).BasicInfo.ActiveProcesses) != 1:
                 raise OSError("suspended child was not the sole active job process")
@@ -968,6 +1291,7 @@ class WindowsJobBackend:
                 stdout_read_fd=stdout_read,
                 stderr_read_fd=stderr_read,
                 inherited_handle_count=len(handles),
+                preparation_lease=preparation_lease,
             )
             job = 0
             process_handle = None

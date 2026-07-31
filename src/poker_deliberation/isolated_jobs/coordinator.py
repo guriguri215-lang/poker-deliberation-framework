@@ -425,15 +425,11 @@ class IsolatedJobCoordinator:
                 "exit_code": outcome.evidence.exit_code,
             }
         )
-        policy = self.job_store.load(request.execution_id).policy
-        approved_input = policy.filesystem.approved_input
-        actual = ResourceAmountsV1(
-            tool_attempts=1,
-            tool_input_bytes=0 if approved_input is None else approved_input.size_bytes,
+        actual = self._started_actual(
+            request,
             tool_output_bytes=len(outcome.stdout) + len(outcome.stderr),
             artifact_bytes=max(len(outcome.stdout), len(outcome.stderr)),
             run_bytes=len(outcome.stdout) + len(outcome.stderr),
-            concurrency_slots=1,
         )
         result = self.budget_store.settle(
             request.budget_run_id,
@@ -451,6 +447,37 @@ class IsolatedJobCoordinator:
             observed_peak_concurrency=1,
         )
         return result.state.settlements[-1].status
+
+    def _started_actual(
+        self,
+        request: IsolatedJobRequestV1,
+        *,
+        tool_output_bytes: int = 0,
+        artifact_bytes: int = 0,
+        run_bytes: int = 0,
+    ) -> ResourceAmountsV1:
+        policy = self.job_store.load(request.execution_id).policy
+        approved_input = policy.filesystem.approved_input
+        return ResourceAmountsV1(
+            tool_attempts=1,
+            tool_input_bytes=0 if approved_input is None else approved_input.size_bytes,
+            tool_output_bytes=tool_output_bytes,
+            artifact_bytes=artifact_bytes,
+            run_bytes=run_bytes,
+            concurrency_slots=1,
+        )
+
+    def _recovery_actual(self, request: IsolatedJobRequestV1) -> ResourceAmountsV1:
+        current = self.job_store.load(request.execution_id)
+        if current.evidence is None:
+            return self._started_actual(request)
+        stdout, stderr = self.job_store.load_outputs(request.execution_id)
+        return self._started_actual(
+            request,
+            tool_output_bytes=len(stdout) + len(stderr),
+            artifact_bytes=max(len(stdout), len(stderr)),
+            run_bytes=len(stdout) + len(stderr),
+        )
 
     def _record_budget_cancellation(
         self,
@@ -499,6 +526,7 @@ class IsolatedJobCoordinator:
         request: IsolatedJobRequestV1,
         *,
         evidence_sha256: str,
+        worker_live: bool,
     ) -> None:
         state = self.budget_store.load(request.budget_run_id)
         cancellation = next(
@@ -517,9 +545,13 @@ class IsolatedJobCoordinator:
                 permit_id=request.budget_permit_id,
                 state_value=CancellationState.EFFECT_UNKNOWN,
                 evidence_sha256=evidence_sha256,
-                worker_live=False,
+                worker_live=worker_live,
             )
-        elif cancellation.state is CancellationState.EFFECT_UNKNOWN and (cancellation.worker_live):
+        elif (
+            cancellation.state is CancellationState.EFFECT_UNKNOWN
+            and cancellation.worker_live
+            and not worker_live
+        ):
             self.budget_store.record_cancellation(
                 request.budget_run_id,
                 operation_id=_operation_id(request.execution_id, "cancel-unknown-closed"),
@@ -534,6 +566,7 @@ class IsolatedJobCoordinator:
         request: IsolatedJobRequestV1,
         *,
         evidence_sha256: str,
+        worker_live: bool = False,
     ) -> None:
         state = self.budget_store.load(request.budget_run_id)
         permit = next(
@@ -551,13 +584,16 @@ class IsolatedJobCoordinator:
         self._close_cancellation_as_effect_unknown(
             request,
             evidence_sha256=evidence_sha256,
+            worker_live=worker_live,
         )
+        if worker_live:
+            return
         self.budget_store.settle(
             request.budget_run_id,
             operation_id=_operation_id(request.execution_id, "settle-resume-unknown"),
             settlement_id=_operation_id(request.execution_id, "settlement"),
             permit_id=request.budget_permit_id,
-            actual=ResourceAmountsV1(concurrency_slots=1),
+            actual=self._started_actual(request),
             status=SettlementStatus.EFFECT_UNKNOWN,
             effect_evidence_sha256=evidence_sha256,
             failure_category=FailureCategory.EXTERNAL_EFFECT_UNKNOWN,
@@ -589,6 +625,17 @@ class IsolatedJobCoordinator:
         request: IsolatedJobRequestV1,
         outcome: WindowsJobOutcome,
     ) -> tuple[IsolatedJobStatus, JobFailureCode | None]:
+        tree_termination_confirmed = (
+            outcome.evidence.active_processes == 0
+            and outcome.evidence.process_tree_termination_confirmed
+        )
+        if not tree_termination_confirmed:
+            self._close_cancellation_as_effect_unknown(
+                request,
+                evidence_sha256=isolated_job_sha256(outcome.evidence),
+                worker_live=True,
+            )
+            return IsolatedJobStatus.EFFECT_UNKNOWN, JobFailureCode.EFFECT_UNKNOWN
         if outcome.cancelled:
             cancellation_confirmed = self._record_budget_cancellation(request, outcome)
             if not cancellation_confirmed:
@@ -596,6 +643,7 @@ class IsolatedJobCoordinator:
                 self._close_cancellation_as_effect_unknown(
                     request,
                     evidence_sha256=evidence_sha,
+                    worker_live=False,
                 )
                 self._settle(
                     request,
@@ -617,6 +665,7 @@ class IsolatedJobCoordinator:
             self._close_cancellation_as_effect_unknown(
                 request,
                 evidence_sha256=isolated_job_sha256(outcome.evidence),
+                worker_live=False,
             )
             self._settle(
                 request,
@@ -715,7 +764,7 @@ class IsolatedJobCoordinator:
                         ),
                         settlement_id=_operation_id(request.execution_id, "settlement"),
                         permit_id=request.budget_permit_id,
-                        actual=ResourceAmountsV1(concurrency_slots=1),
+                        actual=self._recovery_actual(request),
                         status=SettlementStatus.CANCELLED,
                         effect_evidence_sha256=cancellation_evidence,
                         cancellation_evidence_sha256=cancellation_evidence,
@@ -726,13 +775,14 @@ class IsolatedJobCoordinator:
                     self._close_cancellation_as_effect_unknown(
                         request,
                         evidence_sha256=evidence_sha,
+                        worker_live=False,
                     )
                     self.budget_store.settle(
                         request.budget_run_id,
                         operation_id=_operation_id(request.execution_id, "settle-unknown"),
                         settlement_id=_operation_id(request.execution_id, "settlement"),
                         permit_id=request.budget_permit_id,
-                        actual=ResourceAmountsV1(concurrency_slots=1),
+                        actual=self._recovery_actual(request),
                         status=SettlementStatus.EFFECT_UNKNOWN,
                         effect_evidence_sha256=evidence_sha,
                         failure_category=FailureCategory.EXTERNAL_EFFECT_UNKNOWN,
@@ -750,6 +800,36 @@ class IsolatedJobCoordinator:
         return self._result_from_state(request.execution_id)
 
     def execute(
+        self,
+        request: IsolatedJobRequestV1,
+        policy: IsolatedJobPolicyV1,
+        *,
+        context_envelope: ContextEnvelope,
+        assignment: AgentAssignment,
+        budget_lineage: ExecutionLineageV1,
+        action_expires_at: datetime,
+        approval_run_id: str,
+        approval_request_id: str,
+        authority_provider: DecisionAuthorityProvider,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> IsolatedJobResultV1:
+        try:
+            return self._execute_impl(
+                request,
+                policy,
+                context_envelope=context_envelope,
+                assignment=assignment,
+                budget_lineage=budget_lineage,
+                action_expires_at=action_expires_at,
+                approval_run_id=approval_run_id,
+                approval_request_id=approval_request_id,
+                authority_provider=authority_provider,
+                cancelled=cancelled,
+            )
+        finally:
+            self.backend.abort_preparation(request.execution_id)
+
+    def _execute_impl(
         self,
         request: IsolatedJobRequestV1,
         policy: IsolatedJobPolicyV1,
@@ -842,7 +922,7 @@ class IsolatedJobCoordinator:
         prepared: PreparedWindowsJob | None = None
         try:
             prepared = self.backend.prepare(request, policy)
-        except Exception as exc:
+        except BaseException as exc:
             failure_code = (
                 exc.code if isinstance(exc, IsolatedJobError) else JobFailureCode.IDENTITY_MISMATCH
             )
@@ -864,12 +944,15 @@ class IsolatedJobCoordinator:
                     failure_code=failure_code,
                 )
             except Exception:
-                self.job_store.transition(
-                    request.execution_id,
-                    status=IsolatedJobStatus.EFFECT_UNKNOWN,
-                    reason_code="prelaunch_durability_unknown",
-                    failure_code=JobFailureCode.EFFECT_UNKNOWN,
-                )
+                with suppress(Exception):
+                    self.job_store.transition(
+                        request.execution_id,
+                        status=IsolatedJobStatus.EFFECT_UNKNOWN,
+                        reason_code="prelaunch_durability_unknown",
+                        failure_code=JobFailureCode.EFFECT_UNKNOWN,
+                    )
+            if not isinstance(exc, Exception):
+                raise
             raise ValueError(failure_code.value) from exc
 
         try:
@@ -880,7 +963,7 @@ class IsolatedJobCoordinator:
                 process_id=prepared.process_id,
                 process_creation_time_100ns=prepared.creation_time_100ns,
             )
-        except Exception as exc:
+        except BaseException as exc:
             prepared.terminate_before_resume()
             evidence_sha = isolated_job_sha256(
                 {
@@ -925,6 +1008,8 @@ class IsolatedJobCoordinator:
                         reason_code="launch_commit_durability_unknown",
                         failure_code=JobFailureCode.EFFECT_UNKNOWN,
                     )
+            if not isinstance(exc, Exception):
+                raise
             raise ValueError(JobFailureCode.STORAGE_FAILURE.value) from exc
         effect_recheck_sha256: str | None = None
         effect_admission_refused = False
@@ -945,7 +1030,7 @@ class IsolatedJobCoordinator:
                 )
                 if second_reference != approval_reference:
                     raise ValueError("approval current changed before effect admission")
-            except Exception:
+            except BaseException:
                 effect_admission_refused = True
                 raise
             effect_recheck_sha256 = effect_recheck.binding_sha256
@@ -959,7 +1044,9 @@ class IsolatedJobCoordinator:
                 reason_code="primary_thread_resumed",
                 effect_admission_recheck_binding_sha256=effect_recheck_sha256,
             )
-        except Exception as exc:
+        except BaseException as exc:
+            if isinstance(exc, IsolatedJobError) and exc.code is JobFailureCode.APPROVAL_MISMATCH:
+                effect_admission_refused = True
             prepared.terminate_before_resume()
             evidence_sha = isolated_job_sha256(
                 {
@@ -984,6 +1071,8 @@ class IsolatedJobCoordinator:
                 if effect_admission_refused
                 else JobFailureCode.EFFECT_UNKNOWN
             )
+            if not isinstance(exc, Exception):
+                raise
             raise ValueError(code.value) from exc
 
         def on_cancel_requested() -> None:
@@ -998,10 +1087,33 @@ class IsolatedJobCoordinator:
                 permit_id=request.budget_permit_id,
             )
 
-        outcome = prepared.wait(
-            cancelled=cancelled,
-            on_cancel_requested=on_cancel_requested,
-        )
+        try:
+            outcome = prepared.wait(
+                cancelled=cancelled,
+                on_cancel_requested=on_cancel_requested,
+            )
+        except BaseException:
+            prepared.terminate_before_resume()
+            evidence_sha = isolated_job_sha256(
+                {
+                    "execution_id": request.execution_id,
+                    "stage": "controller_exit_while_waiting",
+                }
+            )
+            with suppress(DurableBudgetError):
+                self._settle_ambiguous_resume(
+                    request,
+                    evidence_sha256=evidence_sha,
+                    worker_live=False,
+                )
+            with suppress(Exception):
+                self.job_store.transition(
+                    request.execution_id,
+                    status=IsolatedJobStatus.EFFECT_UNKNOWN,
+                    reason_code="controller_exit_while_waiting",
+                    failure_code=JobFailureCode.EFFECT_UNKNOWN,
+                )
+            raise
         try:
             final_status, final_code = self._settle_outcome(request, outcome)
         except DurableBudgetError:
@@ -1013,6 +1125,7 @@ class IsolatedJobCoordinator:
                     self._settle_ambiguous_resume(
                         request,
                         evidence_sha256=evidence_sha,
+                        worker_live=not outcome.evidence.process_tree_termination_confirmed,
                     )
                 self.job_store.transition(
                     request.execution_id,
@@ -1070,8 +1183,6 @@ class IsolatedJobCoordinator:
             and current.status is not IsolatedJobStatus.EFFECT_UNKNOWN
         ):
             return self._result_from_state(request.execution_id)
-        if current.status is IsolatedJobStatus.EFFECT_UNKNOWN:
-            return self._recover_nonterminal(request)
         if current.process_id is not None:
             assert current.process_creation_time_100ns is not None
             process_status = self.backend.process_identity_status(

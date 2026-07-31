@@ -20,10 +20,10 @@
 |---|---|
 | 起動対象 | hash・file identityを再検証したbase Pythonと固定`synthetic_child.py`だけ |
 | argv | `-I -S -B -u -X utf8`とclosed operation enum／bounded整数だけ |
-| process tree | Windows Job Objectへsuspended状態で割当て後にresumeし、`KILL_ON_JOB_CLOSE`と`TerminateJobObject`を使用 |
+| process tree | `PROC_THREAD_ATTRIBUTE_JOB_LIST`により生成時からWindows Job Objectへ所属するsuspended childだけを作り、`KILL_ON_JOB_CLOSE`と`TerminateJobObject`を使用 |
 | resource | process/job CPU time、process/job committed memory、active process数をJob Objectへ設定してexact requery。CPUはprocess timeとJob accountingを独立にpollし、どちらかの上限到達時にJob全体を停止 |
 | wall/output | controller wall clockとstdout／stderr／combined byte capの超過時にJob全体を停止 |
-| handles | NUL stdin、stdout pipe、stderr pipe、任意の承認済みinput handle一つだけを明示handle listへ設定。repository内の同backend起動はinheritable handleの存続中に直列化 |
+| handles | 同じ`STARTUPINFOEX`へNUL stdin、stdout pipe、stderr pipe、任意の承認済みinput handle一つだけの`HANDLE_LIST`と単一Jobの`JOB_LIST`を設定。repository内の同backend起動はinheritable handleの存続中に直列化 |
 | filesystem | 固定working directoryはidentity-bound。任意write surfaceはなく、inputはworkspace配下・単一hardlink・最大2 MiBの単一read handleだけ |
 | link/path | absolute Windows path、component、reparse/symlink、hardlink、ADS、reserved name、escapeをfail closed |
 | secrets | requestは参照IDとdigestだけ。秘密形状、raw secret値、raw reconciliation evidenceを拒否 |
@@ -69,7 +69,10 @@ canonical bytesは既存storage canonical JSONを再利用し、SHA-256はcorrup
    effectなしで再検証する。
 4. previewで固定したbudget policy/activation digestをreserve時にもCAS相関し、P2-011B permitを
    reserveして`prepared` snapshotを専用revision rootへpublishする。
-5. childをsuspendedで生成し、Job Objectへ割り当て、limitとidentityを再照合する。
+5. callerがresource取得前にpreparation leaseを保持し、非daemon preparation workerが
+   `HANDLE_LIST`と`JOB_LIST`を同じ`CreateProcessW`へ渡して、生成時からJob所属のsuspended childを
+   作る。leaseはbackendからcoordinatorへのreturn handoff中も所有権を保持し、limitとidentityを
+   再照合する。
 6. process identityだけを持つ`launch_committed`をpublishする。この状態はeffect admissionを主張しない。
 7. permitをstartし、suspended childのexecutable identityを再検証してからapproval
    current／live authorityを再検証する。durable publicationを挟まず、backendが
@@ -97,7 +100,9 @@ prepared
 
 `completed`はexit code 0、active process 0、完全なoutput evidence、成功settlementを全て要求する。
 `cancelled`はJob全体停止、active process 0、cancellation acknowledgement、cancelled settlementを
-要求する。`effect_unknown`はsuccess、failed、retryへ変換しない。再起動後は保存済みPIDとcreation
+要求する。backend outcomeにかかわらずcoordinatorもactive process 0とtree停止証拠を独立に要求し、
+未確認ならworker-liveの`effect_unknown`としてpermitを開いたままにする。`effect_unknown`は
+success、failed、retryへ変換しない。再起動後は保存済みPIDとcreation
 timeを照合し、同じlive processまたはidentity mismatchなら自動回復せず`run_locked`に停止する。
 process不在を確認した回復では、`requested`/`unconfirmed` cancellationをworker非liveの
 `effect_unknown`へ閉じ、exactな`acknowledged` evidenceがあれば`cancelled`まで冪等に完遂して、
@@ -115,6 +120,10 @@ partial write、corrupt current/payload、stale CAS、cross-execution replay、t
 fail closedとなる。`current`置換後のstorage errorは、同じrevision、state、stdout、stderrを
 verified historyから完全一致で再読できた場合だけcommit済みとして扱う。
 
+effect admission後またはその成否が不明な経路は、成功outputが未取得でもattempt 1、approved input
+bytes、concurrency 1をactual usageに記録する。保存済みevidence/outputがあるrestart closureでは既知の
+output usageも再構成する。
+
 job rootとbudget rootはdistributed transactionではない。terminal job snapshotより先にbudgetを
 settleし、terminal publicationが不確実ならbudget settlementが`succeeded`でもjobを
 `effect_unknown`にする。budget settlement単独はjob success authorityではなく、自動retryを許可しない。
@@ -129,7 +138,8 @@ repository testは次を実Windows processで検証する。
 - normal exit、closed stdin、module inventory、明示input handle。
 - wall-clock、CPU、memory、process count、stdout、stderr、combined output cap。
 - descendant tree termination、cancel race、同一execution並行起動。
-- prepare/resume/wait中のcontroller abortを含む`BaseException`後のprocess tree cleanup。
+- preparation worker、backend return handoff、resume、running publication、wait中のcontroller abortを
+  含む`BaseException`後のprocess tree cleanup。
 - real approval/context/budget/storageのvertical sliceとterminal exact replay。
 - cancel request/ack/confirm各publication faultとprocess不在後のpermit closure。
 - restart/effect-unknown/reconciliation、partial publication、payload tamper。

@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `9.0.0`
-- source SHA-256: `eae499dae49f9f68f082bd3b5bc515a25c93ed89951127e3323cb557d2fd969b`
+- source SHA-256: `4b251f6446e993e35dc99b1a7ccc679efc4073d0c3de9c40c6d4d8a02c2c4c9f`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -932,7 +932,7 @@
   - P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.
   - P3-030B remains a separate Decision gate for any general natural-language or site parser.
   - P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.
-  - P2-028A remains not started and is not activated by this local-only path.
+  - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
   - P3-030C remains a separate Decision gate for external solver, range-equity, multiopponent, GTO, or equilibrium scope.
 
 ## Synchronization contract

@@ -247,8 +247,11 @@ distributed filesystem、secure erase は保証しない。
 
 P2-028AはAMD64 Windows上でbase Pythonと固定repository synthetic helperのfile identity/hashを
 effect-admission approval再検証の直前に再検証し、`ResumeThread`直前にはapprovalの
-`valid_until`をlive clockで再確認する。childはsuspendedで生成し、CPU time、committed memory、active process、
-`KILL_ON_JOB_CLOSE`を設定したJob Objectへ割り当て、exact requery後にだけresumeする。Job CPU
+`valid_until`をlive clockで再確認する。resource取得前に登録したpreparation leaseと非daemon workerを
+使い、明示`HANDLE_LIST`と`JOB_LIST`を一つの`CreateProcessW`へ渡すため、childは生成時からCPU time、
+committed memory、active process、`KILL_ON_JOB_CLOSE`を設定したJob Objectへ所属するsuspended
+processである。leaseはbackend return handoff中もcleanup ownershipを保持し、exact requery後にだけ
+resumeする。Job CPU
 accountingとprocess CPU timeをcontrollerが独立にpollし、上限到達時は`TerminateJobObject`でtree全体を停止する。stdinはNUL、
 stdout/stderrはbounded pipe、追加handleはidentity-boundなworkspace内input一つだけである。
 
@@ -257,8 +260,10 @@ path component、reserved name、ADS、workspace escape、reparse/symlink、appr
 2 MiB超過、open後identity変更をfail closedにする。approvalは`external_code` action digestとlive authorityへ
 effect直前まで拘束し、context、budget、secret-reference setはhash/provenanceだけを保存する。
 
-Job終了、wall/output/cancel超過時とprepare/resume/waitのcontroller abort時はtree全体を停止し、
-active process 0を再観測する。exit code 0でもprocess/job CPU evidenceがhard cap以上なら
+Job終了、wall/output/cancel超過時とpreparation worker／return handoff／resume／running publication／
+waitのcontroller abort時はtree全体を停止し、active process 0を再観測する。coordinatorもterminal
+settlement前にtree停止証拠を独立に検証し、未確認ならworker-liveの`effect_unknown`としてpermitを
+閉じない。exit code 0でもprocess/job CPU evidenceがhard cap以上なら
 `cpu_limit`であり、successにしない。ただしlocal Job
 terminationはremote provider、remote billing、remote cancellation、network isolationの証拠ではない。
 `effect_unknown`はsuccess/failed/retryへ変換せず、保存済みPID/creation time不在と別のopaque

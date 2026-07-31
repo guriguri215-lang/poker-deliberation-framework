@@ -149,6 +149,9 @@ durable settlementから復元し、callable再実行、二重課金、二重set
 acknowledgmentなしのsuccessやlive workerはsuccessにならない。
 P2-028Aのprocess不在回復では`requested`/`unconfirmed`をworker非liveの`effect_unknown`へ閉じ、
 exact ACK evidenceは`cancelled`まで完遂してから対応permitをsettleする。
+effect admission後またはresume成否不明のclosureではattempt 1、approved input bytes、concurrency 1を
+必ずactual usageへ含め、保存済みevidence/outputがあるrestart closureでは既知のoutput usageも含める。
+tree停止を確認できない場合はworker-liveの`effect_unknown`としてpermitをsettleしない。
 
 P2-011B自体はtyped RM-028 isolation requirement/evidence interfaceだけを提供する。P2-028Aは別の
 Windows backendとして、固定repository synthetic helperに限りprocess-tree kill、Job Object

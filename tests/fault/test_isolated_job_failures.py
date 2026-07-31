@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sys
 from dataclasses import dataclass
 from datetime import timedelta
@@ -46,7 +47,10 @@ from poker_deliberation.isolated_jobs.store import (
     _validate_successor,
     initialize_isolated_job_root,
 )
-from poker_deliberation.isolated_jobs.windows_backend import WindowsJobBackend
+from poker_deliberation.isolated_jobs.windows_backend import (
+    WindowsJobBackend,
+    WindowsJobOutcome,
+)
 from poker_deliberation.schemas import AgentAssignment
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
@@ -100,6 +104,16 @@ class _DifferentProcessBackend(WindowsJobBackend):
     ) -> str:
         del process_id, creation_time_100ns
         return "different_live_process"
+
+
+class _SameLiveProcessBackend(WindowsJobBackend):
+    @staticmethod
+    def process_identity_status(
+        process_id: int,
+        creation_time_100ns: int,
+    ) -> str:
+        del process_id, creation_time_100ns
+        return "same_live_process"
 
 
 class _Approved:
@@ -215,13 +229,23 @@ def _executable_with_publication_fault(
     )
 
 
-def _prepared(tmp_path: Path, *, suffix: str) -> _PreparedFixture:
+def _prepared(
+    tmp_path: Path,
+    *,
+    suffix: str,
+    operation: SyntheticOperation = SyntheticOperation.SUCCESS,
+    input_bytes: bytes | None = None,
+) -> _PreparedFixture:
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     budget_root = tmp_path / "budget"
     job_root = tmp_path / "jobs"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    approved_input = None
+    if input_bytes is not None:
+        approved_input = workspace / "approved-input.txt"
+        approved_input.write_bytes(input_bytes)
     initialize_durable_budget_root(
         budget_root,
         legacy,
@@ -235,7 +259,7 @@ def _prepared(tmp_path: Path, *, suffix: str) -> _PreparedFixture:
         initialized_at=NOW,
     )
     budget = DurableBudgetStore(budget_root, legacy, wall_clock=lambda: NOW)
-    value = request(suffix=suffix)
+    value = request(operation, suffix=suffix)
     budget.create(
         value.budget_run_id,
         durable_policy(),
@@ -243,7 +267,7 @@ def _prepared(tmp_path: Path, *, suffix: str) -> _PreparedFixture:
     )
     assignment, envelope = context_for(value)
     lineage = lineage_for(value, envelope)
-    policy = policy_for(workspace)
+    policy = policy_for(workspace, approved_input=approved_input)
     job_store = IsolatedJobStore(job_root, legacy, clock=lambda: NOW)
     coordinator = IsolatedJobCoordinator(
         job_store,
@@ -378,7 +402,47 @@ def test_restart_after_resume_settles_started_permit_as_effect_unknown(
 
     assert recovered.status is IsolatedJobStatus.EFFECT_UNKNOWN
     assert budget_state.settlements[-1].status.value == "effect_unknown"
+    assert budget_state.settlements[-1].actual.tool_attempts == 1
     assert not budget_state.active_permits
+
+
+def test_effect_unknown_recovery_refuses_to_close_live_process_permit(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="effect-unknown-live-process")
+    value = fixture.value
+    fixture.coordinator.backend = _SameLiveProcessBackend()
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=321,
+        process_creation_time_100ns=654,
+    )
+    fixture.budget.start(
+        value.budget_run_id,
+        operation_id="start-effect-unknown-live-process",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RUNNING,
+        reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="9" * 64,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.EFFECT_UNKNOWN,
+        reason_code="controller_restart",
+        failure_code=JobFailureCode.EFFECT_UNKNOWN,
+    )
+
+    with pytest.raises(ValueError, match=JobFailureCode.RUN_LOCKED.value):
+        fixture.coordinator.recover_after_restart(value, fixture.policy)
+
+    budget_state = fixture.budget.load(value.budget_run_id)
+    assert any(permit.permit_id == value.budget_permit_id for permit in budget_state.active_permits)
+    assert not budget_state.settlements
 
 
 def test_corrupt_current_payload_is_rejected_before_state_use(tmp_path: Path) -> None:
@@ -470,6 +534,209 @@ def test_effect_admission_approval_change_terminates_before_resume(
     assert state.failure_code is JobFailureCode.EFFECT_UNKNOWN
     assert state.process_id is not None
     assert budget_state.settlements[-1].status.value == "effect_unknown"
+    assert not budget_state.active_permits
+
+
+def test_effect_admission_controller_abort_hard_stops_and_rethrows(
+    tmp_path: Path,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="approval-controller-abort",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+
+    class InterruptSecondApproval(_Approved):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def verify(self, **verify_kwargs: Any):
+            self.calls += 1
+            if self.calls == 2:
+                raise KeyboardInterrupt("synthetic approval controller abort")
+            return super().verify(**verify_kwargs)
+
+    coordinator.approvals = InterruptSecondApproval()  # type: ignore[assignment]
+    with pytest.raises(KeyboardInterrupt):
+        coordinator.execute(value, policy, **kwargs)
+
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.process_id is not None
+    assert (
+        WindowsJobBackend.process_identity_status(
+            state.process_id,
+            state.process_creation_time_100ns or 0,
+        )
+        == "absent"
+    )
+    assert budget_state.settlements[-1].actual.tool_attempts == 1
+    assert not budget_state.active_permits
+
+
+def test_prepare_return_handoff_abort_is_closed_by_preexisting_lease(
+    tmp_path: Path,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="prepare-return-handoff-abort",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+
+    class InterruptReturnBackend(WindowsJobBackend):
+        process_id: int | None = None
+        creation_time: int | None = None
+
+        def prepare(
+            self,
+            request_value: IsolatedJobRequestV1,
+            policy_value: IsolatedJobPolicyV1,
+        ):
+            prepared = super().prepare(request_value, policy_value)
+            self.process_id = prepared.process_id
+            self.creation_time = prepared.creation_time_100ns
+            raise KeyboardInterrupt("synthetic prepare return handoff abort")
+
+    backend = InterruptReturnBackend()
+    coordinator.backend = backend
+    with pytest.raises(KeyboardInterrupt):
+        coordinator.execute(value, policy, **kwargs)
+
+    assert backend.process_id is not None
+    assert backend.creation_time is not None
+    assert (
+        WindowsJobBackend.process_identity_status(
+            backend.process_id,
+            backend.creation_time,
+        )
+        == "absent"
+    )
+    assert value.execution_id not in backend_module._PREPARATION_LEASES
+    assert job_store.load(value.execution_id).status is IsolatedJobStatus.FAILED
+    assert not budget.load(value.budget_run_id).active_permits
+
+
+def test_kernel_boundary_expiry_reports_approval_mismatch_before_resume(
+    tmp_path: Path,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="kernel-boundary-expiry",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    clock_calls = 0
+
+    def expiring_clock():
+        nonlocal clock_calls
+        clock_calls += 1
+        return NOW if clock_calls < 4 else NOW + timedelta(minutes=30)
+
+    coordinator.clock = expiring_clock
+    with pytest.raises(ValueError, match=JobFailureCode.APPROVAL_MISMATCH.value):
+        coordinator.execute(value, policy, **kwargs)
+
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+    assert clock_calls == 4
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.process_id is not None
+    assert (
+        WindowsJobBackend.process_identity_status(
+            state.process_id,
+            state.process_creation_time_100ns or 0,
+        )
+        == "absent"
+    )
+    assert budget_state.settlements[-1].actual.tool_attempts == 1
+    assert not budget_state.active_permits
+
+
+def test_resume_rechecks_identity_after_second_approval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="identity-after-approval",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    original_verify = backend_module.verify_execution_identity
+    identity_checks = 0
+
+    def fail_fourth_identity(identity: object) -> None:
+        nonlocal identity_checks
+        identity_checks += 1
+        if identity_checks == 4:
+            raise IsolatedJobError(JobFailureCode.IDENTITY_MISMATCH)
+        original_verify(identity)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(backend_module, "verify_execution_identity", fail_fourth_identity)
+    with pytest.raises(ValueError, match=JobFailureCode.EFFECT_UNKNOWN.value):
+        coordinator.execute(value, policy, **kwargs)
+
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+    assert identity_checks == 4
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.process_id is not None
+    assert (
+        WindowsJobBackend.process_identity_status(
+            state.process_id,
+            state.process_creation_time_100ns or 0,
+        )
+        == "absent"
+    )
+    assert budget_state.settlements[-1].actual.tool_attempts == 1
+    assert not budget_state.active_permits
+
+
+def test_running_publication_controller_abort_hard_stops_and_rethrows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="running-controller-abort",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    original_transition = job_store.transition
+    fired = False
+
+    def interrupt_running(*args: Any, **transition_kwargs: Any):
+        nonlocal fired
+        if transition_kwargs.get("status") is IsolatedJobStatus.RUNNING and not fired:
+            fired = True
+            raise KeyboardInterrupt("synthetic running publication abort")
+        return original_transition(*args, **transition_kwargs)
+
+    monkeypatch.setattr(job_store, "transition", interrupt_running)
+    with pytest.raises(KeyboardInterrupt):
+        coordinator.execute(value, policy, **kwargs)
+
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+    assert fired is True
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.process_id is not None
+    assert (
+        WindowsJobBackend.process_identity_status(
+            state.process_id,
+            state.process_creation_time_100ns or 0,
+        )
+        == "absent"
+    )
+    assert budget_state.settlements[-1].actual.tool_attempts == 1
     assert not budget_state.active_permits
 
 
@@ -805,36 +1072,47 @@ def test_resume_expiry_at_kernel_boundary_terminates_without_effect(
     )
 
 
-def test_prepare_controller_abort_terminates_unassigned_suspended_child(
+def test_atomic_job_create_controller_abort_terminates_assigned_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     value = request(
         SyntheticOperation.HANG,
-        suffix="prepare-controller-abort",
+        suffix="atomic-create-controller-abort",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
     observed: dict[str, int] = {}
-    original_create = backend_module._winapi.CreateProcess
+    original_create_job = backend_module._kernel32.CreateJobObjectW
+    original_create_process = backend_module._kernel32.CreateProcessW
 
-    def capture_create(*args: Any, **kwargs: Any):
-        result = original_create(*args, **kwargs)
-        observed["process_id"] = int(result[2])
-        observed["creation_time"] = backend_module._process_creation_time(int(result[0]))
-        return result
+    def capture_job(*args: Any) -> object:
+        handle = original_create_job(*args)
+        observed["job_handle"] = int(handle)
+        return handle
 
-    def interrupt_assignment(*_args: Any, **_kwargs: Any) -> bool:
-        raise KeyboardInterrupt("synthetic controller abort")
+    def interrupt_after_create(*args: Any) -> bool:
+        created = bool(original_create_process(*args))
+        if not created:
+            return False
+        process_information = backend_module.ctypes.cast(
+            args[-1],
+            backend_module.ctypes.POINTER(backend_module._PROCESS_INFORMATION),
+        ).contents
+        observed["process_id"] = int(process_information.dwProcessId)
+        observed["creation_time"] = backend_module._process_creation_time(
+            int(process_information.hProcess)
+        )
+        observed["active_processes"] = int(
+            backend_module._query_accounting(observed["job_handle"]).BasicInfo.ActiveProcesses
+        )
+        raise KeyboardInterrupt("synthetic post-kernel-create abort")
 
-    monkeypatch.setattr(backend_module._winapi, "CreateProcess", capture_create)
-    monkeypatch.setattr(
-        backend_module._kernel32,
-        "AssignProcessToJobObject",
-        interrupt_assignment,
-    )
+    monkeypatch.setattr(backend_module._kernel32, "CreateJobObjectW", capture_job)
+    monkeypatch.setattr(backend_module._kernel32, "CreateProcessW", interrupt_after_create)
     with pytest.raises(KeyboardInterrupt):
         WindowsJobBackend().prepare(value, policy_for(tmp_path))
 
+    assert observed["active_processes"] == 1
     assert (
         WindowsJobBackend.process_identity_status(
             observed["process_id"],
@@ -842,6 +1120,41 @@ def test_prepare_controller_abort_terminates_unassigned_suspended_child(
         )
         == "absent"
     )
+
+
+def test_job_list_attribute_failure_refuses_before_process_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="job-list-refusal",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    original_update = backend_module._kernel32.UpdateProcThreadAttribute
+    update_calls = 0
+    create_called = False
+
+    def fail_job_list(*args: Any) -> bool:
+        nonlocal update_calls
+        update_calls += 1
+        if update_calls == 2:
+            backend_module.ctypes.set_last_error(87)
+            return False
+        return bool(original_update(*args))
+
+    def observe_create(*_args: Any) -> bool:
+        nonlocal create_called
+        create_called = True
+        return False
+
+    monkeypatch.setattr(backend_module._kernel32, "UpdateProcThreadAttribute", fail_job_list)
+    monkeypatch.setattr(backend_module._kernel32, "CreateProcessW", observe_create)
+    with pytest.raises(OSError):
+        WindowsJobBackend().prepare(value, policy_for(tmp_path))
+
+    assert update_calls == 2
+    assert create_called is False
 
 
 def test_resume_controller_abort_after_kernel_resume_kills_job_tree(
@@ -901,6 +1214,131 @@ def test_wait_controller_abort_kills_job_tree(
         )
         == "absent"
     )
+
+
+def test_partial_reader_start_abort_closes_unstarted_pipe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="partial-reader-start",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    descriptors = (prepared.stdout_read_fd, prepared.stderr_read_fd)
+    original_start = backend_module.threading.Thread.start
+    start_count = 0
+
+    def interrupt_second_start(thread: object) -> None:
+        nonlocal start_count
+        start_count += 1
+        if start_count == 2:
+            raise KeyboardInterrupt("synthetic reader startup abort")
+        original_start(thread)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(backend_module.threading.Thread, "start", interrupt_second_start)
+    with pytest.raises(KeyboardInterrupt):
+        prepared.resume()
+    assert prepared._stdout_done.wait(timeout=5)
+
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert prepared._closed is True
+
+
+def test_approved_input_base_exception_closes_inheritable_descriptor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    approved_input = tmp_path / "approved.txt"
+    approved_input.write_bytes(b"bounded input\n")
+    value = request(
+        SyntheticOperation.COPY_HANDLES,
+        suffix="input-base-exception",
+    )
+    observed_descriptor: int | None = None
+    original_set_inheritable = backend_module.os.set_inheritable
+
+    def interrupt_after_inheritable(file_descriptor: int, inheritable: bool) -> None:
+        nonlocal observed_descriptor
+        original_set_inheritable(file_descriptor, inheritable)
+        if inheritable:
+            observed_descriptor = file_descriptor
+            raise KeyboardInterrupt("synthetic input admission abort")
+
+    monkeypatch.setattr(backend_module.os, "set_inheritable", interrupt_after_inheritable)
+    with pytest.raises(KeyboardInterrupt):
+        WindowsJobBackend().prepare(
+            value,
+            policy_for(tmp_path, approved_input=approved_input),
+        )
+
+    assert observed_descriptor is not None
+    with pytest.raises(OSError):
+        os.fstat(observed_descriptor)
+
+
+def test_cancel_termination_failure_is_effect_unknown_not_cancelled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="cancel-termination-failure",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    prepared.resume()
+    monkeypatch.setattr(
+        backend_module._kernel32,
+        "TerminateJobObject",
+        lambda *_args: False,
+    )
+
+    outcome = prepared.wait(cancelled=lambda: True)
+
+    assert outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN
+    assert outcome.cancelled is False
+    assert outcome.evidence.active_processes > 0
+    assert outcome.evidence.process_tree_termination_confirmed is False
+
+
+def test_exit_zero_at_exact_cpu_cap_is_deterministically_cpu_limit(
+    tmp_path: Path,
+) -> None:
+    cap_ms = 200
+    value = request(
+        SyntheticOperation.CPU_SPIN,
+        suffix="cpu-exact-terminal",
+        arguments=SyntheticArgumentsV1(duration_ms=1),
+    )
+    prepared = WindowsJobBackend().prepare(
+        value,
+        policy_for(
+            tmp_path,
+            job_limits=limits(
+                process_cpu_time_ms=cap_ms,
+                job_cpu_time_ms=cap_ms,
+            ),
+        ),
+    )
+    accounting = backend_module._JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION()
+    accounting.BasicInfo.TotalUserTime.QuadPart = cap_ms * 10_000
+    extended = backend_module._JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+    try:
+        assert (
+            prepared._infer_exit_failure(
+                0,
+                accounting,
+                extended,
+                process_user_time_100ns=0,
+            )
+            is JobFailureCode.CPU_LIMIT
+        )
+    finally:
+        prepared.terminate_before_resume()
 
 
 def test_budget_settlement_postreplace_fault_exactly_confirms_and_closes_permit(
@@ -981,6 +1419,77 @@ def test_cancel_publication_faults_close_started_permit(
     )
 
 
+def test_unconfirmed_tree_death_never_confirms_cancel_or_closes_permit(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="cancel-live-tree")
+    value = fixture.value
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=901,
+        process_creation_time_100ns=902,
+    )
+    fixture.budget.start(
+        value.budget_run_id,
+        operation_id="start-cancel-live-tree",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RUNNING,
+        reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="d" * 64,
+    )
+    fixture.budget.request_cancellation(
+        value.budget_run_id,
+        operation_id="request-cancel-live-tree",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.CANCEL_REQUESTED,
+        reason_code="caller_cancel_requested",
+    )
+    evidence = JobEvidenceV1(
+        process_id=901,
+        process_creation_time_100ns=902,
+        exit_code=259,
+        termination_reason=JobFailureCode.CANCELLED.value,
+        total_processes=1,
+        active_processes=1,
+        stdout_sha256=hashlib.sha256(b"").hexdigest(),
+        stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        command_line_sha256="b" * 64,
+        inherited_handle_count=3,
+        process_tree_termination_confirmed=False,
+        job_limits_requeried=True,
+        executable_identity_rechecked=True,
+        output_complete=False,
+    )
+    outcome = WindowsJobOutcome(
+        evidence=evidence,
+        stdout=b"",
+        stderr=b"",
+        failure_code=JobFailureCode.CANCELLED,
+        cancelled=True,
+    )
+
+    status, code = fixture.coordinator._settle_outcome(value, outcome)
+    budget_state = fixture.budget.load(value.budget_run_id)
+    cancellation = next(
+        item for item in budget_state.cancellations if item.permit_id == value.budget_permit_id
+    )
+
+    assert status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert code is JobFailureCode.EFFECT_UNKNOWN
+    assert cancellation.state is CancellationState.EFFECT_UNKNOWN
+    assert cancellation.worker_live is True
+    assert any(permit.permit_id == value.budget_permit_id for permit in budget_state.active_permits)
+    assert not budget_state.settlements
+
+
 def test_recovery_closes_requested_cancellation_after_process_absence(
     tmp_path: Path,
 ) -> None:
@@ -1028,6 +1537,68 @@ def test_recovery_closes_requested_cancellation_after_process_absence(
     assert cancellation.worker_live is False
     assert not budget_state.active_permits
     assert budget_state.settlements[-1].status.value == "effect_unknown"
+    assert budget_state.settlements[-1].actual.tool_attempts == 1
+
+
+def test_acknowledged_cancel_recovery_charges_attempt_and_approved_input(
+    tmp_path: Path,
+) -> None:
+    input_bytes = b"approved bounded input\n"
+    fixture = _prepared(
+        tmp_path,
+        suffix="recover-acknowledged-cancel",
+        operation=SyntheticOperation.COPY_HANDLES,
+        input_bytes=input_bytes,
+    )
+    value = fixture.value
+    fixture.coordinator.backend = _AbsentBackend()
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=777,
+        process_creation_time_100ns=888,
+    )
+    fixture.budget.start(
+        value.budget_run_id,
+        operation_id="start-recover-acknowledged-cancel",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RUNNING,
+        reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="d" * 64,
+    )
+    fixture.budget.request_cancellation(
+        value.budget_run_id,
+        operation_id="request-recover-acknowledged-cancel",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.budget.record_cancellation(
+        value.budget_run_id,
+        operation_id="ack-recover-acknowledged-cancel",
+        permit_id=value.budget_permit_id,
+        state_value=CancellationState.ACKNOWLEDGED,
+        evidence_sha256="a" * 64,
+        worker_live=False,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.EFFECT_UNKNOWN,
+        reason_code="controller_restart",
+        failure_code=JobFailureCode.EFFECT_UNKNOWN,
+    )
+
+    recovered = fixture.coordinator.recover_after_restart(value, fixture.policy)
+    budget_state = fixture.budget.load(value.budget_run_id)
+    settlement = budget_state.settlements[-1]
+
+    assert recovered.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert settlement.status.value == "cancelled"
+    assert settlement.actual.tool_attempts == 1
+    assert settlement.actual.tool_input_bytes == len(input_bytes)
+    assert not budget_state.active_permits
 
 
 def test_recovery_retries_budget_closure_and_reconciliation_rejects_active_permit(

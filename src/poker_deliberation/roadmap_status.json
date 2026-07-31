@@ -1737,7 +1737,7 @@
         "P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.",
         "P3-030B remains a separate Decision gate for any general natural-language or site parser.",
         "P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.",
-        "P2-028A remains not started and is not activated by this local-only path.",
+        "At P3-030A completion, P2-028A had not started and was not activated by that local-only path.",
         "P3-030C remains a separate Decision gate for external solver, range-equity, multiopponent, GTO, or equilibrium scope."
       ],
       "decision_gate": {

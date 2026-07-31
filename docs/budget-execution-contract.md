@@ -145,9 +145,11 @@ durable settlementから復元し、callable再実行、二重課金、二重set
 `requested`、`acknowledged`、`cancelled`、`unconfirmed`、`effect_unknown`を別revisionで記録する。
 acknowledgmentなしのsuccessやlive workerはsuccessにならない。
 
-RM-028はtyped isolation requirement/evidence interfaceだけで、implementationはない。process-tree kill、
-remote cancellation保証、OS CPU/memory/output isolation、external-code isolationが必要なrequestは
-reservation前に`isolation_required`となる。P2-011Bはhard stop、external provider/solver、
+P2-011B自体はtyped RM-028 isolation requirement/evidence interfaceだけを提供する。P2-028Aは別の
+Windows backendとして、固定repository synthetic helperに限りprocess-tree kill、Job Object
+CPU/memory/process cap、bounded output、durable cancellation/reconciliationを実装する。remote
+cancellation、network isolation、任意external code、provider/solverには使えず、それらを要求する
+requestは引き続きreservation前に`isolation_required`となる。P2-011Bはexternal provider/solver、
 completion marker、product reader/status、flat-v1 migration、通常run/resume統合を実装しない。
 
 ## P2-010B budget correlation

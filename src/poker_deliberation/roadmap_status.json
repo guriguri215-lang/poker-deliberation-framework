@@ -190,8 +190,8 @@
     {
       "id": "P2-028A",
       "rm_id": "RM-028",
-      "status": "not_started",
-      "status_reason": "The Decision gate is approved; this milestone advances after the parent roadmap item completes its required planned-state transition.",
+      "status": "in_progress",
+      "status_reason": "The approved Windows-first repository-owned synthetic helper slice is implemented and under qualification; arbitrary external code, provider/solver adapters, remote cancellation, and OS-enforced network isolation remain outside the implemented boundary.",
       "dependencies": [
         "P2-011B",
         "P2-012B",
@@ -1589,8 +1589,8 @@
       "title": "Isolated solver and provider job control",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "planned",
-      "status_reason": "The Decision gate approved a Windows-first repository-owned synthetic helper slice; implementation activation follows as a separate legal status transition.",
+      "status": "in_progress",
+      "status_reason": "P2-028A implements the approved Windows-first repository-owned synthetic helper slice with Job Object hard stops and durable effect state; the broader solver/provider, remote-cancel, and network-isolation scope remains incomplete.",
       "dependencies": [
         "RM-011",
         "RM-012",

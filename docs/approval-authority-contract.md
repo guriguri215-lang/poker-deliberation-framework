@@ -7,7 +7,9 @@
   resume/lifecycle binding、汎用の effect-free pre-execution recheck を追加する。
   P2-027B cleanup executor の既存 inventory と独立した effect 直前 recheck は変更しない。
 - **FACT**: P2-028A の process isolation、durable external-effect state、executor 起動、
-  cancellation、reconciliation は P2-013B の範囲外である。
+  cancellation、reconciliation は P2-013B 自体の範囲外である。P2-028Aの別coordinatorは
+  P2-013B verified readerと`recheck_approval_for_execution`を初回admissionとeffect直前の2回使用し、
+  exact `external_code` actionだけを固定repository synthetic helperへ接続する。
 - **FACT**: P2-013A は外部 executor、provider、solver を起動しない。承認は実行・正しさ・収束・GTO・均衡・exploitability・正確な range の証拠ではない。
 
 ## 信頼境界

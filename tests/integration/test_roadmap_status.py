@@ -149,7 +149,7 @@ def test_public_projection_preserves_status_scope_and_decision_rationale() -> No
         "RM-027": "completed",
     }
     assert items["RM-013"]["status"] == "completed"
-    assert items["RM-028"]["status"] == "proposed"
+    assert items["RM-028"]["status"] == "in_progress"
     assert items["RM-029"]["status"] == "completed"
     assert items["RM-025"]["priority"] == "P1"
     assert items["RM-018A"]["status"] == "planned"
@@ -195,10 +195,10 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
     )
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
+    assert not {item_id for item_id, item in milestones.items() if item["status"] == "not_started"}
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
         "P2-028A",
     }
-    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -361,8 +361,8 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
             "conformance without an execution bridge."
         ),
     }
-    assert items["RM-028"]["status"] == "proposed"
-    assert milestones["P2-028A"]["status"] == "not_started"
+    assert items["RM-028"]["status"] == "in_progress"
+    assert milestones["P2-028A"]["status"] == "in_progress"
     assert items["RM-019"]["dependencies"] == [
         "RM-010",
         "RM-011",
@@ -562,13 +562,13 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
-        "in_progress": 5,
+        "in_progress": 6,
         "planned": 6,
-        "proposed": 2,
+        "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
         "completed": 18,
-        "not_started": 1,
+        "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [

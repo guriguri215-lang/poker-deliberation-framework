@@ -242,3 +242,25 @@ control artifact は bounded identifiers と purpose-separated SHA-256 binding �
 credential、approval reason、provider input、traceback を保存しない。ただし同権限の malicious
 writer、完全な syscall 間 TOCTOU 排除、ACL/signature/HMAC、power-loss durability、
 distributed filesystem、secure erase は保証しない。
+
+## P2-028A isolated-job threat boundary
+
+P2-028AはAMD64 Windows上でbase Pythonと固定repository synthetic helperのfile identity/hashを
+effect前に再検証する。childはsuspendedで生成し、CPU time、committed memory、active process、
+`KILL_ON_JOB_CLOSE`を設定したJob Objectへ割り当て、exact requery後にだけresumeする。Job CPU
+accountingもcontrollerがpollし、上限到達時は`TerminateJobObject`でtree全体を停止する。stdinはNUL、
+stdout/stderrはbounded pipe、追加handleはidentity-boundなworkspace内input一つだけである。
+
+request schemaはshell、任意executable/argv/environment、network要求、raw secret値を受け付けない。
+path component、reserved name、ADS、workspace escape、reparse/symlink、approved inputのhardlink、
+open後identity変更をfail closedにする。approvalは`external_code` action digestとlive authorityへ
+effect直前まで拘束し、context、budget、secret-reference setはhash/provenanceだけを保存する。
+
+Job終了、wall/output/cancel超過時はtree全体を停止し、active process 0を再観測する。ただしlocal Job
+terminationはremote provider、remote billing、remote cancellation、network isolationの証拠ではない。
+`effect_unknown`はsuccess/failed/retryへ変換せず、保存済みPID/creation time不在と別のopaque
+reconciliation evidence digestを確認しても`reconciled`は非successのままである。
+
+同権限malicious writer、完全なTOCTOU排除、reduced token/AppContainer、全OS DLL attestation、
+distributed/power-loss durability、writer authenticity、秘密性は非保証である。詳細は
+[`isolated-job-control.md`](isolated-job-control.md)を参照する。

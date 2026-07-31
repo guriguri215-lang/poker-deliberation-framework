@@ -365,6 +365,17 @@ def test_artifact_byte_limit_accepts_equality_and_rejects_one_over() -> None:
     )
     assert isinstance(inventory[0], PayloadInventoryEntryV1)
     assert inventory[0].size_bytes == len(data)
+    isolated_producer_request = request.model_copy(
+        update={
+            "producer_id": "p2-028a-isolated-job-control",
+            "producer_version": "1.0.0",
+        }
+    )
+    with pytest.raises(CanonicalStorageError, match="complete artifact set"):
+        build_inventory(
+            isolated_producer_request,
+            max_artifact_bytes=len(data),
+        )
 
 
 def _tool_binding(ordinal: int, result_id: str) -> ToolBindingV1:

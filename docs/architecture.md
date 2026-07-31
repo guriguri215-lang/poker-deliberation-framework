@@ -286,3 +286,20 @@ callback の後にもpayload/current/controlを再検証する。pending/danglin
 absent と推定せず effect unknown とする。
 不確実な effect は成功へ丸めず、read-only reconciliation に停止する。詳細は
 [`local-data-cleanup.md`](local-data-cleanup.md)を正本とする。
+
+## P2-028A isolated job architecture
+
+`isolated_jobs/models.py`はstrict versioned request/policy/identity/evidence/state、
+`canonical.py`はcanonical bytes/argv/action plan、`windows_backend.py`は固定synthetic child用の
+Windows Job Object、`store.py`はP2-012A revision/CAS上のfull snapshot、`coordinator.py`は
+approval/context/budget/effect順序を所有する。
+
+依存方向はcoordinator → P2-013B verified approval reader / P2-024A context validator /
+P2-011B durable budget / isolated-job store / Windows backendである。childはsuspendedで生成してJobへ
+割り当て、limitとidentityを再照合し、effect直前approval recheckと`launch_committed` publication後に
+だけresumeする。budget settlementをterminal job snapshotより先に確定する。
+
+このlayerは通常`Orchestrator`、CLI、flat-v1、provider、solver、runtime bridgeへ注入しない。
+storage artifactは`isolated_job_state.json`、`stdout.txt`、`stderr.txt`の固定3点で、全revisionが
+full snapshotである。詳細contractと非保証は
+[`isolated-job-control.md`](isolated-job-control.md)を正本とする。

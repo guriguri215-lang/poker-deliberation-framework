@@ -231,7 +231,7 @@ class RM028IsolationEvidenceV1(_ExecutionModel):
 
 
 class RM028IsolationBoundary(Protocol):
-    """Evidence-only interface.  P2-011B ships no implementation."""
+    """Evidence-only interface; P2-011B is neutral and P2-028A supplies a bounded backend."""
 
     def inspect(self, requirement: IsolationRequirementV1) -> RM028IsolationEvidenceV1: ...
 

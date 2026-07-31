@@ -697,9 +697,10 @@ ordinal reduction、cooperative cancellation、RM-028 evidence interfaceまで�
 Orchestrator/CLI/flat-v1、capability state、P2-011A value/schemaを変更しない。
 
 `parallel_deliberation_and_tool_retry`は通常product経路では`disabled`、
-`process_sandbox`は`unavailable`、`immutable_revision_storage_foundation`は`implemented`、
-`product_integrated_durable_run`は`implemented`である。P2-011BはP2-013BやP2-028Aを
-実装せず、通常product経路のparallel/retryを有効化しない。
+`process_sandbox`は`unavailable`、`repository_synthetic_isolated_job_control`、
+`immutable_revision_storage_foundation`、`product_integrated_durable_run`は`implemented`である。
+P2-011B自体はP2-013BやP2-028Aを実装せず、P2-028Aの別Windows backendも通常product経路の
+parallel/retryを有効化しない。
 
 ## P2-012B implementation boundary
 
@@ -734,7 +735,20 @@ cleanup revision CAS、receipt/tombstone、write-zero replay、read-only reconci
 secure erase、automatic repair/retry、broad discovery、product namespaceからのdirect deleteは
 実装しない。
 
-**FACT**: `local_data_cleanup_executor`は`implemented`である。P2-013BとP2-028Aは
-`not_started`のままであり、cleanup CLI、secure erase、automatic repair/retryは実装しない。
+**FACT**: `local_data_cleanup_executor`は`implemented`である。P2-013Bはcompleted、P2-028Aは
+別の固定repository synthetic helper限定スライスとして`in_progress`であり、cleanup経路には
+接続しない。cleanup CLI、secure erase、automatic repair/retryは実装しない。
+
+## P2-028A 実装境界
+
+**FACT**: AMD64 WindowsのJob Objectを用い、base Pythonと固定repository synthetic helperだけに
+canonical argv、identity、approval、context、budget、closed handle、resource/output cap、
+process-tree hard stop、durable cancellation/reconciliationを適用する。
+
+**FACT**: `repository_synthetic_isolated_job_control`は`implemented`だが、汎用
+`process_sandbox`、network isolation、remote cancellation、外部provider/solver、P2-025B bridgeは
+未実装である。RM-028/P2-028Aは`in_progress`を維持する。
+
+詳細は[`isolated-job-control.md`](isolated-job-control.md)を正本とする。
 
 詳細は `docs/local-data-cleanup.md` を正本とする。

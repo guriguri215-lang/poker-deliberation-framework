@@ -31,6 +31,12 @@ from poker_deliberation.confirmed_review_models import (
     ReviewIntakeConfirmationV1,
 )
 from poker_deliberation.context_lifecycle import ContextClassification
+from poker_deliberation.isolated_jobs.models import (
+    ISOLATED_JOB_ARTIFACT_SCHEMA,
+    ISOLATED_JOB_PRODUCER_ID,
+    ISOLATED_JOB_PRODUCER_VERSION,
+    DurableIsolatedJobStateV1,
+)
 from poker_deliberation.local_data_policy import (
     DEFAULT_LOCAL_DATA_POLICY,
     ClassificationEvidence,
@@ -226,6 +232,24 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         CONTROL_CANONICALIZATION,
         DURABLE_BUDGET_ARTIFACT_SCHEMA,
         "budget_state",
+    ),
+    "isolated_job_state.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        ISOLATED_JOB_ARTIFACT_SCHEMA,
+        "isolated_job_state",
+    ),
+    "stdout.txt": (
+        "text/plain",
+        TEXT_SERIALIZATION,
+        "poker-isolated-job-stdout-artifact-v1",
+        "isolated_job_stdout",
+    ),
+    "stderr.txt": (
+        "text/plain",
+        TEXT_SERIALIZATION,
+        "poker-isolated-job-stderr-artifact-v1",
+        "isolated_job_stderr",
     ),
 }
 
@@ -576,6 +600,12 @@ def payload_order_key(logical_name: str) -> tuple[int, bytes]:
         return (18, b"")
     if logical_name == "budget_state.json":
         return (19, b"")
+    if logical_name == "isolated_job_state.json":
+        return (20, b"")
+    if logical_name == "stdout.txt":
+        return (21, b"")
+    if logical_name == "stderr.txt":
+        return (22, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -835,6 +865,13 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         if state.run_id != run_id:
             raise CanonicalStorageError("durable budget state run ID mismatch")
         return state
+    if logical_name == "isolated_job_state.json":
+        job_state = parse_canonical_model(data, DurableIsolatedJobStateV1)
+        if job_state.execution_id != run_id:
+            raise CanonicalStorageError("isolated-job state execution ID mismatch")
+        return job_state
+    if logical_name in {"stdout.txt", "stderr.txt"}:
+        return validate_canonical_text(data)
     raise CanonicalStorageError("artifact payload has no strict validator")
 
 
@@ -961,6 +998,12 @@ def _validate_source_graph(
             allowed_binding_kinds.update({"context", "phase", "budget_policy"})
         elif entry.logical_name == "final_report.md":
             allowed_binding_kinds.add("report")
+        elif entry.logical_name in {
+            "isolated_job_state.json",
+            "stdout.txt",
+            "stderr.txt",
+        }:
+            allowed_binding_kinds.update({"context", "budget_policy"})
         actual_binding_kinds = {binding.kind for binding in entry.provenance_bindings}
         if not actual_binding_kinds <= allowed_binding_kinds:
             raise CanonicalStorageError(
@@ -1648,6 +1691,24 @@ def build_inventory(
     ):
         raise CanonicalStorageError(
             "durable budget state requires its dedicated producer and exclusive revision"
+        )
+    isolated_names = {
+        "isolated_job_state.json",
+        "stdout.txt",
+        "stderr.txt",
+    }
+    present_isolated = isolated_names & {artifact.logical_name for artifact in request.artifacts}
+    isolated_producer = request.producer_id == ISOLATED_JOB_PRODUCER_ID
+    if (
+        isolated_producer
+        and (
+            present_isolated != isolated_names
+            or len(request.artifacts) != len(isolated_names)
+            or request.producer_version != ISOLATED_JOB_PRODUCER_VERSION
+        )
+    ) or (present_isolated and not isolated_producer):
+        raise CanonicalStorageError(
+            "isolated-job state requires its dedicated producer and complete artifact set"
         )
     parsed: dict[str, Any] = {}
     artifacts = sorted(request.artifacts, key=lambda item: payload_order_key(item.logical_name))

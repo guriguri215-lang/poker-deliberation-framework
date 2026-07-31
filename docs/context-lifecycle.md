@@ -135,3 +135,14 @@ terminal lifecycle auditの`retention_started_at`はprovider use-expiryではな
 freezeした`CompletionMarkerV2.published_at`である。classificationはadmitted sourceの最大値から
 downgradeせず、restricted persistenceを拒否する。P2-012B hookはP2-027A pure evaluatorのbounded
 metadataだけをmarker前に保存し、削除・quarantine・暗号化などのactionを実行しない。
+
+## P2-028A isolated-job binding
+
+P2-028Aはexecution admissionごとに既存`validate_context_envelope`を実行し、run/context/attempt/
+assignment、parent/source、payload/policy/integrity hash、UTC expiryを検証する。action expiryは
+context expiryを超えられない。durable isolated-job stateへ保存するのはこれらのtyped scalar binding
+だけで、`AgentContext`、canonical payload、provider input、secret値は保存しない。
+
+同じbindingはP2-011B `ExecutionLineageV1`のcontext source/policy/integrityと一致しなければならず、
+staleまたはcross-attempt contextはapprovalやprocess effectより前に拒否する。この接続は
+Codex/Python bridge、provider dispatch、automatic retryを追加しない。

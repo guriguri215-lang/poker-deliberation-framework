@@ -19,6 +19,7 @@ from poker_deliberation.bounded_natural_language_models import (
 )
 from tests.bounded_natural_language_support import (
     SOURCE_BYTES,
+    focal_call_source,
     multiplayer_source,
     ready_bounded_preparation,
 )
@@ -137,6 +138,18 @@ def test_every_extracted_binding_is_an_exact_utf8_half_open_source_span() -> Non
         ].decode()
         == "ポスト"
     )
+    assert (
+        SOURCE_BYTES[
+            by_path["hand.actions[0].blind"].start_byte : by_path["hand.actions[0].blind"].end_byte
+        ]
+        == b"SB"
+    )
+    assert (
+        SOURCE_BYTES[
+            by_path["hand.actions[1].blind"].start_byte : by_path["hand.actions[1].blind"].end_byte
+        ]
+        == b"BB"
+    )
 
 
 @pytest.mark.parametrize(
@@ -165,12 +178,43 @@ def test_three_and_six_player_boundaries_extract_without_false_side_pot_rejectio
     assert projection.tool_plan.contestable_pot_units == 28
 
 
+def test_completed_hand_can_select_a_nonterminal_focal_call() -> None:
+    prepared = ready_bounded_preparation(
+        source_bytes=focal_call_source(),
+        intake_id="intake-bounded-focal-call",
+    )
+    assert prepared.candidate is not None
+    projection = prepared.candidate.projection
+    assert projection.focal_decision.hero_response == "call"
+    assert projection.focal_decision.facing_action_index == 7
+    assert projection.focal_decision.hero_action_index == 8
+    assert projection.hand.actions[-1].action == "fold"
+    assert projection.tool_plan.pot_odds_input.model_dump(mode="json") == {
+        "pot_before_bet": 12.0,
+        "opponent_bet": 8.0,
+        "call_cost": 8.0,
+        "expected_rake": 0.0,
+    }
+
+
 def test_missing_header_is_not_misclassified_as_duplicate_blinds() -> None:
     source = b"\n".join(SOURCE_BYTES.splitlines()[1:]) + b"\n"
     result = _prepare(source)
     assert result.status == "blocked"
     assert [(item.code.value, item.field_path) for item in result.diagnostics] == [
         ("BNL_E_MISSING", "hand.header")
+    ]
+
+
+def test_declared_blind_kind_must_match_actor_position() -> None:
+    source = SOURCE_BYTES.replace(
+        "Heroが1をSBとしてポストしました。".encode(),
+        "Heroが1をBBとしてポストしました。".encode(),
+    )
+    result = _prepare(source)
+    assert result.status == "blocked"
+    assert [(item.code.value, item.field_path) for item in result.diagnostics] == [
+        ("BNL_E_CONFLICT", "hand.actions.post_blind")
     ]
 
 

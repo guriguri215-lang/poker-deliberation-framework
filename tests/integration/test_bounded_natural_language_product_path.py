@@ -24,6 +24,7 @@ from tests.bounded_natural_language_support import (
     SOURCE_BYTES,
     app_config,
     bounded_admission,
+    focal_call_source,
     multiplayer_source,
 )
 
@@ -182,6 +183,45 @@ def test_six_player_boundary_publishes_and_replays_terminal_artifacts(tmp_path) 
 
     assert report.run_status == "completed"
     assert report.reconstructed_input["hand"]["table_size"] == 6
+    verify_bounded_natural_language_provenance(
+        source_bytes=source,
+        candidate=admission.candidate,
+        confirmation=admission.confirmation,
+        case=admission.case,
+        report=report,
+        provenance=provenance,
+        assignments=assignments,
+        agent_reports=agent_reports,
+        storage_root=orchestrator.product_store.revision_root,
+        storage_revision=read.revision,
+        storage_transaction_id=read.transaction_id,
+    )
+
+
+def test_focal_call_branch_publishes_and_replays_terminal_artifacts(tmp_path) -> None:
+    source = focal_call_source()
+    admission = bounded_admission(
+        run_id="run-bounded-product-focal-call",
+        source_bytes=source,
+        intake_id="intake-bounded-product-focal-call",
+    )
+    orchestrator = Orchestrator(config=app_config(tmp_path), provider=LocalProvider())
+
+    report = orchestrator.run_bounded_natural_language_review(admission)
+    read = orchestrator.product_store.read_current(report.run_id)
+    assignments, agent_reports = _ordered_support(read, report)
+    provenance = parse_canonical_model(
+        read.payload_bytes("bounded_nl_provenance.json"),
+        BoundedNaturalLanguageProvenanceV1,
+    )
+
+    assert admission.candidate.projection.focal_decision.hero_response == "call"
+    assert report.run_status == "completed"
+    assert [item.tool_name for item in report.tool_results] == [
+        "hand_validator",
+        "hand_pot_ledger",
+        "pot_odds",
+    ]
     verify_bounded_natural_language_provenance(
         source_bytes=source,
         candidate=admission.candidate,

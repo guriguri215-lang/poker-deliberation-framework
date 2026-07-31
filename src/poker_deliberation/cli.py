@@ -34,13 +34,13 @@ from poker_deliberation.approvals import (
 from poker_deliberation.bounded_natural_language import (
     admit_bounded_natural_language_review,
     create_bounded_confirmation,
+    create_bounded_confirmation_authority,
     prepare_bounded_natural_language_intake,
     review_bounded_natural_language_intake,
 )
 from poker_deliberation.bounded_natural_language_models import (
     MAX_BOUNDED_NL_ARTIFACT_BYTES,
     MAX_BOUNDED_NL_SOURCE_BYTES,
-    BoundedConfirmationAuthorityV1,
     BoundedIntakeConfirmationV1,
     BoundedIntakePreparationResultV1,
 )
@@ -542,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             if bounded_preparation.status != "ready" or bounded_preparation.candidate is None:
                 raise ValueError("BNL_E_CONFIRMATION_MISSING")
-            bounded_authority = BoundedConfirmationAuthorityV1(
+            bounded_authority = create_bounded_confirmation_authority(
                 authority_id=args.authority_id,
                 authority_kind="local_user",
                 authentication="self_asserted",

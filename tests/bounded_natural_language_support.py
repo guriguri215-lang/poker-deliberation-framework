@@ -20,6 +20,21 @@ SOURCE_PATH = ROOT / "tests" / "fixtures" / "bounded_natural_language" / "v1" / 
 SOURCE_BYTES = SOURCE_PATH.read_bytes()
 
 
+def focal_call_source() -> bytes:
+    """Complete the hand after a turn focal call so the call branch is retrospective."""
+
+    return SOURCE_BYTES.replace(
+        "Heroがフォールドしました。".encode(),
+        (
+            "Heroが8をコールしました。\n"
+            "リバーは3hです。\n"
+            "Villainが10をベットしました。\n"
+            "Heroがフォールドしました。"
+        ).encode(),
+        1,
+    )
+
+
 def multiplayer_source(table_size: int) -> bytes:
     """Build a legal 3- or 6-handed boundary fixture with the same focal decision."""
 

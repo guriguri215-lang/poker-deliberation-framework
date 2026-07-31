@@ -12,9 +12,9 @@
   "expected_hand_sha256": "d8617f842952a9bece1c3f057735ede8eda56d80d2d7ecf8e8d59257881a0be8",
   "expected_focal_sha256": "d2428cbceaa4accac628f17340ab0720a2ac901295de3606cf002a271616f7c5",
   "expected_tool_plan_sha256": "9d86d230feb92b3c29e5c0ad1704117f4e02816f7cddae0acd04df2842799c87",
-  "expected_source_bindings_sha256": "9d1964636e56132203fbdf181053c3fd88d819f753f5391da3d33859bb079e64",
+  "expected_source_bindings_sha256": "19f45c9799cab1280823ed5333c27d3e19f5fa6ef491590f14e9af23561500a0",
   "expected_extractor_sha256": "5c64bdcbffa878c31d8b203a7c5aea1e5b82228d83fb66651ec5cbfa3b0b8998",
-  "expected_binding_count": 60,
+  "expected_binding_count": 62,
   "cases": [
     {"case_id": "valid-extraction-and-spans", "expected_evidence": ["exact-field-extraction", "exact-source-span-binding"]},
     {"case_id": "supported-notation-variation", "expected_evidence": ["explicit-variation-preserves-semantics"]},

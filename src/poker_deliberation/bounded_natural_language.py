@@ -200,8 +200,8 @@ def _fail(
     )
 
 
-def _validate_control_id(value: str, field_path: str) -> None:
-    if _CONTROL_ID_RE.fullmatch(value) is None:
+def _validate_control_id(value: object, field_path: str) -> None:
+    if not isinstance(value, str) or _CONTROL_ID_RE.fullmatch(value) is None:
         _fail(BoundedNaturalLanguageDiagnosticCode.CONTROL, field_path)
     if redact_sensitive(value) != value:
         _fail(BoundedNaturalLanguageDiagnosticCode.CONTROL_SECRET, field_path)
@@ -626,6 +626,7 @@ def _parse_candidate(
     board: list[str] = []
     actions: list[HandAction] = []
     action_decimals: list[tuple[Decimal, Decimal | None]] = []
+    action_blinds: list[str | None] = []
     current_street: Street | None = None
     current_street_span: _SpanRef | None = None
     seen_streets: list[Street] = []
@@ -821,6 +822,7 @@ def _parse_candidate(
             if len(actions) >= MAX_BOUNDED_NL_ACTIONS:
                 _fail(BoundedNaturalLanguageDiagnosticCode.LIMIT, "hand.actions")
             actor = action_match.group("actor")
+            blind_kind = action_match.group("blind") if action_kind == "post_blind" else None
             amount = (
                 _decimal(action_match.group("amount"), field_path="hand.actions.amount")
                 if "amount" in action_match.groupdict()
@@ -856,6 +858,7 @@ def _parse_candidate(
                 )
             )
             action_decimals.append((amount, to_amount))
+            action_blinds.append(blind_kind)
             amount_values.append(amount)
             if action_kind == "raise" and to_amount is not None:
                 amount_values.append(to_amount)
@@ -874,6 +877,12 @@ def _parse_candidate(
                 action_kind,
                 _span_ref(line, action_match, "verb"),
             )
+            if blind_kind is not None:
+                add_binding(
+                    f"hand.actions[{action_index}].blind",
+                    blind_kind,
+                    _span_ref(line, action_match, "blind"),
+                )
             if "amount" in action_match.groupdict():
                 add_binding(
                     f"hand.actions[{action_index}].amount",
@@ -1006,11 +1015,16 @@ def _parse_candidate(
     if seen_streets[-1] is not actions[-1].street:
         _fail(BoundedNaturalLanguageDiagnosticCode.ACTION, "hand.actions.terminal")
     _validate_action_order(players, actions)
-    for action, (amount, _) in zip(actions, action_decimals, strict=True):
+    for action, (amount, _), declared_blind in zip(
+        actions,
+        action_decimals,
+        action_blinds,
+        strict=True,
+    ):
         if action.action == "post_blind":
             position, _ = player_map[action.actor]
             expected = small_blind if position == "SB" else big_blind if position == "BB" else None
-            if expected is None or amount != expected:
+            if expected is None or amount != expected or declared_blind != position:
                 _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "hand.actions.post_blind")
     known_cards = [*hero_cards, *board]
     if len(known_cards) != len(set(known_cards)):
@@ -1362,6 +1376,67 @@ def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedInta
     return candidate
 
 
+def _strict_bounded_confirmation_authority(
+    authority: BoundedConfirmationAuthorityV1,
+) -> BoundedConfirmationAuthorityV1:
+    try:
+        authority_id = authority.authority_id
+        authority_kind = authority.authority_kind
+        authentication = authority.authentication
+        scope = authority.scope
+    except AttributeError:
+        _fail(
+            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
+            "confirmation.authority",
+        )
+    if (
+        not isinstance(authority_id, str)
+        or authority_kind not in {"local_user", "verified_application"}
+        or authentication not in {"self_asserted", "verified"}
+        or scope != "confirm_bounded_natural_language_projection"
+    ):
+        _fail(
+            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
+            "confirmation.authority",
+        )
+    _validate_control_id(authority_id, "confirmation.authority.authority_id")
+    try:
+        return BoundedConfirmationAuthorityV1(
+            authority_id=authority_id,
+            authority_kind=authority_kind,
+            authentication=authentication,
+            scope=scope,
+        )
+    except ValidationError:
+        _fail(
+            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
+            "confirmation.authority",
+        )
+
+
+def create_bounded_confirmation_authority(
+    *,
+    authority_id: str,
+    authority_kind: Literal["local_user", "verified_application"],
+    authentication: Literal["self_asserted", "verified"],
+) -> BoundedConfirmationAuthorityV1:
+    """Validate raw authority controls before Pydantic can echo their values."""
+
+    _validate_control_id(authority_id, "confirmation.authority.authority_id")
+    try:
+        authority = BoundedConfirmationAuthorityV1(
+            authority_id=authority_id,
+            authority_kind=authority_kind,
+            authentication=authentication,
+        )
+    except ValidationError:
+        _fail(
+            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
+            "confirmation.authority",
+        )
+    return _strict_bounded_confirmation_authority(authority)
+
+
 def create_bounded_confirmation(
     candidate: BoundedIntakeCandidateV1,
     *,
@@ -1379,6 +1454,7 @@ def create_bounded_confirmation(
     expires_at: datetime | None = None,
 ) -> BoundedIntakeConfirmationV1:
     candidate = verify_bounded_candidate(candidate)
+    authority = _strict_bounded_confirmation_authority(authority)
     for value, field_path in (
         (run_id, "confirmation.run_id"),
         (confirmation_id, "confirmation.confirmation_id"),
@@ -1386,15 +1462,6 @@ def create_bounded_confirmation(
         (authority.authority_id, "confirmation.authority.authority_id"),
     ):
         _validate_control_id(value, field_path)
-    try:
-        authority = BoundedConfirmationAuthorityV1.model_validate_json(
-            canonical_json_bytes(authority), strict=True
-        )
-    except (ValidationError, CanonicalStorageError):
-        _fail(
-            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
-            "confirmation.authority",
-        )
     projection = candidate.projection
     expected = (
         projection.source.content_sha256,

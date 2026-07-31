@@ -112,12 +112,12 @@ class BoundedNaturalLanguageEvaluationFixtureV1(_EvaluationModel):
         "9d86d230feb92b3c29e5c0ad1704117f4e02816f7cddae0acd04df2842799c87"
     ]
     expected_source_bindings_sha256: Literal[
-        "9d1964636e56132203fbdf181053c3fd88d819f753f5391da3d33859bb079e64"
+        "19f45c9799cab1280823ed5333c27d3e19f5fa6ef491590f14e9af23561500a0"
     ]
     expected_extractor_sha256: Literal[
         "5c64bdcbffa878c31d8b203a7c5aea1e5b82228d83fb66651ec5cbfa3b0b8998"
     ]
-    expected_binding_count: Literal[60]
+    expected_binding_count: Literal[62]
     cases: tuple[BoundedNaturalLanguageEvaluationCaseV1, ...]
 
     @model_validator(mode="after")

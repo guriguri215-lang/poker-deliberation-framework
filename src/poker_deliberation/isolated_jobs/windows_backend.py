@@ -82,8 +82,6 @@ _TERMINATION_EXIT_CODE: Final = 0xE0280001
 _POLL_INTERVAL_SECONDS: Final = 0.01
 _POST_TERMINATION_WAIT_MS: Final = 5_000
 _PROCESS_CREATION_LOCK: Final = threading.RLock()
-_PREPARATION_REGISTRY_LOCK: Final = threading.RLock()
-_PREPARATION_LEASES: dict[str, PreparationLease] = {}
 
 
 class _LARGE_INTEGER(ctypes.Structure):
@@ -568,7 +566,7 @@ class WindowsJobOutcome:
 
 
 class PreparationLease:
-    """Own preparation resources across the backend-to-caller return boundary."""
+    """Caller-owned cleanup token established before preparation starts."""
 
     def __init__(self, execution_id: str) -> None:
         self.execution_id = execution_id
@@ -646,11 +644,40 @@ class PreparationLease:
             if self._released:
                 return
             self._released = True
+            self._abort_requested = True
             self._prepared = None
             self._error = None
-        with _PREPARATION_REGISTRY_LOCK:
-            if _PREPARATION_LEASES.get(self.execution_id) is self:
-                del _PREPARATION_LEASES[self.execution_id]
+
+
+class WindowsJobPreparation:
+    """Context-managed direct preparation with no resourceful call-return gap."""
+
+    def __init__(
+        self,
+        backend: WindowsJobBackend,
+        request: IsolatedJobRequestV1,
+        policy: IsolatedJobPolicyV1,
+    ) -> None:
+        self._backend = backend
+        self._request = request
+        self._policy = policy
+        self._lease = backend.new_preparation_lease(request.execution_id)
+        self._prepared: PreparedWindowsJob | None = None
+
+    def __enter__(self) -> PreparedWindowsJob:
+        try:
+            self._prepared = self._backend._prepare_with_lease(
+                self._request,
+                self._policy,
+                self._lease,
+            )
+            return self._prepared
+        except BaseException:
+            self._lease.abort_and_join()
+            raise
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self._lease.abort_and_join()
 
 
 class PreparedWindowsJob:
@@ -685,8 +712,10 @@ class PreparedWindowsJob:
         self.inherited_handle_count = inherited_handle_count
         self._preparation_lease = preparation_lease
         self._resumed = False
+        self._resume_effect_possible = False
         self._closed = False
         self._identity_rechecked = False
+        self._pre_resume_termination_evidence: JobEvidenceV1 | None = None
         self._started_ns: int | None = None
         limits = policy.limits
         self._output = _OutputBudget(
@@ -746,6 +775,10 @@ class PreparedWindowsJob:
         verify_execution_identity(self.policy.execution_identity)
         self._identity_rechecked = True
 
+    @property
+    def resume_effect_possible(self) -> bool:
+        return self._resume_effect_possible
+
     def resume(
         self,
         *,
@@ -755,22 +788,28 @@ class PreparedWindowsJob:
         if self._resumed or self._closed:
             raise RuntimeError("isolated job cannot be resumed twice")
         try:
+            self._start_readers()
             verify_execution_identity(self.policy.execution_identity)
             self._identity_rechecked = True
-            self._start_readers()
             self._started_ns = time.monotonic_ns()
             if approval_valid_until is not None and (
                 clock is None or clock() >= approval_valid_until
             ):
                 raise IsolatedJobError(JobFailureCode.APPROVAL_MISMATCH)
+            self._resume_effect_possible = True
             result = _kernel32.ResumeThread(wintypes.HANDLE(int(self.thread_handle)))
             if result == 0xFFFFFFFF:
                 raise _last_error()
             self._resumed = True
             _winapi.CloseHandle(self.thread_handle)
             self.thread_handle = None
-        except BaseException:
-            self.terminate_before_resume()
+        except BaseException as exc:
+            reason = (
+                exc.code
+                if isinstance(exc, IsolatedJobError)
+                else JobFailureCode.INTERNAL_INVARIANT_ERROR
+            )
+            self.terminate_before_resume(reason=reason)
             raise
 
     def _terminate_job(self) -> bool:
@@ -793,18 +832,93 @@ class PreparedWindowsJob:
             return False
         return False
 
-    def terminate_before_resume(self) -> None:
+    def terminate_before_resume(
+        self,
+        *,
+        reason: JobFailureCode = JobFailureCode.INTERNAL_INVARIANT_ERROR,
+    ) -> JobEvidenceV1 | None:
         if self._closed:
-            return
-        self._terminate_job()
+            return self._pre_resume_termination_evidence
+        terminated = self._terminate_job()
         if self.process_handle is not None:
             with suppress(BaseException):
                 _kernel32.TerminateProcess(
                     wintypes.HANDLE(int(self.process_handle)),
                     _TERMINATION_EXIT_CODE,
                 )
+            with suppress(BaseException):
+                _kernel32.WaitForSingleObject(
+                    wintypes.HANDLE(int(self.process_handle)),
+                    _POST_TERMINATION_WAIT_MS,
+                )
+        if self._threads is not None:
+            for thread in self._threads:
+                with suppress(BaseException):
+                    thread.join(timeout=5)
+        stdout, stderr, _overflow, reader_error = self._output.snapshot()
+        accounting = _JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION()
+        extended = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        with suppress(BaseException):
+            accounting = _query_accounting(self.job_handle)
+        with suppress(BaseException):
+            extended = _query_extended(self.job_handle)
+        process_kernel_time = 0
+        process_user_time = 0
+        if self.process_handle is not None:
+            with suppress(BaseException):
+                _creation, process_kernel_time, process_user_time = _process_times(
+                    int(self.process_handle)
+                )
+        exit_code = _TERMINATION_EXIT_CODE
+        if self.process_handle is not None:
+            with suppress(BaseException):
+                exit_code = int(_winapi.GetExitCodeProcess(self.process_handle))
+        observed_active = int(accounting.BasicInfo.ActiveProcesses)
+        active_processes = 0 if terminated else max(1, observed_active)
+        total_processes = max(
+            1,
+            active_processes,
+            int(accounting.BasicInfo.TotalProcesses),
+        )
+        self._pre_resume_termination_evidence = JobEvidenceV1(
+            process_id=self.process_id,
+            process_creation_time_100ns=self.creation_time_100ns,
+            exit_code=exit_code,
+            termination_reason=reason.value,
+            wall_clock_ms=(
+                0
+                if self._started_ns is None
+                else max(0, (time.monotonic_ns() - self._started_ns) // 1_000_000)
+            ),
+            job_user_time_100ns=int(accounting.BasicInfo.TotalUserTime.QuadPart),
+            job_kernel_time_100ns=int(accounting.BasicInfo.TotalKernelTime.QuadPart),
+            process_user_time_100ns=process_user_time,
+            process_kernel_time_100ns=process_kernel_time,
+            peak_process_memory_bytes=int(extended.PeakProcessMemoryUsed),
+            peak_job_memory_bytes=int(extended.PeakJobMemoryUsed),
+            total_processes=total_processes,
+            active_processes=active_processes,
+            stdout_bytes=len(stdout),
+            stderr_bytes=len(stderr),
+            stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+            stderr_sha256=hashlib.sha256(stderr).hexdigest(),
+            command_line_sha256=command_line_sha256(self.command_line),
+            inherited_handle_count=self.inherited_handle_count,
+            process_tree_termination_confirmed=active_processes == 0,
+            job_limits_requeried=True,
+            executable_identity_rechecked=self._identity_rechecked,
+            output_complete=(
+                active_processes == 0
+                and not reader_error
+                and (
+                    self._threads is None
+                    or (self._stdout_done.is_set() and self._stderr_done.is_set())
+                )
+            ),
+        )
         with suppress(BaseException):
             self.close()
+        return self._pre_resume_termination_evidence
 
     def _abort_for_controller_exit(self) -> None:
         self._terminate_job()
@@ -1130,18 +1244,7 @@ class WindowsJobBackend:
     boundary_id = "windows-job-object-repository-synthetic-v1"
 
     def new_preparation_lease(self, execution_id: str) -> PreparationLease:
-        lease = PreparationLease(execution_id)
-        with _PREPARATION_REGISTRY_LOCK:
-            if execution_id in _PREPARATION_LEASES:
-                raise IsolatedJobError(JobFailureCode.RUN_LOCKED)
-            _PREPARATION_LEASES[execution_id] = lease
-        return lease
-
-    def abort_preparation(self, execution_id: str) -> None:
-        with _PREPARATION_REGISTRY_LOCK:
-            lease = _PREPARATION_LEASES.get(execution_id)
-        if lease is not None:
-            lease.abort_and_join()
+        return PreparationLease(execution_id)
 
     def _open_input(
         self,
@@ -1191,10 +1294,21 @@ class WindowsJobBackend:
         self,
         request: IsolatedJobRequestV1,
         policy: IsolatedJobPolicyV1,
+    ) -> WindowsJobPreparation:
+        """Return a no-resource context manager for direct backend qualification."""
+
+        return WindowsJobPreparation(self, request, policy)
+
+    def _prepare_with_lease(
+        self,
+        request: IsolatedJobRequestV1,
+        policy: IsolatedJobPolicyV1,
+        lease: PreparationLease,
     ) -> PreparedWindowsJob:
         if sys.platform != "win32":
             raise OSError("Windows Job Object backend is unavailable")
-        lease = self.new_preparation_lease(request.execution_id)
+        if lease.execution_id != request.execution_id:
+            raise IsolatedJobError(JobFailureCode.STALE_REPLAY)
 
         def prepare_worker() -> None:
             try:

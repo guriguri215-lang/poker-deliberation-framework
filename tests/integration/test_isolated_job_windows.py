@@ -51,9 +51,9 @@ pytestmark = pytest.mark.skipif(
 
 
 def _run_backend(value, policy):
-    prepared = WindowsJobBackend().prepare(value, policy)
-    prepared.resume()
-    return prepared.wait()
+    with WindowsJobBackend().prepare(value, policy) as prepared:
+        prepared.resume()
+        return prepared.wait()
 
 
 def test_windows_job_normal_exit_closed_stdin_and_module_inventory(tmp_path: Path) -> None:

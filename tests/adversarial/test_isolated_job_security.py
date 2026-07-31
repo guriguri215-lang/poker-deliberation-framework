@@ -123,8 +123,11 @@ def test_direct_or_unvalidated_policy_cannot_escape_workspace(tmp_path: Path) ->
         update={"filesystem": bypassed_filesystem},
     )
     value = request(SyntheticOperation.COPY_HANDLES, suffix="direct-policy-escape")
-    with pytest.raises(IsolatedJobError) as rejected:
-        WindowsJobBackend().prepare(value, bypassed_policy)
+    with (
+        pytest.raises(IsolatedJobError) as rejected,
+        WindowsJobBackend().prepare(value, bypassed_policy),
+    ):
+        pass
     assert rejected.value.code is JobFailureCode.PATH_CONFINEMENT_FAILED
 
 
@@ -166,8 +169,8 @@ def test_noncanonical_or_secret_shaped_input_is_refused_before_launch(
     value = request(SyntheticOperation.COPY_HANDLES, suffix="bad-input")
     policy = policy_for(workspace, approved_input=source)
 
-    with pytest.raises(ValueError):
-        WindowsJobBackend().prepare(value, policy)
+    with pytest.raises(ValueError), WindowsJobBackend().prepare(value, policy):
+        pass
 
 
 def test_changed_execution_identity_is_refused_before_launch(tmp_path: Path) -> None:
@@ -179,8 +182,11 @@ def test_changed_execution_identity_is_refused_before_launch(tmp_path: Path) -> 
     changed_identity = policy.execution_identity.model_copy(update={"synthetic_helper": helper})
     changed_policy = policy.model_copy(update={"execution_identity": changed_identity})
 
-    with pytest.raises(IsolatedJobError) as rejected:
-        WindowsJobBackend().prepare(value, changed_policy)
+    with (
+        pytest.raises(IsolatedJobError) as rejected,
+        WindowsJobBackend().prepare(value, changed_policy),
+    ):
+        pass
 
     assert rejected.value.code is JobFailureCode.IDENTITY_MISMATCH
 
@@ -196,8 +202,11 @@ def test_same_size_approved_input_mutation_is_refused_before_launch(
     policy = policy_for(workspace, approved_input=source)
     source.write_bytes(b"other fixture\n")
 
-    with pytest.raises(IsolatedJobError) as rejected:
-        WindowsJobBackend().prepare(value, policy)
+    with (
+        pytest.raises(IsolatedJobError) as rejected,
+        WindowsJobBackend().prepare(value, policy),
+    ):
+        pass
 
     assert rejected.value.code is JobFailureCode.IDENTITY_MISMATCH
 

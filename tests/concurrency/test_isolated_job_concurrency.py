@@ -74,10 +74,10 @@ class _CountingBackend(WindowsJobBackend):
         self.count = 0
         self.lock = threading.Lock()
 
-    def prepare(self, request_value, policy):
+    def _prepare_with_lease(self, request_value, policy, lease):
         with self.lock:
             self.count += 1
-        return super().prepare(request_value, policy)
+        return super()._prepare_with_lease(request_value, policy, lease)
 
 
 def _coordinator_fixture(
@@ -170,6 +170,77 @@ def test_concurrent_exact_execution_launches_only_one_child(tmp_path: Path) -> N
     assert [result.status for result in results] == [IsolatedJobStatus.COMPLETED]
     assert len(errors) == 1
     assert str(errors[0]) == JobFailureCode.RUN_LOCKED.value
+
+
+def test_running_exact_duplicate_cannot_abort_first_callers_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _CountingBackend()
+    value, policy, coordinator, job_store, _budget, kwargs = _coordinator_fixture(
+        tmp_path,
+        suffix="running-duplicate",
+        backend=backend,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    running = threading.Event()
+    cancel_first = threading.Event()
+    first_results = []
+    first_errors: list[BaseException] = []
+    original_transition = job_store.transition
+
+    def observe_running(*args: Any, **transition_kwargs: Any):
+        result = original_transition(*args, **transition_kwargs)
+        if transition_kwargs.get("status") is IsolatedJobStatus.RUNNING:
+            running.set()
+        return result
+
+    monkeypatch.setattr(job_store, "transition", observe_running)
+
+    def run_first() -> None:
+        try:
+            first_results.append(
+                coordinator.execute(
+                    value,
+                    policy,
+                    cancelled=cancel_first.is_set,
+                    **kwargs,
+                )
+            )
+        except BaseException as exc:
+            first_errors.append(exc)
+
+    thread = threading.Thread(target=run_first)
+    thread.start()
+    assert running.wait(timeout=10)
+    state = job_store.load(value.execution_id)
+    assert state.process_id is not None
+    assert state.process_creation_time_100ns is not None
+    assert (
+        WindowsJobBackend.process_identity_status(
+            state.process_id,
+            state.process_creation_time_100ns,
+        )
+        == "same_live_process"
+    )
+
+    with pytest.raises(ValueError, match=JobFailureCode.RUN_LOCKED.value):
+        coordinator.execute(value, policy, **kwargs)
+    assert (
+        WindowsJobBackend.process_identity_status(
+            state.process_id,
+            state.process_creation_time_100ns,
+        )
+        == "same_live_process"
+    )
+
+    cancel_first.set()
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+    assert not first_errors
+    assert [result.status for result in first_results] == [IsolatedJobStatus.CANCELLED]
+    assert backend.count == 1
 
 
 def test_cancel_is_durable_tree_wide_and_budget_settled(tmp_path: Path) -> None:

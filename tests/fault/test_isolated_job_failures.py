@@ -48,6 +48,7 @@ from poker_deliberation.isolated_jobs.store import (
     initialize_isolated_job_root,
 )
 from poker_deliberation.isolated_jobs.windows_backend import (
+    PreparationLease,
     WindowsJobBackend,
     WindowsJobOutcome,
 )
@@ -530,10 +531,10 @@ def test_effect_admission_approval_change_terminates_before_resume(
     state = job_store.load(value.execution_id)
     budget_state = budget.load(value.budget_run_id)
 
-    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
-    assert state.failure_code is JobFailureCode.EFFECT_UNKNOWN
+    assert state.status is IsolatedJobStatus.FAILED
+    assert state.failure_code is JobFailureCode.APPROVAL_MISMATCH
     assert state.process_id is not None
-    assert budget_state.settlements[-1].status.value == "effect_unknown"
+    assert budget_state.settlements[-1].status.value == "released_no_effect"
     assert not budget_state.active_permits
 
 
@@ -564,7 +565,8 @@ def test_effect_admission_controller_abort_hard_stops_and_rethrows(
 
     state = job_store.load(value.execution_id)
     budget_state = budget.load(value.budget_run_id)
-    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.status is IsolatedJobStatus.FAILED
+    assert state.failure_code is JobFailureCode.INTERNAL_INVARIANT_ERROR
     assert state.process_id is not None
     assert (
         WindowsJobBackend.process_identity_status(
@@ -573,7 +575,8 @@ def test_effect_admission_controller_abort_hard_stops_and_rethrows(
         )
         == "absent"
     )
-    assert budget_state.settlements[-1].actual.tool_attempts == 1
+    assert budget_state.settlements[-1].status.value == "released_no_effect"
+    assert budget_state.settlements[-1].actual.tool_attempts == 0
     assert not budget_state.active_permits
 
 
@@ -591,13 +594,20 @@ def test_prepare_return_handoff_abort_is_closed_by_preexisting_lease(
     class InterruptReturnBackend(WindowsJobBackend):
         process_id: int | None = None
         creation_time: int | None = None
+        lease: PreparationLease | None = None
 
-        def prepare(
+        def _prepare_with_lease(
             self,
             request_value: IsolatedJobRequestV1,
             policy_value: IsolatedJobPolicyV1,
+            lease: PreparationLease,
         ):
-            prepared = super().prepare(request_value, policy_value)
+            self.lease = lease
+            prepared = super()._prepare_with_lease(
+                request_value,
+                policy_value,
+                lease,
+            )
             self.process_id = prepared.process_id
             self.creation_time = prepared.creation_time_100ns
             raise KeyboardInterrupt("synthetic prepare return handoff abort")
@@ -616,7 +626,9 @@ def test_prepare_return_handoff_abort_is_closed_by_preexisting_lease(
         )
         == "absent"
     )
-    assert value.execution_id not in backend_module._PREPARATION_LEASES
+    assert backend.lease is not None
+    assert backend.lease._released is True
+    assert backend.lease._prepared is None
     assert job_store.load(value.execution_id).status is IsolatedJobStatus.FAILED
     assert not budget.load(value.budget_run_id).active_permits
 
@@ -645,7 +657,8 @@ def test_kernel_boundary_expiry_reports_approval_mismatch_before_resume(
     state = job_store.load(value.execution_id)
     budget_state = budget.load(value.budget_run_id)
     assert clock_calls == 4
-    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.status is IsolatedJobStatus.FAILED
+    assert state.failure_code is JobFailureCode.APPROVAL_MISMATCH
     assert state.process_id is not None
     assert (
         WindowsJobBackend.process_identity_status(
@@ -655,6 +668,7 @@ def test_kernel_boundary_expiry_reports_approval_mismatch_before_resume(
         == "absent"
     )
     assert budget_state.settlements[-1].actual.tool_attempts == 1
+    assert budget_state.settlements[-1].status.value == "failed"
     assert not budget_state.active_permits
 
 
@@ -680,13 +694,14 @@ def test_resume_rechecks_identity_after_second_approval(
         original_verify(identity)  # type: ignore[arg-type]
 
     monkeypatch.setattr(backend_module, "verify_execution_identity", fail_fourth_identity)
-    with pytest.raises(ValueError, match=JobFailureCode.EFFECT_UNKNOWN.value):
+    with pytest.raises(ValueError, match=JobFailureCode.IDENTITY_MISMATCH.value):
         coordinator.execute(value, policy, **kwargs)
 
     state = job_store.load(value.execution_id)
     budget_state = budget.load(value.budget_run_id)
     assert identity_checks == 4
-    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.status is IsolatedJobStatus.FAILED
+    assert state.failure_code is JobFailureCode.IDENTITY_MISMATCH
     assert state.process_id is not None
     assert (
         WindowsJobBackend.process_identity_status(
@@ -696,6 +711,7 @@ def test_resume_rechecks_identity_after_second_approval(
         == "absent"
     )
     assert budget_state.settlements[-1].actual.tool_attempts == 1
+    assert budget_state.settlements[-1].status.value == "failed"
     assert not budget_state.active_permits
 
 
@@ -975,17 +991,17 @@ def test_wait_accounting_exception_terminates_and_returns_effect_unknown(
         suffix="accounting-exception",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
-    prepared = WindowsJobBackend().prepare(
+    with WindowsJobBackend().prepare(
         value,
         policy_for(tmp_path, job_limits=limits(wall_clock_ms=2_000)),
-    )
-    prepared.resume()
+    ) as prepared:
+        prepared.resume()
 
-    def fail_accounting(_job: int):
-        raise OSError("synthetic accounting failure")
+        def fail_accounting(_job: int):
+            raise OSError("synthetic accounting failure")
 
-    monkeypatch.setattr(backend_module, "_query_accounting", fail_accounting)
-    outcome = prepared.wait()
+        monkeypatch.setattr(backend_module, "_query_accounting", fail_accounting)
+        outcome = prepared.wait()
 
     assert outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN
     assert outcome.evidence.output_complete is False
@@ -1001,21 +1017,21 @@ def test_pipe_read_error_is_not_treated_as_complete_output(
         suffix="pipe-read-error",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
-    prepared = WindowsJobBackend().prepare(
+    with WindowsJobBackend().prepare(
         value,
         policy_for(tmp_path, job_limits=limits(wall_clock_ms=2_000)),
-    )
-    target_fds = {prepared.stdout_read_fd, prepared.stderr_read_fd}
-    original_read = backend_module.os.read
+    ) as prepared:
+        target_fds = {prepared.stdout_read_fd, prepared.stderr_read_fd}
+        original_read = backend_module.os.read
 
-    def fail_target_read(file_descriptor: int, size: int) -> bytes:
-        if file_descriptor in target_fds:
-            raise OSError("synthetic pipe read failure")
-        return original_read(file_descriptor, size)
+        def fail_target_read(file_descriptor: int, size: int) -> bytes:
+            if file_descriptor in target_fds:
+                raise OSError("synthetic pipe read failure")
+            return original_read(file_descriptor, size)
 
-    monkeypatch.setattr(backend_module.os, "read", fail_target_read)
-    prepared.resume()
-    outcome = prepared.wait()
+        monkeypatch.setattr(backend_module.os, "read", fail_target_read)
+        prepared.resume()
+        outcome = prepared.wait()
 
     assert outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN
     assert outcome.evidence.output_complete is False
@@ -1030,17 +1046,72 @@ def test_resume_identity_failure_terminates_without_effect(
         suffix="resume-identity",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
-    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
 
-    def fail_identity(_identity: object) -> None:
-        raise IsolatedJobError(JobFailureCode.IDENTITY_MISMATCH)
+        def fail_identity(_identity: object) -> None:
+            raise IsolatedJobError(JobFailureCode.IDENTITY_MISMATCH)
 
-    monkeypatch.setattr(backend_module, "verify_execution_identity", fail_identity)
-    with pytest.raises(IsolatedJobError) as rejected:
-        prepared.resume()
+        monkeypatch.setattr(backend_module, "verify_execution_identity", fail_identity)
+        with pytest.raises(IsolatedJobError) as rejected:
+            prepared.resume()
     assert rejected.value.code is JobFailureCode.IDENTITY_MISMATCH
     assert prepared._resumed is False
     assert prepared._closed is True
+
+
+def test_resume_rechecks_identity_after_reader_start_before_kernel_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="reader-start-identity-order",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        original_start_readers = prepared._start_readers
+        original_verify = backend_module.verify_execution_identity
+        identity_invalid = False
+        resume_called = False
+
+        def mutate_after_reader_start() -> None:
+            nonlocal identity_invalid
+            original_start_readers()
+            identity_invalid = True
+
+        def reject_mutated_identity(identity: object) -> None:
+            if identity_invalid:
+                raise IsolatedJobError(JobFailureCode.IDENTITY_MISMATCH)
+            original_verify(identity)  # type: ignore[arg-type]
+
+        def observe_resume(_handle: object) -> int:
+            nonlocal resume_called
+            resume_called = True
+            return 0
+
+        monkeypatch.setattr(prepared, "_start_readers", mutate_after_reader_start)
+        monkeypatch.setattr(
+            backend_module,
+            "verify_execution_identity",
+            reject_mutated_identity,
+        )
+        monkeypatch.setattr(backend_module._kernel32, "ResumeThread", observe_resume)
+
+        with pytest.raises(IsolatedJobError) as rejected:
+            prepared.resume()
+
+    assert rejected.value.code is JobFailureCode.IDENTITY_MISMATCH
+    assert resume_called is False
+    assert prepared.resume_effect_possible is False
+    assert prepared._resumed is False
+    assert prepared._closed is True
+    assert (
+        WindowsJobBackend.process_identity_status(
+            prepared.process_id,
+            prepared.creation_time_100ns,
+        )
+        == "absent"
+    )
 
 
 def test_resume_expiry_at_kernel_boundary_terminates_without_effect(
@@ -1051,14 +1122,14 @@ def test_resume_expiry_at_kernel_boundary_terminates_without_effect(
         suffix="resume-expiry",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
-    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
-    prepared.verify_identity_before_admission()
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        prepared.verify_identity_before_admission()
 
-    with pytest.raises(IsolatedJobError) as rejected:
-        prepared.resume(
-            approval_valid_until=NOW,
-            clock=lambda: NOW,
-        )
+        with pytest.raises(IsolatedJobError) as rejected:
+            prepared.resume(
+                approval_valid_until=NOW,
+                clock=lambda: NOW,
+            )
 
     assert rejected.value.code is JobFailureCode.APPROVAL_MISMATCH
     assert prepared._resumed is False
@@ -1070,6 +1141,39 @@ def test_resume_expiry_at_kernel_boundary_terminates_without_effect(
         )
         == "absent"
     )
+
+
+def test_prepare_factory_acquires_no_process_before_context_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="prepare-context-factory",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    create_job_called = False
+    original_create_job = backend_module._kernel32.CreateJobObjectW
+
+    def observe_create_job(*args: Any) -> object:
+        nonlocal create_job_called
+        create_job_called = True
+        return original_create_job(*args)
+
+    monkeypatch.setattr(
+        backend_module._kernel32,
+        "CreateJobObjectW",
+        observe_create_job,
+    )
+    try:
+        preparation = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+        raise KeyboardInterrupt("synthetic caller abort before context entry")
+    except KeyboardInterrupt:
+        pass
+
+    assert preparation._prepared is None
+    assert preparation._lease._worker is None
+    assert create_job_called is False
 
 
 def test_atomic_job_create_controller_abort_terminates_assigned_child(
@@ -1109,8 +1213,11 @@ def test_atomic_job_create_controller_abort_terminates_assigned_child(
 
     monkeypatch.setattr(backend_module._kernel32, "CreateJobObjectW", capture_job)
     monkeypatch.setattr(backend_module._kernel32, "CreateProcessW", interrupt_after_create)
-    with pytest.raises(KeyboardInterrupt):
-        WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    with (
+        pytest.raises(KeyboardInterrupt),
+        WindowsJobBackend().prepare(value, policy_for(tmp_path)),
+    ):
+        pass
 
     assert observed["active_processes"] == 1
     assert (
@@ -1150,8 +1257,14 @@ def test_job_list_attribute_failure_refuses_before_process_creation(
 
     monkeypatch.setattr(backend_module._kernel32, "UpdateProcThreadAttribute", fail_job_list)
     monkeypatch.setattr(backend_module._kernel32, "CreateProcessW", observe_create)
-    with pytest.raises(OSError):
-        WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    with (
+        pytest.raises(OSError),
+        WindowsJobBackend().prepare(
+            value,
+            policy_for(tmp_path),
+        ),
+    ):
+        pass
 
     assert update_calls == 2
     assert create_called is False
@@ -1166,16 +1279,16 @@ def test_resume_controller_abort_after_kernel_resume_kills_job_tree(
         suffix="resume-controller-abort",
         arguments=SyntheticArgumentsV1(duration_ms=5_000, child_count=1),
     )
-    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
-    original_resume = backend_module._kernel32.ResumeThread
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        original_resume = backend_module._kernel32.ResumeThread
 
-    def interrupt_after_resume(handle: object) -> int:
-        original_resume(handle)
-        raise KeyboardInterrupt("synthetic controller abort")
+        def interrupt_after_resume(handle: object) -> int:
+            original_resume(handle)
+            raise KeyboardInterrupt("synthetic controller abort")
 
-    monkeypatch.setattr(backend_module._kernel32, "ResumeThread", interrupt_after_resume)
-    with pytest.raises(KeyboardInterrupt):
-        prepared.resume()
+        monkeypatch.setattr(backend_module._kernel32, "ResumeThread", interrupt_after_resume)
+        with pytest.raises(KeyboardInterrupt):
+            prepared.resume()
 
     assert prepared._closed is True
     assert (
@@ -1196,15 +1309,15 @@ def test_wait_controller_abort_kills_job_tree(
         suffix="wait-controller-abort",
         arguments=SyntheticArgumentsV1(duration_ms=5_000, child_count=1),
     )
-    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
-    prepared.resume()
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        prepared.resume()
 
-    def interrupt_accounting(_job_handle: int):
-        raise KeyboardInterrupt("synthetic controller abort")
+        def interrupt_accounting(_job_handle: int):
+            raise KeyboardInterrupt("synthetic controller abort")
 
-    monkeypatch.setattr(backend_module, "_query_accounting", interrupt_accounting)
-    with pytest.raises(KeyboardInterrupt):
-        prepared.wait()
+        monkeypatch.setattr(backend_module, "_query_accounting", interrupt_accounting)
+        with pytest.raises(KeyboardInterrupt):
+            prepared.wait()
 
     assert prepared._closed is True
     assert (
@@ -1225,22 +1338,22 @@ def test_partial_reader_start_abort_closes_unstarted_pipe(
         suffix="partial-reader-start",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
-    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
-    descriptors = (prepared.stdout_read_fd, prepared.stderr_read_fd)
-    original_start = backend_module.threading.Thread.start
-    start_count = 0
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        descriptors = (prepared.stdout_read_fd, prepared.stderr_read_fd)
+        original_start = backend_module.threading.Thread.start
+        start_count = 0
 
-    def interrupt_second_start(thread: object) -> None:
-        nonlocal start_count
-        start_count += 1
-        if start_count == 2:
-            raise KeyboardInterrupt("synthetic reader startup abort")
-        original_start(thread)  # type: ignore[arg-type]
+        def interrupt_second_start(thread: object) -> None:
+            nonlocal start_count
+            start_count += 1
+            if start_count == 2:
+                raise KeyboardInterrupt("synthetic reader startup abort")
+            original_start(thread)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(backend_module.threading.Thread, "start", interrupt_second_start)
-    with pytest.raises(KeyboardInterrupt):
-        prepared.resume()
-    assert prepared._stdout_done.wait(timeout=5)
+        monkeypatch.setattr(backend_module.threading.Thread, "start", interrupt_second_start)
+        with pytest.raises(KeyboardInterrupt):
+            prepared.resume()
+        assert prepared._stdout_done.wait(timeout=5)
 
     for descriptor in descriptors:
         with pytest.raises(OSError):
@@ -1269,11 +1382,14 @@ def test_approved_input_base_exception_closes_inheritable_descriptor(
             raise KeyboardInterrupt("synthetic input admission abort")
 
     monkeypatch.setattr(backend_module.os, "set_inheritable", interrupt_after_inheritable)
-    with pytest.raises(KeyboardInterrupt):
+    with (
+        pytest.raises(KeyboardInterrupt),
         WindowsJobBackend().prepare(
             value,
             policy_for(tmp_path, approved_input=approved_input),
-        )
+        ),
+    ):
+        pass
 
     assert observed_descriptor is not None
     with pytest.raises(OSError):
@@ -1289,15 +1405,15 @@ def test_cancel_termination_failure_is_effect_unknown_not_cancelled(
         suffix="cancel-termination-failure",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
-    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
-    prepared.resume()
-    monkeypatch.setattr(
-        backend_module._kernel32,
-        "TerminateJobObject",
-        lambda *_args: False,
-    )
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        prepared.resume()
+        monkeypatch.setattr(
+            backend_module._kernel32,
+            "TerminateJobObject",
+            lambda *_args: False,
+        )
 
-    outcome = prepared.wait(cancelled=lambda: True)
+        outcome = prepared.wait(cancelled=lambda: True)
 
     assert outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN
     assert outcome.cancelled is False
@@ -1314,7 +1430,7 @@ def test_exit_zero_at_exact_cpu_cap_is_deterministically_cpu_limit(
         suffix="cpu-exact-terminal",
         arguments=SyntheticArgumentsV1(duration_ms=1),
     )
-    prepared = WindowsJobBackend().prepare(
+    with WindowsJobBackend().prepare(
         value,
         policy_for(
             tmp_path,
@@ -1323,11 +1439,10 @@ def test_exit_zero_at_exact_cpu_cap_is_deterministically_cpu_limit(
                 job_cpu_time_ms=cap_ms,
             ),
         ),
-    )
-    accounting = backend_module._JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION()
-    accounting.BasicInfo.TotalUserTime.QuadPart = cap_ms * 10_000
-    extended = backend_module._JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
-    try:
+    ) as prepared:
+        accounting = backend_module._JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION()
+        accounting.BasicInfo.TotalUserTime.QuadPart = cap_ms * 10_000
+        extended = backend_module._JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         assert (
             prepared._infer_exit_failure(
                 0,
@@ -1337,8 +1452,6 @@ def test_exit_zero_at_exact_cpu_cap_is_deterministically_cpu_limit(
             )
             is JobFailureCode.CPU_LIMIT
         )
-    finally:
-        prepared.terminate_before_resume()
 
 
 def test_budget_settlement_postreplace_fault_exactly_confirms_and_closes_permit(
@@ -1811,9 +1924,9 @@ def test_output_bytes_must_match_process_evidence_before_publication(
 ) -> None:
     fixture = _prepared(tmp_path, suffix="output-binding")
     value = fixture.value
-    prepared = WindowsJobBackend().prepare(value, fixture.policy)
-    prepared.resume()
-    outcome = prepared.wait()
+    with WindowsJobBackend().prepare(value, fixture.policy) as prepared:
+        prepared.resume()
+        outcome = prepared.wait()
     fixture.job_store.transition(
         value.execution_id,
         status=IsolatedJobStatus.LAUNCH_COMMITTED,
@@ -1845,9 +1958,9 @@ def test_output_bytes_must_match_process_evidence_before_publication(
 def test_reconciliation_preserves_bound_output_evidence(tmp_path: Path) -> None:
     fixture = _prepared(tmp_path, suffix="reconcile-output")
     value = fixture.value
-    prepared = WindowsJobBackend().prepare(value, fixture.policy)
-    prepared.resume()
-    outcome = prepared.wait()
+    with WindowsJobBackend().prepare(value, fixture.policy) as prepared:
+        prepared.resume()
+        outcome = prepared.wait()
     fixture.job_store.transition(
         value.execution_id,
         status=IsolatedJobStatus.LAUNCH_COMMITTED,

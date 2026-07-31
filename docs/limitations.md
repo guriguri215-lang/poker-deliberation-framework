@@ -163,9 +163,11 @@
   任意外部コード、provider/solver、network isolationには適用しない。
 - P2-028Aはrepository-owned backend内のprocess creationだけを共有lockで直列化する。別libraryや
   同権限processが同時に作る未調整childへのhandle inheritanceをOS全体で排除する保証ではない。
-- P2-028Aのpreparation lease、非daemon worker、`JOB_LIST`はrepository coordinator内のcontroller
-  abortとreturn handoffを対象にする。process crash／OS停止ではJob handleのclose-on-process-exitと
-  `KILL_ON_JOB_CLOSE`に依存し、power-loss durabilityや別processからの強制回収を保証しない。
+- P2-028Aのcaller固有preparation lease、非daemon worker、`JOB_LIST`はrepository coordinatorと
+  context-managed direct qualification内のcontroller abortを対象にする。contextにenterせず
+  `prepare()` factoryを呼ぶだけではresourceを取得しない。process crash／OS停止ではJob handleの
+  close-on-process-exitと`KILL_ON_JOB_CLOSE`に依存し、power-loss durabilityや別processからの
+  強制回収を保証しない。
 - P2-011B structural resumeはbudget stateだけをverified historyから再構成する。P2-012Bの通常resumeは
   verified `approval_required` checkpointに限定される。P2-013A/Bは
   approval actor/authority/action digest、明示reissue、expiry/revocation recheckを追加するが、

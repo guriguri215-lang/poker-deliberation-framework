@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import re
+import types
 import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Literal, NoReturn, cast
+from typing import Annotated, Any, Literal, NoReturn, TypeVar, Union, cast, get_args, get_origin
 from uuid import uuid4
 
 from pydantic import BaseModel, ValidationError
@@ -207,19 +208,99 @@ def _validate_control_id(value: object, field_path: str) -> None:
         _fail(BoundedNaturalLanguageDiagnosticCode.CONTROL_SECRET, field_path)
 
 
-def _has_exact_declared_model_shape(value: object) -> bool:
-    """Reject model-copy extras recursively without inspecting unknown values."""
+_MAX_STRICT_MODEL_DEPTH = 64
+_MAX_STRICT_MODEL_NODES = 8_192
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
 
-    if isinstance(value, BaseModel):
-        declared = set(type(value).model_fields)
-        if set(value.__dict__) != declared or value.__pydantic_extra__:
+
+def _has_exact_contract_shape(value: object, annotation: object) -> bool:
+    """Boundedly reject wrong model types, subclasses, extras, and cyclic containers."""
+
+    active: set[int] = set()
+    visited_nodes = 0
+
+    def visit(item: object, expected: object, depth: int) -> bool:
+        nonlocal visited_nodes
+        visited_nodes += 1
+        if depth > _MAX_STRICT_MODEL_DEPTH or visited_nodes > _MAX_STRICT_MODEL_NODES:
             return False
-        return all(_has_exact_declared_model_shape(value.__dict__[field]) for field in declared)
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return all(_has_exact_declared_model_shape(item) for item in value)
-    if isinstance(value, dict):
-        return all(_has_exact_declared_model_shape(item) for item in value.values())
-    return True
+
+        origin = get_origin(expected)
+        arguments = get_args(expected)
+        if origin is Annotated:
+            return bool(arguments) and visit(item, arguments[0], depth + 1)
+        if origin in {Union, types.UnionType}:
+            return any(visit(item, branch, depth + 1) for branch in arguments)
+
+        if isinstance(expected, type) and issubclass(expected, BaseModel):
+            if type(item) is not expected:
+                return False
+            model = item
+            declared = set(expected.model_fields)
+            if set(model.__dict__) != declared or model.__pydantic_extra__:
+                return False
+            identity = id(model)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                return all(
+                    visit(model.__dict__[field], expected.model_fields[field].annotation, depth + 1)
+                    for field in declared
+                )
+            finally:
+                active.remove(identity)
+
+        container_type: type[object] | None = None
+        if origin in {list, tuple, dict, set, frozenset}:
+            container_type = origin
+        if container_type is not None:
+            if type(item) is not container_type:
+                return False
+            identity = id(item)
+            if identity in active:
+                return False
+            active.add(identity)
+            try:
+                if origin is dict:
+                    key_type, value_type = arguments if len(arguments) == 2 else (Any, Any)
+                    return all(
+                        visit(key, key_type, depth + 1) and visit(entry, value_type, depth + 1)
+                        for key, entry in cast(dict[object, object], item).items()
+                    )
+                values = cast(
+                    list[object] | tuple[object, ...] | set[object] | frozenset[object], item
+                )
+                if origin is tuple and arguments and arguments[-1] is not Ellipsis:
+                    return len(values) == len(arguments) and all(
+                        visit(entry, expected_item, depth + 1)
+                        for entry, expected_item in zip(values, arguments, strict=True)
+                    )
+                expected_item = arguments[0] if arguments else Any
+                return all(visit(entry, expected_item, depth + 1) for entry in values)
+            finally:
+                active.remove(identity)
+
+        if expected is type(None):
+            return item is None
+        return True
+
+    return visit(value, annotation, 0)
+
+
+def _strict_contract_model(
+    value: object,
+    model_type: type[_ModelT],
+    *,
+    code: BoundedNaturalLanguageDiagnosticCode,
+    field_path: str,
+) -> _ModelT:
+    if not _has_exact_contract_shape(value, model_type):
+        _fail(code, field_path)
+    try:
+        return model_type.model_validate(cast(BaseModel, value).__dict__, strict=True)
+    except (ValidationError, RecursionError, TypeError):
+        _fail(code, field_path)
 
 
 def _sha256(payload: bytes) -> str:
@@ -1346,10 +1427,12 @@ def prepare_bounded_natural_language_intake(
 
 
 def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedIntakeCandidateV1:
-    if type(candidate) is not BoundedIntakeCandidateV1 or not _has_exact_declared_model_shape(
-        candidate
-    ):
-        _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "candidate")
+    candidate = _strict_contract_model(
+        candidate,
+        BoundedIntakeCandidateV1,
+        code=BoundedNaturalLanguageDiagnosticCode.CONFLICT,
+        field_path="candidate",
+    )
     try:
         payload = canonical_json_bytes(candidate)
         if len(payload) > MAX_BOUNDED_NL_ARTIFACT_BYTES:
@@ -1398,46 +1481,14 @@ def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedInta
 def _strict_bounded_confirmation_authority(
     authority: BoundedConfirmationAuthorityV1,
 ) -> BoundedConfirmationAuthorityV1:
-    if type(authority) is not BoundedConfirmationAuthorityV1 or not _has_exact_declared_model_shape(
-        authority
-    ):
-        _fail(
-            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
-            "confirmation.authority",
-        )
-    try:
-        authority_id = authority.authority_id
-        authority_kind = authority.authority_kind
-        authentication = authority.authentication
-        scope = authority.scope
-    except AttributeError:
-        _fail(
-            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
-            "confirmation.authority",
-        )
-    if (
-        not isinstance(authority_id, str)
-        or authority_kind not in {"local_user", "verified_application"}
-        or authentication not in {"self_asserted", "verified"}
-        or scope != "confirm_bounded_natural_language_projection"
-    ):
-        _fail(
-            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
-            "confirmation.authority",
-        )
-    _validate_control_id(authority_id, "confirmation.authority.authority_id")
-    try:
-        return BoundedConfirmationAuthorityV1(
-            authority_id=authority_id,
-            authority_kind=authority_kind,
-            authentication=authentication,
-            scope=scope,
-        )
-    except ValidationError:
-        _fail(
-            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
-            "confirmation.authority",
-        )
+    strict = _strict_contract_model(
+        authority,
+        BoundedConfirmationAuthorityV1,
+        code=BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
+        field_path="confirmation.authority",
+    )
+    _validate_control_id(strict.authority_id, "confirmation.authority.authority_id")
+    return strict
 
 
 def create_bounded_confirmation_authority(
@@ -1598,10 +1649,12 @@ class BoundedNaturalLanguageAdmission:
 def _strict_confirmation(
     confirmation: BoundedIntakeConfirmationV1,
 ) -> BoundedIntakeConfirmationV1:
-    if type(confirmation) is not BoundedIntakeConfirmationV1 or not _has_exact_declared_model_shape(
-        confirmation
-    ):
-        _fail(BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "confirmation")
+    confirmation = _strict_contract_model(
+        confirmation,
+        BoundedIntakeConfirmationV1,
+        code=BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
+        field_path="confirmation",
+    )
     try:
         payload = canonical_json_bytes(confirmation)
         if len(payload) > MAX_BOUNDED_NL_ARTIFACT_BYTES:

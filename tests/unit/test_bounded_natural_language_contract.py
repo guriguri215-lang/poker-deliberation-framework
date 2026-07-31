@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from pydantic import ValidationError
+from pydantic import ValidationError, create_model
 
 from poker_deliberation.bounded_natural_language import (
     BoundedNaturalLanguageError,
@@ -13,6 +14,7 @@ from poker_deliberation.bounded_natural_language import (
     verify_bounded_candidate,
 )
 from poker_deliberation.bounded_natural_language_models import (
+    BoundedCandidateProjectionV1,
     BoundedConfirmationAuthorityV1,
     BoundedIntakeCandidateV1,
     BoundedNaturalLanguageDiagnosticCode,
@@ -380,6 +382,69 @@ def test_candidate_hash_tamper_and_unknown_fields_are_rejected() -> None:
     assert secret not in str(copied_error.value)
 
 
+def test_candidate_type_tamper_and_cycle_are_rejected_without_warnings() -> None:
+    prepared = ready_bounded_preparation()
+    assert prepared.candidate is not None
+    secret = "sk-" + "f" * 26
+    cycle: list[object] = []
+    cycle.append(cycle)
+
+    for forged_projection in (secret, cycle):
+        forged = prepared.candidate.model_copy(update={"projection": forged_projection})
+        with warnings.catch_warnings(record=True) as observed:
+            warnings.simplefilter("always")
+            with pytest.raises(BoundedNaturalLanguageError) as error:
+                verify_bounded_candidate(forged)
+        assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+        assert str(error.value) == "BNL_E_CONFLICT"
+        assert observed == []
+
+
+def test_nested_model_subclasses_are_rejected_without_silent_field_loss() -> None:
+    prepared = ready_bounded_preparation()
+    assert prepared.candidate is not None
+    projection_type = create_model(
+        "ProjectionWithFutureUnit",
+        future=(str, ...),
+        __base__=BoundedCandidateProjectionV1,
+    )
+    nested_projection = projection_type.model_validate(
+        prepared.candidate.projection.model_dump(mode="python")
+        | {"future": "opaque-candidate-marker"}
+    )
+    forged_candidate = prepared.candidate.model_copy(update={"projection": nested_projection})
+
+    with warnings.catch_warnings(record=True) as candidate_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as candidate_error:
+            verify_bounded_candidate(forged_candidate)
+    assert candidate_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+    assert candidate_warnings == []
+
+    confirmation = _confirmation(prepared)
+    authority_type = create_model(
+        "AuthorityWithFutureUnit",
+        future=(str, ...),
+        __base__=BoundedConfirmationAuthorityV1,
+    )
+    nested_authority = authority_type.model_validate(
+        confirmation.authority.model_dump(mode="python") | {"future": "opaque-authority-marker"}
+    )
+    forged_confirmation = confirmation.model_copy(update={"authority": nested_authority})
+    with warnings.catch_warnings(record=True) as confirmation_warnings:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as confirmation_error:
+            admit_bounded_natural_language_review(
+                SOURCE_BYTES,
+                prepared.candidate,
+                forged_confirmation,
+            )
+    assert (
+        confirmation_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
+    )
+    assert confirmation_warnings == []
+
+
 def test_stale_confirmation_and_cross_run_binding_are_rejected() -> None:
     prepared = ready_bounded_preparation()
     assert prepared.candidate is not None
@@ -405,3 +470,24 @@ def test_stale_confirmation_and_cross_run_binding_are_rejected() -> None:
         )
     assert copied_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
     assert secret not in str(copied_error.value)
+
+
+def test_confirmation_known_field_type_tamper_is_sanitized_without_warnings() -> None:
+    prepared = ready_bounded_preparation()
+    assert prepared.candidate is not None
+    secret = "sk-" + "g" * 26
+    confirmation = _confirmation(prepared)
+    forged = confirmation.model_copy(update={"authority": secret})
+
+    with warnings.catch_warnings(record=True) as observed:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as error:
+            admit_bounded_natural_language_review(
+                SOURCE_BYTES,
+                prepared.candidate,
+                forged,
+            )
+    assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
+    assert str(error.value) == "BNL_E_CONFIRMATION_BINDING"
+    assert secret not in str(error.value)
+    assert observed == []

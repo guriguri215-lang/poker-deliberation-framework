@@ -8,7 +8,8 @@
 - source/candidate/source-bindings/focal/tool-plan/extractorの6 domain-separated SHA-256をすべて
   明示確認するまでrun namespaceを作らない。SHA-256はcorruption/correlation検出用で、署名や
   writer authenticityではない。confirmationはauthority、run ID、idempotency key、UTC期限へ束縛し、
-  最大24時間、cross-run replay拒否である。
+  最大24時間、cross-run replay拒否である。intake/source/run/confirmation/idempotency/authority IDは
+  portable文字だけに制限し、credential形状を永続化前に拒否する。
 - bounded product pathはexact `LocalProvider`と`default_registry()`を再検証し、raw sourceを
   contextへ渡さず、`hand_validator -> hand_pot_ledger -> pot_odds`以外のtool plan/resultを拒否する。
   terminal readerはparser、ledger-derived integer inputs、tool/report evidence、4個のbounded artifact、

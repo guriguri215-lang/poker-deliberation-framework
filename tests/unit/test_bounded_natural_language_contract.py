@@ -19,6 +19,7 @@ from poker_deliberation.bounded_natural_language_models import (
 )
 from tests.bounded_natural_language_support import (
     SOURCE_BYTES,
+    multiplayer_source,
     ready_bounded_preparation,
 )
 
@@ -120,6 +121,123 @@ def test_every_extracted_binding_is_an_exact_utf8_half_open_source_span() -> Non
         ]
         == b"8"
     )
+    assert (
+        SOURCE_BYTES[
+            by_path["hand.actions[0].action"].start_byte : by_path[
+                "hand.actions[0].action"
+            ].end_byte
+        ].decode()
+        == "ポスト"
+    )
+    assert (
+        SOURCE_BYTES[
+            by_path["hand.actions[1].action"].start_byte : by_path[
+                "hand.actions[1].action"
+            ].end_byte
+        ].decode()
+        == "ポスト"
+    )
+
+
+@pytest.mark.parametrize(
+    ("table_size", "expected_positions", "facing_index", "hero_index"),
+    [
+        (3, ["BTN", "SB", "BB"], 8, 9),
+        (6, ["UTG", "HJ", "CO", "BTN", "SB", "BB"], 11, 12),
+    ],
+)
+def test_three_and_six_player_boundaries_extract_without_false_side_pot_rejection(
+    table_size: int,
+    expected_positions: list[str],
+    facing_index: int,
+    hero_index: int,
+) -> None:
+    prepared = ready_bounded_preparation(
+        source_bytes=multiplayer_source(table_size),
+        intake_id=f"intake-bounded-{table_size}-player",
+    )
+    assert prepared.candidate is not None
+    projection = prepared.candidate.projection
+    assert projection.hand.table_size == table_size
+    assert [item.position for item in projection.hand.players] == expected_positions
+    assert projection.focal_decision.facing_action_index == facing_index
+    assert projection.focal_decision.hero_action_index == hero_index
+    assert projection.tool_plan.contestable_pot_units == 28
+
+
+def test_missing_header_is_not_misclassified_as_duplicate_blinds() -> None:
+    source = b"\n".join(SOURCE_BYTES.splitlines()[1:]) + b"\n"
+    result = _prepare(source)
+    assert result.status == "blocked"
+    assert [(item.code.value, item.field_path) for item in result.diagnostics] == [
+        ("BNL_E_MISSING", "hand.header")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "code", "field_path"),
+    [
+        (
+            SOURCE_BYTES.replace(
+                "Villainがチェックしました。\nフロップ".encode(),
+                "Villainがチェックしました。\nVillainがチェックしました。\nフロップ".encode(),
+            ),
+            "BNL_E_ACTION",
+            "hand.actions.actor_order",
+        ),
+        (
+            SOURCE_BYTES.replace(
+                "Heroが1をコールしました。\nVillainがチェックしました。".encode(),
+                "Villainがチェックしました。\nHeroが1をコールしました。".encode(),
+            ),
+            "BNL_E_ACTION",
+            "hand.actions.actor_order",
+        ),
+        (
+            SOURCE_BYTES.replace(
+                "Heroがフォールドしました。\n判断直前".encode(),
+                "Heroがフォールドしました。\nリバーは3hです。\n判断直前".encode(),
+            ),
+            "BNL_E_ACTION",
+            "hand.actions.terminal",
+        ),
+        (
+            SOURCE_BYTES.replace(
+                "フロップはAh 7d 2cです。\nVillainがチェックしました。\n"
+                "Heroが4をベットしました。\nVillainが4をコールしました。\n".encode(),
+                "フロップはAh 7d 2cです。\n".encode(),
+            ),
+            "BNL_E_STREET",
+            "hand.actions.street",
+        ),
+        (
+            SOURCE_BYTES.replace(
+                "HeroはSBで開始スタック100です。".encode(),
+                "HeroはSBで開始スタック14です。".encode(),
+            ),
+            "BNL_E_UNSUPPORTED",
+            "focal_decision.all_in",
+        ),
+        (
+            SOURCE_BYTES.replace(
+                "VillainはBBで開始スタック100です。".encode(),
+                "VillainはBBで開始スタック999999999995.0003です。".encode(),
+            ),
+            "BNL_E_AMOUNT",
+            "hand.players.starting_stack",
+        ),
+    ],
+)
+def test_action_order_terminal_all_in_and_decimal_boundaries_fail_closed(
+    source: bytes,
+    code: str,
+    field_path: str,
+) -> None:
+    result = _prepare(source)
+    assert result.status == "blocked"
+    assert [(item.code.value, item.field_path) for item in result.diagnostics] == [
+        (code, field_path)
+    ]
 
 
 @pytest.mark.parametrize(

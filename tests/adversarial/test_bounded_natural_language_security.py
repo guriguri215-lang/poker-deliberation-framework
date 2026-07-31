@@ -5,9 +5,11 @@ import pytest
 from poker_deliberation.bounded_natural_language import (
     BoundedNaturalLanguageError,
     admit_bounded_natural_language_review,
+    create_bounded_confirmation,
     prepare_bounded_natural_language_intake,
 )
 from poker_deliberation.bounded_natural_language_models import (
+    BoundedConfirmationAuthorityV1,
     BoundedNaturalLanguageDiagnosticCode,
 )
 from tests.bounded_natural_language_support import (
@@ -121,3 +123,85 @@ def test_missing_confirmation_never_has_an_admission_object() -> None:
     assert prepared.status == "ready"
     assert prepared.candidate is not None
     assert not hasattr(prepared, "admission")
+
+
+@pytest.mark.parametrize("field", ["intake_id", "source_id"])
+def test_secret_shaped_preparation_control_ids_are_rejected_without_persistence(
+    field: str,
+) -> None:
+    secret = "sk-" + "a" * 26
+    kwargs = {
+        "intake_id": "intake-adversarial-control",
+        "source_id": "fixture-adversarial-control",
+    }
+    kwargs[field] = secret
+    result = prepare_bounded_natural_language_intake(
+        SOURCE_BYTES,
+        **kwargs,
+        source_kind="repository_fixture",
+        license_classification="repository_owned_mit",
+        usage_classification="redistribution_allowed",
+        classification="public",
+    )
+
+    assert result.status == "blocked"
+    assert result.source is None
+    assert result.candidate is None
+    assert result.diagnostics[0].code is BoundedNaturalLanguageDiagnosticCode.CONTROL_SECRET
+    assert secret not in result.model_dump_json()
+
+
+def test_invalid_preparation_control_id_has_stable_sanitized_diagnostic() -> None:
+    result = prepare_bounded_natural_language_intake(
+        SOURCE_BYTES,
+        intake_id="bad intake id",
+        source_id="fixture-adversarial-control",
+        source_kind="repository_fixture",
+        license_classification="repository_owned_mit",
+        usage_classification="redistribution_allowed",
+        classification="public",
+    )
+    assert result.status == "blocked"
+    assert [(item.code.value, item.field_path) for item in result.diagnostics] == [
+        ("BNL_E_CONTROL", "candidate.intake_id")
+    ]
+    assert "bad intake id" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["run_id", "confirmation_id", "idempotency_key", "authority_id"],
+)
+def test_secret_shaped_confirmation_control_ids_are_rejected_without_echo(field: str) -> None:
+    prepared = ready_bounded_preparation(intake_id="intake-adversarial-confirmation")
+    assert prepared.source is not None and prepared.candidate is not None
+    projection = prepared.candidate.projection
+    secret = "sk-" + "b" * 26
+    values = {
+        "run_id": "run-adversarial-confirmation",
+        "confirmation_id": "confirmation-adversarial",
+        "idempotency_key": "idempotency-adversarial",
+        "authority_id": "local-adversarial-user",
+    }
+    values[field] = secret
+
+    with pytest.raises(BoundedNaturalLanguageError) as error:
+        create_bounded_confirmation(
+            prepared.candidate,
+            run_id=values["run_id"],
+            confirmation_id=values["confirmation_id"],
+            idempotency_key=values["idempotency_key"],
+            authority=BoundedConfirmationAuthorityV1(
+                authority_id=values["authority_id"],
+                authority_kind="local_user",
+                authentication="self_asserted",
+            ),
+            expected_source_sha256=prepared.source.content_sha256,
+            expected_candidate_sha256=prepared.candidate.candidate_sha256,
+            expected_source_bindings_sha256=projection.source_bindings_sha256,
+            expected_focal_sha256=projection.focal_decision.focal_sha256,
+            expected_tool_plan_sha256=projection.tool_plan.tool_plan_sha256,
+            expected_extractor_sha256=projection.extractor_sha256,
+        )
+    assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONTROL_SECRET
+    assert secret not in str(error.value)

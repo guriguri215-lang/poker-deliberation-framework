@@ -50,7 +50,8 @@ read-only replayになります。
 - `Hero`の2 hole cards。
 - `プリフロップ`に続く時系列action。必要に応じてflop 3枚、turn 1枚、river 1枚を順番に記す。
 - actionはSB/BB post、check、fold、call、bet、または「追加額」と「合計額」を両方記すraise。
-  最大64 actionsで、曖昧なraise表現は受理しない。
+  最大64 actionsで、曖昧なraise表現は受理しない。人数ごとのposition集合、blind post順、
+  preflop/postflopのactor順、street完了、terminal foldも検証する。
 - 任意の検算値として、判断直前pot、call額、call後の争点potを各1回だけ記せる。記した値が
   ledger再計算と違えば拒否する。
 - 最後に、同一street上で相手のbet/raiseと直後のHero foldが隣接する、単一の
@@ -74,7 +75,7 @@ source byte spanを返してfail closedにします。errorへsource lexemeやse
 確認後も`USER_CLAIM`であり、検証済みcalculator結果だけが各tool contractに従う`CALCULATED`
 です。`LocalProvider`の文章的出力は`UNKNOWN`のままです。
 
-terminal runは`bounded_nl_source.json`、`bounded_nl_candidate.json`、
+terminal runは`bounded_nl_source.txt`、`bounded_nl_candidate.json`、
 `bounded_nl_confirmation.json`、`bounded_nl_provenance.json`を既存artifact群へ追加します。readerは
 parserを再実行し、exact spans、6 hash、focal action adjacency、tool inputs/results、context、role、
 report、storage revisionを再相関します。artifact欠落、改ざん、cross-run replayは拒否します。
@@ -99,6 +100,9 @@ python scripts/run_bounded_natural_language_evaluation.py \
   --output tmp/bounded-nl-evaluation/result.json
 ```
 
-field extraction、source span、diagnostic、end-to-end tool evidence、storage replayを別々に採点し、
-5 metricがすべてexact `1.0`の場合だけ合格します。これはversion 1 grammar境界の適合性であり、
+fixtureはsource、hand、focal decision、tool plan、全source-binding tuple、extractorの固定hash oracleと
+binding件数を含みます。source byteが1つでも異なる場合は全caseをfail closedにし、各spanは固定tuple、
+元source slice、lexeme hashを再計算します。field extraction、source span、diagnostic、end-to-end tool
+evidence、storage replayを別々に採点し、5 metricがすべてexact `1.0`の場合だけ合格します。
+これはversion 1 grammar境界の適合性であり、
 一般自然言語精度、戦略品質、GTO、均衡、release readinessの評価ではありません。

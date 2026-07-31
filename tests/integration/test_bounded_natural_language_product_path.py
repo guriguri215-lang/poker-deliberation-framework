@@ -24,6 +24,7 @@ from tests.bounded_natural_language_support import (
     SOURCE_BYTES,
     app_config,
     bounded_admission,
+    multiplayer_source,
 )
 
 
@@ -150,3 +151,47 @@ def test_prepare_and_confirmation_objects_do_not_create_a_run_namespace(tmp_path
     admission = bounded_admission(run_id="run-bounded-not-created")
 
     assert orchestrator._namespace_kind(admission.confirmation.run_id) is None
+
+
+def test_generic_run_rejects_bounded_marker_before_creating_namespace(tmp_path) -> None:
+    orchestrator = Orchestrator(config=app_config(tmp_path), provider=LocalProvider())
+    admission = bounded_admission(run_id="run-bounded-generic-rejected")
+
+    with pytest.raises(BoundedNaturalLanguageError) as error:
+        orchestrator.run(admission.case, run_id=admission.confirmation.run_id)
+    assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_MISSING
+    assert orchestrator._namespace_kind(admission.confirmation.run_id) is None
+
+
+def test_six_player_boundary_publishes_and_replays_terminal_artifacts(tmp_path) -> None:
+    source = multiplayer_source(6)
+    admission = bounded_admission(
+        run_id="run-bounded-product-six-player",
+        source_bytes=source,
+        intake_id="intake-bounded-product-six-player",
+    )
+    orchestrator = Orchestrator(config=app_config(tmp_path), provider=LocalProvider())
+
+    report = orchestrator.run_bounded_natural_language_review(admission)
+    read = orchestrator.product_store.read_current(report.run_id)
+    assignments, agent_reports = _ordered_support(read, report)
+    provenance = parse_canonical_model(
+        read.payload_bytes("bounded_nl_provenance.json"),
+        BoundedNaturalLanguageProvenanceV1,
+    )
+
+    assert report.run_status == "completed"
+    assert report.reconstructed_input["hand"]["table_size"] == 6
+    verify_bounded_natural_language_provenance(
+        source_bytes=source,
+        candidate=admission.candidate,
+        confirmation=admission.confirmation,
+        case=admission.case,
+        report=report,
+        provenance=provenance,
+        assignments=assignments,
+        agent_reports=agent_reports,
+        storage_root=orchestrator.product_store.revision_root,
+        storage_revision=read.revision,
+        storage_transaction_id=read.transaction_id,
+    )

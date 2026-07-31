@@ -8,6 +8,13 @@
   "content_classification": "public",
   "scoring": "exact-evidence-set-v1",
   "threshold": "1.0",
+  "source_sha256": "e220dc2c1d4ef697ad4c2d20346a4dcd12a705335cf84b0acd500b4bbc0227f7",
+  "expected_hand_sha256": "d8617f842952a9bece1c3f057735ede8eda56d80d2d7ecf8e8d59257881a0be8",
+  "expected_focal_sha256": "d2428cbceaa4accac628f17340ab0720a2ac901295de3606cf002a271616f7c5",
+  "expected_tool_plan_sha256": "9d86d230feb92b3c29e5c0ad1704117f4e02816f7cddae0acd04df2842799c87",
+  "expected_source_bindings_sha256": "9d1964636e56132203fbdf181053c3fd88d819f753f5391da3d33859bb079e64",
+  "expected_extractor_sha256": "5c64bdcbffa878c31d8b203a7c5aea1e5b82228d83fb66651ec5cbfa3b0b8998",
+  "expected_binding_count": 60,
   "cases": [
     {"case_id": "valid-extraction-and-spans", "expected_evidence": ["exact-field-extraction", "exact-source-span-binding"]},
     {"case_id": "supported-notation-variation", "expected_evidence": ["explicit-variation-preserves-semantics"]},

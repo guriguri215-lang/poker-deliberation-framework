@@ -72,7 +72,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 9.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 10.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。

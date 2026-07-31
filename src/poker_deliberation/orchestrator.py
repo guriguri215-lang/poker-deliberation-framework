@@ -1347,6 +1347,11 @@ class Orchestrator:
                 ConfirmedReviewDiagnosticCode.CONFIRMATION_MISSING,
                 "case.metadata.confirmed_review",
             )
+        if "bounded_natural_language_review" in case.metadata:
+            raise BoundedNaturalLanguageError(
+                BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_MISSING,
+                "case.metadata.bounded_natural_language_review",
+            )
         case, normalization = extract_normalization_result(case)
         actual_run_id = run_id or new_run_id()
         try:

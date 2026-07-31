@@ -20,6 +20,54 @@ SOURCE_PATH = ROOT / "tests" / "fixtures" / "bounded_natural_language" / "v1" / 
 SOURCE_BYTES = SOURCE_PATH.read_bytes()
 
 
+def multiplayer_source(table_size: int) -> bytes:
+    """Build a legal 3- or 6-handed boundary fixture with the same focal decision."""
+
+    positions = {
+        3: (("SeatBTN", "BTN"), ("Hero", "SB"), ("Villain", "BB")),
+        6: (
+            ("SeatUTG", "UTG"),
+            ("SeatHJ", "HJ"),
+            ("SeatCO", "CO"),
+            ("SeatBTN", "BTN"),
+            ("Hero", "SB"),
+            ("Villain", "BB"),
+        ),
+    }
+    if table_size not in positions:
+        raise ValueError("table_size must be 3 or 6")
+    players = positions[table_size]
+    preflop_folds = [
+        f"{player}がフォールドしました。"
+        for player, position in players
+        if position not in {"SB", "BB"}
+    ]
+    lines = [
+        f"これは完了済みのNLHEキャッシュゲームです。参加者は{table_size}人です。",
+        "ブラインドは1/2で、アンティは0、レーキは0です。",
+        *(f"{player}は{position}で開始スタック100です。" for player, position in players),
+        "HeroのホールカードはAs Kdです。",
+        "プリフロップです。",
+        "Heroが1をSBとしてポストしました。",
+        "Villainが2をBBとしてポストしました。",
+        *preflop_folds,
+        "Heroが1をコールしました。",
+        "Villainがチェックしました。",
+        "フロップはAh 7d 2cです。",
+        "Heroが4をベットしました。",
+        "Villainが4をコールしました。",
+        "ターンは9sです。",
+        "Heroがチェックしました。",
+        "Villainが8をベットしました。",
+        "Heroがフォールドしました。",
+        "判断直前のポットは12です。",
+        "コール額は8です。",
+        "コール後の争点ポットは28です。",
+        "検討対象は、ターンでVillainが8をベットした直後のHeroのコールまたはフォールド判断です。",
+    ]
+    return ("\n".join(lines) + "\n").encode()
+
+
 def ready_bounded_preparation(
     *,
     source_bytes: bytes = SOURCE_BYTES,

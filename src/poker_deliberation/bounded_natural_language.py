@@ -88,6 +88,7 @@ _SEP = r"[、,]"
 _STOP = r"(?:。|\.)"
 _COPULA = r"(?:です|だ)"
 _PAST = r"(?:しました|した)"
+_CONTROL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 _HEADER_RE = re.compile(
     rf"^{_SPACE}これは完了済みの(?P<game>NLHE)(?P<format>キャッシュゲーム){_COPULA}{_STOP}"
@@ -114,7 +115,7 @@ _TURN_RE = re.compile(rf"^{_SPACE}(?P<street>ターン)は(?P<card>{_CARD}){_COP
 _RIVER_RE = re.compile(rf"^{_SPACE}(?P<street>リバー)は(?P<card>{_CARD}){_COPULA}{_STOP}{_SPACE}$")
 _POST_RE = re.compile(
     rf"^{_SPACE}(?P<actor>{_PLAYER})が(?P<amount>{_POSITIVE_AMOUNT})を"
-    rf"(?P<blind>SB|BB)としてポスト{_PAST}{_STOP}{_SPACE}$"
+    rf"(?P<blind>SB|BB)として(?P<verb>ポスト){_PAST}{_STOP}{_SPACE}$"
 )
 _CHECK_RE = re.compile(rf"^{_SPACE}(?P<actor>{_PLAYER})が(?P<verb>チェック){_PAST}{_STOP}{_SPACE}$")
 _FOLD_RE = re.compile(
@@ -197,6 +198,13 @@ def _fail(
         start_byte=start_byte,
         end_byte=end_byte,
     )
+
+
+def _validate_control_id(value: str, field_path: str) -> None:
+    if _CONTROL_ID_RE.fullmatch(value) is None:
+        _fail(BoundedNaturalLanguageDiagnosticCode.CONTROL, field_path)
+    if redact_sensitive(value) != value:
+        _fail(BoundedNaturalLanguageDiagnosticCode.CONTROL_SECRET, field_path)
 
 
 def _sha256(payload: bytes) -> str:
@@ -391,6 +399,7 @@ def validate_bounded_source(
     usage_classification: Literal["local_analysis_only", "redistribution_allowed"],
     classification: Literal["internal", "public"],
 ) -> tuple[BoundedSourceProvenanceV1, str]:
+    _validate_control_id(source_id, "source.source_id")
     if not source_bytes or len(source_bytes) > MAX_BOUNDED_NL_SOURCE_BYTES:
         _fail(BoundedNaturalLanguageDiagnosticCode.SOURCE_SIZE, "source")
     if source_bytes.startswith(b"\xef\xbb\xbf"):
@@ -458,10 +467,11 @@ def _decimal(value: str, *, field_path: str) -> Decimal:
     return parsed
 
 
-def _float(value: Decimal) -> float:
+def _float(value: Decimal, *, field_path: str) -> float:
     result = float(value)
-    if not Decimal(str(result)).is_finite():
-        _fail(BoundedNaturalLanguageDiagnosticCode.AMOUNT, "source.amount")
+    round_trip = Decimal(str(result))
+    if not round_trip.is_finite() or round_trip != value:
+        _fail(BoundedNaturalLanguageDiagnosticCode.AMOUNT, field_path)
     return result
 
 
@@ -514,6 +524,89 @@ def _strict_hand(hand: CanonicalHand) -> CanonicalHand:
         _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "candidate.hand")
 
 
+_POSITIONS_BY_TABLE_SIZE: dict[int, frozenset[str]] = {
+    2: frozenset({"SB", "BB"}),
+    3: frozenset({"BTN", "SB", "BB"}),
+    4: frozenset({"CO", "BTN", "SB", "BB"}),
+    5: frozenset({"HJ", "CO", "BTN", "SB", "BB"}),
+    6: frozenset({"UTG", "HJ", "CO", "BTN", "SB", "BB"}),
+}
+_PREFLOP_POSITION_ORDER = ("UTG", "HJ", "CO", "BTN", "SB", "BB")
+_POSTFLOP_POSITION_ORDER = ("SB", "BB", "UTG", "HJ", "CO", "BTN")
+_HEADS_UP_POSTFLOP_POSITION_ORDER = ("BB", "SB")
+
+
+def _validate_action_order(
+    players: list[tuple[str, str, Decimal]],
+    actions: list[HandAction],
+) -> None:
+    """Validate the finite grammar's complete betting order without extending the ledger."""
+
+    table_size = len(players)
+    position_to_player = {position: player for player, position, _ in players}
+    if frozenset(position_to_player) != _POSITIONS_BY_TABLE_SIZE.get(table_size):
+        _fail(BoundedNaturalLanguageDiagnosticCode.PLAYER, "hand.players.position")
+    if len(actions) < 3:
+        _fail(BoundedNaturalLanguageDiagnosticCode.MISSING, "hand.actions")
+    small_blind_player = position_to_player["SB"]
+    big_blind_player = position_to_player["BB"]
+    if tuple((item.actor, item.action, item.street) for item in actions[:2]) != (
+        (small_blind_player, "post_blind", Street.PREFLOP),
+        (big_blind_player, "post_blind", Street.PREFLOP),
+    ):
+        _fail(BoundedNaturalLanguageDiagnosticCode.ACTION, "hand.actions.blind_order")
+
+    active = {player for player, _, _ in players}
+    current_street = Street.PREFLOP
+    street_action_count = 0
+    terminal = False
+
+    def ordered_active(street: Street) -> list[str]:
+        order = (
+            _PREFLOP_POSITION_ORDER
+            if street is Street.PREFLOP
+            else _HEADS_UP_POSTFLOP_POSITION_ORDER
+            if table_size == 2
+            else _POSTFLOP_POSITION_ORDER
+        )
+        return [
+            position_to_player[position] for position in order if position in position_to_player
+        ]
+
+    pending = [player for player in ordered_active(current_street) if player in active]
+    for action in actions[2:]:
+        if terminal or action.action == "post_blind":
+            _fail(BoundedNaturalLanguageDiagnosticCode.ACTION, "hand.actions.terminal")
+        if action.street is not current_street:
+            if (
+                _STREET_ORDER[action.street] != _STREET_ORDER[current_street] + 1
+                or pending
+                or street_action_count == 0
+                or len(active) < 2
+            ):
+                _fail(BoundedNaturalLanguageDiagnosticCode.STREET, "hand.actions.street")
+            current_street = action.street
+            street_action_count = 0
+            pending = [player for player in ordered_active(current_street) if player in active]
+        if action.actor not in active or not pending or action.actor != pending[0]:
+            _fail(BoundedNaturalLanguageDiagnosticCode.ACTION, "hand.actions.actor_order")
+        pending.pop(0)
+        street_action_count += 1
+        if action.action == "fold":
+            active.remove(action.actor)
+            pending = [player for player in pending if player in active]
+            if len(active) == 1:
+                terminal = True
+                pending = []
+        elif action.action in {"bet", "raise"}:
+            order = [player for player in ordered_active(current_street) if player in active]
+            actor_index = order.index(action.actor)
+            pending = order[actor_index + 1 :] + order[:actor_index]
+
+    if not terminal:
+        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "hand.completion")
+
+
 def _parse_candidate(
     source_bytes: bytes,
     text: str,
@@ -560,8 +653,10 @@ def _parse_candidate(
             continue
         match = _HEADER_RE.fullmatch(line.text)
         if match is not None:
-            if stage != 0 or header_count is not None:
+            if header_count is not None:
                 _fail(BoundedNaturalLanguageDiagnosticCode.DUPLICATE, "hand.header")
+            if stage != 0:
+                _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "hand.header")
             header_count = int(match.group("count"))
             add_binding("hand.game_type", "NLHE", _span_ref(line, match, "game"))
             add_binding("hand.format", "cash", _span_ref(line, match, "format"))
@@ -570,8 +665,12 @@ def _parse_candidate(
             continue
         match = _BLINDS_RE.fullmatch(line.text)
         if match is not None:
-            if stage != 1 or small_blind is not None:
+            if small_blind is not None:
                 _fail(BoundedNaturalLanguageDiagnosticCode.DUPLICATE, "hand.blinds")
+            if stage == 0:
+                _fail(BoundedNaturalLanguageDiagnosticCode.MISSING, "hand.header")
+            if stage != 1:
+                _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "hand.blinds")
             small_blind = _decimal(match.group("sb"), field_path="hand.small_blind")
             big_blind = _decimal(match.group("bb"), field_path="hand.big_blind")
             ante = _decimal(match.group("ante"), field_path="hand.ante")
@@ -582,8 +681,16 @@ def _parse_candidate(
                 _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "hand.ante_or_rake")
             amount_values.extend((small_blind, big_blind, ante, rake))
             for field, field_value, group in (
-                ("hand.small_blind", _float(small_blind), "sb"),
-                ("hand.big_blind", _float(big_blind), "bb"),
+                (
+                    "hand.small_blind",
+                    _float(small_blind, field_path="hand.small_blind"),
+                    "sb",
+                ),
+                (
+                    "hand.big_blind",
+                    _float(big_blind, field_path="hand.big_blind"),
+                    "bb",
+                ),
                 ("hand.ante", 0.0, "ante"),
                 ("hand.rake", 0.0, "rake"),
             ):
@@ -620,15 +727,19 @@ def _parse_candidate(
             )
             add_binding(
                 f"hand.players[{index}].starting_stack",
-                _float(stack),
+                _float(stack, field_path="hand.players.starting_stack"),
                 _span_ref(line, match, "stack"),
             )
             stage = 3
             continue
         match = _HERO_CARDS_RE.fullmatch(line.text)
         if match is not None:
-            if stage != 3 or hero_cards is not None:
+            if hero_cards is not None:
                 _fail(BoundedNaturalLanguageDiagnosticCode.DUPLICATE, "hand.hero_cards")
+            if header_count is None or len(players) != header_count:
+                _fail(BoundedNaturalLanguageDiagnosticCode.MISSING, "hand.players")
+            if stage != 3:
+                _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "hand.hero_cards")
             hero_cards = [match.group("card1"), match.group("card2")]
             add_binding("hand.hero_player_id", "Hero", _span_ref(line, match, "hero"))
             add_binding(
@@ -730,8 +841,18 @@ def _parse_candidate(
                     street=current_street,
                     actor=actor,
                     action=action_kind,
-                    amount=_float(amount),
-                    to_amount=None if to_amount is None else _float(to_amount),
+                    amount=_float(
+                        amount,
+                        field_path=f"hand.actions[{action_index}].amount",
+                    ),
+                    to_amount=(
+                        None
+                        if to_amount is None
+                        else _float(
+                            to_amount,
+                            field_path=f"hand.actions[{action_index}].to_amount",
+                        )
+                    ),
                 )
             )
             action_decimals.append((amount, to_amount))
@@ -748,22 +869,27 @@ def _parse_candidate(
                 actor,
                 _span_ref(line, action_match, "actor"),
             )
-            verb_group = "blind" if action_kind == "post_blind" else "verb"
             add_binding(
                 f"hand.actions[{action_index}].action",
                 action_kind,
-                _span_ref(line, action_match, verb_group),
+                _span_ref(line, action_match, "verb"),
             )
             if "amount" in action_match.groupdict():
                 add_binding(
                     f"hand.actions[{action_index}].amount",
-                    _float(amount),
+                    _float(
+                        amount,
+                        field_path=f"hand.actions[{action_index}].amount",
+                    ),
                     _span_ref(line, action_match, "amount"),
                 )
             if action_kind == "raise" and to_amount is not None:
                 add_binding(
                     f"hand.actions[{action_index}].to_amount",
-                    _float(to_amount),
+                    _float(
+                        to_amount,
+                        field_path=f"hand.actions[{action_index}].to_amount",
+                    ),
                     _span_ref(line, action_match, "to_amount"),
                 )
             continue
@@ -780,9 +906,14 @@ def _parse_candidate(
                 assertion_name = name
                 break
         if assertion_match is not None and assertion_name is not None:
-            if stage not in {5, 6} or assertion_name in assertions:
+            if assertion_name in assertions:
                 _fail(
                     BoundedNaturalLanguageDiagnosticCode.DUPLICATE, f"assertions.{assertion_name}"
+                )
+            if stage not in {5, 6}:
+                _fail(
+                    BoundedNaturalLanguageDiagnosticCode.CONFLICT,
+                    f"assertions.{assertion_name}",
                 )
             assertion_value = _decimal(
                 assertion_match.group("amount"), field_path=f"assertions.{assertion_name}"
@@ -791,7 +922,10 @@ def _parse_candidate(
             amount_values.append(assertion_value)
             add_binding(
                 f"declared_pot_assertions.{assertion_name}",
-                _float(assertion_value),
+                _float(
+                    assertion_value,
+                    field_path=f"declared_pot_assertions.{assertion_name}",
+                ),
                 _span_ref(line, assertion_match, "amount"),
             )
             stage = 6
@@ -835,7 +969,7 @@ def _parse_candidate(
             )
             add_binding(
                 "focal_decision.selector_amount",
-                _float(selector.amount),
+                _float(selector.amount, field_path="focal_decision.selector_amount"),
                 _span_ref(line, focal_match, "amount"),
             )
             stage = 7
@@ -869,6 +1003,9 @@ def _parse_candidate(
     player_map = {player: (position, stack) for player, position, stack in players}
     if any(action.actor not in player_map for action in actions):
         _fail(BoundedNaturalLanguageDiagnosticCode.PLAYER, "hand.actions.actor")
+    if seen_streets[-1] is not actions[-1].street:
+        _fail(BoundedNaturalLanguageDiagnosticCode.ACTION, "hand.actions.terminal")
+    _validate_action_order(players, actions)
     for action, (amount, _) in zip(actions, action_decimals, strict=True):
         if action.action == "post_blind":
             position, _ = player_map[action.actor]
@@ -884,15 +1021,15 @@ def _parse_candidate(
             game_type="NLHE",
             format="cash",
             table_size=header_count,
-            small_blind=_float(small_blind),
-            big_blind=_float(big_blind),
+            small_blind=_float(small_blind, field_path="hand.small_blind"),
+            big_blind=_float(big_blind, field_path="hand.big_blind"),
             ante=0.0,
             rake=0.0,
             players=[
                 PlayerStack(
                     player_id=player,
                     position=position,
-                    starting_stack=_float(stack),
+                    starting_stack=_float(stack, field_path="hand.players.starting_stack"),
                 )
                 for player, position, stack in players
             ],
@@ -941,7 +1078,7 @@ def _parse_candidate(
         selector_street=cast(Literal["preflop", "flop", "turn", "river"], selector.street.value),
         selector_actor=selector.actor,
         selector_action=selector.action,
-        selector_amount=_float(selector.amount),
+        selector_amount=_float(selector.amount, field_path="focal_decision.selector_amount"),
         facing_action_index=facing_index,
         hero_action_index=hero_index,
         hero_response=hero_action.action,
@@ -971,8 +1108,8 @@ def _parse_candidate(
         ledger = HandPotLedgerOutputV1.model_validate(ledger_result.output, strict=True)
     except ValidationError:
         _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.hand_pot_ledger")
-    if any(layer.kind == "side" for layer in ledger.pot_layers):
-        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.side_pot")
+    if any(remaining == 0 for remaining in ledger.remaining_stacks_units.values()):
+        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.all_in")
     facing_ledger = ledger.ledger_actions[facing_index]
     hero_ledger = ledger.ledger_actions[hero_index]
     if (
@@ -988,19 +1125,36 @@ def _parse_candidate(
     if call_cost_units <= 0 or pot_before_units < 0 or opponent_bet_units <= 0:
         _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.pot_odds")
     hero_stack_before = hero_ledger.remaining_stack_units_after + hero_ledger.committed_units
-    if hero_stack_before < call_cost_units:
-        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.short_call")
+    if hero_stack_before <= call_cost_units:
+        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.all_in")
     if hero_action.action == "call" and hero_ledger.committed_units != call_cost_units:
         _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "focal_decision.call")
     contestable_units = pot_before_units + opponent_bet_units + call_cost_units
 
     assertion_values = BoundedDeclaredPotAssertionsV1(
         pot_before_bet=(
-            None if "pot_before_bet" not in assertions else _float(assertions["pot_before_bet"])
+            None
+            if "pot_before_bet" not in assertions
+            else _float(
+                assertions["pot_before_bet"],
+                field_path="declared_pot_assertions.pot_before_bet",
+            )
         ),
-        call_cost=None if "call_cost" not in assertions else _float(assertions["call_cost"]),
+        call_cost=(
+            None
+            if "call_cost" not in assertions
+            else _float(
+                assertions["call_cost"],
+                field_path="declared_pot_assertions.call_cost",
+            )
+        ),
         contestable_pot=(
-            None if "contestable_pot" not in assertions else _float(assertions["contestable_pot"])
+            None
+            if "contestable_pot" not in assertions
+            else _float(
+                assertions["contestable_pot"],
+                field_path="declared_pot_assertions.contestable_pot",
+            )
         ),
     )
     expected_assertions = {
@@ -1022,9 +1176,18 @@ def _parse_candidate(
             )
 
     pot_odds_input = BoundedPotOddsInputV1(
-        pot_before_bet=_float(chip_unit * pot_before_units),
-        opponent_bet=_float(chip_unit * opponent_bet_units),
-        call_cost=_float(chip_unit * call_cost_units),
+        pot_before_bet=_float(
+            chip_unit * pot_before_units,
+            field_path="tool_plan.pot_odds.pot_before_bet",
+        ),
+        opponent_bet=_float(
+            chip_unit * opponent_bet_units,
+            field_path="tool_plan.pot_odds.opponent_bet",
+        ),
+        call_cost=_float(
+            chip_unit * call_cost_units,
+            field_path="tool_plan.pot_odds.call_cost",
+        ),
         expected_rake=0.0,
     )
     pot_odds_payload = pot_odds_input.model_dump(mode="json")
@@ -1109,6 +1272,7 @@ def prepare_bounded_natural_language_intake(
 
     bindings: list[BoundedSourceBindingV1] = []
     try:
+        _validate_control_id(intake_id, "candidate.intake_id")
         source, text = validate_bounded_source(
             source_bytes,
             source_id=source_id,
@@ -1133,8 +1297,8 @@ def prepare_bounded_natural_language_intake(
         if len(canonical_json_bytes(candidate)) > MAX_BOUNDED_NL_ARTIFACT_BYTES:
             _fail(BoundedNaturalLanguageDiagnosticCode.LIMIT, "candidate.size_bytes")
         candidate = verify_bounded_candidate(candidate)
-    except (BoundedNaturalLanguageError, CanonicalStorageError) as exc:
-        if isinstance(exc, CanonicalStorageError):
+    except (BoundedNaturalLanguageError, CanonicalStorageError, ValidationError) as exc:
+        if isinstance(exc, (CanonicalStorageError, ValidationError)):
             exc = BoundedNaturalLanguageError(
                 BoundedNaturalLanguageDiagnosticCode.CONFLICT,
                 "candidate",
@@ -1161,6 +1325,8 @@ def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedInta
     except (ValidationError, CanonicalStorageError):
         _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "candidate")
     projection = candidate.projection
+    _validate_control_id(projection.intake_id, "candidate.intake_id")
+    _validate_control_id(projection.source.source_id, "source.source_id")
     if candidate.candidate_sha256 != bounded_candidate_sha256(projection):
         _fail(
             BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "candidate.candidate_sha256"
@@ -1213,6 +1379,13 @@ def create_bounded_confirmation(
     expires_at: datetime | None = None,
 ) -> BoundedIntakeConfirmationV1:
     candidate = verify_bounded_candidate(candidate)
+    for value, field_path in (
+        (run_id, "confirmation.run_id"),
+        (confirmation_id, "confirmation.confirmation_id"),
+        (idempotency_key, "confirmation.idempotency_key"),
+        (authority.authority_id, "confirmation.authority.authority_id"),
+    ):
+        _validate_control_id(value, field_path)
     try:
         authority = BoundedConfirmationAuthorityV1.model_validate_json(
             canonical_json_bytes(authority), strict=True
@@ -1339,9 +1512,18 @@ def _strict_confirmation(
                 BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
                 "confirmation.size_bytes",
             )
-        return BoundedIntakeConfirmationV1.model_validate_json(payload, strict=True)
+        strict = BoundedIntakeConfirmationV1.model_validate_json(payload, strict=True)
     except (ValidationError, CanonicalStorageError):
         _fail(BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "confirmation")
+    for value, field_path in (
+        (strict.run_id, "confirmation.run_id"),
+        (strict.intake_id, "confirmation.intake_id"),
+        (strict.confirmation_id, "confirmation.confirmation_id"),
+        (strict.idempotency_key, "confirmation.idempotency_key"),
+        (strict.authority.authority_id, "confirmation.authority.authority_id"),
+    ):
+        _validate_control_id(value, field_path)
+    return strict
 
 
 def _admit_bounded_at(

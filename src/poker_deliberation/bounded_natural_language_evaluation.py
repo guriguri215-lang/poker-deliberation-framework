@@ -12,11 +12,15 @@ from poker_deliberation.bounded_natural_language import (
     BoundedNaturalLanguageError,
     _admit_bounded_at,
     admit_bounded_natural_language_review,
+    bounded_focal_sha256,
+    bounded_tool_plan_sha256,
     create_bounded_confirmation,
     prepare_bounded_natural_language_intake,
     verify_bounded_candidate,
 )
 from poker_deliberation.bounded_natural_language_models import (
+    BOUNDED_NL_BINDINGS_CANONICALIZATION_ID,
+    BOUNDED_NL_SOURCE_CANONICALIZATION_ID,
     MAX_BOUNDED_NL_SOURCE_BYTES,
     BoundedConfirmationAuthorityV1,
     BoundedIntakeConfirmationV1,
@@ -30,6 +34,7 @@ from poker_deliberation.providers import LocalProvider
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_domain_sha256,
+    domain_sha256,
     parse_canonical_model,
 )
 from poker_deliberation.storage.terminal_canonical import product_payload_commitments
@@ -39,6 +44,7 @@ EVALUATION_FAMILY_ID: Literal["poker-bounded-nl-evaluation-json-v1"] = (
 )
 EVALUATION_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
 EVALUATION_THRESHOLD: Literal["1.0"] = "1.0"
+EVALUATION_HAND_CANONICALIZATION_ID = "poker-bounded-nl-evaluation-hand-json-v1"
 REQUIRED_CASE_EVIDENCE = (
     ("valid-extraction-and-spans", ("exact-field-extraction", "exact-source-span-binding")),
     ("supported-notation-variation", ("explicit-variation-preserves-semantics",)),
@@ -95,6 +101,23 @@ class BoundedNaturalLanguageEvaluationFixtureV1(_EvaluationModel):
     content_classification: Literal["public"] = "public"
     scoring: Literal["exact-evidence-set-v1"] = "exact-evidence-set-v1"
     threshold: Literal["1.0"] = EVALUATION_THRESHOLD
+    source_sha256: Literal["e220dc2c1d4ef697ad4c2d20346a4dcd12a705335cf84b0acd500b4bbc0227f7"]
+    expected_hand_sha256: Literal[
+        "d8617f842952a9bece1c3f057735ede8eda56d80d2d7ecf8e8d59257881a0be8"
+    ]
+    expected_focal_sha256: Literal[
+        "d2428cbceaa4accac628f17340ab0720a2ac901295de3606cf002a271616f7c5"
+    ]
+    expected_tool_plan_sha256: Literal[
+        "9d86d230feb92b3c29e5c0ad1704117f4e02816f7cddae0acd04df2842799c87"
+    ]
+    expected_source_bindings_sha256: Literal[
+        "9d1964636e56132203fbdf181053c3fd88d819f753f5391da3d33859bb079e64"
+    ]
+    expected_extractor_sha256: Literal[
+        "5c64bdcbffa878c31d8b203a7c5aea1e5b82228d83fb66651ec5cbfa3b0b8998"
+    ]
+    expected_binding_count: Literal[60]
     cases: tuple[BoundedNaturalLanguageEvaluationCaseV1, ...]
 
     @model_validator(mode="after")
@@ -149,6 +172,7 @@ class BoundedNaturalLanguageEvaluationResultV1(_EvaluationModel):
     scoring: Literal["exact-evidence-set-v1"] = "exact-evidence-set-v1"
     threshold: Literal["1.0"] = EVALUATION_THRESHOLD
     interpretation: Literal["bounded_grammar_contract_only"] = "bounded_grammar_contract_only"
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     case_results: tuple[BoundedNaturalLanguageEvaluationCaseResultV1, ...]
     metrics: tuple[BoundedNaturalLanguageMetricV1, ...]
     overall_score: Literal["0.0", "1.0"]
@@ -248,36 +272,69 @@ def _diagnostic(source: bytes, case_id: str) -> tuple[str, str]:
     return item.code.value, item.field_path
 
 
+def _valid_extraction_evidence(
+    result: BoundedIntakePreparationResultV1,
+    source: bytes,
+    fixture: BoundedNaturalLanguageEvaluationFixtureV1,
+) -> tuple[str, ...]:
+    """Compare extraction evidence with the fixed repository-owned oracle."""
+
+    if result.status != "ready" or result.source is None or result.candidate is None:
+        return ()
+    projection = result.candidate.projection
+    fields_ok = (
+        canonical_domain_sha256(
+            EVALUATION_HAND_CANONICALIZATION_ID,
+            projection.hand.model_dump(mode="json"),
+        )
+        == fixture.expected_hand_sha256
+        and projection.focal_decision.focal_sha256 == fixture.expected_focal_sha256
+        and bounded_focal_sha256(projection.focal_decision) == fixture.expected_focal_sha256
+        and projection.tool_plan.tool_plan_sha256 == fixture.expected_tool_plan_sha256
+        and bounded_tool_plan_sha256(projection.tool_plan) == fixture.expected_tool_plan_sha256
+        and projection.extractor_sha256 == fixture.expected_extractor_sha256
+    )
+    actual_source_sha256 = domain_sha256(BOUNDED_NL_SOURCE_CANONICALIZATION_ID, source)
+    bindings_payload = [item.model_dump(mode="json") for item in projection.source_bindings]
+    bindings_sha256 = canonical_domain_sha256(
+        BOUNDED_NL_BINDINGS_CANONICALIZATION_ID,
+        bindings_payload,
+    )
+    spans_ok = (
+        actual_source_sha256 == fixture.source_sha256
+        and result.source.content_sha256 == fixture.source_sha256
+        and projection.source.content_sha256 == fixture.source_sha256
+        and len(projection.source_bindings) == fixture.expected_binding_count
+        and projection.source_bindings_sha256 == fixture.expected_source_bindings_sha256
+        and bindings_sha256 == fixture.expected_source_bindings_sha256
+        and all(
+            item.source_sha256 == fixture.source_sha256
+            and 0 <= item.start_byte < item.end_byte <= len(source)
+            and item.lexeme_sha256
+            == domain_sha256(
+                BOUNDED_NL_BINDINGS_CANONICALIZATION_ID + ":lexeme",
+                source[item.start_byte : item.end_byte],
+            )
+            for item in projection.source_bindings
+        )
+    )
+    evidence = []
+    if fields_ok:
+        evidence.append("exact-field-extraction")
+    if spans_ok:
+        evidence.append("exact-source-span-binding")
+    return tuple(evidence)
+
+
 def _case_evidence(
     case_id: str,
     *,
     source: bytes,
     work_root: Path,
+    fixture: BoundedNaturalLanguageEvaluationFixtureV1,
 ) -> tuple[str, ...]:
     if case_id == "valid-extraction-and-spans":
-        result = _ready(source, case_id)
-        candidate = result.candidate
-        assert candidate is not None
-        projection = candidate.projection
-        fields_ok = (
-            projection.hand.hero_cards == ["As", "Kd"]
-            and len(projection.hand.actions) == 9
-            and projection.focal_decision.facing_action_index == 7
-            and projection.focal_decision.hero_action_index == 8
-            and projection.focal_decision.hero_response == "fold"
-            and projection.tool_plan.contestable_pot_units == 28
-        )
-        spans_ok = all(
-            item.source_sha256 == projection.source.content_sha256
-            and bool(source[item.start_byte : item.end_byte])
-            for item in projection.source_bindings
-        )
-        evidence = []
-        if fields_ok:
-            evidence.append("exact-field-extraction")
-        if spans_ok:
-            evidence.append("exact-source-span-binding")
-        return tuple(evidence)
+        return _valid_extraction_evidence(_prepare(source, case_id), source, fixture)
     if case_id == "supported-notation-variation":
         base = _ready(source, case_id + "-base").candidate
         variant_source = source.replace(b"1/2", "1\uff0f2".encode())
@@ -493,10 +550,21 @@ def run_bounded_natural_language_evaluation(
     if tuple(item.case_id for item in fixture.cases) != REQUIRED_CASE_IDS:
         raise ValueError("bounded-language evaluation inventory mismatch")
     source = source_path.read_bytes()
+    source_sha256 = domain_sha256(BOUNDED_NL_SOURCE_CANONICALIZATION_ID, source)
+    source_matches_fixture = source_sha256 == fixture.source_sha256
     results = []
     for item in fixture.cases:
         try:
-            observed = _case_evidence(item.case_id, source=source, work_root=work_root)
+            observed = (
+                _case_evidence(
+                    item.case_id,
+                    source=source,
+                    work_root=work_root,
+                    fixture=fixture,
+                )
+                if source_matches_fixture
+                else ()
+            )
         except Exception:
             observed = ()
         passed = observed == item.expected_evidence
@@ -538,6 +606,7 @@ def run_bounded_natural_language_evaluation(
         "scoring": fixture.scoring,
         "threshold": fixture.threshold,
         "interpretation": "bounded_grammar_contract_only",
+        "source_sha256": source_sha256,
         "case_results": tuple(item.model_dump(mode="json") for item in results),
         "metrics": tuple(item.model_dump(mode="json") for item in metrics),
         "overall_score": overall_score,
@@ -548,5 +617,6 @@ def run_bounded_natural_language_evaluation(
         metrics=tuple(metrics),
         overall_score=overall_score,
         passed=passed,
+        source_sha256=source_sha256,
         result_sha256=canonical_domain_sha256(EVALUATION_FAMILY_ID, payload),
     )

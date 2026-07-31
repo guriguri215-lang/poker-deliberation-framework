@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import re
 import types
 import unicodedata
@@ -220,29 +221,6 @@ def _has_exact_contract_shape(value: object, annotation: object) -> bool:
     visited_nodes = 0
 
     def visit_any(item: object, depth: int) -> bool:
-        if isinstance(item, BaseModel):
-            identity = id(item)
-            if identity in active:
-                return False
-            active.add(identity)
-            try:
-                declared = set(type(item).model_fields)
-                if set(item.__dict__) != declared or item.__pydantic_extra__:
-                    return False
-                if not all(
-                    visit(
-                        item.__dict__[field], type(item).model_fields[field].annotation, depth + 1
-                    )
-                    for field in declared
-                ):
-                    return False
-                try:
-                    type(item).model_validate(item.__dict__, strict=True)
-                except (ValidationError, RecursionError, TypeError):
-                    return False
-                return True
-            finally:
-                active.remove(identity)
         if type(item) is dict:
             identity = id(item)
             if identity in active:
@@ -250,24 +228,23 @@ def _has_exact_contract_shape(value: object, annotation: object) -> bool:
             active.add(identity)
             try:
                 return all(
-                    visit(key, Any, depth + 1) and visit(entry, Any, depth + 1)
+                    type(key) is str and visit(entry, Any, depth + 1)
                     for key, entry in cast(dict[object, object], item).items()
                 )
             finally:
                 active.remove(identity)
-        if type(item) in {list, tuple, set, frozenset}:
+        if type(item) is list:
             identity = id(item)
             if identity in active:
                 return False
             active.add(identity)
             try:
-                values = cast(
-                    list[object] | tuple[object, ...] | set[object] | frozenset[object], item
-                )
-                return all(visit(entry, Any, depth + 1) for entry in values)
+                return all(visit(entry, Any, depth + 1) for entry in cast(list[object], item))
             finally:
                 active.remove(identity)
-        return type(item) in {str, int, float, bool, Decimal, datetime, type(None)}
+        if type(item) is float:
+            return math.isfinite(item)
+        return type(item) in {str, int, bool, type(None)}
 
     def visit(item: object, expected: object, depth: int) -> bool:
         nonlocal visited_nodes

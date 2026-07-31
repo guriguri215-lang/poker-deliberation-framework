@@ -521,6 +521,37 @@ def test_nested_scalar_tamper_and_any_cycle_are_rejected_before_serialization() 
     assert cycle_warnings == []
 
 
+@pytest.mark.parametrize(
+    "non_json_value",
+    [
+        ("heads-up", "100bb"),
+        RangeDefinition(player_id="Nested", notation="KK"),
+        datetime.now(UTC),
+        float("inf"),
+    ],
+)
+def test_any_values_are_limited_to_exact_canonical_json_trees(non_json_value: object) -> None:
+    prepared = ready_bounded_preparation()
+    assert prepared.candidate is not None
+    candidate = prepared.candidate
+    range_definition = RangeDefinition(
+        player_id="Villain",
+        notation="AA",
+        game_conditions={"nested": non_json_value},
+    )
+    forged_hand = candidate.projection.hand.model_copy(update={"known_ranges": [range_definition]})
+    forged_projection = candidate.projection.model_copy(update={"hand": forged_hand})
+    forged_candidate = candidate.model_copy(update={"projection": forged_projection})
+
+    with warnings.catch_warnings(record=True) as observed:
+        warnings.simplefilter("always")
+        with pytest.raises(BoundedNaturalLanguageError) as error:
+            verify_bounded_candidate(forged_candidate)
+    assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+    assert str(error.value) == "BNL_E_CONFLICT"
+    assert observed == []
+
+
 def test_stale_confirmation_and_cross_run_binding_are_rejected() -> None:
     prepared = ready_bounded_preparation()
     assert prepared.candidate is not None

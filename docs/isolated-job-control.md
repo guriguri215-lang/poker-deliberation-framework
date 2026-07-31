@@ -71,8 +71,9 @@ canonical bytesは既存storage canonical JSONを再利用し、SHA-256はcorrup
    reserveして`prepared` snapshotを専用revision rootへpublishする。
 5. childをsuspendedで生成し、Job Objectへ割り当て、limitとidentityを再照合する。
 6. process identityだけを持つ`launch_committed`をpublishする。この状態はeffect admissionを主張しない。
-7. permitをstartし、approval current／live authorityを再検証する。durable publicationを挟まず、
-   executable identityを再検証して直ちに`ResumeThread`を呼び、そのrecheck bindingを
+7. permitをstartし、suspended childのexecutable identityを再検証してからapproval
+   current／live authorityを再検証する。durable publicationを挟まず、backendが
+   `ResumeThread`の直前にもclockとrecheck bindingの`valid_until`を比較し、そのbindingを
    `running`へ一度だけ固定する。
 8. outcomeをbudgetへsettleしてからterminal job snapshotとbounded outputをpublishする。
 
@@ -98,12 +99,18 @@ prepared
 `cancelled`はJob全体停止、active process 0、cancellation acknowledgement、cancelled settlementを
 要求する。`effect_unknown`はsuccess、failed、retryへ変換しない。再起動後は保存済みPIDとcreation
 timeを照合し、同じlive processまたはidentity mismatchなら自動回復せず`run_locked`に停止する。
-process不在を確認した場合も保守的に`effect_unknown`へlatchする。人間がopaque reference IDと
+process不在を確認した回復では、`requested`/`unconfirmed` cancellationをworker非liveの
+`effect_unknown`へ閉じ、exactな`acknowledged` evidenceがあれば`cancelled`まで冪等に完遂して、
+対応するstarted permitをterminal settleする。ACK/CONFIRM publication faultも同じoperation IDで
+再確認し、active permitを残したままreconciliationへ進めない。job自体は保守的に
+`effect_unknown`へlatchする。人間がopaque reference IDと
 evidence digestを与え、process不在と対応permitのterminal settlementを再確認した場合だけ
 `reconciled`へ進む。budget rootが読めない、corrupt、またはpermitがactiveなら拒否し、これは
 常に非successである。
 
 各revisionは`isolated_job_state.json`、UTF-8 `stdout.txt`、`stderr.txt`のfull snapshotを持つ。
+3 artifactはそれぞれexactly oneのlocal-data、context、budget-policy provenanceを持ち、state内の
+context/budget bindingと完全一致しなければならない。
 partial write、corrupt current/payload、stale CAS、cross-execution replay、transition lineageの改変は
 fail closedとなる。`current`置換後のstorage errorは、同じrevision、state、stdout、stderrを
 verified historyから完全一致で再読できた場合だけcommit済みとして扱う。
@@ -122,7 +129,9 @@ repository testは次を実Windows processで検証する。
 - normal exit、closed stdin、module inventory、明示input handle。
 - wall-clock、CPU、memory、process count、stdout、stderr、combined output cap。
 - descendant tree termination、cancel race、同一execution並行起動。
+- prepare/resume/wait中のcontroller abortを含む`BaseException`後のprocess tree cleanup。
 - real approval/context/budget/storageのvertical sliceとterminal exact replay。
+- cancel request/ack/confirm各publication faultとprocess不在後のpermit closure。
 - restart/effect-unknown/reconciliation、partial publication、payload tamper。
 - workspace escape、hardlink、secret形状、CRLF/BOM、identity改変、argv/env/shell field注入。
 - strict contract canonicalizationとproperty-based durable transition。

@@ -207,11 +207,15 @@ def _validate_successor(
     if (
         older_effect is None
         and newer_effect is not None
-        and newer.status
-        not in {
-            IsolatedJobStatus.RUNNING,
-            IsolatedJobStatus.EFFECT_UNKNOWN,
-        }
+        and (
+            older.status is not IsolatedJobStatus.LAUNCH_COMMITTED
+            or older.process_id is None
+            or newer.status
+            not in {
+                IsolatedJobStatus.RUNNING,
+                IsolatedJobStatus.EFFECT_UNKNOWN,
+            }
+        )
     ):
         raise ValueError("isolated-job effect-admission identity was introduced out of order")
     if older.evidence is not None and newer.evidence != older.evidence:
@@ -219,11 +223,15 @@ def _validate_successor(
     if (
         older.evidence is None
         and newer.evidence is not None
-        and newer.status
-        not in {
-            *TERMINAL_JOB_STATUSES,
-            IsolatedJobStatus.EFFECT_UNKNOWN,
-        }
+        and (
+            newer.status
+            not in {
+                IsolatedJobStatus.CANCELLED,
+                IsolatedJobStatus.COMPLETED,
+                IsolatedJobStatus.FAILED,
+                IsolatedJobStatus.EFFECT_UNKNOWN,
+            }
+        )
     ):
         raise ValueError("isolated-job process evidence was introduced before terminal state")
 
@@ -428,7 +436,10 @@ class IsolatedJobStore:
         try:
             outcome = self.revisions.publish(request)
         except RunStorageError as exc:
-            if exc.failure.code is RunStorageFailureCode.EFFECT_UNKNOWN:
+            if exc.failure.code is RunStorageFailureCode.EFFECT_UNKNOWN or (
+                exc.failure.filesystem_effect == "current_advanced"
+                and exc.failure.domain_effect == "current_advanced"
+            ):
                 try:
                     history = self._load_history(state.execution_id)
                     confirmed_stdout, confirmed_stderr = self.load_outputs(state.execution_id)

@@ -148,3 +148,6 @@ assignment ID、role、owner、phase、root/parent attempt、root/parent context
 envelope自身から期待parent/sourceを逆算せず、budget lineageを独立の期待値として検証する。
 staleまたはcross-attempt contextはapprovalやprocess effectより前に拒否する。この接続は
 Codex/Python bridge、provider dispatch、automatic retryを追加しない。
+isolated-job専用revisionのstate/stdout/stderr各artifactもexactly oneのcontext provenanceを要求し、
+そのscalar値をstateの`ContextJobBindingV1`と完全一致させる。state payloadだけ一致してmanifest
+provenanceが欠落・差替えされたrevisionはadmitしない。

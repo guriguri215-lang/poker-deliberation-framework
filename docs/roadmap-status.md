@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `9.0.0`
-- source SHA-256: `82018621365ce3c1fef90e2bdaa290f8b99d282388763b9542c7cde971b0bef4`
+- source SHA-256: `eae499dae49f9f68f082bd3b5bc515a25c93ed89951127e3323cb557d2fd969b`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -282,7 +282,7 @@
   - Keep existing write and transition responsibility in the orchestrator and do not anticipate RM-012 transactions, manifests, locks, recovery, or CAS.
   - Do not add automatic retry, parallel execution, budget accounting, timeout or cancellation redesign, durable resume, or approval CAS.
   - Do not add dependencies, external providers, external solvers, or a Codex/Python runtime bridge.
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P2-010B is an internal structural revision seam; the normal product terminal path is P2-012B.
 
 ### RM-011 — Budget, retry, timeout, cancellation, and concurrency semantics
@@ -323,7 +323,7 @@
   - whether parallel deliberation is a product capability
   - field removal and deprecation policy
   - cost precision
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P2-011B provides internal durable accounting contracts while the public capability parallel_deliberation_and_tool_retry remains disabled.
 
 ### RM-012 — Versioned run manifest and failure atomicity
@@ -363,7 +363,7 @@
   - supported old-run versions
   - retention and quarantine
   - Windows durability target
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P2-012A is the immutable structural foundation; P2-012B is the normal product terminal protocol.
 
 ### RM-013 — Approval and resume contract hardening
@@ -395,7 +395,7 @@
   - actor trust model
   - approval expiry/revocation
   - authority scopes
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P2-013A supplies authoritative local approval decisions; P2-013B remains the separate lifecycle and reissue milestone.
 
 ### RM-014 — Versioned normalization grammar
@@ -432,7 +432,7 @@
 - Decision gate rationale:
   - approved repository-owned generic key-value grammar version 1
   - supported site none and continued natural-language/site-parser unavailability
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P3-014A supports no poker site and does not start RM-015 hand-rule profiles or RM-016 range grammar work.
 
 ### RM-015 — Hand rule profiles and side-pot accounting
@@ -459,7 +459,7 @@
   - tests/characterization/test_hand_pot_ledger_compatibility.py
 - Decision gate rationale:
   - future site, jurisdiction, rake, and game rule profiles require a separate approved decision
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P3-015A is limited to the repository-owned generic no-rake NLHE cash profile with supported site none.
   - Raked and site-specific rule profiles remain future RM-015 work.
   - P3-015A does not implement RM-016, RM-019, RM-020, RM-025 bridge work, or P2-028A external execution.
@@ -496,7 +496,7 @@
   - tests/integration/test_tool_contracts.py
 - Decision gate rationale:
   - future range syntax, multiple-range semantics, external source/license classes, import formats, and equity integration require a separate approved decision
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P3-016A is additive to the legacy RangeDefinition and parser and does not change existing equity semantics.
   - Natural-language hand or range intake and end-to-end report integration are deferred to RM-030.
 
@@ -738,7 +738,7 @@
   - Support Python local runtime only and reject Codex bridge, unknown runtime, and unknown schema versions fail closed.
   - Preserve AgentContext, provider, CLI, run/resume/show, and artifact compatibility; keep P2-024A as additive internal API.
   - Do not implement external providers, solvers, dependencies, RM-010 through RM-013, RM-027 cleanup, or parallel execution.
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - Prerequisite for RM-010 analysis boundaries and RM-025 runtime conformance.
 
 ### RM-025 — Codex and Python agent runtime conformance
@@ -766,7 +766,7 @@
   - tests/integration/test_runtime_conformance.py
 - Decision gate rationale:
   - whether a future actual bridge candidate should be registered after the conformance-only contract
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability.
   - A future actual bridge would require a separately approved P2-025B candidate; P2-025B is not registered or implemented by P2-025A.
 
@@ -790,7 +790,7 @@
 - Decision gate rationale:
   - third-party in-process code policy
   - distribution and trust model
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - May support RM-019/RM-020 adapters but never replaces their approval or isolation requirements.
 
 ### RM-027 — Local data lifecycle
@@ -831,7 +831,7 @@
   - quarantine
   - encryption
   - audit tombstones and deletion priority
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - P2-027A provides policy/schema; P2-027B relies on the P2-012B verified run protocol and P2-013A runtime authority.
 
 ### RM-028 — Isolated solver and provider job control
@@ -863,7 +863,7 @@
   - supported isolation platform
   - resource limits
   - external executables and licenses
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - Hard dependency for any RM-019/RM-020 execution that claims timeout or cancellation guarantees.
 
 ### RM-029 — Offline Python product path safety and usability completion
@@ -889,14 +889,14 @@
   - tests/unit/test_report_summary.py
   - tests/integration/test_offline_product_path.py
   - tests/characterization/test_product_run_compatibility.py
-- Completion-time relations (historical; not current status assertions):
+- Relations:
   - Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.
   - Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects; P2-025A is now the approved conformance-only milestone while the actual bridge remains unavailable and separately decision-gated.
 
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations below record the P3-030A completion-time boundary; the milestone table is authoritative for later status changes such as P2-028A.
+- Status reason: P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.
 - Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake

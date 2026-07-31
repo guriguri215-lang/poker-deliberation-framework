@@ -456,24 +456,78 @@ class IsolatedJobCoordinator:
         self,
         request: IsolatedJobRequestV1,
         outcome: WindowsJobOutcome,
-    ) -> None:
+    ) -> bool:
         evidence_sha = isolated_job_sha256(outcome.evidence)
-        self.budget_store.record_cancellation(
-            request.budget_run_id,
-            operation_id=_operation_id(request.execution_id, "cancel-ack"),
-            permit_id=request.budget_permit_id,
-            state_value=CancellationState.ACKNOWLEDGED,
-            evidence_sha256=evidence_sha,
-            worker_live=False,
+        state = self.budget_store.load(request.budget_run_id)
+        cancellation = next(
+            (item for item in state.cancellations if item.permit_id == request.budget_permit_id),
+            None,
         )
-        self.budget_store.record_cancellation(
-            request.budget_run_id,
-            operation_id=_operation_id(request.execution_id, "cancel-confirm"),
-            permit_id=request.budget_permit_id,
-            state_value=CancellationState.CANCELLED,
-            evidence_sha256=evidence_sha,
-            worker_live=False,
+        if cancellation is None:
+            return False
+        if cancellation.state is CancellationState.REQUESTED:
+            self.budget_store.record_cancellation(
+                request.budget_run_id,
+                operation_id=_operation_id(request.execution_id, "cancel-ack"),
+                permit_id=request.budget_permit_id,
+                state_value=CancellationState.ACKNOWLEDGED,
+                evidence_sha256=evidence_sha,
+                worker_live=False,
+            )
+            state = self.budget_store.load(request.budget_run_id)
+            cancellation = next(
+                item for item in state.cancellations if item.permit_id == request.budget_permit_id
+            )
+        if cancellation.state is CancellationState.ACKNOWLEDGED:
+            cancellation_evidence = cancellation.evidence_sha256 or evidence_sha
+            self.budget_store.record_cancellation(
+                request.budget_run_id,
+                operation_id=_operation_id(request.execution_id, "cancel-confirm"),
+                permit_id=request.budget_permit_id,
+                state_value=CancellationState.CANCELLED,
+                evidence_sha256=cancellation_evidence,
+                worker_live=False,
+            )
+            state = self.budget_store.load(request.budget_run_id)
+            cancellation = next(
+                item for item in state.cancellations if item.permit_id == request.budget_permit_id
+            )
+        return cancellation.state is CancellationState.CANCELLED
+
+    def _close_cancellation_as_effect_unknown(
+        self,
+        request: IsolatedJobRequestV1,
+        *,
+        evidence_sha256: str,
+    ) -> None:
+        state = self.budget_store.load(request.budget_run_id)
+        cancellation = next(
+            (item for item in state.cancellations if item.permit_id == request.budget_permit_id),
+            None,
         )
+        if cancellation is None:
+            return
+        if cancellation.state in {
+            CancellationState.REQUESTED,
+            CancellationState.UNCONFIRMED,
+        }:
+            self.budget_store.record_cancellation(
+                request.budget_run_id,
+                operation_id=_operation_id(request.execution_id, "cancel-unknown"),
+                permit_id=request.budget_permit_id,
+                state_value=CancellationState.EFFECT_UNKNOWN,
+                evidence_sha256=evidence_sha256,
+                worker_live=False,
+            )
+        elif cancellation.state is CancellationState.EFFECT_UNKNOWN and (cancellation.worker_live):
+            self.budget_store.record_cancellation(
+                request.budget_run_id,
+                operation_id=_operation_id(request.execution_id, "cancel-unknown-closed"),
+                permit_id=request.budget_permit_id,
+                state_value=CancellationState.EFFECT_UNKNOWN,
+                evidence_sha256=cancellation.evidence_sha256,
+                worker_live=False,
+            )
 
     def _settle_ambiguous_resume(
         self,
@@ -494,6 +548,10 @@ class IsolatedJobCoordinator:
                 evidence_sha256=evidence_sha256,
             )
             return
+        self._close_cancellation_as_effect_unknown(
+            request,
+            evidence_sha256=evidence_sha256,
+        )
         self.budget_store.settle(
             request.budget_run_id,
             operation_id=_operation_id(request.execution_id, "settle-resume-unknown"),
@@ -532,7 +590,20 @@ class IsolatedJobCoordinator:
         outcome: WindowsJobOutcome,
     ) -> tuple[IsolatedJobStatus, JobFailureCode | None]:
         if outcome.cancelled:
-            self._record_budget_cancellation(request, outcome)
+            cancellation_confirmed = self._record_budget_cancellation(request, outcome)
+            if not cancellation_confirmed:
+                evidence_sha = isolated_job_sha256(outcome.evidence)
+                self._close_cancellation_as_effect_unknown(
+                    request,
+                    evidence_sha256=evidence_sha,
+                )
+                self._settle(
+                    request,
+                    outcome,
+                    status=SettlementStatus.EFFECT_UNKNOWN,
+                    failure_category=FailureCategory.EXTERNAL_EFFECT_UNKNOWN,
+                )
+                return IsolatedJobStatus.EFFECT_UNKNOWN, JobFailureCode.EFFECT_UNKNOWN
             settled = self._settle(
                 request,
                 outcome,
@@ -543,6 +614,10 @@ class IsolatedJobCoordinator:
                 return IsolatedJobStatus.CANCELLED, JobFailureCode.CANCELLED
             return IsolatedJobStatus.EFFECT_UNKNOWN, JobFailureCode.EFFECT_UNKNOWN
         if outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN:
+            self._close_cancellation_as_effect_unknown(
+                request,
+                evidence_sha256=isolated_job_sha256(outcome.evidence),
+            )
             self._settle(
                 request,
                 outcome,
@@ -614,29 +689,55 @@ class IsolatedJobCoordinator:
                     ),
                     None,
                 )
-                if cancellation is not None and cancellation.state is CancellationState.REQUESTED:
-                    self.budget_store.record_cancellation(
+                if cancellation is not None and cancellation.state in {
+                    CancellationState.ACKNOWLEDGED,
+                    CancellationState.CANCELLED,
+                }:
+                    cancellation_evidence = cancellation.evidence_sha256
+                    assert cancellation_evidence is not None
+                    if cancellation.state is CancellationState.ACKNOWLEDGED:
+                        self.budget_store.record_cancellation(
+                            request.budget_run_id,
+                            operation_id=_operation_id(
+                                request.execution_id,
+                                "cancel-confirm",
+                            ),
+                            permit_id=request.budget_permit_id,
+                            state_value=CancellationState.CANCELLED,
+                            evidence_sha256=cancellation_evidence,
+                            worker_live=False,
+                        )
+                    self.budget_store.settle(
                         request.budget_run_id,
                         operation_id=_operation_id(
                             request.execution_id,
-                            "cancel-unknown",
+                            "settle-cancel-recovery",
                         ),
+                        settlement_id=_operation_id(request.execution_id, "settlement"),
                         permit_id=request.budget_permit_id,
-                        state_value=CancellationState.EFFECT_UNKNOWN,
-                        evidence_sha256=evidence_sha,
-                        worker_live=True,
+                        actual=ResourceAmountsV1(concurrency_slots=1),
+                        status=SettlementStatus.CANCELLED,
+                        effect_evidence_sha256=cancellation_evidence,
+                        cancellation_evidence_sha256=cancellation_evidence,
+                        failure_category=FailureCategory.CANCEL,
+                        observed_peak_concurrency=1,
                     )
-                self.budget_store.settle(
-                    request.budget_run_id,
-                    operation_id=_operation_id(request.execution_id, "settle-unknown"),
-                    settlement_id=_operation_id(request.execution_id, "settlement"),
-                    permit_id=request.budget_permit_id,
-                    actual=ResourceAmountsV1(concurrency_slots=1),
-                    status=SettlementStatus.EFFECT_UNKNOWN,
-                    effect_evidence_sha256=evidence_sha,
-                    failure_category=FailureCategory.EXTERNAL_EFFECT_UNKNOWN,
-                    observed_peak_concurrency=1,
-                )
+                else:
+                    self._close_cancellation_as_effect_unknown(
+                        request,
+                        evidence_sha256=evidence_sha,
+                    )
+                    self.budget_store.settle(
+                        request.budget_run_id,
+                        operation_id=_operation_id(request.execution_id, "settle-unknown"),
+                        settlement_id=_operation_id(request.execution_id, "settlement"),
+                        permit_id=request.budget_permit_id,
+                        actual=ResourceAmountsV1(concurrency_slots=1),
+                        status=SettlementStatus.EFFECT_UNKNOWN,
+                        effect_evidence_sha256=evidence_sha,
+                        failure_category=FailureCategory.EXTERNAL_EFFECT_UNKNOWN,
+                        observed_peak_concurrency=1,
+                    )
         except (DurableBudgetError, ValueError):
             pass
         if current.status is not IsolatedJobStatus.EFFECT_UNKNOWN:
@@ -834,6 +935,7 @@ class IsolatedJobCoordinator:
                 permit_id=request.budget_permit_id,
             )
             try:
+                prepared.verify_identity_before_admission()
                 second_reference, effect_recheck = self.approvals.verify(
                     approval_run_id=approval_run_id,
                     request_id=approval_request_id,
@@ -847,7 +949,10 @@ class IsolatedJobCoordinator:
                 effect_admission_refused = True
                 raise
             effect_recheck_sha256 = effect_recheck.binding_sha256
-            prepared.resume()
+            prepared.resume(
+                approval_valid_until=effect_recheck.valid_until,
+                clock=self.clock,
+            )
             self.job_store.transition(
                 request.execution_id,
                 status=IsolatedJobStatus.RUNNING,
@@ -900,22 +1005,25 @@ class IsolatedJobCoordinator:
         try:
             final_status, final_code = self._settle_outcome(request, outcome)
         except DurableBudgetError:
-            evidence_sha = isolated_job_sha256(outcome.evidence)
-            with suppress(DurableBudgetError):
-                self._settle_ambiguous_resume(
-                    request,
-                    evidence_sha256=evidence_sha,
+            try:
+                final_status, final_code = self._settle_outcome(request, outcome)
+            except DurableBudgetError:
+                evidence_sha = isolated_job_sha256(outcome.evidence)
+                with suppress(DurableBudgetError):
+                    self._settle_ambiguous_resume(
+                        request,
+                        evidence_sha256=evidence_sha,
+                    )
+                self.job_store.transition(
+                    request.execution_id,
+                    status=IsolatedJobStatus.EFFECT_UNKNOWN,
+                    reason_code="budget_settlement_unknown",
+                    evidence=outcome.evidence,
+                    failure_code=JobFailureCode.EFFECT_UNKNOWN,
+                    stdout=outcome.stdout,
+                    stderr=outcome.stderr,
                 )
-            self.job_store.transition(
-                request.execution_id,
-                status=IsolatedJobStatus.EFFECT_UNKNOWN,
-                reason_code="budget_settlement_unknown",
-                evidence=outcome.evidence,
-                failure_code=JobFailureCode.EFFECT_UNKNOWN,
-                stdout=outcome.stdout,
-                stderr=outcome.stderr,
-            )
-            return self._result_from_state(request.execution_id)
+                return self._result_from_state(request.execution_id)
 
         try:
             self.job_store.transition(

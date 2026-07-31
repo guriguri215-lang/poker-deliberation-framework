@@ -1011,16 +1011,6 @@ class DurableBudgetStore:
     ) -> DurableMutationResultV1:
         _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
-        if (
-            expected_policy_sha256 is not None and state.policy_sha256 != expected_policy_sha256
-        ) or (
-            expected_activation_sha256 is not None
-            and state.activation_sha256 != expected_activation_sha256
-        ):
-            raise _failure(
-                DurableFailureCode.INVALID_INPUT,
-                operation_id=operation_id,
-            )
         request_payload = {
             "kind": OperationKind.RESERVE.value,
             "permit_id": permit_id,
@@ -1041,6 +1031,16 @@ class DurableBudgetStore:
         )
         if replay is not None:
             return replay
+        if (
+            expected_policy_sha256 is not None and state.policy_sha256 != expected_policy_sha256
+        ) or (
+            expected_activation_sha256 is not None
+            and state.activation_sha256 != expected_activation_sha256
+        ):
+            raise _failure(
+                DurableFailureCode.INVALID_INPUT,
+                operation_id=operation_id,
+            )
         usage, remaining = self._charge_active_runtime(
             state,
             elapsed,
@@ -1628,6 +1628,18 @@ class DurableBudgetStore:
             or (
                 previous.state is CancellationState.ACKNOWLEDGED
                 and state_value is CancellationState.CANCELLED
+            )
+            or (
+                previous.state is CancellationState.UNCONFIRMED
+                and state_value is CancellationState.EFFECT_UNKNOWN
+                and not worker_live
+            )
+            or (
+                previous.state is CancellationState.EFFECT_UNKNOWN
+                and previous.worker_live
+                and state_value is CancellationState.EFFECT_UNKNOWN
+                and not worker_live
+                and evidence_sha256 == previous.evidence_sha256
             )
         )
         if not transition_allowed:

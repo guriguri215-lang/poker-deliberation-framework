@@ -62,7 +62,10 @@ class _Approved:
                 approval_manifest_sha256="2" * 64,
                 request_id=request_id,
             ),
-            ApprovalExecutionRecheckBindingV2.model_construct(binding_sha256="3" * 64),
+            ApprovalExecutionRecheckBindingV2.model_construct(
+                binding_sha256="3" * 64,
+                valid_until=NOW + timedelta(minutes=30),
+            ),
         )
 
 

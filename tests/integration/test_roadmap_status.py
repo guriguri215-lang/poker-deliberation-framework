@@ -388,10 +388,12 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
     rendered = render_roadmap_markdown(load_roadmap())
 
     assert milestones["P2-028A"]["status"] == "in_progress"
-    assert "milestone table is authoritative for later status changes" in str(
+    assert "milestone table remains authoritative for current status" in str(
         items["RM-030"]["status_reason"]
     )
+    assert "P2-028A remains not started" in str(items["RM-030"]["relations"])
     assert "Completion-time relations (historical; not current status assertions)" in rendered
+    assert "- Relations:" in rendered
 
 
 def test_unknown_projection_fields_fail_closed() -> None:

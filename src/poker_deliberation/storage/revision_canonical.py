@@ -1766,6 +1766,51 @@ def build_inventory(
             or evidence.stderr_sha256 != hashlib.sha256(stderr).hexdigest()
         ):
             raise CanonicalStorageError("isolated-job output/evidence binding mismatch")
+        context = state.context_binding
+        expected_context = ContextBindingV1(
+            context_sha256=context.integrity_sha256,
+            context_id=context.context_id,
+            attempt_id=context.attempt_id,
+            parent_context_id=context.parent_context_id,
+            schema_version=context.schema_version,
+            classification=ContextClassification.INTERNAL,
+            payload_sha256=context.payload_sha256,
+            source_sha256=context.source_sha256,
+            policy_sha256=context.policy_sha256,
+            envelope_sha256=context.integrity_sha256,
+            expires_at=context.expires_at,
+            producer_runtime="python-local",
+            consumer_runtime="python-local",
+        )
+        expected_budget = BudgetPolicyBindingV1(
+            policy_schema_version="2.0.0",
+            policy_sha256=state.budget_binding.policy_sha256,
+        )
+        for entry in inventories:
+            local_bindings = tuple(
+                binding
+                for binding in entry.provenance_bindings
+                if isinstance(binding, LocalDataBindingV1)
+            )
+            context_bindings = tuple(
+                binding
+                for binding in entry.provenance_bindings
+                if isinstance(binding, ContextBindingV1)
+            )
+            budget_bindings = tuple(
+                binding
+                for binding in entry.provenance_bindings
+                if isinstance(binding, BudgetPolicyBindingV1)
+            )
+            if (
+                len(entry.provenance_bindings) != 3
+                or len(local_bindings) != 1
+                or context_bindings != (expected_context,)
+                or budget_bindings != (expected_budget,)
+            ):
+                raise CanonicalStorageError(
+                    "isolated-job artifacts require exact local/context/budget provenance"
+                )
     result = tuple(inventories)
     _validate_source_graph(result, parsed, run_id=request.run_id)
     return result, provenance_heads(result), parsed

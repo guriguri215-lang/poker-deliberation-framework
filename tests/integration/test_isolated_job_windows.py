@@ -224,6 +224,45 @@ def test_process_and_job_cpu_caps_are_independently_enforced(
         outcome.evidence.process_user_time_100ns >= process_cpu_ms * 9_000
         or outcome.evidence.job_user_time_100ns >= job_cpu_ms * 9_000
     )
+    bounded_user_time = (
+        outcome.evidence.process_user_time_100ns
+        if process_cpu_ms < job_cpu_ms
+        else outcome.evidence.job_user_time_100ns
+    )
+    assert bounded_user_time < 500 * 10_000
+    assert outcome.evidence.wall_clock_ms < 1_500
+
+
+def test_cpu_terminal_race_never_accepts_over_cap_exit_zero(
+    tmp_path: Path,
+) -> None:
+    cap_ms = 200
+    for index in range(18):
+        workspace = tmp_path / f"cpu-terminal-{index}"
+        workspace.mkdir()
+        value = request(
+            SyntheticOperation.CPU_SPIN,
+            suffix=f"cpu-terminal-{index}",
+            arguments=SyntheticArgumentsV1(duration_ms=185),
+        )
+        outcome = _run_backend(
+            value,
+            policy_for(
+                workspace,
+                job_limits=limits(
+                    wall_clock_ms=2_000,
+                    process_cpu_time_ms=cap_ms,
+                    job_cpu_time_ms=cap_ms,
+                ),
+            ),
+        )
+        exceeded = (
+            outcome.evidence.process_user_time_100ns >= cap_ms * 10_000
+            or outcome.evidence.job_user_time_100ns >= cap_ms * 10_000
+        )
+        assert not (exceeded and outcome.failure_code is None)
+        if exceeded:
+            assert outcome.failure_code is JobFailureCode.CPU_LIMIT
 
 
 def test_combined_output_limit_wins_when_it_is_the_tighter_boundary(

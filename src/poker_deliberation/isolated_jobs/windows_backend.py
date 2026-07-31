@@ -16,6 +16,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from ctypes import wintypes
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, Literal
 
@@ -443,21 +444,36 @@ class PreparedWindowsJob:
         stdout_thread.start()
         stderr_thread.start()
 
-    def resume(self) -> None:
+    def verify_identity_before_admission(self) -> None:
+        if self._resumed or self._closed:
+            raise RuntimeError("isolated job identity cannot be checked after resume")
+        verify_execution_identity(self.policy.execution_identity)
+        self._identity_rechecked = True
+
+    def resume(
+        self,
+        *,
+        approval_valid_until: datetime | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if self._resumed or self._closed:
             raise RuntimeError("isolated job cannot be resumed twice")
         try:
-            verify_execution_identity(self.policy.execution_identity)
-            self._identity_rechecked = True
+            if not self._identity_rechecked:
+                self.verify_identity_before_admission()
             self._start_readers()
             self._started_ns = time.monotonic_ns()
+            if approval_valid_until is not None and (
+                clock is None or clock() >= approval_valid_until
+            ):
+                raise IsolatedJobError(JobFailureCode.APPROVAL_MISMATCH)
             result = _kernel32.ResumeThread(wintypes.HANDLE(int(self.thread_handle)))
             if result == 0xFFFFFFFF:
                 raise _last_error()
+            self._resumed = True
             _winapi.CloseHandle(self.thread_handle)
             self.thread_handle = None
-            self._resumed = True
-        except Exception:
+        except BaseException:
             self.terminate_before_resume()
             raise
 
@@ -477,21 +493,33 @@ class PreparedWindowsJob:
                 if int(_query_accounting(self.job_handle).BasicInfo.ActiveProcesses) == 0:
                     return True
                 time.sleep(_POLL_INTERVAL_SECONDS)
-        except Exception:
+        except BaseException:
             return False
         return False
 
     def terminate_before_resume(self) -> None:
         if self._closed:
             return
-        if self._resumed:
-            self._terminate_job()
-        else:
-            _kernel32.TerminateProcess(
-                wintypes.HANDLE(int(self.process_handle)),
-                _TERMINATION_EXIT_CODE,
-            )
-        self.close()
+        self._terminate_job()
+        if self.process_handle is not None:
+            with suppress(BaseException):
+                _kernel32.TerminateProcess(
+                    wintypes.HANDLE(int(self.process_handle)),
+                    _TERMINATION_EXIT_CODE,
+                )
+        with suppress(BaseException):
+            self.close()
+
+    def _abort_for_controller_exit(self) -> None:
+        self._terminate_job()
+        if self.process_handle is not None:
+            with suppress(BaseException):
+                _kernel32.TerminateProcess(
+                    wintypes.HANDLE(int(self.process_handle)),
+                    _TERMINATION_EXIT_CODE,
+                )
+        with suppress(BaseException):
+            self.close()
 
     def _infer_exit_failure(
         self,
@@ -500,11 +528,16 @@ class PreparedWindowsJob:
         extended: _JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         process_user_time_100ns: int,
     ) -> JobFailureCode | None:
-        if exit_code == 0:
-            return None
         operation = self.request.operation
         arguments = self.request.arguments
         limits = self.policy.limits
+        if (
+            process_user_time_100ns >= limits.process_cpu_time_ms * 10_000
+            or int(accounting.BasicInfo.TotalUserTime.QuadPart) >= limits.job_cpu_time_ms * 10_000
+        ):
+            return JobFailureCode.CPU_LIMIT
+        if exit_code == 0:
+            return None
         if (
             operation is SyntheticOperation.MEMORY_PRESSURE
             and arguments.memory_bytes is not None
@@ -541,6 +574,9 @@ class PreparedWindowsJob:
             )
         except Exception:
             return self._effect_unknown_outcome()
+        except BaseException:
+            self._abort_for_controller_exit()
+            raise
 
     def _wait_impl(
         self,
@@ -939,16 +975,24 @@ class WindowsJobBackend:
             stdout_read = None
             stderr_read = None
             return prepared
-        except Exception:
+        except BaseException:
             if process_handle is not None:
-                _kernel32.TerminateProcess(
-                    wintypes.HANDLE(int(process_handle)),
-                    _TERMINATION_EXIT_CODE,
-                )
+                with suppress(BaseException):
+                    _kernel32.TerminateProcess(
+                        wintypes.HANDLE(int(process_handle)),
+                        _TERMINATION_EXIT_CODE,
+                    )
+                with suppress(BaseException):
+                    _kernel32.WaitForSingleObject(
+                        wintypes.HANDLE(int(process_handle)),
+                        _POST_TERMINATION_WAIT_MS,
+                    )
             if thread_handle is not None:
-                _winapi.CloseHandle(thread_handle)
+                with suppress(BaseException):
+                    _winapi.CloseHandle(thread_handle)
             if process_handle is not None:
-                _winapi.CloseHandle(process_handle)
+                with suppress(BaseException):
+                    _winapi.CloseHandle(process_handle)
             raise
         finally:
             for cleanup_descriptor in (

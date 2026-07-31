@@ -783,7 +783,11 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
         if item["relations"]:
             _append_detail_list(
                 lines,
-                "Completion-time relations (historical; not current status assertions)",
+                (
+                    "Completion-time relations (historical; not current status assertions)"
+                    if item["id"] == "RM-030"
+                    else "Relations"
+                ),
                 list(item["relations"]),
             )
         lines.append("")

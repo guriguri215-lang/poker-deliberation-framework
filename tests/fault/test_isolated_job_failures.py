@@ -14,7 +14,10 @@ if sys.platform != "win32":
 
 from poker_deliberation.approval_canonical import action_digest_sha256
 from poker_deliberation.approval_models import ApprovalExecutionRecheckBindingV2
-from poker_deliberation.budgets.durable_models import ExecutionLineageV1
+from poker_deliberation.budgets.durable_models import (
+    CancellationState,
+    ExecutionLineageV1,
+)
 from poker_deliberation.budgets.durable_store import (
     DurableBudgetStore,
     initialize_durable_budget_root,
@@ -112,7 +115,10 @@ class _Approved:
                 approval_manifest_sha256="2" * 64,
                 request_id=str(kwargs["request_id"]),
             ),
-            ApprovalExecutionRecheckBindingV2.model_construct(binding_sha256="3" * 64),
+            ApprovalExecutionRecheckBindingV2.model_construct(
+                binding_sha256="3" * 64,
+                valid_until=NOW + timedelta(minutes=30),
+            ),
         )
 
 
@@ -136,6 +142,8 @@ def _executable_with_publication_fault(
     *,
     suffix: str,
     fail_on_current_replace: int,
+    operation: SyntheticOperation = SyntheticOperation.SUCCESS,
+    arguments: SyntheticArgumentsV1 | None = None,
 ):
     legacy = tmp_path / "legacy"
     legacy.mkdir()
@@ -155,7 +163,7 @@ def _executable_with_publication_fault(
         root_id="root-" + "c" * 32,
         initialized_at=NOW,
     )
-    value = request(suffix=suffix)
+    value = request(operation, suffix=suffix, arguments=arguments)
     budget = DurableBudgetStore(budget_root, legacy, wall_clock=lambda: NOW)
     budget.create(
         value.budget_run_id,
@@ -527,6 +535,34 @@ def test_post_replace_effect_unknown_is_returned_only_after_exact_confirmation(
     assert fixture.job_store.load(fixture.value.execution_id) == state
 
 
+def test_current_advanced_lineage_read_fault_uses_exact_confirmation(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="lineage-confirmed")
+    reread_count = 0
+    fired = False
+
+    def fault(hook: str) -> None:
+        nonlocal reread_count, fired
+        if hook == "reconciliation.lineage.current.before_reread":
+            reread_count += 1
+            if reread_count == 1 and not fired:
+                fired = True
+                raise OSError("synthetic lineage reread uncertainty")
+
+    fixture.job_store.revisions.fault_injector = fault
+    state = fixture.job_store.transition(
+        fixture.value.execution_id,
+        status=IsolatedJobStatus.FAILED,
+        reason_code="confirmed_lineage_reread",
+        failure_code=JobFailureCode.STORAGE_FAILURE,
+    )
+
+    assert fired is True
+    assert state.status is IsolatedJobStatus.FAILED
+    assert fixture.job_store.load(fixture.value.execution_id) == state
+
+
 def test_corrupt_post_replace_state_is_never_confirmed_as_success(
     tmp_path: Path,
 ) -> None:
@@ -598,6 +634,68 @@ def test_lower_revision_admission_rejects_output_without_state_evidence(
     )
 
     with pytest.raises(CanonicalStorageError, match="requires exact process evidence"):
+        build_inventory(request_value, max_artifact_bytes=70 * 1024 * 1024)
+
+
+@pytest.mark.parametrize("omitted_kind", ["context", "budget_policy"])
+def test_lower_revision_requires_exact_isolated_provenance(
+    tmp_path: Path,
+    omitted_kind: str,
+) -> None:
+    fixture = _prepared(tmp_path, suffix=f"lower-provenance-{omitted_kind}")
+    state = fixture.job_store.load(fixture.value.execution_id)
+    artifacts = (
+        fixture.job_store._artifact(
+            state,
+            logical_name="isolated_job_state.json",
+            data=state.canonical_bytes,
+            schema=ISOLATED_JOB_ARTIFACT_SCHEMA,
+            origin_kind="isolated_job_state",
+            serialization="poker-run-storage-json-v1",
+            media_type="application/json",
+        ),
+        fixture.job_store._artifact(
+            state,
+            logical_name="stdout.txt",
+            data=b"",
+            schema="poker-isolated-job-stdout-artifact-v1",
+            origin_kind="isolated_job_stdout",
+            serialization="poker-run-storage-utf8-text-v1",
+            media_type="text/plain",
+        ),
+        fixture.job_store._artifact(
+            state,
+            logical_name="stderr.txt",
+            data=b"",
+            schema="poker-isolated-job-stderr-artifact-v1",
+            origin_kind="isolated_job_stderr",
+            serialization="poker-run-storage-utf8-text-v1",
+            media_type="text/plain",
+        ),
+    )
+    mutated = tuple(
+        artifact.model_copy(
+            update={
+                "provenance_bindings": tuple(
+                    binding
+                    for binding in artifact.provenance_bindings
+                    if binding.kind != omitted_kind
+                )
+            }
+        )
+        for artifact in artifacts
+    )
+    request_value = RevisionPublishRequestV1(
+        run_id=state.execution_id,
+        transaction_id="txn-" + ("8" if omitted_kind == "context" else "9") * 32,
+        proposed_revision=1,
+        created_at=NOW,
+        producer_id=ISOLATED_JOB_PRODUCER_ID,
+        producer_version=ISOLATED_JOB_PRODUCER_VERSION,
+        artifacts=mutated,
+    )
+
+    with pytest.raises(CanonicalStorageError, match="exact local/context/budget provenance"):
         build_inventory(request_value, max_artifact_bytes=70 * 1024 * 1024)
 
 
@@ -678,7 +776,134 @@ def test_resume_identity_failure_terminates_without_effect(
     assert prepared._closed is True
 
 
-def test_budget_settlement_mutation_fault_cannot_leave_running_job(
+def test_resume_expiry_at_kernel_boundary_terminates_without_effect(
+    tmp_path: Path,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="resume-expiry",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    prepared.verify_identity_before_admission()
+
+    with pytest.raises(IsolatedJobError) as rejected:
+        prepared.resume(
+            approval_valid_until=NOW,
+            clock=lambda: NOW,
+        )
+
+    assert rejected.value.code is JobFailureCode.APPROVAL_MISMATCH
+    assert prepared._resumed is False
+    assert prepared._closed is True
+    assert (
+        WindowsJobBackend.process_identity_status(
+            prepared.process_id,
+            prepared.creation_time_100ns,
+        )
+        == "absent"
+    )
+
+
+def test_prepare_controller_abort_terminates_unassigned_suspended_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="prepare-controller-abort",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    observed: dict[str, int] = {}
+    original_create = backend_module._winapi.CreateProcess
+
+    def capture_create(*args: Any, **kwargs: Any):
+        result = original_create(*args, **kwargs)
+        observed["process_id"] = int(result[2])
+        observed["creation_time"] = backend_module._process_creation_time(int(result[0]))
+        return result
+
+    def interrupt_assignment(*_args: Any, **_kwargs: Any) -> bool:
+        raise KeyboardInterrupt("synthetic controller abort")
+
+    monkeypatch.setattr(backend_module._winapi, "CreateProcess", capture_create)
+    monkeypatch.setattr(
+        backend_module._kernel32,
+        "AssignProcessToJobObject",
+        interrupt_assignment,
+    )
+    with pytest.raises(KeyboardInterrupt):
+        WindowsJobBackend().prepare(value, policy_for(tmp_path))
+
+    assert (
+        WindowsJobBackend.process_identity_status(
+            observed["process_id"],
+            observed["creation_time"],
+        )
+        == "absent"
+    )
+
+
+def test_resume_controller_abort_after_kernel_resume_kills_job_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.SPAWN_TREE,
+        suffix="resume-controller-abort",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000, child_count=1),
+    )
+    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    original_resume = backend_module._kernel32.ResumeThread
+
+    def interrupt_after_resume(handle: object) -> int:
+        original_resume(handle)
+        raise KeyboardInterrupt("synthetic controller abort")
+
+    monkeypatch.setattr(backend_module._kernel32, "ResumeThread", interrupt_after_resume)
+    with pytest.raises(KeyboardInterrupt):
+        prepared.resume()
+
+    assert prepared._closed is True
+    assert (
+        WindowsJobBackend.process_identity_status(
+            prepared.process_id,
+            prepared.creation_time_100ns,
+        )
+        == "absent"
+    )
+
+
+def test_wait_controller_abort_kills_job_tree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.SPAWN_TREE,
+        suffix="wait-controller-abort",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000, child_count=1),
+    )
+    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+    prepared.resume()
+
+    def interrupt_accounting(_job_handle: int):
+        raise KeyboardInterrupt("synthetic controller abort")
+
+    monkeypatch.setattr(backend_module, "_query_accounting", interrupt_accounting)
+    with pytest.raises(KeyboardInterrupt):
+        prepared.wait()
+
+    assert prepared._closed is True
+    assert (
+        WindowsJobBackend.process_identity_status(
+            prepared.process_id,
+            prepared.creation_time_100ns,
+        )
+        == "absent"
+    )
+
+
+def test_budget_settlement_postreplace_fault_exactly_confirms_and_closes_permit(
     tmp_path: Path,
 ) -> None:
     value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
@@ -700,10 +925,109 @@ def test_budget_settlement_mutation_fault_cannot_leave_running_job(
     state = job_store.load(value.execution_id)
     budget_state = budget.load(value.budget_run_id)
 
-    assert result.status is IsolatedJobStatus.EFFECT_UNKNOWN
-    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert result.status is IsolatedJobStatus.COMPLETED
+    assert state.status is IsolatedJobStatus.COMPLETED
     assert not budget_state.active_permits
     assert budget_state.settlements[-1].status.value == "succeeded"
+
+
+@pytest.mark.parametrize(
+    ("fault_ordinal", "expected_job_status", "expected_cancellation"),
+    [
+        (3, IsolatedJobStatus.EFFECT_UNKNOWN, CancellationState.EFFECT_UNKNOWN),
+        (4, IsolatedJobStatus.CANCELLED, CancellationState.CANCELLED),
+        (5, IsolatedJobStatus.CANCELLED, CancellationState.CANCELLED),
+    ],
+)
+def test_cancel_publication_faults_close_started_permit(
+    tmp_path: Path,
+    fault_ordinal: int,
+    expected_job_status: IsolatedJobStatus,
+    expected_cancellation: CancellationState,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix=f"cancel-fault-{fault_ordinal}",
+        fail_on_current_replace=99,
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    after_replace_count = 0
+    fired = False
+
+    def fault(hook: str) -> None:
+        nonlocal after_replace_count, fired
+        if hook == "current.after_replace":
+            after_replace_count += 1
+            if after_replace_count == fault_ordinal and not fired:
+                fired = True
+                raise OSError("synthetic cancellation publication uncertainty")
+
+    budget.revisions.fault_injector = fault
+    result = coordinator.execute(value, policy, cancelled=lambda: True, **kwargs)
+    budget_state = budget.load(value.budget_run_id)
+    cancellation = next(
+        item for item in budget_state.cancellations if item.permit_id == value.budget_permit_id
+    )
+
+    assert fired is True
+    assert result.status is expected_job_status
+    assert job_store.load(value.execution_id).status is expected_job_status
+    assert cancellation.state is expected_cancellation
+    assert cancellation.worker_live is False
+    assert not budget_state.active_permits
+    assert budget_state.settlements[-1].status.value == (
+        "cancelled" if expected_job_status is IsolatedJobStatus.CANCELLED else "effect_unknown"
+    )
+
+
+def test_recovery_closes_requested_cancellation_after_process_absence(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="recover-requested-cancel")
+    value = fixture.value
+    fixture.coordinator.backend = _AbsentBackend()
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=777,
+        process_creation_time_100ns=888,
+    )
+    fixture.budget.start(
+        value.budget_run_id,
+        operation_id="start-recover-requested-cancel",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RUNNING,
+        reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="d" * 64,
+    )
+    fixture.budget.request_cancellation(
+        value.budget_run_id,
+        operation_id="request-recover-requested-cancel",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.EFFECT_UNKNOWN,
+        reason_code="controller_restart",
+        failure_code=JobFailureCode.EFFECT_UNKNOWN,
+    )
+
+    recovered = fixture.coordinator.recover_after_restart(value, fixture.policy)
+    budget_state = fixture.budget.load(value.budget_run_id)
+    cancellation = next(
+        item for item in budget_state.cancellations if item.permit_id == value.budget_permit_id
+    )
+
+    assert recovered.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert cancellation.state is CancellationState.EFFECT_UNKNOWN
+    assert cancellation.worker_live is False
+    assert not budget_state.active_permits
+    assert budget_state.settlements[-1].status.value == "effect_unknown"
 
 
 def test_recovery_retries_budget_closure_and_reconciliation_rejects_active_permit(
@@ -824,6 +1148,74 @@ def test_successor_process_effect_and_evidence_bindings_are_one_way(
                 update={"evidence": newer.evidence.model_copy(update={"wall_clock_ms": 1})}
             ),
         )
+
+
+def test_prepared_effect_unknown_cannot_claim_effect_admission_digest(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="premature-effect-digest")
+
+    with pytest.raises(ValueError, match="introduced out of order"):
+        fixture.job_store.transition(
+            fixture.value.execution_id,
+            status=IsolatedJobStatus.EFFECT_UNKNOWN,
+            reason_code="pre_effect_storage_unknown",
+            effect_admission_recheck_binding_sha256="a" * 64,
+            failure_code=JobFailureCode.EFFECT_UNKNOWN,
+        )
+
+    state = fixture.job_store.load(fixture.value.execution_id)
+    assert state.status is IsolatedJobStatus.PREPARED
+    assert state.effect_admission_recheck_binding_sha256 is None
+
+
+def test_reconciliation_cannot_introduce_late_process_evidence(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="late-reconciliation-evidence")
+    value = fixture.value
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=901,
+        process_creation_time_100ns=902,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.EFFECT_UNKNOWN,
+        reason_code="pre_resume_publication_unknown",
+        failure_code=JobFailureCode.EFFECT_UNKNOWN,
+    )
+    evidence = JobEvidenceV1(
+        process_id=901,
+        process_creation_time_100ns=902,
+        exit_code=0,
+        total_processes=1,
+        active_processes=0,
+        stdout_sha256=hashlib.sha256(b"").hexdigest(),
+        stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        command_line_sha256="b" * 64,
+        inherited_handle_count=3,
+        process_tree_termination_confirmed=True,
+        job_limits_requeried=True,
+        executable_identity_rechecked=True,
+        output_complete=True,
+    )
+
+    with pytest.raises(ValueError, match="introduced before terminal state"):
+        fixture.job_store.transition(
+            value.execution_id,
+            status=IsolatedJobStatus.RECONCILED,
+            reason_code="manual_reconciliation",
+            evidence=evidence,
+            failure_code=JobFailureCode.RECONCILIATION_REQUIRED,
+            reconciliation_evidence_sha256="c" * 64,
+        )
+
+    state = fixture.job_store.load(value.execution_id)
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.evidence is None
 
 
 def test_secret_shaped_output_is_never_published(tmp_path: Path) -> None:

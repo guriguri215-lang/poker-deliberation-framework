@@ -1694,7 +1694,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations below record the P3-030A completion-time boundary; the milestone table is authoritative for later status changes such as P2-028A.",
+      "status_reason": "P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.",
       "dependencies": [
         "RM-014"
       ],

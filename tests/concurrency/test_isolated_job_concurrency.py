@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import sys
 import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+if sys.platform != "win32":
+    pytest.skip("Windows Job Object concurrency tests", allow_module_level=True)
 
 from poker_deliberation.approval_models import ApprovalExecutionRecheckBindingV2
 from poker_deliberation.budgets.durable_store import (
@@ -193,3 +197,36 @@ def test_cancel_is_durable_tree_wide_and_budget_settled(tmp_path: Path) -> None:
     ]
     assert budget_state.settlements[-1].status.value == "cancelled"
     assert budget_state.cancellations[-1].state.value == "cancelled"
+
+
+def test_concurrent_cancel_signal_race_reaches_one_closed_terminal_state(
+    tmp_path: Path,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _coordinator_fixture(
+        tmp_path,
+        suffix="cancel-race",
+        operation=SyntheticOperation.HANG,
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    cancellation = threading.Event()
+    timer = threading.Timer(0.05, cancellation.set)
+    timer.start()
+    try:
+        result = coordinator.execute(
+            value,
+            policy,
+            cancelled=cancellation.is_set,
+            **kwargs,
+        )
+    finally:
+        timer.cancel()
+        timer.join(timeout=1)
+
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+    assert result.status is IsolatedJobStatus.CANCELLED
+    assert state.status is IsolatedJobStatus.CANCELLED
+    assert state.evidence is not None
+    assert state.evidence.active_processes == 0
+    assert not budget_state.active_permits
+    assert budget_state.settlements[-1].status.value == "cancelled"

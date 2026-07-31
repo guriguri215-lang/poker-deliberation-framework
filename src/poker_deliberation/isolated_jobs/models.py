@@ -6,6 +6,7 @@ provide a generic subprocess surface and never contain secret values.
 
 from __future__ import annotations
 
+import ntpath
 import re
 import unicodedata
 from datetime import datetime
@@ -35,6 +36,7 @@ ISOLATED_JOB_PRODUCER_VERSION: Final[Literal["1.0.0"]] = "1.0.0"
 ISOLATED_JOB_ARTIFACT_SCHEMA: Final[Literal["poker-isolated-job-state-artifact-v1"]] = (
     "poker-isolated-job-state-artifact-v1"
 )
+MAX_APPROVED_INPUT_BYTES: Final = 2 * 1024 * 1024
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -202,8 +204,6 @@ class JobLimitsV1(_JobModel):
     def combined_limits_are_coherent(self) -> JobLimitsV1:
         if self.job_memory_bytes < self.process_memory_bytes:
             raise ValueError("job memory limit cannot be below the per-process limit")
-        if self.job_cpu_time_ms < self.process_cpu_time_ms:
-            raise ValueError("job CPU limit cannot be below the per-process limit")
         if self.combined_output_bytes > self.stdout_bytes + self.stderr_bytes:
             raise ValueError("combined output limit exceeds the stream-limit sum")
         return self
@@ -270,6 +270,20 @@ class FilesystemPolicyV1(_JobModel):
     def handle_contract_is_exact(self) -> FilesystemPolicyV1:
         if self.input_handle_required != (self.approved_input is not None):
             raise ValueError("approved input and explicit handle requirement must be paired")
+        approved = self.approved_input
+        if approved is not None:
+            workspace = ntpath.normcase(self.workspace_root.absolute_path)
+            candidate = ntpath.normcase(approved.absolute_path)
+            try:
+                common = ntpath.commonpath((workspace, candidate))
+            except ValueError as exc:
+                raise ValueError("approved input must be beneath the isolated workspace") from exc
+            if common != workspace or candidate == workspace:
+                raise ValueError("approved input must be beneath the isolated workspace")
+            if approved.link_count != 1:
+                raise ValueError("approved input must have exactly one hard link")
+            if approved.size_bytes > MAX_APPROVED_INPUT_BYTES:
+                raise ValueError("approved input exceeds the bounded input size")
         return self
 
 
@@ -345,6 +359,11 @@ class ContextJobBindingV1(_JobModel):
     schema_version: Literal["1.0.0"] = ISOLATED_JOB_SCHEMA_VERSION
     context_id: PortableId
     attempt_id: PortableId
+    assignment_id: PortableId
+    role: PortableId
+    root_attempt_id: PortableId
+    parent_attempt_id: PortableId | None = None
+    root_context_id: PortableId
     parent_context_id: PortableId | None = None
     payload_sha256: Sha256
     source_sha256: Sha256
@@ -353,6 +372,20 @@ class ContextJobBindingV1(_JobModel):
     expires_at: datetime
 
     _expiry_utc = field_validator("expires_at")(lambda value: _utc(value, "expires_at"))
+
+    @model_validator(mode="after")
+    def exact_lineage_shape(self) -> ContextJobBindingV1:
+        if (self.parent_attempt_id is None) != (self.parent_context_id is None):
+            raise ValueError("context attempt and parent lineage must be paired")
+        if self.parent_attempt_id is None:
+            if self.root_attempt_id != self.attempt_id or self.root_context_id != self.context_id:
+                raise ValueError("initial context must equal its root lineage")
+        elif self.attempt_id in {
+            self.root_attempt_id,
+            self.parent_attempt_id,
+        } or self.context_id in {self.root_context_id, self.parent_context_id}:
+            raise ValueError("retry context and attempt identities must be fresh")
+        return self
 
 
 class BudgetJobBindingV1(_JobModel):
@@ -395,6 +428,8 @@ class JobEvidenceV1(_JobModel):
     wall_clock_ms: int = Field(default=0, ge=0)
     job_user_time_100ns: int = Field(default=0, ge=0)
     job_kernel_time_100ns: int = Field(default=0, ge=0)
+    process_user_time_100ns: int = Field(default=0, ge=0)
+    process_kernel_time_100ns: int = Field(default=0, ge=0)
     peak_process_memory_bytes: int = Field(default=0, ge=0)
     peak_job_memory_bytes: int = Field(default=0, ge=0)
     total_processes: int = Field(default=0, ge=0)
@@ -517,11 +552,23 @@ class DurableIsolatedJobStateV1(_JobModel):
                 raise ValueError("job event transition lineage mismatch")
         if self.events[-1].status is not self.status:
             raise ValueError("last job event must match current status")
-        if self.status is IsolatedJobStatus.PREPARED:
+        if self.status in {
+            IsolatedJobStatus.PREPARED,
+            IsolatedJobStatus.LAUNCH_COMMITTED,
+        }:
             if self.effect_admission_recheck_binding_sha256 is not None:
-                raise ValueError("prepared job cannot claim effect-admission recheck")
-        elif self.process_id is not None and self.effect_admission_recheck_binding_sha256 is None:
-            raise ValueError("post-prepare job requires effect-admission recheck identity")
+                raise ValueError("pre-effect job cannot claim effect-admission recheck")
+        elif (
+            self.status
+            in {
+                IsolatedJobStatus.RUNNING,
+                IsolatedJobStatus.CANCEL_REQUESTED,
+                IsolatedJobStatus.CANCELLED,
+                IsolatedJobStatus.COMPLETED,
+            }
+            and self.effect_admission_recheck_binding_sha256 is None
+        ):
+            raise ValueError("effectful job requires effect-admission recheck identity")
         needs_process = self.status in {
             IsolatedJobStatus.LAUNCH_COMMITTED,
             IsolatedJobStatus.RUNNING,

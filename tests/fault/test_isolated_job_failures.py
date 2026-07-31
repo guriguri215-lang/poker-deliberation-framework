@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import sys
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+if sys.platform != "win32":
+    pytest.skip("Windows Job Object fault tests", allow_module_level=True)
 
 from poker_deliberation.approval_canonical import action_digest_sha256
 from poker_deliberation.approval_models import ApprovalExecutionRecheckBindingV2
@@ -15,27 +20,42 @@ from poker_deliberation.budgets.durable_store import (
     initialize_durable_budget_root,
 )
 from poker_deliberation.context_lifecycle import ContextEnvelope
+from poker_deliberation.isolated_jobs import windows_backend as backend_module
+from poker_deliberation.isolated_jobs.canonical import isolated_job_sha256
 from poker_deliberation.isolated_jobs.coordinator import IsolatedJobCoordinator
 from poker_deliberation.isolated_jobs.models import (
+    ISOLATED_JOB_ARTIFACT_SCHEMA,
+    ISOLATED_JOB_PRODUCER_ID,
+    ISOLATED_JOB_PRODUCER_VERSION,
     ApprovalJobReferenceV1,
     IsolatedJobError,
     IsolatedJobPolicyV1,
     IsolatedJobRequestV1,
     IsolatedJobStatus,
+    JobEvidenceV1,
     JobFailureCode,
     ReconciliationReferenceV1,
+    SyntheticArgumentsV1,
+    SyntheticOperation,
 )
 from poker_deliberation.isolated_jobs.store import (
     IsolatedJobStore,
+    _validate_successor,
     initialize_isolated_job_root,
 )
 from poker_deliberation.isolated_jobs.windows_backend import WindowsJobBackend
 from poker_deliberation.schemas import AgentAssignment
+from poker_deliberation.storage.revision_canonical import (
+    CanonicalStorageError,
+    build_inventory,
+)
+from poker_deliberation.storage.revision_models import RevisionPublishRequestV1
 from tests.isolated_job_support import (
     NOW,
     JobAuthority,
     context_for,
     durable_policy,
+    limits,
     lineage_for,
     policy_for,
     request,
@@ -310,7 +330,6 @@ def test_restart_after_launch_commit_releases_reserved_no_effect(
         reason_code="suspended_child_assigned",
         process_id=123,
         process_creation_time_100ns=456,
-        effect_admission_recheck_binding_sha256="8" * 64,
     )
 
     recovered = fixture.coordinator.recover_after_restart(value, fixture.policy)
@@ -333,7 +352,6 @@ def test_restart_after_resume_settles_started_permit_as_effect_unknown(
         reason_code="suspended_child_assigned",
         process_id=321,
         process_creation_time_100ns=654,
-        effect_admission_recheck_binding_sha256="9" * 64,
     )
     fixture.budget.start(
         value.budget_run_id,
@@ -344,6 +362,7 @@ def test_restart_after_resume_settles_started_permit_as_effect_unknown(
         value.execution_id,
         status=IsolatedJobStatus.RUNNING,
         reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="9" * 64,
     )
 
     recovered = fixture.coordinator.recover_after_restart(value, fixture.policy)
@@ -439,10 +458,10 @@ def test_effect_admission_approval_change_terminates_before_resume(
     state = job_store.load(value.execution_id)
     budget_state = budget.load(value.budget_run_id)
 
-    assert state.status is IsolatedJobStatus.FAILED
-    assert state.failure_code is JobFailureCode.APPROVAL_MISMATCH
-    assert state.process_id is None
-    assert budget_state.settlements[-1].status.value == "released_no_effect"
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.failure_code is JobFailureCode.EFFECT_UNKNOWN
+    assert state.process_id is not None
+    assert budget_state.settlements[-1].status.value == "effect_unknown"
     assert not budget_state.active_permits
 
 
@@ -483,6 +502,330 @@ def test_terminal_publication_fault_never_returns_success(tmp_path: Path) -> Non
     assert budget_state.settlements[-1].status.value == "succeeded"
 
 
+def test_post_replace_effect_unknown_is_returned_only_after_exact_confirmation(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="postreplace-confirmed")
+    fired = False
+
+    def fault(hook: str) -> None:
+        nonlocal fired
+        if hook == "current.after_replace" and not fired:
+            fired = True
+            raise OSError("synthetic post-replace uncertainty")
+
+    fixture.job_store.revisions.fault_injector = fault
+    state = fixture.job_store.transition(
+        fixture.value.execution_id,
+        status=IsolatedJobStatus.FAILED,
+        reason_code="confirmed_postreplace",
+        failure_code=JobFailureCode.CHILD_EXIT_NONZERO,
+    )
+
+    assert fired is True
+    assert state.status is IsolatedJobStatus.FAILED
+    assert fixture.job_store.load(fixture.value.execution_id) == state
+
+
+def test_corrupt_post_replace_state_is_never_confirmed_as_success(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="postreplace-corrupt")
+    current_path = (
+        fixture.job_store.revisions.runs_root
+        / fixture.value.execution_id
+        / ".revision-store"
+        / "current.json"
+    )
+
+    def fault(hook: str) -> None:
+        if hook == "current.after_replace":
+            current_path.write_bytes(b"{}\n")
+            raise OSError("synthetic corrupt post-replace state")
+
+    fixture.job_store.revisions.fault_injector = fault
+    with pytest.raises(IsolatedJobError) as rejected:
+        fixture.job_store.transition(
+            fixture.value.execution_id,
+            status=IsolatedJobStatus.FAILED,
+            reason_code="corrupt_postreplace",
+            failure_code=JobFailureCode.CHILD_EXIT_NONZERO,
+        )
+    assert rejected.value.code is JobFailureCode.STORAGE_FAILURE
+
+
+def test_lower_revision_admission_rejects_output_without_state_evidence(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="lower-output-binding")
+    state = fixture.job_store.load(fixture.value.execution_id)
+    request_value = RevisionPublishRequestV1(
+        run_id=state.execution_id,
+        transaction_id="txn-" + "7" * 32,
+        proposed_revision=1,
+        created_at=NOW,
+        producer_id=ISOLATED_JOB_PRODUCER_ID,
+        producer_version=ISOLATED_JOB_PRODUCER_VERSION,
+        artifacts=(
+            fixture.job_store._artifact(
+                state,
+                logical_name="isolated_job_state.json",
+                data=state.canonical_bytes,
+                schema=ISOLATED_JOB_ARTIFACT_SCHEMA,
+                origin_kind="isolated_job_state",
+                serialization="poker-run-storage-json-v1",
+                media_type="application/json",
+            ),
+            fixture.job_store._artifact(
+                state,
+                logical_name="stdout.txt",
+                data=b"unbound\n",
+                schema="poker-isolated-job-stdout-artifact-v1",
+                origin_kind="isolated_job_stdout",
+                serialization="poker-run-storage-utf8-text-v1",
+                media_type="text/plain",
+            ),
+            fixture.job_store._artifact(
+                state,
+                logical_name="stderr.txt",
+                data=b"",
+                schema="poker-isolated-job-stderr-artifact-v1",
+                origin_kind="isolated_job_stderr",
+                serialization="poker-run-storage-utf8-text-v1",
+                media_type="text/plain",
+            ),
+        ),
+    )
+
+    with pytest.raises(CanonicalStorageError, match="requires exact process evidence"):
+        build_inventory(request_value, max_artifact_bytes=70 * 1024 * 1024)
+
+
+def test_wait_accounting_exception_terminates_and_returns_effect_unknown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="accounting-exception",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    prepared = WindowsJobBackend().prepare(
+        value,
+        policy_for(tmp_path, job_limits=limits(wall_clock_ms=2_000)),
+    )
+    prepared.resume()
+
+    def fail_accounting(_job: int):
+        raise OSError("synthetic accounting failure")
+
+    monkeypatch.setattr(backend_module, "_query_accounting", fail_accounting)
+    outcome = prepared.wait()
+
+    assert outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN
+    assert outcome.evidence.output_complete is False
+    assert prepared._closed is True
+
+
+def test_pipe_read_error_is_not_treated_as_complete_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="pipe-read-error",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    prepared = WindowsJobBackend().prepare(
+        value,
+        policy_for(tmp_path, job_limits=limits(wall_clock_ms=2_000)),
+    )
+    target_fds = {prepared.stdout_read_fd, prepared.stderr_read_fd}
+    original_read = backend_module.os.read
+
+    def fail_target_read(file_descriptor: int, size: int) -> bytes:
+        if file_descriptor in target_fds:
+            raise OSError("synthetic pipe read failure")
+        return original_read(file_descriptor, size)
+
+    monkeypatch.setattr(backend_module.os, "read", fail_target_read)
+    prepared.resume()
+    outcome = prepared.wait()
+
+    assert outcome.failure_code is JobFailureCode.EFFECT_UNKNOWN
+    assert outcome.evidence.output_complete is False
+
+
+def test_resume_identity_failure_terminates_without_effect(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="resume-identity",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    prepared = WindowsJobBackend().prepare(value, policy_for(tmp_path))
+
+    def fail_identity(_identity: object) -> None:
+        raise IsolatedJobError(JobFailureCode.IDENTITY_MISMATCH)
+
+    monkeypatch.setattr(backend_module, "verify_execution_identity", fail_identity)
+    with pytest.raises(IsolatedJobError) as rejected:
+        prepared.resume()
+    assert rejected.value.code is JobFailureCode.IDENTITY_MISMATCH
+    assert prepared._resumed is False
+    assert prepared._closed is True
+
+
+def test_budget_settlement_mutation_fault_cannot_leave_running_job(
+    tmp_path: Path,
+) -> None:
+    value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
+        tmp_path,
+        suffix="budget-settle-fault",
+        fail_on_current_replace=99,
+    )
+    after_replace_count = 0
+
+    def fault(hook: str) -> None:
+        nonlocal after_replace_count
+        if hook == "current.after_replace":
+            after_replace_count += 1
+            if after_replace_count == 3:
+                raise OSError("synthetic budget settlement uncertainty")
+
+    budget.revisions.fault_injector = fault
+    result = coordinator.execute(value, policy, **kwargs)
+    state = job_store.load(value.execution_id)
+    budget_state = budget.load(value.budget_run_id)
+
+    assert result.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert state.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    assert not budget_state.active_permits
+    assert budget_state.settlements[-1].status.value == "succeeded"
+
+
+def test_recovery_retries_budget_closure_and_reconciliation_rejects_active_permit(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="recovery-budget-fault")
+    value = fixture.value
+    fixture.coordinator.backend = _AbsentBackend()
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=777,
+        process_creation_time_100ns=888,
+    )
+    fixture.budget.start(
+        value.budget_run_id,
+        operation_id="start-recovery-budget-fault",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RUNNING,
+        reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="d" * 64,
+    )
+
+    def fault(hook: str) -> None:
+        if hook == "staging.before_mkdir":
+            raise OSError("synthetic budget closure failure")
+
+    fixture.budget.revisions.fault_injector = fault
+    recovered = fixture.coordinator.recover_after_restart(value, fixture.policy)
+    assert recovered.status is IsolatedJobStatus.EFFECT_UNKNOWN
+    with pytest.raises(ValueError, match=JobFailureCode.RECONCILIATION_REQUIRED.value):
+        fixture.coordinator.reconcile(
+            value.execution_id,
+            reconciliation_reference=ReconciliationReferenceV1(
+                reference_id="reconcile-active-budget",
+                evidence_sha256="e" * 64,
+            ),
+        )
+
+    fixture.budget.revisions.fault_injector = None
+    fixture.coordinator.recover_after_restart(value, fixture.policy)
+    reconciled = fixture.coordinator.reconcile(
+        value.execution_id,
+        reconciliation_reference=ReconciliationReferenceV1(
+            reference_id="reconcile-closed-budget",
+            evidence_sha256="f" * 64,
+        ),
+    )
+    assert reconciled.status is IsolatedJobStatus.RECONCILED
+
+
+def test_successor_process_effect_and_evidence_bindings_are_one_way(
+    tmp_path: Path,
+) -> None:
+    fixture = _prepared(tmp_path, suffix="immutable-successor")
+    value = fixture.value
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.LAUNCH_COMMITTED,
+        reason_code="suspended_child_assigned",
+        process_id=901,
+        process_creation_time_100ns=902,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RUNNING,
+        reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="a" * 64,
+    )
+    evidence = JobEvidenceV1(
+        process_id=901,
+        process_creation_time_100ns=902,
+        exit_code=0,
+        termination_reason=JobFailureCode.EFFECT_UNKNOWN.value,
+        total_processes=1,
+        active_processes=0,
+        stdout_sha256=hashlib.sha256(b"").hexdigest(),
+        stderr_sha256=hashlib.sha256(b"").hexdigest(),
+        command_line_sha256="b" * 64,
+        inherited_handle_count=3,
+        process_tree_termination_confirmed=True,
+        job_limits_requeried=True,
+        executable_identity_rechecked=True,
+        output_complete=False,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.EFFECT_UNKNOWN,
+        reason_code="effect_unknown",
+        evidence=evidence,
+        failure_code=JobFailureCode.EFFECT_UNKNOWN,
+    )
+    fixture.job_store.transition(
+        value.execution_id,
+        status=IsolatedJobStatus.RECONCILED,
+        reason_code="manual_reconciliation",
+        failure_code=JobFailureCode.RECONCILIATION_REQUIRED,
+        reconciliation_evidence_sha256="c" * 64,
+    )
+    newer, older = fixture.job_store._load_history(value.execution_id)[:2]
+
+    with pytest.raises(ValueError, match="process identity changed"):
+        _validate_successor(older, newer.model_copy(update={"process_id": 999}))
+    with pytest.raises(ValueError, match="effect-admission identity changed"):
+        _validate_successor(
+            older,
+            newer.model_copy(update={"effect_admission_recheck_binding_sha256": "d" * 64}),
+        )
+    assert newer.evidence is not None
+    with pytest.raises(ValueError, match="process evidence changed"):
+        _validate_successor(
+            older,
+            newer.model_copy(
+                update={"evidence": newer.evidence.model_copy(update={"wall_clock_ms": 1})}
+            ),
+        )
+
+
 def test_secret_shaped_output_is_never_published(tmp_path: Path) -> None:
     fixture = _prepared(tmp_path, suffix="secret-output")
     value = fixture.value
@@ -514,12 +857,12 @@ def test_output_bytes_must_match_process_evidence_before_publication(
         reason_code="suspended_child_assigned",
         process_id=outcome.evidence.process_id,
         process_creation_time_100ns=outcome.evidence.process_creation_time_100ns,
-        effect_admission_recheck_binding_sha256="a" * 64,
     )
     fixture.job_store.transition(
         value.execution_id,
         status=IsolatedJobStatus.RUNNING,
         reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="a" * 64,
     )
 
     with pytest.raises(IsolatedJobError) as rejected:
@@ -548,12 +891,12 @@ def test_reconciliation_preserves_bound_output_evidence(tmp_path: Path) -> None:
         reason_code="suspended_child_assigned",
         process_id=outcome.evidence.process_id,
         process_creation_time_100ns=outcome.evidence.process_creation_time_100ns,
-        effect_admission_recheck_binding_sha256="b" * 64,
     )
     fixture.job_store.transition(
         value.execution_id,
         status=IsolatedJobStatus.RUNNING,
         reason_code="primary_thread_resumed",
+        effect_admission_recheck_binding_sha256="b" * 64,
     )
     fixture.job_store.transition(
         value.execution_id,
@@ -563,6 +906,15 @@ def test_reconciliation_preserves_bound_output_evidence(tmp_path: Path) -> None:
         failure_code=JobFailureCode.EFFECT_UNKNOWN,
         stdout=outcome.stdout,
         stderr=outcome.stderr,
+    )
+    fixture.budget.start(
+        value.budget_run_id,
+        operation_id="start-reconcile-output",
+        permit_id=value.budget_permit_id,
+    )
+    fixture.coordinator._settle_ambiguous_resume(
+        value,
+        evidence_sha256=isolated_job_sha256(outcome.evidence),
     )
     fixture.coordinator.backend = _AbsentBackend()
 

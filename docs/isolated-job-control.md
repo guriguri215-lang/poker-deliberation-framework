@@ -21,10 +21,10 @@
 | 起動対象 | hash・file identityを再検証したbase Pythonと固定`synthetic_child.py`だけ |
 | argv | `-I -S -B -u -X utf8`とclosed operation enum／bounded整数だけ |
 | process tree | Windows Job Objectへsuspended状態で割当て後にresumeし、`KILL_ON_JOB_CLOSE`と`TerminateJobObject`を使用 |
-| resource | process/job CPU time、process/job committed memory、active process数をJob Objectへ設定してexact requery。CPUはJob accountingもpollし、上限到達時にJob全体を停止 |
+| resource | process/job CPU time、process/job committed memory、active process数をJob Objectへ設定してexact requery。CPUはprocess timeとJob accountingを独立にpollし、どちらかの上限到達時にJob全体を停止 |
 | wall/output | controller wall clockとstdout／stderr／combined byte capの超過時にJob全体を停止 |
-| handles | NUL stdin、stdout pipe、stderr pipe、任意の承認済みinput handle一つだけを明示handle listへ設定 |
-| filesystem | 固定working directoryはidentity-bound。任意write surfaceはなく、inputはworkspace配下の単一read handleだけ |
+| handles | NUL stdin、stdout pipe、stderr pipe、任意の承認済みinput handle一つだけを明示handle listへ設定。repository内の同backend起動はinheritable handleの存続中に直列化 |
+| filesystem | 固定working directoryはidentity-bound。任意write surfaceはなく、inputはworkspace配下・単一hardlink・最大2 MiBの単一read handleだけ |
 | link/path | absolute Windows path、component、reparse/symlink、hardlink、ADS、reserved name、escapeをfail closed |
 | secrets | requestは参照IDとdigestだけ。秘密形状、raw secret値、raw reconciliation evidenceを拒否 |
 | durable state | immutable full snapshot、current CAS、hash lineage、固定3 artifact、typed transitionを検証 |
@@ -37,6 +37,7 @@
 - remote process、remote billing、provider課金、remote cancellationの停止証拠。
 - interpreterがloadし得る全OS DLLの完全な推移的attestation。
 - distributed filesystem、power-loss durability、exactly-once、writer authenticity、秘密性。
+- backend外で同時に行われる未調整のprocess creationに対するhandle inheritanceの完全排除。
 
 ## Versioned contract
 
@@ -66,10 +67,13 @@ canonical bytesは既存storage canonical JSONを再利用し、SHA-256はcorrup
    `CanonicalActionPlanV2(action_category="external_code")`を構築する。
 3. P2-012B terminal readerでP2-013B approval chainを読み、live actor/scope/expiry/revocationを
    effectなしで再検証する。
-4. P2-011B permitをreserveし、`prepared` snapshotを専用revision rootへpublishする。
+4. previewで固定したbudget policy/activation digestをreserve時にもCAS相関し、P2-011B permitを
+   reserveして`prepared` snapshotを専用revision rootへpublishする。
 5. childをsuspendedで生成し、Job Objectへ割り当て、limitとidentityを再照合する。
-6. approvalをもう一度再検証し、同じapproval currentである場合だけ`launch_committed`をpublishする。
-7. permitをstartし、primary threadをresumeして`running`をpublishする。
+6. process identityだけを持つ`launch_committed`をpublishする。この状態はeffect admissionを主張しない。
+7. permitをstartし、approval current／live authorityを再検証する。durable publicationを挟まず、
+   executable identityを再検証して直ちに`ResumeThread`を呼び、そのrecheck bindingを
+   `running`へ一度だけ固定する。
 8. outcomeをbudgetへsettleしてからterminal job snapshotとbounded outputをpublishする。
 
 approval、context、budget、identity、path、handleの不一致は起動前に拒否する。同一executionの並行
@@ -95,15 +99,21 @@ prepared
 要求する。`effect_unknown`はsuccess、failed、retryへ変換しない。再起動後は保存済みPIDとcreation
 timeを照合し、同じlive processまたはidentity mismatchなら自動回復せず`run_locked`に停止する。
 process不在を確認した場合も保守的に`effect_unknown`へlatchする。人間がopaque reference IDと
-evidence digestを与え、process不在を再確認した場合だけ`reconciled`へ進むが、これは非successである。
+evidence digestを与え、process不在と対応permitのterminal settlementを再確認した場合だけ
+`reconciled`へ進む。budget rootが読めない、corrupt、またはpermitがactiveなら拒否し、これは
+常に非successである。
 
 各revisionは`isolated_job_state.json`、UTF-8 `stdout.txt`、`stderr.txt`のfull snapshotを持つ。
 partial write、corrupt current/payload、stale CAS、cross-execution replay、transition lineageの改変は
-fail closedとなる。
+fail closedとなる。`current`置換後のstorage errorは、同じrevision、state、stdout、stderrを
+verified historyから完全一致で再読できた場合だけcommit済みとして扱う。
 
 job rootとbudget rootはdistributed transactionではない。terminal job snapshotより先にbudgetを
 settleし、terminal publicationが不確実ならbudget settlementが`succeeded`でもjobを
 `effect_unknown`にする。budget settlement単独はjob success authorityではなく、自動retryを許可しない。
+P2-011Bの`artifact_bytes`はcaptured stdout/stderrの大きい方、`run_bytes`は両streamの合計である。
+revision control/manifest/stateの物理byteはこのusage単位に含めず、revision store固有のartifact/run
+hard capで別にadmitする。
 
 ## テスト境界
 

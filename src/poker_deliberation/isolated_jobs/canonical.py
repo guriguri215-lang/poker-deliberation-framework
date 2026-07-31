@@ -117,10 +117,15 @@ def build_action_plan(
     expires_at: datetime,
 ) -> CanonicalActionPlanV2:
     fields = {
+        "budget_activation_sha256": budget.activation_sha256,
         "budget_lineage_sha256": budget.lineage_sha256,
         "budget_policy_sha256": budget.policy_sha256,
+        "budget_reservation_sha256": budget.reservation_sha256,
         "context_integrity_sha256": context.integrity_sha256,
         "execution_identity_sha256": policy.execution_identity.identity_sha256,
+        "isolation_boundary_id": isolated_job_sha256(
+            {"isolation_boundary_id": budget.isolation_boundary_id}
+        ),
         "isolation_evidence_sha256": budget.isolation_evidence_sha256,
         "isolation_requirement_sha256": budget.isolation_requirement_sha256,
         "policy_sha256": isolated_job_sha256(policy),

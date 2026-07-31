@@ -190,6 +190,42 @@ def _validate_successor(
     )
     if any(getattr(newer, name) != getattr(older, name) for name in stable_fields):
         raise ValueError("isolated-job immutable binding changed")
+    older_process = (older.process_id, older.process_creation_time_100ns)
+    newer_process = (newer.process_id, newer.process_creation_time_100ns)
+    if older_process != (None, None):
+        if newer_process != older_process:
+            raise ValueError("isolated-job process identity changed")
+    elif newer_process != (None, None) and (
+        older.status is not IsolatedJobStatus.PREPARED
+        or newer.status is not IsolatedJobStatus.LAUNCH_COMMITTED
+    ):
+        raise ValueError("isolated-job process identity was introduced out of order")
+    older_effect = older.effect_admission_recheck_binding_sha256
+    newer_effect = newer.effect_admission_recheck_binding_sha256
+    if older_effect is not None and newer_effect != older_effect:
+        raise ValueError("isolated-job effect-admission identity changed")
+    if (
+        older_effect is None
+        and newer_effect is not None
+        and newer.status
+        not in {
+            IsolatedJobStatus.RUNNING,
+            IsolatedJobStatus.EFFECT_UNKNOWN,
+        }
+    ):
+        raise ValueError("isolated-job effect-admission identity was introduced out of order")
+    if older.evidence is not None and newer.evidence != older.evidence:
+        raise ValueError("isolated-job process evidence changed")
+    if (
+        older.evidence is None
+        and newer.evidence is not None
+        and newer.status
+        not in {
+            *TERMINAL_JOB_STATUSES,
+            IsolatedJobStatus.EFFECT_UNKNOWN,
+        }
+    ):
+        raise ValueError("isolated-job process evidence was introduced before terminal state")
 
 
 def _validate_output_binding(
@@ -392,6 +428,21 @@ class IsolatedJobStore:
         try:
             outcome = self.revisions.publish(request)
         except RunStorageError as exc:
+            if exc.failure.code is RunStorageFailureCode.EFFECT_UNKNOWN:
+                try:
+                    history = self._load_history(state.execution_id)
+                    confirmed_stdout, confirmed_stderr = self.load_outputs(state.execution_id)
+                    current = self.revisions.read_current(state.execution_id)
+                    if (
+                        history
+                        and history[0] == state
+                        and current.current_revision == state.generation
+                        and confirmed_stdout == stdout
+                        and confirmed_stderr == stderr
+                    ):
+                        return state
+                except IsolatedJobError:
+                    pass
             code = (
                 JobFailureCode.STALE_REPLAY
                 if exc.failure.code

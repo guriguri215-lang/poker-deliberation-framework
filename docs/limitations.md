@@ -161,6 +161,8 @@
   cooperative threadを強制停止しない。P2-028Aの別Windows backendは固定repository synthetic
   helperに限ってprocess-tree killとCPU/memory/process/output capを実装する。remote cancellation、
   任意外部コード、provider/solver、network isolationには適用しない。
+- P2-028Aはrepository-owned backend内のprocess creationだけを共有lockで直列化する。別libraryや
+  同権限processが同時に作る未調整childへのhandle inheritanceをOS全体で排除する保証ではない。
 - P2-011B structural resumeはbudget stateだけをverified historyから再構成する。P2-012Bの通常resumeは
   verified `approval_required` checkpointに限定される。P2-013A/Bは
   approval actor/authority/action digest、明示reissue、expiry/revocation recheckを追加するが、

@@ -152,6 +152,11 @@ cancellation、network isolation、任意external code、provider/solverには�
 requestは引き続きreservation前に`isolation_required`となる。P2-011Bはexternal provider/solver、
 completion marker、product reader/status、flat-v1 migration、通常run/resume統合を実装しない。
 
+P2-028AがP2-011Bへsettleするstorage usageはcaptured output payloadを単位とし、
+`artifact_bytes=max(stdout, stderr)`、`run_bytes=stdout+stderr`である。isolated-job state、
+manifest、transaction、current pointer等のrevision構造byteはこの値に含めず、専用revision storeの
+physical artifact/run admissionで別に制限する。
+
 ## P2-010B budget correlation
 
 P2-010Bは現在の`BudgetPolicyV2` schema versionとcanonical SHA-256を

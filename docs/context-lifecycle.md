@@ -144,5 +144,7 @@ context expiryを超えられない。durable isolated-job stateへ保存する�
 だけで、`AgentContext`、canonical payload、provider input、secret値は保存しない。
 
 同じbindingはP2-011B `ExecutionLineageV1`のcontext source/policy/integrityと一致しなければならず、
+assignment ID、role、owner、phase、root/parent attempt、root/parent contextも完全一致させる。
+envelope自身から期待parent/sourceを逆算せず、budget lineageを独立の期待値として検証する。
 staleまたはcross-attempt contextはapprovalやprocess effectより前に拒否する。この接続は
 Codex/Python bridge、provider dispatch、automatic retryを追加しない。

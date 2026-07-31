@@ -296,8 +296,9 @@ approval/context/budget/effect順序を所有する。
 
 依存方向はcoordinator → P2-013B verified approval reader / P2-024A context validator /
 P2-011B durable budget / isolated-job store / Windows backendである。childはsuspendedで生成してJobへ
-割り当て、limitとidentityを再照合し、effect直前approval recheckと`launch_committed` publication後に
-だけresumeする。budget settlementをterminal job snapshotより先に確定する。
+割り当て、limitを再照合してeffect bindingなしの`launch_committed`をpublishする。permit start後に
+approvalを再照合し、durable publicationを挟まずidentity recheckと`ResumeThread`を行い、そのbindingを
+`running`へ固定する。budget settlementをterminal job snapshotより先に確定する。
 
 このlayerは通常`Orchestrator`、CLI、flat-v1、provider、solver、runtime bridgeへ注入しない。
 storage artifactは`isolated_job_state.json`、`stdout.txt`、`stderr.txt`の固定3点で、全revisionが

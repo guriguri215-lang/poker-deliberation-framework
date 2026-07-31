@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sys
 from datetime import timedelta
 from pathlib import Path
 
 import pytest
+
+if sys.platform != "win32":
+    pytest.skip("Windows Job Object integration tests", allow_module_level=True)
 
 from poker_deliberation.approval_models import (
     ApprovalDecisionBatch,
@@ -183,6 +187,84 @@ def test_windows_job_enforces_cpu_memory_and_process_caps(
     assert outcome.evidence.active_processes == 0
     assert outcome.evidence.process_tree_termination_confirmed is True
     assert outcome.evidence.job_limits_requeried is True
+
+
+@pytest.mark.parametrize(
+    ("process_cpu_ms", "job_cpu_ms"),
+    [
+        (100, 3_000),
+        (3_000, 100),
+    ],
+)
+def test_process_and_job_cpu_caps_are_independently_enforced(
+    tmp_path: Path,
+    process_cpu_ms: int,
+    job_cpu_ms: int,
+) -> None:
+    value = request(
+        SyntheticOperation.CPU_SPIN,
+        suffix=f"cpu-{process_cpu_ms}-{job_cpu_ms}",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    outcome = _run_backend(
+        value,
+        policy_for(
+            tmp_path,
+            job_limits=limits(
+                wall_clock_ms=4_000,
+                process_cpu_time_ms=process_cpu_ms,
+                job_cpu_time_ms=job_cpu_ms,
+            ),
+        ),
+    )
+
+    assert outcome.failure_code is JobFailureCode.CPU_LIMIT
+    assert outcome.evidence.active_processes == 0
+    assert (
+        outcome.evidence.process_user_time_100ns >= process_cpu_ms * 9_000
+        or outcome.evidence.job_user_time_100ns >= job_cpu_ms * 9_000
+    )
+
+
+def test_combined_output_limit_wins_when_it_is_the_tighter_boundary(
+    tmp_path: Path,
+) -> None:
+    value = request(
+        SyntheticOperation.STDOUT_FLOOD,
+        suffix="combined-output",
+        arguments=SyntheticArgumentsV1(output_bytes=1_000_000),
+    )
+    outcome = _run_backend(
+        value,
+        policy_for(
+            tmp_path,
+            job_limits=limits(
+                stdout_bytes=8_192,
+                stderr_bytes=8_192,
+                combined_output_bytes=4_096,
+            ),
+        ),
+    )
+
+    assert outcome.failure_code is JobFailureCode.COMBINED_OUTPUT_LIMIT
+    assert len(outcome.stdout) + len(outcome.stderr) == 4_096
+
+
+def test_terminal_observed_at_or_after_deadline_is_not_success(
+    tmp_path: Path,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="deadline-terminal",
+        arguments=SyntheticArgumentsV1(duration_ms=300),
+    )
+    outcome = _run_backend(
+        value,
+        policy_for(tmp_path, job_limits=limits(wall_clock_ms=300)),
+    )
+
+    assert outcome.failure_code is JobFailureCode.WALL_CLOCK_LIMIT
+    assert outcome.evidence.wall_clock_ms >= 300
 
 
 def test_windows_job_terminates_descendant_tree(tmp_path: Path) -> None:

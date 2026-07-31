@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
 
 from poker_deliberation.isolated_jobs.models import (
+    MAX_APPROVED_INPUT_BYTES,
     DirectoryIdentityV1,
     FileIdentityV1,
+    FilesystemPolicyV1,
     IsolatedJobError,
     JobFailureCode,
 )
@@ -139,4 +142,54 @@ def verify_open_file_identity(file_descriptor: int, expected: FileIdentityV1) ->
 def verify_directory_identity(expected: DirectoryIdentityV1) -> None:
     observed = directory_identity(Path(expected.absolute_path))
     if observed != expected:
+        _reject(JobFailureCode.IDENTITY_MISMATCH)
+
+
+def _bounded_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(64 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_APPROVED_INPUT_BYTES:
+                    _reject(JobFailureCode.PATH_CONFINEMENT_FAILED)
+                digest.update(chunk)
+    except OSError:
+        _reject(JobFailureCode.IDENTITY_MISMATCH)
+    return digest.hexdigest()
+
+
+def verify_filesystem_policy(policy: FilesystemPolicyV1) -> None:
+    """Revalidate confinement and identities at each backend admission."""
+
+    verify_directory_identity(policy.workspace_root)
+    approved = policy.approved_input
+    if approved is None:
+        return
+    workspace = canonical_existing_path(
+        Path(policy.workspace_root.absolute_path),
+        directory=True,
+    )
+    candidate = canonical_existing_path(Path(approved.absolute_path), directory=False)
+    try:
+        common = Path(os.path.commonpath((workspace, candidate)))
+    except ValueError:
+        _reject(JobFailureCode.PATH_CONFINEMENT_FAILED)
+    if (
+        os.path.normcase(str(common)) != os.path.normcase(str(workspace))
+        or candidate == workspace
+        or approved.link_count != 1
+        or approved.size_bytes > MAX_APPROVED_INPUT_BYTES
+    ):
+        _reject(JobFailureCode.PATH_CONFINEMENT_FAILED)
+    observed = file_identity(
+        candidate,
+        sha256=_bounded_sha256(candidate),
+        require_single_link=True,
+    )
+    if observed != approved:
         _reject(JobFailureCode.IDENTITY_MISMATCH)

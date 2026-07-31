@@ -382,6 +382,18 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     assert items["RM-020"]["status"] == "planned"
 
 
+def test_historical_relations_do_not_override_current_milestone_status() -> None:
+    items = _by_id()
+    milestones = _milestones(load_roadmap())
+    rendered = render_roadmap_markdown(load_roadmap())
+
+    assert milestones["P2-028A"]["status"] == "in_progress"
+    assert "milestone table is authoritative for later status changes" in str(
+        items["RM-030"]["status_reason"]
+    )
+    assert "Completion-time relations (historical; not current status assertions)" in rendered
+
+
 def test_unknown_projection_fields_fail_closed() -> None:
     top_level = deepcopy(load_roadmap())
     top_level["private_extension"] = {}

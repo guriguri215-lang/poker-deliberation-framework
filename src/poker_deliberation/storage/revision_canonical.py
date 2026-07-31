@@ -1747,6 +1747,25 @@ def build_inventory(
             provenance_bindings=canonicalize_bindings(artifact.provenance_bindings),
         )
         inventories.append(inventory)
+    if isolated_producer:
+        state = cast(
+            DurableIsolatedJobStateV1,
+            parsed["isolated_job_state.json"],
+        )
+        exact = {artifact.logical_name: artifact.exact_bytes for artifact in artifacts}
+        stdout = exact["stdout.txt"]
+        stderr = exact["stderr.txt"]
+        evidence = state.evidence
+        if evidence is None:
+            if stdout or stderr:
+                raise CanonicalStorageError("isolated-job output requires exact process evidence")
+        elif (
+            evidence.stdout_bytes != len(stdout)
+            or evidence.stderr_bytes != len(stderr)
+            or evidence.stdout_sha256 != hashlib.sha256(stdout).hexdigest()
+            or evidence.stderr_sha256 != hashlib.sha256(stderr).hexdigest()
+        ):
+            raise CanonicalStorageError("isolated-job output/evidence binding mismatch")
     result = tuple(inventories)
     _validate_source_graph(result, parsed, run_id=request.run_id)
     return result, provenance_heads(result), parsed

@@ -1,22 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import sys
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+if sys.platform != "win32":
+    pytest.skip("Windows Job Object adversarial tests", allow_module_level=True)
+
 from poker_deliberation.isolated_jobs.canonical import canonical_child_argv
 from poker_deliberation.isolated_jobs.coordinator import qualify_isolated_job_policy
 from poker_deliberation.isolated_jobs.models import (
     FileIdentityV1,
+    FilesystemPolicyV1,
     IsolatedJobError,
     IsolatedJobRequestV1,
     JobFailureCode,
     SecretReferenceV1,
     SyntheticOperation,
 )
-from poker_deliberation.isolated_jobs.paths import _is_reparse
+from poker_deliberation.isolated_jobs.paths import _is_reparse, file_identity
 from poker_deliberation.isolated_jobs.windows_backend import WindowsJobBackend
 from tests.isolated_job_support import limits, policy_for, request
 
@@ -87,6 +93,57 @@ def test_approved_input_must_remain_beneath_workspace(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="beneath"):
         policy_for(workspace, approved_input=outside)
+
+
+def test_direct_or_unvalidated_policy_cannot_escape_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"public fixture\n")
+    baseline = policy_for(workspace)
+    outside_identity = file_identity(
+        outside,
+        sha256=hashlib.sha256(outside.read_bytes()).hexdigest(),
+        require_single_link=True,
+    )
+
+    with pytest.raises(ValidationError, match="beneath"):
+        FilesystemPolicyV1(
+            workspace_root=baseline.filesystem.workspace_root,
+            approved_input=outside_identity,
+            input_handle_required=True,
+        )
+
+    bypassed_filesystem = FilesystemPolicyV1.model_construct(
+        workspace_root=baseline.filesystem.workspace_root,
+        approved_input=outside_identity,
+        input_handle_required=True,
+    )
+    bypassed_policy = baseline.model_copy(
+        update={"filesystem": bypassed_filesystem},
+    )
+    value = request(SyntheticOperation.COPY_HANDLES, suffix="direct-policy-escape")
+    with pytest.raises(IsolatedJobError) as rejected:
+        WindowsJobBackend().prepare(value, bypassed_policy)
+    assert rejected.value.code is JobFailureCode.PATH_CONFINEMENT_FAILED
+
+
+def test_approved_input_has_a_contract_level_size_cap(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "oversized.txt"
+    source.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+
+    with pytest.raises(ValidationError, match="bounded input size"):
+        FilesystemPolicyV1(
+            workspace_root=policy_for(workspace).filesystem.workspace_root,
+            approved_input=file_identity(
+                source,
+                sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+                require_single_link=True,
+            ),
+            input_handle_required=True,
+        )
 
 
 @pytest.mark.parametrize(

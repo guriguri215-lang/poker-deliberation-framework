@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sys
 from datetime import timedelta
 
 import pytest
 from pydantic import ValidationError
+
+if sys.platform != "win32":
+    pytest.skip("Windows-qualified isolated-job contracts", allow_module_level=True)
 
 from poker_deliberation.isolated_jobs.canonical import (
     canonical_child_argv,
@@ -17,11 +21,6 @@ from poker_deliberation.isolated_jobs.models import (
     SyntheticOperation,
 )
 from tests.isolated_job_support import NOW, context_for, lineage_for, policy_for, request
-
-pytestmark = pytest.mark.skipif(
-    __import__("sys").platform != "win32",
-    reason="Windows-qualified isolated-job contracts",
-)
 
 
 def test_request_rejects_unknown_version_field_network_and_argument_shape() -> None:
@@ -75,6 +74,7 @@ def test_closed_argv_has_no_shell_code_module_or_free_text(tmp_path) -> None:
 
 def test_preview_binds_context_budget_identity_and_secret_reference_set(tmp_path) -> None:
     from poker_deliberation.budgets.durable_store import (
+        DurableBudgetError,
         DurableBudgetStore,
         initialize_durable_budget_root,
     )
@@ -171,3 +171,42 @@ def test_preview_binds_context_budget_identity_and_secret_reference_set(tmp_path
         )
     assert outbound["context_integrity_sha256"] == envelope.integrity_sha256
     assert outbound["budget_policy_sha256"] == preview.budget_binding.policy_sha256
+    assert outbound["budget_activation_sha256"] == preview.budget_binding.activation_sha256
+    assert outbound["budget_reservation_sha256"] == preview.budget_binding.reservation_sha256
+    assert "isolation_boundary_id" in outbound
+
+    with pytest.raises(ValueError, match="lineage mismatch"):
+        coordinator.preview(
+            value,
+            policy,
+            context_envelope=envelope,
+            assignment=assignment,
+            budget_lineage=lineage_for(value, envelope).model_copy(
+                update={"assignment_id": "assignment-different"}
+            ),
+            action_expires_at=NOW + timedelta(minutes=30),
+        )
+    with pytest.raises(ValueError, match="parent lineage mismatch"):
+        coordinator.preview(
+            value,
+            policy,
+            context_envelope=envelope,
+            assignment=assignment,
+            budget_lineage=lineage_for(value, envelope).model_copy(
+                update={
+                    "parent_attempt_id": "attempt-parent",
+                    "parent_context_id": "context-parent",
+                }
+            ),
+            action_expires_at=NOW + timedelta(minutes=30),
+        )
+    with pytest.raises(DurableBudgetError):
+        budget.reserve(
+            value.budget_run_id,
+            operation_id="reserve-wrong-preview-binding",
+            permit_id=value.budget_permit_id,
+            reservation=preview.reservation,
+            lineage=lineage_for(value, envelope),
+            expected_policy_sha256="f" * 64,
+            expected_activation_sha256=preview.budget_binding.activation_sha256,
+        )

@@ -781,7 +781,11 @@ def render_roadmap_markdown(document: dict[str, Any] | None = None) -> str:
         if gate["required"]:
             _append_detail_list(lines, "Decision gate rationale", list(gate["rationale"]))
         if item["relations"]:
-            _append_detail_list(lines, "Relations", list(item["relations"]))
+            _append_detail_list(
+                lines,
+                "Completion-time relations (historical; not current status assertions)",
+                list(item["relations"]),
+            )
         lines.append("")
 
     lines.extend(

@@ -246,14 +246,14 @@ distributed filesystem、secure erase は保証しない。
 ## P2-028A isolated-job threat boundary
 
 P2-028AはAMD64 Windows上でbase Pythonと固定repository synthetic helperのfile identity/hashを
-effect前に再検証する。childはsuspendedで生成し、CPU time、committed memory、active process、
+`ResumeThread`直前に再検証する。childはsuspendedで生成し、CPU time、committed memory、active process、
 `KILL_ON_JOB_CLOSE`を設定したJob Objectへ割り当て、exact requery後にだけresumeする。Job CPU
-accountingもcontrollerがpollし、上限到達時は`TerminateJobObject`でtree全体を停止する。stdinはNUL、
+accountingとprocess CPU timeをcontrollerが独立にpollし、上限到達時は`TerminateJobObject`でtree全体を停止する。stdinはNUL、
 stdout/stderrはbounded pipe、追加handleはidentity-boundなworkspace内input一つだけである。
 
 request schemaはshell、任意executable/argv/environment、network要求、raw secret値を受け付けない。
 path component、reserved name、ADS、workspace escape、reparse/symlink、approved inputのhardlink、
-open後identity変更をfail closedにする。approvalは`external_code` action digestとlive authorityへ
+2 MiB超過、open後identity変更をfail closedにする。approvalは`external_code` action digestとlive authorityへ
 effect直前まで拘束し、context、budget、secret-reference setはhash/provenanceだけを保存する。
 
 Job終了、wall/output/cancel超過時はtree全体を停止し、active process 0を再観測する。ただしlocal Job
@@ -264,3 +264,5 @@ reconciliation evidence digestを確認しても`reconciled`は非successのま�
 同権限malicious writer、完全なTOCTOU排除、reduced token/AppContainer、全OS DLL attestation、
 distributed/power-loss durability、writer authenticity、秘密性は非保証である。詳細は
 [`isolated-job-control.md`](isolated-job-control.md)を参照する。
+repository-owned backend同士のprocess creationはinheritable handle存続中に直列化するが、
+backend外の未調整process spawnerまで同期するOS全体の保証ではない。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +10,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
+
+if sys.platform != "win32":
+    pytest.skip("Windows Job Object property tests", allow_module_level=True)
 
 from poker_deliberation.isolated_jobs.canonical import isolated_job_sha256
 from poker_deliberation.isolated_jobs.models import (
@@ -87,6 +91,10 @@ def test_durable_state_machine_allows_only_exact_successors_and_latches_terminal
         context = ContextJobBindingV1(
             context_id=value.context_id,
             attempt_id=value.attempt_id,
+            assignment_id=f"assignment-{value.execution_id}",
+            role="isolated_job",
+            root_attempt_id=value.attempt_id,
+            root_context_id=value.context_id,
             payload_sha256="1" * 64,
             source_sha256="2" * 64,
             policy_sha256="3" * 64,
@@ -128,6 +136,9 @@ def test_durable_state_machine_allows_only_exact_successors_and_latches_terminal
                 kwargs = {
                     "process_id": 123,
                     "process_creation_time_100ns": 456,
+                }
+            elif status is IsolatedJobStatus.RUNNING:
+                kwargs = {
                     "effect_admission_recheck_binding_sha256": "d" * 64,
                 }
             elif status in {

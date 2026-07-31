@@ -1006,15 +1006,32 @@ class DurableBudgetStore:
         permit_id: str,
         reservation: ResourceReservationV1,
         lineage: ExecutionLineageV1,
+        expected_policy_sha256: str | None = None,
+        expected_activation_sha256: str | None = None,
     ) -> DurableMutationResultV1:
         _observed, elapsed = self._observe_monotonic(run_id, operation_id)
         state = self.load(run_id)
+        if (
+            expected_policy_sha256 is not None and state.policy_sha256 != expected_policy_sha256
+        ) or (
+            expected_activation_sha256 is not None
+            and state.activation_sha256 != expected_activation_sha256
+        ):
+            raise _failure(
+                DurableFailureCode.INVALID_INPUT,
+                operation_id=operation_id,
+            )
         request_payload = {
             "kind": OperationKind.RESERVE.value,
             "permit_id": permit_id,
             "reservation": reservation.model_dump(mode="json"),
             "lineage": lineage.model_dump(mode="json"),
         }
+        if expected_policy_sha256 is not None or expected_activation_sha256 is not None:
+            request_payload["expected_budget_binding"] = {
+                "policy_sha256": expected_policy_sha256,
+                "activation_sha256": expected_activation_sha256,
+            }
         request_sha256 = canonical_durable_sha256(request_payload)
         replay = self._existing_operation(
             state,

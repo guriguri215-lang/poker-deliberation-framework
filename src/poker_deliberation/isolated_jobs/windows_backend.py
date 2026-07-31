@@ -42,7 +42,7 @@ from poker_deliberation.isolated_jobs.models import (
     SyntheticOperation,
 )
 from poker_deliberation.isolated_jobs.paths import (
-    verify_directory_identity,
+    verify_filesystem_policy,
     verify_open_file_identity,
 )
 from poker_deliberation.local_data_policy import contains_restricted_secret_shape
@@ -77,6 +77,7 @@ _REQUIRED_LIMIT_FLAGS: Final = (
 _TERMINATION_EXIT_CODE: Final = 0xE0280001
 _POLL_INTERVAL_SECONDS: Final = 0.01
 _POST_TERMINATION_WAIT_MS: Final = 5_000
+_PROCESS_CREATION_LOCK: Final = threading.RLock()
 
 
 class _LARGE_INTEGER(ctypes.Structure):
@@ -202,6 +203,11 @@ def _filetime_value(value: _FILETIME) -> int:
 
 
 def _process_creation_time(handle: int) -> int:
+    creation, _kernel, _user = _process_times(handle)
+    return creation
+
+
+def _process_times(handle: int) -> tuple[int, int, int]:
     creation = _FILETIME()
     exit_time = _FILETIME()
     kernel = _FILETIME()
@@ -214,7 +220,11 @@ def _process_creation_time(handle: int) -> int:
         ctypes.byref(user),
     ):
         raise _last_error()
-    return _filetime_value(creation)
+    return (
+        _filetime_value(creation),
+        _filetime_value(kernel),
+        _filetime_value(user),
+    )
 
 
 def _set_job_limits(job: int, policy: IsolatedJobPolicyV1) -> None:
@@ -291,6 +301,7 @@ class _OutputBudget:
         self.buffers = {"stdout": bytearray(), "stderr": bytearray()}
         self.seen = {"stdout": 0, "stderr": 0}
         self.overflow: JobFailureCode | None = None
+        self.reader_error = False
         self.lock = threading.Lock()
 
     def consume(self, stream: Literal["stdout", "stderr"], chunk: bytes) -> None:
@@ -303,21 +314,31 @@ class _OutputBudget:
             keep = min(len(chunk), stream_remaining, combined_remaining)
             if keep:
                 self.buffers[stream].extend(chunk[:keep])
-            if len(chunk) > stream_remaining and self.overflow is None:
-                self.overflow = (
-                    JobFailureCode.STDOUT_LIMIT
-                    if stream == "stdout"
-                    else JobFailureCode.STDERR_LIMIT
-                )
-            if len(chunk) > combined_remaining and self.overflow is None:
-                self.overflow = JobFailureCode.COMBINED_OUTPUT_LIMIT
+            stream_exceeded = len(chunk) > stream_remaining
+            combined_exceeded = len(chunk) > combined_remaining
+            if self.overflow is None and (stream_exceeded or combined_exceeded):
+                if combined_exceeded and (
+                    not stream_exceeded or combined_remaining <= stream_remaining
+                ):
+                    self.overflow = JobFailureCode.COMBINED_OUTPUT_LIMIT
+                else:
+                    self.overflow = (
+                        JobFailureCode.STDOUT_LIMIT
+                        if stream == "stdout"
+                        else JobFailureCode.STDERR_LIMIT
+                    )
 
-    def snapshot(self) -> tuple[bytes, bytes, JobFailureCode | None]:
+    def record_reader_error(self) -> None:
+        with self.lock:
+            self.reader_error = True
+
+    def snapshot(self) -> tuple[bytes, bytes, JobFailureCode | None, bool]:
         with self.lock:
             return (
                 bytes(self.buffers["stdout"]),
                 bytes(self.buffers["stderr"]),
                 self.overflow,
+                self.reader_error,
             )
 
 
@@ -332,6 +353,7 @@ def _reader(
             try:
                 chunk = os.read(file_descriptor, 65_536)
             except OSError:
+                budget.record_reader_error()
                 break
             if not chunk:
                 break
@@ -382,6 +404,7 @@ class PreparedWindowsJob:
         self.inherited_handle_count = inherited_handle_count
         self._resumed = False
         self._closed = False
+        self._identity_rechecked = False
         self._started_ns: int | None = None
         limits = policy.limits
         self._output = _OutputBudget(
@@ -423,30 +446,39 @@ class PreparedWindowsJob:
     def resume(self) -> None:
         if self._resumed or self._closed:
             raise RuntimeError("isolated job cannot be resumed twice")
-        self._start_readers()
-        self._started_ns = time.monotonic_ns()
-        result = _kernel32.ResumeThread(wintypes.HANDLE(int(self.thread_handle)))
-        if result == 0xFFFFFFFF:
-            raise _last_error()
-        _winapi.CloseHandle(self.thread_handle)
-        self.thread_handle = None
-        self._resumed = True
+        try:
+            verify_execution_identity(self.policy.execution_identity)
+            self._identity_rechecked = True
+            self._start_readers()
+            self._started_ns = time.monotonic_ns()
+            result = _kernel32.ResumeThread(wintypes.HANDLE(int(self.thread_handle)))
+            if result == 0xFFFFFFFF:
+                raise _last_error()
+            _winapi.CloseHandle(self.thread_handle)
+            self.thread_handle = None
+            self._resumed = True
+        except Exception:
+            self.terminate_before_resume()
+            raise
 
     def _terminate_job(self) -> bool:
-        if not _kernel32.TerminateJobObject(
-            wintypes.HANDLE(self.job_handle),
-            _TERMINATION_EXIT_CODE,
-        ):
+        try:
+            if not _kernel32.TerminateJobObject(
+                wintypes.HANDLE(self.job_handle),
+                _TERMINATION_EXIT_CODE,
+            ):
+                return False
+            _kernel32.WaitForSingleObject(
+                wintypes.HANDLE(int(self.process_handle)),
+                _POST_TERMINATION_WAIT_MS,
+            )
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if int(_query_accounting(self.job_handle).BasicInfo.ActiveProcesses) == 0:
+                    return True
+                time.sleep(_POLL_INTERVAL_SECONDS)
+        except Exception:
             return False
-        _kernel32.WaitForSingleObject(
-            wintypes.HANDLE(int(self.process_handle)),
-            _POST_TERMINATION_WAIT_MS,
-        )
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
-            if int(_query_accounting(self.job_handle).BasicInfo.ActiveProcesses) == 0:
-                return True
-            time.sleep(_POLL_INTERVAL_SECONDS)
         return False
 
     def terminate_before_resume(self) -> None:
@@ -466,6 +498,7 @@ class PreparedWindowsJob:
         exit_code: int,
         accounting: _JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION,
         extended: _JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        process_user_time_100ns: int,
     ) -> JobFailureCode | None:
         if exit_code == 0:
             return None
@@ -479,7 +512,8 @@ class PreparedWindowsJob:
         ):
             return JobFailureCode.MEMORY_LIMIT
         if operation is SyntheticOperation.CPU_SPIN and (
-            int(accounting.BasicInfo.TotalUserTime.QuadPart) >= limits.job_cpu_time_ms * 9_000
+            process_user_time_100ns >= limits.process_cpu_time_ms * 9_000
+            or int(accounting.BasicInfo.TotalUserTime.QuadPart) >= limits.job_cpu_time_ms * 9_000
         ):
             return JobFailureCode.CPU_LIMIT
         if (
@@ -500,10 +534,32 @@ class PreparedWindowsJob:
     ) -> WindowsJobOutcome:
         if not self._resumed or self._started_ns is None or self._closed:
             raise RuntimeError("isolated job is not running")
+        try:
+            return self._wait_impl(
+                cancelled=cancelled,
+                on_cancel_requested=on_cancel_requested,
+            )
+        except Exception:
+            return self._effect_unknown_outcome()
+
+    def _wait_impl(
+        self,
+        *,
+        cancelled: Callable[[], bool] | None,
+        on_cancel_requested: Callable[[], None] | None,
+    ) -> WindowsJobOutcome:
+        assert self._started_ns is not None
         stop_reason: JobFailureCode | None = None
         cancelled_value = False
         wall_deadline_ns = self._started_ns + self.policy.limits.wall_clock_ms * 1_000_000
+        finished_ns: int | None = None
         while True:
+            now_ns = time.monotonic_ns()
+            if now_ns >= wall_deadline_ns:
+                stop_reason = JobFailureCode.WALL_CLOCK_LIMIT
+                self._terminate_job()
+                finished_ns = now_ns
+                break
             wait_result = _kernel32.WaitForSingleObject(
                 wintypes.HANDLE(int(self.process_handle)),
                 0,
@@ -511,6 +567,9 @@ class PreparedWindowsJob:
             if wait_result == _WAIT_OBJECT_0:
                 active = int(_query_accounting(self.job_handle).BasicInfo.ActiveProcesses)
                 if active == 0:
+                    finished_ns = time.monotonic_ns()
+                    if finished_ns >= wall_deadline_ns:
+                        stop_reason = JobFailureCode.WALL_CLOCK_LIMIT
                     break
                 child_count = self.request.arguments.child_count
                 if (
@@ -520,15 +579,23 @@ class PreparedWindowsJob:
                 ):
                     stop_reason = JobFailureCode.PROCESS_LIMIT
                     self._terminate_job()
+                    finished_ns = time.monotonic_ns()
                     break
             elif wait_result != _WAIT_TIMEOUT:
                 stop_reason = JobFailureCode.INTERNAL_INVARIANT_ERROR
                 self._terminate_job()
+                finished_ns = time.monotonic_ns()
                 break
-            _stdout, _stderr, overflow = self._output.snapshot()
+            _stdout, _stderr, overflow, reader_error = self._output.snapshot()
+            if reader_error:
+                stop_reason = JobFailureCode.EFFECT_UNKNOWN
+                self._terminate_job()
+                finished_ns = time.monotonic_ns()
+                break
             if overflow is not None:
                 stop_reason = overflow
                 self._terminate_job()
+                finished_ns = time.monotonic_ns()
                 break
             if cancelled is not None and cancelled():
                 try:
@@ -539,21 +606,25 @@ class PreparedWindowsJob:
                 except Exception:
                     stop_reason = JobFailureCode.EFFECT_UNKNOWN
                 self._terminate_job()
+                finished_ns = time.monotonic_ns()
                 break
             accounting_now = _query_accounting(self.job_handle)
+            _creation, _process_kernel_now, process_user_now = _process_times(
+                int(self.process_handle)
+            )
             if (
                 int(accounting_now.BasicInfo.TotalUserTime.QuadPart)
                 >= self.policy.limits.job_cpu_time_ms * 10_000
+                or process_user_now >= self.policy.limits.process_cpu_time_ms * 10_000
             ):
                 stop_reason = JobFailureCode.CPU_LIMIT
                 self._terminate_job()
-                break
-            if time.monotonic_ns() >= wall_deadline_ns:
-                stop_reason = JobFailureCode.WALL_CLOCK_LIMIT
-                self._terminate_job()
+                finished_ns = time.monotonic_ns()
                 break
             time.sleep(_POLL_INTERVAL_SECONDS)
 
+        if finished_ns is None:
+            finished_ns = time.monotonic_ns()
         _kernel32.WaitForSingleObject(
             wintypes.HANDLE(int(self.process_handle)),
             _POST_TERMINATION_WAIT_MS,
@@ -561,18 +632,27 @@ class PreparedWindowsJob:
         if self._threads is not None:
             for thread in self._threads:
                 thread.join(timeout=5)
-        stdout, stderr, overflow = self._output.snapshot()
+        stdout, stderr, overflow, reader_error = self._output.snapshot()
         if overflow is not None:
             stop_reason = overflow
+        if reader_error:
+            stop_reason = JobFailureCode.EFFECT_UNKNOWN
         exit_code = int(_winapi.GetExitCodeProcess(self.process_handle))
         accounting = _query_accounting(self.job_handle)
         extended = _query_extended(self.job_handle)
+        _creation, process_kernel_time, process_user_time = _process_times(int(self.process_handle))
         active_processes = int(accounting.BasicInfo.ActiveProcesses)
         if stop_reason is None:
-            stop_reason = self._infer_exit_failure(exit_code, accounting, extended)
-        wall_clock_ms = max(0, (time.monotonic_ns() - self._started_ns) // 1_000_000)
+            stop_reason = self._infer_exit_failure(
+                exit_code,
+                accounting,
+                extended,
+                process_user_time,
+            )
+        wall_clock_ms = max(0, (finished_ns - self._started_ns) // 1_000_000)
         output_complete = (
             overflow is None
+            and not reader_error
             and self._stdout_done.is_set()
             and self._stderr_done.is_set()
             and active_processes == 0
@@ -585,6 +665,8 @@ class PreparedWindowsJob:
             wall_clock_ms=wall_clock_ms,
             job_user_time_100ns=int(accounting.BasicInfo.TotalUserTime.QuadPart),
             job_kernel_time_100ns=int(accounting.BasicInfo.TotalKernelTime.QuadPart),
+            process_user_time_100ns=process_user_time,
+            process_kernel_time_100ns=process_kernel_time,
             peak_process_memory_bytes=int(extended.PeakProcessMemoryUsed),
             peak_job_memory_bytes=int(extended.PeakJobMemoryUsed),
             total_processes=int(accounting.BasicInfo.TotalProcesses),
@@ -597,7 +679,7 @@ class PreparedWindowsJob:
             inherited_handle_count=self.inherited_handle_count,
             process_tree_termination_confirmed=active_processes == 0,
             job_limits_requeried=True,
-            executable_identity_rechecked=True,
+            executable_identity_rechecked=self._identity_rechecked,
             output_complete=output_complete,
         )
         self.close()
@@ -609,12 +691,82 @@ class PreparedWindowsJob:
             cancelled=cancelled_value,
         )
 
+    def _effect_unknown_outcome(self) -> WindowsJobOutcome:
+        assert self._started_ns is not None
+        terminated = self._terminate_job()
+        if self._threads is not None:
+            for thread in self._threads:
+                thread.join(timeout=5)
+        stdout, stderr, _overflow, _reader_error = self._output.snapshot()
+        accounting = _JOBOBJECT_BASIC_AND_IO_ACCOUNTING_INFORMATION()
+        extended = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        with suppress(Exception):
+            accounting = _query_accounting(self.job_handle)
+        with suppress(Exception):
+            extended = _query_extended(self.job_handle)
+        process_kernel_time = 0
+        process_user_time = 0
+        with suppress(Exception):
+            _creation, process_kernel_time, process_user_time = _process_times(
+                int(self.process_handle)
+            )
+        exit_code = _TERMINATION_EXIT_CODE
+        with suppress(Exception):
+            exit_code = int(_winapi.GetExitCodeProcess(self.process_handle))
+        observed_active = int(accounting.BasicInfo.ActiveProcesses)
+        active_processes = 0 if terminated else max(1, observed_active)
+        total_processes = max(
+            1,
+            active_processes,
+            int(accounting.BasicInfo.TotalProcesses),
+        )
+        evidence = JobEvidenceV1(
+            process_id=self.process_id,
+            process_creation_time_100ns=self.creation_time_100ns,
+            exit_code=exit_code,
+            termination_reason=JobFailureCode.EFFECT_UNKNOWN.value,
+            wall_clock_ms=max(
+                0,
+                (time.monotonic_ns() - self._started_ns) // 1_000_000,
+            ),
+            job_user_time_100ns=int(accounting.BasicInfo.TotalUserTime.QuadPart),
+            job_kernel_time_100ns=int(accounting.BasicInfo.TotalKernelTime.QuadPart),
+            process_user_time_100ns=process_user_time,
+            process_kernel_time_100ns=process_kernel_time,
+            peak_process_memory_bytes=int(extended.PeakProcessMemoryUsed),
+            peak_job_memory_bytes=int(extended.PeakJobMemoryUsed),
+            total_processes=total_processes,
+            active_processes=active_processes,
+            stdout_bytes=len(stdout),
+            stderr_bytes=len(stderr),
+            stdout_sha256=hashlib.sha256(stdout).hexdigest(),
+            stderr_sha256=hashlib.sha256(stderr).hexdigest(),
+            command_line_sha256=command_line_sha256(self.command_line),
+            inherited_handle_count=self.inherited_handle_count,
+            process_tree_termination_confirmed=active_processes == 0,
+            job_limits_requeried=True,
+            executable_identity_rechecked=self._identity_rechecked,
+            output_complete=False,
+        )
+        self.close()
+        return WindowsJobOutcome(
+            evidence=evidence,
+            stdout=stdout,
+            stderr=stderr,
+            failure_code=JobFailureCode.EFFECT_UNKNOWN,
+            cancelled=False,
+        )
+
     def close(self) -> None:
         if self._closed:
             return
         if self.thread_handle is not None:
             _winapi.CloseHandle(self.thread_handle)
             self.thread_handle = None
+        if self._threads is None:
+            for file_descriptor in (self.stdout_read_fd, self.stderr_read_fd):
+                with suppress(OSError):
+                    os.close(file_descriptor)
         if self.process_handle is not None:
             _winapi.CloseHandle(self.process_handle)
             self.process_handle = None
@@ -633,7 +785,11 @@ class PreparedWindowsJob:
 
 
 class WindowsJobBackend:
-    """Closed Windows Job Object launcher for the repository helper."""
+    """Closed Windows Job Object launcher for the repository helper.
+
+    Repository-owned launches share one creation lock while inheritable handles
+    exist. Uncoordinated external process creation remains outside this boundary.
+    """
 
     boundary_id = "windows-job-object-repository-synthetic-v1"
 
@@ -642,6 +798,7 @@ class WindowsJobBackend:
         request: IsolatedJobRequestV1,
         policy: IsolatedJobPolicyV1,
     ) -> int | None:
+        verify_filesystem_policy(policy.filesystem)
         approved = policy.filesystem.approved_input
         if request.operation is SyntheticOperation.COPY_HANDLES:
             if approved is None:
@@ -684,8 +841,16 @@ class WindowsJobBackend:
     ) -> PreparedWindowsJob:
         if sys.platform != "win32":
             raise OSError("Windows Job Object backend is unavailable")
+        with _PROCESS_CREATION_LOCK:
+            return self._prepare_locked(request, policy)
+
+    def _prepare_locked(
+        self,
+        request: IsolatedJobRequestV1,
+        policy: IsolatedJobPolicyV1,
+    ) -> PreparedWindowsJob:
         verify_execution_identity(policy.execution_identity)
-        verify_directory_identity(policy.filesystem.workspace_root)
+        verify_filesystem_policy(policy.filesystem)
         job = int(_kernel32.CreateJobObjectW(None, None) or 0)
         if not job:
             raise _last_error()

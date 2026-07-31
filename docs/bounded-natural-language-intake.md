@@ -54,8 +54,8 @@ read-only replayになります。
   preflop/postflopのactor順、street完了、terminal foldも検証する。
 - 任意の検算値として、判断直前pot、call額、call後の争点potを各1回だけ記せる。記した値が
   ledger再計算と違えば拒否する。
-- 最後に、同一street上で相手のbet/raiseと直後のHero foldが隣接する、単一の
-  `コールまたはフォールド` focal decisionを指定する。
+- 最後に、同一street上で相手のbet/raiseと直後のHero callまたはfoldが隣接する、単一の
+  `コールまたはフォールド` focal decisionを指定する。hand全体はterminal foldまで記録する。
 
 具体的な受理例は
 [`tests/fixtures/bounded_natural_language/v1/valid-ja.txt`](../tests/fixtures/bounded_natural_language/v1/valid-ja.txt)

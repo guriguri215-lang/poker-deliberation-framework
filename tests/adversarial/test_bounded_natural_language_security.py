@@ -233,3 +233,32 @@ def test_type_tampered_confirmation_authority_has_stable_sanitized_error() -> No
         )
     assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY
     assert str(error.value) == "BNL_E_CONFIRMATION_AUTHORITY"
+
+
+def test_unknown_field_confirmation_authority_has_stable_sanitized_error() -> None:
+    prepared = ready_bounded_preparation(intake_id="intake-adversarial-authority-extra")
+    assert prepared.source is not None and prepared.candidate is not None
+    projection = prepared.candidate.projection
+    secret = "sk-" + "c" * 26
+    authority = BoundedConfirmationAuthorityV1(
+        authority_id="local-adversarial-user",
+        authority_kind="local_user",
+        authentication="self_asserted",
+    ).model_copy(update={"future": secret})
+
+    with pytest.raises(BoundedNaturalLanguageError) as error:
+        create_bounded_confirmation(
+            prepared.candidate,
+            run_id="run-adversarial-authority-extra",
+            confirmation_id="confirmation-adversarial-authority-extra",
+            idempotency_key="idempotency-adversarial-authority-extra",
+            authority=authority,
+            expected_source_sha256=prepared.source.content_sha256,
+            expected_candidate_sha256=prepared.candidate.candidate_sha256,
+            expected_source_bindings_sha256=projection.source_bindings_sha256,
+            expected_focal_sha256=projection.focal_decision.focal_sha256,
+            expected_tool_plan_sha256=projection.tool_plan.tool_plan_sha256,
+            expected_extractor_sha256=projection.extractor_sha256,
+        )
+    assert error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY
+    assert secret not in str(error.value)

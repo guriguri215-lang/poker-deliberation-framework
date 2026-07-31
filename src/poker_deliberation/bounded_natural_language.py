@@ -207,6 +207,21 @@ def _validate_control_id(value: object, field_path: str) -> None:
         _fail(BoundedNaturalLanguageDiagnosticCode.CONTROL_SECRET, field_path)
 
 
+def _has_exact_declared_model_shape(value: object) -> bool:
+    """Reject model-copy extras recursively without inspecting unknown values."""
+
+    if isinstance(value, BaseModel):
+        declared = set(type(value).model_fields)
+        if set(value.__dict__) != declared or value.__pydantic_extra__:
+            return False
+        return all(_has_exact_declared_model_shape(value.__dict__[field]) for field in declared)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return all(_has_exact_declared_model_shape(item) for item in value)
+    if isinstance(value, dict):
+        return all(_has_exact_declared_model_shape(item) for item in value.values())
+    return True
+
+
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
@@ -1331,6 +1346,10 @@ def prepare_bounded_natural_language_intake(
 
 
 def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedIntakeCandidateV1:
+    if type(candidate) is not BoundedIntakeCandidateV1 or not _has_exact_declared_model_shape(
+        candidate
+    ):
+        _fail(BoundedNaturalLanguageDiagnosticCode.CONFLICT, "candidate")
     try:
         payload = canonical_json_bytes(candidate)
         if len(payload) > MAX_BOUNDED_NL_ARTIFACT_BYTES:
@@ -1379,6 +1398,13 @@ def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedInta
 def _strict_bounded_confirmation_authority(
     authority: BoundedConfirmationAuthorityV1,
 ) -> BoundedConfirmationAuthorityV1:
+    if type(authority) is not BoundedConfirmationAuthorityV1 or not _has_exact_declared_model_shape(
+        authority
+    ):
+        _fail(
+            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_AUTHORITY,
+            "confirmation.authority",
+        )
     try:
         authority_id = authority.authority_id
         authority_kind = authority.authority_kind
@@ -1572,6 +1598,10 @@ class BoundedNaturalLanguageAdmission:
 def _strict_confirmation(
     confirmation: BoundedIntakeConfirmationV1,
 ) -> BoundedIntakeConfirmationV1:
+    if type(confirmation) is not BoundedIntakeConfirmationV1 or not _has_exact_declared_model_shape(
+        confirmation
+    ):
+        _fail(BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "confirmation")
     try:
         payload = canonical_json_bytes(confirmation)
         if len(payload) > MAX_BOUNDED_NL_ARTIFACT_BYTES:

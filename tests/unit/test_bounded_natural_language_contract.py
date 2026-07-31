@@ -372,6 +372,13 @@ def test_candidate_hash_tamper_and_unknown_fields_are_rejected() -> None:
     with pytest.raises(ValidationError):
         BoundedIntakeCandidateV1.model_validate(payload)
 
+    secret = "sk-" + "d" * 26
+    copied_unknown = prepared.candidate.model_copy(update={"future": secret})
+    with pytest.raises(BoundedNaturalLanguageError) as copied_error:
+        verify_bounded_candidate(copied_unknown)
+    assert copied_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFLICT
+    assert secret not in str(copied_error.value)
+
 
 def test_stale_confirmation_and_cross_run_binding_are_rejected() -> None:
     prepared = ready_bounded_preparation()
@@ -387,3 +394,14 @@ def test_stale_confirmation_and_cross_run_binding_are_rejected() -> None:
     with pytest.raises(BoundedNaturalLanguageError) as replay_error:
         admit_bounded_natural_language_review(SOURCE_BYTES, prepared.candidate, forged)
     assert replay_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
+
+    secret = "sk-" + "e" * 26
+    copied_unknown = current.model_copy(update={"future": secret})
+    with pytest.raises(BoundedNaturalLanguageError) as copied_error:
+        admit_bounded_natural_language_review(
+            SOURCE_BYTES,
+            prepared.candidate,
+            copied_unknown,
+        )
+    assert copied_error.value.code is BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING
+    assert secret not in str(copied_error.value)

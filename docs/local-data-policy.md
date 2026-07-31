@@ -108,6 +108,7 @@ run payloadとして `internal` 以上に分類される。source本文は同art
 exact source byte length/SHA-256、parser identity/version、sanitized diagnosticと、
 成功時のcanonical normalized-hand length/SHA-256だけを保存する。structured JSON入力と
 provenanceを持たないlegacy copyでは、このartifactを新規作成しない。
+
 `retention_started_at`はexact `CompletionMarkerV2.published_at`、verification basisは
 `verified_terminal`である。provider contextのuse-expiryやfilesystem mtimeをretention anchorへ
 流用しない。
@@ -116,3 +117,15 @@ incomplete、corrupt、orphan、path/lineage/encryption mismatchはpure
 `quarantine_candidate`/manual-review evaluationへ写像できるが、P2-012Bはscan、move、delete、
 quarantine、encryption、receipt、tombstone、secure eraseを行わない。flat-v1とcopy migrationは
 `legacy_unverified`かつprotected/manual reviewのままである。
+
+## P2-028A isolated-job artifacts
+
+P2-028A専用revisionは`isolated_job_state.json`、`stdout.txt`、`stderr.txt`の固定3 artifactだけを
+full snapshotとしてpublishする。全て`internal`、source-inheritance、restricted-secret clean、
+P2-024A context binding、P2-011B budget-policy bindingを要求する。unknown logical name、artifact
+欠落、schema/origin/serialization違い、秘密形状、UTF-8不正、provenance不一致はpublication/read前に
+fail closedとなる。
+
+これはP2-027B cleanup候補の自動発見やdeleteを追加しない。isolated-job rootのretention、
+quarantine、secure erase、broad cleanupは未実装であり、P2-028A coordinatorもcleanup effectを
+起動しない。

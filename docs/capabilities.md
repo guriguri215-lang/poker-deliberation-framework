@@ -95,3 +95,13 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 - **UNKNOWN**: coverage thresholdは人間承認値がないため、現在のbaselineでは設定しない。
 
 公開判断は[公開前チェックリスト](public-release-checklist.md)を参照してください。
+
+## P2-028A Windows限定capability
+
+| capability ID | 状態 | 実行上の意味 |
+|---|---|---|
+| `repository_synthetic_isolated_job_control` | **implemented** | Windows Job Objectで、固定repository synthetic helperだけをapproval/context/budget/identityに拘束し、hard stop、resource/output cap、durable cancellation/reconciliationを提供する。汎用process sandboxではない。 |
+
+`process_sandbox`は引き続き**unavailable**である。通常tool、任意外部コード、provider、solver、
+remote process、network isolationへこの限定capabilityを拡張しない。詳細は
+[隔離ジョブ制御契約](isolated-job-control.md)を参照する。

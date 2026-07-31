@@ -1,0 +1,162 @@
+# 隔離ジョブ制御契約（P2-028A）
+
+## 状態と対象
+
+- **FACT**: P2-028AはWindows上のrepository-owned synthetic helperだけを対象とする入口スライスである。
+- **FACT**: `repository_synthetic_isolated_job_control`は`implemented`である。
+- **FACT**: 汎用`process_sandbox`、`external_solver`、`codex_python_runtime_bridge`は`unavailable`、
+  `openai_agents_outbound`は`disabled`のままである。
+- **FACT**: RM-028とP2-028Aは`in_progress`である。任意外部コード、実provider/solver、
+  remote cancellation、OS強制network isolationを満たしていないため`completed`ではない。
+- **ASSUMPTION**: backendはAMD64版Windowsと、実行時にidentityを取得できるbase CPythonを前提とする。
+- **UNKNOWN**: 今回のローカル行以外のWindows/Python組合せ、remote CI、異なるOS設定での結果。
+
+このAPIは通常`Orchestrator`、CLI、provider、solver、Codex/Python bridgeへ接続しない。shell、
+自由なexecutable、自由なargv、script/module指定、環境変数、network要求を受け付けない。
+
+## 実証する保証
+
+| 項目 | P2-028Aの保証 |
+|---|---|
+| 起動対象 | hash・file identityを再検証したbase Pythonと固定`synthetic_child.py`だけ |
+| argv | `-I -S -B -u -X utf8`とclosed operation enum／bounded整数だけ |
+| process tree | `PROC_THREAD_ATTRIBUTE_JOB_LIST`により生成時からWindows Job Objectへ所属するsuspended childだけを作り、`KILL_ON_JOB_CLOSE`と`TerminateJobObject`を使用 |
+| resource | process/job CPU time、process/job committed memory、active process数をJob Objectへ設定してexact requery。CPUはprocess timeとJob accountingを独立にpollし、どちらかの上限到達時にJob全体を停止 |
+| wall/output | controller wall clockとstdout／stderr／combined byte capの超過時にJob全体を停止 |
+| handles | 同じ`STARTUPINFOEX`へNUL stdin、stdout pipe、stderr pipe、任意の承認済みinput handle一つだけの`HANDLE_LIST`と単一Jobの`JOB_LIST`を設定。repository内の同backend起動はinheritable handleの存続中に直列化 |
+| filesystem | 固定working directoryはidentity-bound。任意write surfaceはなく、inputはworkspace配下・単一hardlink・最大2 MiBの単一read handleだけ |
+| link/path | absolute Windows path、component、reparse/symlink、hardlink、ADS、reserved name、escapeをfail closed |
+| secrets | requestは参照IDとdigestだけ。秘密形状、raw secret値、raw reconciliation evidenceを拒否 |
+| durable state | immutable full snapshot、current CAS、hash lineage、固定3 artifact、typed transitionを検証 |
+
+次は保証しない。
+
+- OSレベルのnetwork default-denyまたはdestination allowlist。requestでnetworkを求めた時点で拒否する。
+- 任意外部コード、provider、solver、package、container、WSLの隔離。
+- reduced token、AppContainer、別ユーザー、ACL boundary、同権限malicious writerからの隔離。
+- remote process、remote billing、provider課金、remote cancellationの停止証拠。
+- interpreterがloadし得る全OS DLLの完全な推移的attestation。
+- distributed filesystem、power-loss durability、exactly-once、writer authenticity、秘密性。
+- backend外で同時に行われる未調整のprocess creationに対するhandle inheritanceの完全排除。
+- 最終identity照合から`ResumeThread`までを一つのOS syscallとして原子的にする保証。
+
+## Versioned contract
+
+`poker_deliberation.isolated_jobs.models`はstrict、frozen、unknown-field拒否のversion
+`1.0.0` contractを持つ。
+
+- `IsolatedJobRequestV1`: run/execution/attempt/context/budget lineage、closed operation、
+  bounded arguments、secret reference metadata。
+- `IsolatedJobPolicyV1`: backend、Job Object limits、execution identity、filesystem/handle policy。
+- `ExecutionIdentityV1`: interpreter、Python DLL、encoding files、synthetic helper、Python version、
+  architectureと全体digest。helperは標準libraryの非frozen importを3つのencoding fileだけに
+  制限し、module-inventory実体試験でidentity集合との対応を確認する。
+- `JobEvidenceV1`: process identity、exit/termination、wall/CPU/memory/process/output accounting、
+  command-line digest、handle数、tree停止・limit再照合・identity再照合。
+- `DurableIsolatedJobStateV1`: request/policy/action/approval/context/budget binding、generation、
+  previous hash、effect state、evidence、event chain。
+
+canonical bytesは既存storage canonical JSONを再利用し、SHA-256はcorruptionとcorrelationだけを
+検出する。署名、writer authenticity、秘密性は主張しない。
+
+## Admissionとeffect境界
+
+実行順序は次の通りである。
+
+1. request、policy、P2-024A `ContextEnvelope`、P2-011B lineageを検証する。
+2. exact request/policy/context/budget/secret-reference digestを持つ
+   `CanonicalActionPlanV2(action_category="external_code")`を構築する。
+3. P2-012B terminal readerでP2-013B approval chainを読み、live actor/scope/expiry/revocationを
+   effectなしで再検証する。
+4. previewで固定したbudget policy/activation digestをreserve時にもCAS相関し、P2-011B permitを
+   reserveして`prepared` snapshotを専用revision rootへpublishする。
+5. 各callerがresource取得前に他callerと共有しないpreparation lease objectを保持し、非daemon
+   preparation workerが
+   `HANDLE_LIST`と`JOB_LIST`を同じ`CreateProcessW`へ渡して、生成時からJob所属のsuspended childを
+   作る。coordinatorはleaseを全実行範囲の`finally`で回収する。直接backend qualification用の
+   `prepare()`はresourceを取得しないcontext manager factoryであり、context entry内のhandoffと
+   exit cleanupを強制する。limitとidentityを再照合する。
+6. process identityだけを持つ`launch_committed`をpublishする。この状態はeffect admissionを主張しない。
+7. suspended childのexecutable identityを再検証してからapproval current／live authorityを再検証し、
+   permitをstartする。backendはreaderを開始した後にidentityをもう一度再検証し、続けてclockと
+   recheck bindingの`valid_until`を比較してから`ResumeThread`を呼ぶ。そのbindingを
+   `running`へ一度だけ固定する。
+8. outcomeをbudgetへsettleしてからterminal job snapshotとbounded outputをpublishする。
+
+approval、context、budget、identity、path、handleの不一致は起動前に拒否する。同一executionの並行
+実行はrevision authorityにより一つだけがeffectへ進み、他方は`run_locked`となる。terminal exact
+replayは保存済みresultを返し、子を再起動しない。automatic retryは常に禁止する。
+
+## Durable stateとrecovery
+
+状態は次の意味を持つ。
+
+```text
+prepared
+  ├─ launch_committed ─ running ─ completed
+  │                         ├─ failed
+  │                         ├─ cancel_requested ─ cancelled
+  │                         └─ effect_unknown
+  ├─ failed
+  └─ effect_unknown ─ reconciled
+```
+
+`completed`はexit code 0、active process 0、完全なoutput evidence、成功settlementを全て要求する。
+`cancelled`はJob全体停止、active process 0、cancellation acknowledgement、cancelled settlementを
+要求する。backend outcomeにかかわらずcoordinatorもactive process 0とtree停止証拠を独立に要求し、
+未確認ならworker-liveの`effect_unknown`としてpermitを開いたままにする。`effect_unknown`は
+success、failed、retryへ変換しない。再起動後は保存済みPIDとcreation
+timeを照合し、同じlive processまたは照合不能なら自動回復せず`run_locked`に停止する。PIDが再利用
+されcreation timeが異なる場合は、記録processが不在である証拠として扱い、無関係なsuccessor processへ
+触れずにprocess不在回復へ進む。process不在を確認した回復では、`requested`/`unconfirmed`
+cancellationをworker非liveの
+`effect_unknown`へ閉じ、exactな`acknowledged` evidenceがあれば`cancelled`まで冪等に完遂して、
+対応するstarted permitをterminal settleする。ACK/CONFIRM publication faultも同じoperation IDで
+再確認し、active permitを残したままreconciliationへ進めない。job自体は保守的に
+`effect_unknown`へlatchする。人間がopaque reference IDと
+evidence digestを与え、process不在と対応permitのterminal settlementを再確認した場合だけ
+`reconciled`へ進む。budget rootが読めない、corrupt、またはpermitがactiveなら拒否し、これは
+常に非successである。
+
+各revisionは`isolated_job_state.json`、UTF-8 `stdout.txt`、`stderr.txt`のfull snapshotを持つ。
+3 artifactはそれぞれexactly oneのlocal-data、context、budget-policy provenanceを持ち、state内の
+context/budget bindingと完全一致しなければならない。
+partial write、corrupt current/payload、stale CAS、cross-execution replay、transition lineageの改変は
+fail closedとなる。`current`置換後のstorage errorは、同じrevision、state、stdout、stderrを
+verified historyから完全一致で再読できた場合だけcommit済みとして扱う。
+
+approval拒否またはkernel-boundary expiryが`ResumeThread`前に確定した場合はno-effectの`failed`
+または`released_no_effect`として閉じる。ただしactive process 0、tree停止、limit/identity再照合、
+complete output evidenceが全て揃う場合だけで、一つでも欠ければ`effect_unknown`かつstarted permit
+維持に留める。effect admission後または
+その成否が不明な経路は、成功outputが未取得でもattempt 1、approved input
+bytes、concurrency 1をactual usageに記録する。保存済みevidence/outputがあるrestart closureでは既知の
+output usageも再構成する。
+
+job rootとbudget rootはdistributed transactionではない。terminal job snapshotより先にbudgetを
+settleし、terminal publicationが不確実ならbudget settlementが`succeeded`でもjobを
+`effect_unknown`にする。budget settlement単独はjob success authorityではなく、自動retryを許可しない。
+P2-011Bの`artifact_bytes`はcaptured stdout/stderrの大きい方、`run_bytes`は両streamの合計である。
+revision control/manifest/stateの物理byteはこのusage単位に含めず、revision store固有のartifact/run
+hard capで別にadmitする。
+
+## テスト境界
+
+repository testは次を実Windows processで検証する。
+
+- normal exit、closed stdin、module inventory、明示input handle。
+- wall-clock、CPU、memory、process count、stdout、stderr、combined output cap。
+- descendant tree termination、cancel race、同一execution並行起動。
+- preparation worker、caller固有lease、direct context entry、resume、running publication、wait中の
+  controller abortを
+  含む`BaseException`後のprocess tree cleanup。
+- non-daemon preparation workerが固定したtrusted `DeleteProcThreadAttributeList` entrypointを
+  一度だけ呼び、呼出し前後のfault checkpointで中断してもattribute list、child、process/thread
+  handleを回収する。
+- real approval/context/budget/storageのvertical sliceとterminal exact replay。
+- cancel request/ack/confirm各publication faultとprocess不在後のpermit closure。
+- restart/effect-unknown/reconciliation、partial publication、payload tamper。
+- workspace escape、hardlink、secret形状、CRLF/BOM、identity改変、argv/env/shell field注入。
+- strict contract canonicalizationとproperty-based durable transition。
+
+mockだけでhard-stopやresource isolationを実装済みとは判定しない。

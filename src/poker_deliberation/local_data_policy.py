@@ -62,6 +62,12 @@ _TOOL_RESULT_ARTIFACT = re.compile(
 Clock = Callable[[], datetime]
 
 
+def contains_restricted_secret_shape(value: str) -> bool:
+    """Return whether bounded control or payload text matches a known secret shape."""
+
+    return _SECRET_METADATA.search(value) is not None
+
+
 class SubjectKind(StrEnum):
     ATTEMPT_CONTEXT = "attempt_context"
     RUN_PAYLOAD = "run_payload"
@@ -928,6 +934,8 @@ _FIXED_RUN_PAYLOAD_ARTIFACTS = frozenset(
         "assumptions.json",
         "evidence.jsonl",
         "approvals.json",
+        "stdout.txt",
+        "stderr.txt",
     }
 )
 _FIXED_RUN_AUDIT_ARTIFACTS = frozenset(
@@ -937,6 +945,7 @@ _FIXED_RUN_AUDIT_ARTIFACTS = frozenset(
         "assignments.json",
         "agent_execution_records.json",
         "budget_state.json",
+        "isolated_job_state.json",
         "security_events.json",
         "disputes.json",
     }

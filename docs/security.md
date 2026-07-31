@@ -242,3 +242,42 @@ control artifact は bounded identifiers と purpose-separated SHA-256 binding �
 credential、approval reason、provider input、traceback を保存しない。ただし同権限の malicious
 writer、完全な syscall 間 TOCTOU 排除、ACL/signature/HMAC、power-loss durability、
 distributed filesystem、secure erase は保証しない。
+
+## P2-028A isolated-job threat boundary
+
+P2-028AはAMD64 Windows上でbase Pythonと固定repository synthetic helperのfile identity/hashを
+effect-admission approval再検証の直前に再検証し、`ResumeThread`直前にはapprovalの
+`valid_until`をlive clockで再確認する。各callerがresource取得前に保持する非共有preparation lease
+objectと非daemon workerを
+使い、明示`HANDLE_LIST`と`JOB_LIST`を一つの`CreateProcessW`へ渡すため、childは生成時からCPU time、
+committed memory、active process、`KILL_ON_JOB_CLOSE`を設定したJob Objectへ所属するsuspended
+processである。coordinatorは自身のlease objectだけを全実行範囲の`finally`で回収し、duplicate callerが
+先行Jobを停止できない。direct backend qualificationはresource-free `prepare()` factoryのcontext
+entry/exitに限定する。exact requery後にreaderを開始し、identityとexpiryを最後に再確認してからだけ
+resumeする。Job CPU
+accountingとprocess CPU timeをcontrollerが独立にpollし、上限到達時は`TerminateJobObject`でtree全体を停止する。stdinはNUL、
+stdout/stderrはbounded pipe、追加handleはidentity-boundなworkspace内input一つだけである。
+
+request schemaはshell、任意executable/argv/environment、network要求、raw secret値を受け付けない。
+path component、reserved name、ADS、workspace escape、reparse/symlink、approved inputのhardlink、
+2 MiB超過、open後identity変更をfail closedにする。approvalは`external_code` action digestとlive authorityへ
+effect直前まで拘束し、context、budget、secret-reference setはhash/provenanceだけを保存する。
+
+Job終了、wall/output/cancel超過時とpreparation worker／context entry／resume／running publication／
+waitのcontroller abort時はtree全体を停止し、active process 0を再観測する。coordinatorもterminal
+settlement前にtree停止証拠を独立に検証し、未確認ならworker-liveの`effect_unknown`としてpermitを
+閉じない。exit code 0でもprocess/job CPU evidenceがhard cap以上なら
+`cpu_limit`であり、successにしない。ただしlocal Job
+terminationはremote provider、remote billing、remote cancellation、network isolationの証拠ではない。
+`ResumeThread`前に確定したapproval expiryまたはidentity mismatchはno-effectの`failed`として閉じ、
+effect有無が不明な経路と区別する。ただしtree停止、limit/identity、complete output evidenceの
+いずれかが欠ける場合はFAILEDへ確定しない。最終identity照合と`ResumeThread`は連続するが、一つの
+OS syscallとして原子的ではない。
+`effect_unknown`はsuccess/failed/retryへ変換せず、保存済みPID/creation time不在と別のopaque
+reconciliation evidence digestを確認しても`reconciled`は非successのままである。
+
+同権限malicious writer、完全なTOCTOU排除、reduced token/AppContainer、全OS DLL attestation、
+distributed/power-loss durability、writer authenticity、秘密性は非保証である。詳細は
+[`isolated-job-control.md`](isolated-job-control.md)を参照する。
+repository-owned backend同士のprocess creationはinheritable handle存続中に直列化するが、
+backend外の未調整process spawnerまで同期するOS全体の保証ではない。

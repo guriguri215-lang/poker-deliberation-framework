@@ -84,7 +84,15 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "process_sandbox",
         "unavailable",
-        "Local tools have structural caps but no OS-level CPU or memory sandbox.",
+        "No general sandbox exists for ordinary tools, arbitrary external code, providers, "
+        "solvers, or network isolation.",
+    ),
+    Capability(
+        "repository_synthetic_isolated_job_control",
+        "implemented",
+        "A Windows Job Object backend runs only the fixed repository synthetic helper with "
+        "approval, context, budget, identity, handle, resource, durable-state, cancellation, "
+        "and reconciliation controls; it is not a general process sandbox.",
     ),
     Capability(
         "parallel_deliberation_and_tool_retry",

@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `9.0.0`
-- source SHA-256: `e147daa190a053223afe7860a1f503ce67725187fb604fea31153117caa5b570`
+- source SHA-256: `4b251f6446e993e35dc99b1a7ccc679efc4073d0c3de9c40c6d4d8a02c2c4c9f`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -43,7 +43,7 @@
 | `P2-013A` | `RM-013` | `completed` | `P2-012B` | Approval actor, authority, action digest, request/decision idempotency, and CAS transaction. | Strict approval authority, action binding, decision idempotency, CAS publication, and bounded failure audit are implemented. |
 | `P2-027B` | `RM-027` | `completed` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. | The additive authorized cleanup API implements quarantine, staged deletion, receipts, tombstones, CAS, and reconciliation. |
 | `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
-| `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
+| `P2-028A` | `RM-028` | `in_progress` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | The approved Windows-first repository-owned synthetic helper slice is implemented and under qualification; arbitrary external code, provider/solver adapters, remote cancellation, and OS-enforced network isolation remain outside the implemented boundary. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
@@ -84,7 +84,7 @@
 | `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P1` | `in_progress` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `P2-025A` | `required` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `required` |
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-027B` | `required` |
-| `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
+| `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `in_progress` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
 | `RM-029` | Offline Python product path safety and usability completion | `phase-2` | `P1` | `completed` | `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-029A` | `none` |
 | `RM-030` | Natural-language canonical intake and adjudicated report integration | `phase-4` | `P2` | `in_progress` | `RM-014` | `n/a` | `required` |
 
@@ -836,8 +836,8 @@
 
 ### RM-028 — Isolated solver and provider job control
 
-- Status: `proposed`
-- Status reason: Approved as a roadmap candidate only; cooperative in-process cancellation is not a hard stop.
+- Status: `in_progress`
+- Status reason: P2-028A implements the approved Windows-first repository-owned synthetic helper slice with Job Object hard stops and durable effect state; the broader solver/provider, remote-cancel, and network-isolation scope remains incomplete.
 - Objective: Provide durable, approval-bound process isolation and hard-stop evidence for non-cooperative external jobs.
 - Capabilities:
   - process_sandbox
@@ -896,7 +896,7 @@
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented.
+- Status reason: P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.
 - Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake
@@ -928,11 +928,11 @@
   - P3-030B natural-language or site parser, model selection, ambiguity policy, source rights, privacy, and parser-quality evaluation
   - P2-025B actual Codex or cross-runtime execution bridge, outbound effects, authentication, budgets, and reconciliation
   - P3-030C external solver, range-equity, multiopponent, GTO, or equilibrium semantics and evidence thresholds
-- Relations:
+- Completion-time relations (historical; not current status assertions):
   - P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.
   - P3-030B remains a separate Decision gate for any general natural-language or site parser.
   - P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.
-  - P2-028A remains not started and is not activated by this local-only path.
+  - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
   - P3-030C remains a separate Decision gate for external solver, range-equity, multiopponent, GTO, or equilibrium scope.
 
 ## Synchronization contract

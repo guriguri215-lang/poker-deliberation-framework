@@ -76,8 +76,11 @@ RM-029/P2-029Aはoffline Python product pathの安全性・数値検証・利用
 P2-025Aのconformance-only contract完了後も実bridgeは未実装のため`in_progress`とdecision gateを
 維持します。RM-017はP3-017A offline exact-evidence harnessを完了しましたが、主観的metric、
 外部dataset、人間rubricが未実装のため`in_progress`を維持します。
-RM-028は`proposed`、P2-028Aは`not_started`であり、
-RM-019/RM-020の外部provider/solver実行は開始していません。
+RM-028とP2-028Aは`in_progress`です。P2-028AはWindows Job Objectで固定repository-owned
+synthetic helperだけを実行するapproval/context/budget-boundな入口スライスを実装しています。
+汎用process sandbox、OS強制network isolation、任意外部コード、remote cancellation、実provider/
+solver adapterは未実装であり、RM-019/RM-020の外部provider/solver実行も開始していません。
+詳細は[`docs/isolated-job-control.md`](docs/isolated-job-control.md)を参照してください。
 P2-029Aの詳細contractは
 [`docs/offline-product-path.md`](docs/offline-product-path.md)を参照してください。
 

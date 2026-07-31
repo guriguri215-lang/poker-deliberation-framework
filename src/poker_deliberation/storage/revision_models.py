@@ -112,6 +112,9 @@ OriginKind = Literal[
     "final_report_json",
     "final_report_markdown",
     "budget_state",
+    "isolated_job_state",
+    "isolated_job_stdout",
+    "isolated_job_stderr",
 ]
 
 

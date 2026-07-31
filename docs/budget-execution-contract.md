@@ -133,6 +133,9 @@ bytesが異なるkey reuseは`idempotency_conflict`になる。committed reserve
 明示的なno-effect releaseだけで閉じる。started-unsettled permitはrestart時に`effect_unknown`/
 `reconciliation_required`となり、blind release、retry、success扱いをしない。run lock、revision CAS、
 current-replace ambiguity、durability uncertainty、effect unknownは別のtyped failureである。
+budget binding付きreserveも記録済みoperationのexact replayを先に判定し、未記録mutationだけを
+current policy/activation digestへCAS相関する。後続の正当なpolicy tighteningは過去のexact replayを
+invalid inputへ変換しない。
 
 retry admissionは実行から分離し、明示的transientかつidempotent、またはauthoritative reconciliation
 済みのeffectだけを最大N+1 attemptまで許可する。retryごとにfresh attempt/context IDと既存
@@ -144,11 +147,27 @@ exact settlement replayを実装する内部callable adapterである。完了�
 durable settlementから復元し、callable再実行、二重課金、二重settleを行わない。cancellationは
 `requested`、`acknowledged`、`cancelled`、`unconfirmed`、`effect_unknown`を別revisionで記録する。
 acknowledgmentなしのsuccessやlive workerはsuccessにならない。
+P2-028Aのprocess不在回復では`requested`/`unconfirmed`をworker非liveの`effect_unknown`へ閉じ、
+exact ACK evidenceは`cancelled`まで完遂してから対応permitをsettleする。
+effect admission後またはresume成否不明のclosureではattempt 1、approved input bytes、concurrency 1を
+必ずactual usageへ含め、保存済みevidence/outputがあるrestart closureでは既知のoutput usageも含める。
+tree停止を確認できない場合はworker-liveの`effect_unknown`としてpermitをsettleしない。
+二度目のapproval拒否がpermit start前に確定した場合は`released_no_effect`、start後でも
+`ResumeThread`前のexpiry/identity拒否が確定した場合は、active process 0、tree停止、
+limit/identity再照合、complete output evidenceを全て確認できたときだけ`failed`として閉じる。
+いずれかが欠ける場合は`effect_unknown`とし、started permitをsettleしない。
 
-RM-028はtyped isolation requirement/evidence interfaceだけで、implementationはない。process-tree kill、
-remote cancellation保証、OS CPU/memory/output isolation、external-code isolationが必要なrequestは
-reservation前に`isolation_required`となる。P2-011Bはhard stop、external provider/solver、
+P2-011B自体はtyped RM-028 isolation requirement/evidence interfaceだけを提供する。P2-028Aは別の
+Windows backendとして、固定repository synthetic helperに限りprocess-tree kill、Job Object
+CPU/memory/process cap、bounded output、durable cancellation/reconciliationを実装する。remote
+cancellation、network isolation、任意external code、provider/solverには使えず、それらを要求する
+requestは引き続きreservation前に`isolation_required`となる。P2-011Bはexternal provider/solver、
 completion marker、product reader/status、flat-v1 migration、通常run/resume統合を実装しない。
+
+P2-028AがP2-011Bへsettleするstorage usageはcaptured output payloadを単位とし、
+`artifact_bytes=max(stdout, stderr)`、`run_bytes=stdout+stderr`である。isolated-job state、
+manifest、transaction、current pointer等のrevision構造byteはこの値に含めず、専用revision storeの
+physical artifact/run admissionで別に制限する。
 
 ## P2-010B budget correlation
 

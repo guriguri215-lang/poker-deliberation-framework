@@ -149,7 +149,7 @@ def test_public_projection_preserves_status_scope_and_decision_rationale() -> No
         "RM-027": "completed",
     }
     assert items["RM-013"]["status"] == "completed"
-    assert items["RM-028"]["status"] == "proposed"
+    assert items["RM-028"]["status"] == "in_progress"
     assert items["RM-029"]["status"] == "completed"
     assert items["RM-025"]["priority"] == "P1"
     assert items["RM-018A"]["status"] == "planned"
@@ -195,10 +195,10 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
     )
-    assert {item_id for item_id, item in milestones.items() if item["status"] == "not_started"} == {
+    assert not {item_id for item_id, item in milestones.items() if item["status"] == "not_started"}
+    assert {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"} == {
         "P2-028A",
     }
-    assert not {item_id for item_id, item in milestones.items() if item["status"] == "in_progress"}
     assert milestones["P2-011A"]["dependencies"] == ["RM-023", "P2-010A"]
     assert milestones["P2-029A"]["dependencies"] == [
         "P2-012B",
@@ -361,8 +361,8 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
             "conformance without an execution bridge."
         ),
     }
-    assert items["RM-028"]["status"] == "proposed"
-    assert milestones["P2-028A"]["status"] == "not_started"
+    assert items["RM-028"]["status"] == "in_progress"
+    assert milestones["P2-028A"]["status"] == "in_progress"
     assert items["RM-019"]["dependencies"] == [
         "RM-010",
         "RM-011",
@@ -380,6 +380,20 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
     ]
     assert items["RM-019"]["status"] == "planned"
     assert items["RM-020"]["status"] == "planned"
+
+
+def test_historical_relations_do_not_override_current_milestone_status() -> None:
+    items = _by_id()
+    milestones = _milestones(load_roadmap())
+    rendered = render_roadmap_markdown(load_roadmap())
+
+    assert milestones["P2-028A"]["status"] == "in_progress"
+    assert "milestone table remains authoritative for current status" in str(
+        items["RM-030"]["status_reason"]
+    )
+    assert "At P3-030A completion, P2-028A had not started" in str(items["RM-030"]["relations"])
+    assert "Completion-time relations (historical; not current status assertions)" in rendered
+    assert "- Relations:" in rendered
 
 
 def test_unknown_projection_fields_fail_closed() -> None:
@@ -502,6 +516,27 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     with pytest.raises(ValueError, match="public item contract changed"):
         validate_roadmap_update(previous, contract_change)
 
+    legacy_relation = deepcopy(previous)
+    legacy_rm030 = _by_id(legacy_relation)["RM-030"]["relations"]
+    historical = next(
+        relation
+        for relation in legacy_rm030  # type: ignore[union-attr]
+        if str(relation).startswith("At P3-030A completion, P2-028A")
+    )
+    legacy_rm030[legacy_rm030.index(historical)] = (  # type: ignore[union-attr]
+        "P2-028A remains not started and is not activated by this local-only path."
+    )
+    validate_roadmap_update(legacy_relation, previous)
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, legacy_relation)
+
+    arbitrary_relation = deepcopy(previous)
+    _by_id(arbitrary_relation)["RM-030"]["relations"].append(  # type: ignore[union-attr]
+        "Arbitrary relation mutation."
+    )
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, arbitrary_relation)
+
     transition_table_change = deepcopy(previous)
     transition_table_change["legal_transitions"]["planned"].append("proposed")  # type: ignore[index,union-attr]
     _by_id(transition_table_change)["RM-018A"]["status"] = "proposed"
@@ -562,13 +597,13 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
-        "in_progress": 5,
+        "in_progress": 6,
         "planned": 6,
-        "proposed": 2,
+        "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
         "completed": 18,
-        "not_started": 1,
+        "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []
     assert summary["implementation_ready_ids"] == [

@@ -432,6 +432,42 @@ def test_policy_change_can_only_tighten_above_used_and_reserved(
     assert tightened.state.attempts[0].status is AttemptStatus.RESERVED
 
 
+def test_reserve_exact_replay_precedes_current_budget_binding_check(
+    store: DurableBudgetStore,
+) -> None:
+    _create(store)
+    original = store.load("Run-budget-store")
+    reservation = _reservation(run_bytes=100)
+    admitted = store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-bound-replay",
+        permit_id="permit-bound-replay",
+        reservation=reservation,
+        lineage=_lineage(),
+        expected_policy_sha256=original.policy_sha256,
+        expected_activation_sha256=original.activation_sha256,
+    )
+    store.tighten_policy(
+        "Run-budget-store",
+        operation_id="tighten-after-reserve",
+        new_policy=_policy(max_concurrency=1, max_run_bytes=15_000),
+        reason_sha256="f" * 64,
+    )
+
+    replay = store.reserve(
+        "Run-budget-store",
+        operation_id="reserve-bound-replay",
+        permit_id="permit-bound-replay",
+        reservation=reservation,
+        lineage=_lineage(),
+        expected_policy_sha256=original.policy_sha256,
+        expected_activation_sha256=original.activation_sha256,
+    )
+
+    assert admitted.status is MutationStatus.APPLIED
+    assert replay.status is MutationStatus.EXACT_REPLAY
+
+
 def test_cancellation_before_start_blocks_start_and_ack_is_not_settlement(
     store: DurableBudgetStore,
 ) -> None:

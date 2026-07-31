@@ -56,18 +56,21 @@
   Its conservation tolerance is a binary64 forward-error envelope derived from the current cached
   subset-DP loops and non-negative arithmetic. It is not a proof for a different implementation,
   non-finite aggregate, external solver, GTO strategy, or equilibrium.
-- Human approval decisions persist and resume; approved external actions are not auto-executed.
+- Human approval decisions persist and resume. The ordinary product path still does not
+  auto-execute approved external actions. P2-028A has a separate internal API that can execute only
+  the exact approved repository synthetic helper; it is not a provider/solver executor.
 - Evidence records are validated, claim-linked, stored in `evidence.jsonl`, and included in reports.
   Case-specific web retrieval itself still requires a connected agent and explicit recording.
 - Local calculators run in-process. Hard size/work/depth caps prevent callers from requesting
   unbounded work, convergent best-response DAGs are memoized, and over-budget results fail closed,
-  but the MVP has no OS-level preemptive CPU or memory sandbox. Providers must honor the cooperative
-  cancellation contract. Any future external-code executor must use process isolation and true
-  time/memory limits.
+  but ordinary calculators remain in-process and have no OS-level preemptive CPU or memory sandbox.
+  Providers must honor the cooperative cancellation contract. P2-028A's separate Windows backend
+  applies Job Object CPU/memory/process limits only to the fixed repository synthetic helper.
 - Ordinary P2-011A deadline/cancellation is cooperative and in-process. It distinguishes requested,
   acknowledged, and unconfirmed cancellation, but an uncooperative daemon thread may continue after
-  the run reports a limitation. There is no process-tree kill, remote cancellation, or durable
-  reconciliation.
+  the run reports a limitation. P2-011A itself has no process-tree kill, remote cancellation, or
+  durable reconciliation; P2-028A supplies local tree kill and durable reconciliation only for its
+  fixed repository synthetic helper, never for remote work.
 - Role-specific provider contexts now use a versioned P2-024A attempt envelope with Python-local
   lineage, UTC use-expiry, exact allowlists, and unkeyed SHA-256 integrity. It does not persist the
   envelope, choose a storage retention duration, delete data, run cleanup, provide secure erase, add
@@ -77,6 +80,12 @@
   atomic for cooperating readers; it is not a distributed transaction across the product and budget
   roots. A post-pointer settlement overrun or failure remains `incomplete`, and no automatic orphan
   repair or cleanup is performed. At-rest encryption is not implemented.
+- P2-028A isolated-job state and P2-011B budget state use separate revision roots rather than one
+  distributed transaction. The coordinator settles budget before publishing a terminal job
+  snapshot so `completed` never precedes settlement. If terminal publication then becomes
+  uncertain, the job is durably `effect_unknown` even if the immutable budget settlement says
+  `succeeded`; that settlement is accounting evidence, not job-success authority, and no automatic
+  retry is allowed.
 - Provider/tool budget accounting remains serial and in-memory during ordinary execution. Terminal
   publication alone reserves one durable slot, remaining runtime, and exact storage bytes in the
   P2-011B root. It does not meter an external provider's actual invoice or persist provider/tool
@@ -149,12 +158,24 @@
   provider invoice、billing source、remote effect authenticityをmeterまたはattestしない。外部provider/
   solver自体も実装しない。
 - P2-011B cancellationはrequested/acknowledged/cancelled/unconfirmed/effect_unknownをdurableに区別するが、
-  cooperative threadを強制停止しない。process-tree kill、remote cancellation保証、CPU/memory/output
-  isolationはP2-028Aまで未実装である。
+  cooperative threadを強制停止しない。P2-028Aの別Windows backendは固定repository synthetic
+  helperに限ってprocess-tree killとCPU/memory/process/output capを実装する。remote cancellation、
+  任意外部コード、provider/solver、network isolationには適用しない。
+- P2-028Aはrepository-owned backend内のprocess creationだけを共有lockで直列化する。別libraryや
+  同権限processが同時に作る未調整childへのhandle inheritanceをOS全体で排除する保証ではない。
+- P2-028Aのcaller固有preparation lease、非daemon worker、`JOB_LIST`はrepository coordinatorと
+  context-managed direct qualification内のcontroller abortを対象にする。contextにenterせず
+  `prepare()` factoryを呼ぶだけではresourceを取得しない。process crash／OS停止ではJob handleの
+  close-on-process-exitと`KILL_ON_JOB_CLOSE`に依存し、power-loss durabilityや別processからの
+  強制回収を保証しない。
+- attribute-list cleanupはmodule load時に固定したtrusted kernel32 VOID entrypointをnon-daemon
+  preparation workerが一度だけ呼ぶ境界で検証する。そのentrypoint自体の悪意ある差替え、native
+  crash、controller process terminationに対するexact cleanupは保証しない。
 - P2-011B structural resumeはbudget stateだけをverified historyから再構成する。P2-012Bの通常resumeは
   verified `approval_required` checkpointに限定される。P2-013A/Bは
   approval actor/authority/action digest、明示reissue、expiry/revocation recheckを追加するが、
-  external action executionとdurable effect resumeはP2-028A以降まで未実装である。
+  P2-028Aはexact approved synthetic helperだけにexternal-code action recheckとdurable effect
+  recoveryを接続する。通常external action、provider/solver、runtime bridgeは未実装である。
 - P2-012Aと同様、Windows directory sync unavailable evidence、power-loss、hardware cache、
   network/distributed filesystem、same-privilege malicious writer authenticityは保証しない。
 - terminalization自体が極端に短いruntimeまたはartifact/run hard capを超える場合、ordinary callは

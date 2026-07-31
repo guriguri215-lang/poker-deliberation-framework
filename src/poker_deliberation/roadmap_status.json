@@ -190,8 +190,8 @@
     {
       "id": "P2-028A",
       "rm_id": "RM-028",
-      "status": "not_started",
-      "status_reason": "Not started.",
+      "status": "in_progress",
+      "status_reason": "The approved Windows-first repository-owned synthetic helper slice is implemented and under qualification; arbitrary external code, provider/solver adapters, remote cancellation, and OS-enforced network isolation remain outside the implemented boundary.",
       "dependencies": [
         "P2-011B",
         "P2-012B",
@@ -1589,8 +1589,8 @@
       "title": "Isolated solver and provider job control",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "proposed",
-      "status_reason": "Approved as a roadmap candidate only; cooperative in-process cancellation is not a hard stop.",
+      "status": "in_progress",
+      "status_reason": "P2-028A implements the approved Windows-first repository-owned synthetic helper slice with Job Object hard stops and durable effect state; the broader solver/provider, remote-cancel, and network-isolation scope remains incomplete.",
       "dependencies": [
         "RM-011",
         "RM-012",
@@ -1694,7 +1694,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented.",
+      "status_reason": "P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.",
       "dependencies": [
         "RM-014"
       ],
@@ -1737,7 +1737,7 @@
         "P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.",
         "P3-030B remains a separate Decision gate for any general natural-language or site parser.",
         "P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.",
-        "P2-028A remains not started and is not activated by this local-only path.",
+        "At P3-030A completion, P2-028A had not started and was not activated by that local-only path.",
         "P3-030C remains a separate Decision gate for external solver, range-equity, multiopponent, GTO, or equilibrium scope."
       ],
       "decision_gate": {

@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `9.0.0`
-- source SHA-256: `e147daa190a053223afe7860a1f503ce67725187fb604fea31153117caa5b570`
+- source SHA-256: `db29e083ddb7fd2c7192b2ef0c9eab46fc8566f65eb1a97bbc8743d9d8267908`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -43,7 +43,7 @@
 | `P2-013A` | `RM-013` | `completed` | `P2-012B` | Approval actor, authority, action digest, request/decision idempotency, and CAS transaction. | Strict approval authority, action binding, decision idempotency, CAS publication, and bounded failure audit are implemented. |
 | `P2-027B` | `RM-027` | `completed` | `P2-012B`, `P2-013A` | Authorized cleanup executor, dry-run digest, CAS, receipt, tombstone, and reconciliation. | The additive authorized cleanup API implements quarantine, staged deletion, receipts, tombstones, CAS, and reconciliation. |
 | `P2-013B` | `RM-013` | `completed` | `P2-013A`, `P2-027B` | Resume integration, legacy reissue, expiry/revocation, and lifecycle binding. | Explicit historical and expired-request reissue, replay-first CAS resume integration, immutable lifecycle binding, and effect-free expiry/revocation pre-execution rechecks are implemented. |
-| `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | Not started. |
+| `P2-028A` | `RM-028` | `not_started` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | The Decision gate is approved; this milestone advances after the parent roadmap item completes its required planned-state transition. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
@@ -84,7 +84,7 @@
 | `RM-025` | Codex and Python agent runtime conformance | `post-phase-2` | `P1` | `in_progress` | `RM-012`, `RM-013`, `RM-023`, `RM-024` | `P2-025A` | `required` |
 | `RM-026` | Framework extension SPI | `phase-3` | `P2` | `proposed` | `RM-006`, `RM-012`, `RM-023` | `n/a` | `required` |
 | `RM-027` | Local data lifecycle | `phase-2` | `P1` | `completed` | `RM-023`, `RM-024` | `P2-027B` | `required` |
-| `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `proposed` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
+| `RM-028` | Isolated solver and provider job control | `phase-2` | `P1` | `planned` | `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-028A` | `required` |
 | `RM-029` | Offline Python product path safety and usability completion | `phase-2` | `P1` | `completed` | `RM-012`, `RM-013`, `RM-024`, `RM-027` | `P2-029A` | `none` |
 | `RM-030` | Natural-language canonical intake and adjudicated report integration | `phase-4` | `P2` | `in_progress` | `RM-014` | `n/a` | `required` |
 
@@ -836,8 +836,8 @@
 
 ### RM-028 — Isolated solver and provider job control
 
-- Status: `proposed`
-- Status reason: Approved as a roadmap candidate only; cooperative in-process cancellation is not a hard stop.
+- Status: `planned`
+- Status reason: The Decision gate approved a Windows-first repository-owned synthetic helper slice; implementation activation follows as a separate legal status transition.
 - Objective: Provide durable, approval-bound process isolation and hard-stop evidence for non-cooperative external jobs.
 - Capabilities:
   - process_sandbox

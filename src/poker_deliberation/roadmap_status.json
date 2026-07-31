@@ -191,7 +191,7 @@
       "id": "P2-028A",
       "rm_id": "RM-028",
       "status": "not_started",
-      "status_reason": "Not started.",
+      "status_reason": "The Decision gate is approved; this milestone advances after the parent roadmap item completes its required planned-state transition.",
       "dependencies": [
         "P2-011B",
         "P2-012B",
@@ -1589,8 +1589,8 @@
       "title": "Isolated solver and provider job control",
       "phase": "phase-2",
       "priority": "P1",
-      "status": "proposed",
-      "status_reason": "Approved as a roadmap candidate only; cooperative in-process cancellation is not a hard stop.",
+      "status": "planned",
+      "status_reason": "The Decision gate approved a Windows-first repository-owned synthetic helper slice; implementation activation follows as a separate legal status transition.",
       "dependencies": [
         "RM-011",
         "RM-012",

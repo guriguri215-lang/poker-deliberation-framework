@@ -21,6 +21,12 @@ P3-030Aは、caller-suppliedの完全なhand/range候補をsource/candidate hash
 site parser、外部model/solverではなく、入力claimは確認後も`USER_CLAIM`です。詳細は
 [`docs/confirmed-review-intake.md`](docs/confirmed-review-intake.md)を参照してください。
 
+P3-030Bは別capabilityとして、文書化した有限の日本語retrospective NLHE cash grammarだけを
+exact UTF-8 source span付きで決定的に抽出します。6 hashの明示確認後に限り、固定LocalProvider、
+`hand_validator -> hand_pot_ledger -> pot_odds`、durable provenance replayへ接続します。一般自然言語、
+site/OCR、tournament、range、外部model/solverではありません。詳細は
+[`docs/bounded-natural-language-intake.md`](docs/bounded-natural-language-intake.md)を参照してください。
+
 P3-015Aの`hand_pot_ledger`は、明示した`generic_nlhe_cash_no_rake_v1`だけを対象に、
 caller-declared chip unitの整数ledger、uncalled return、side pot、fold eligibility、
 full-raise reopeningを独立`Fraction` oracle付きで計算します。rake、straddle、site profile、
@@ -66,7 +72,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 9.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 10.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。

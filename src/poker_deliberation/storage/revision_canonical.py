@@ -15,6 +15,15 @@ from typing import Any, TypeVar, cast
 
 from pydantic import AnyUrl, BaseModel, TypeAdapter, ValidationError
 
+from poker_deliberation.bounded_natural_language_models import (
+    BOUNDED_NL_CANDIDATE_ARTIFACT_SCHEMA,
+    BOUNDED_NL_CONFIRMATION_ARTIFACT_SCHEMA,
+    BOUNDED_NL_PROVENANCE_ARTIFACT_SCHEMA,
+    BOUNDED_NL_SOURCE_ARTIFACT_SCHEMA,
+    BoundedIntakeCandidateV1,
+    BoundedIntakeConfirmationV1,
+    BoundedNaturalLanguageProvenanceV1,
+)
 from poker_deliberation.budgets.durable_models import (
     DURABLE_BUDGET_ARTIFACT_SCHEMA,
     DURABLE_BUDGET_PRODUCER_ID,
@@ -149,6 +158,24 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         CONFIRMATION_ARTIFACT_SCHEMA,
         "confirmed_review_confirmation",
     ),
+    "bounded_nl_source.txt": (
+        "text/plain",
+        TEXT_SERIALIZATION,
+        BOUNDED_NL_SOURCE_ARTIFACT_SCHEMA,
+        "bounded_nl_source",
+    ),
+    "bounded_nl_candidate.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_NL_CANDIDATE_ARTIFACT_SCHEMA,
+        "bounded_nl_candidate",
+    ),
+    "bounded_nl_confirmation.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_NL_CONFIRMATION_ARTIFACT_SCHEMA,
+        "bounded_nl_confirmation",
+    ),
     "input.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -227,6 +254,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         PROVENANCE_ARTIFACT_SCHEMA,
         "confirmed_review_provenance",
     ),
+    "bounded_nl_provenance.json": (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_NL_PROVENANCE_ARTIFACT_SCHEMA,
+        "bounded_nl_provenance",
+    ),
     "budget_state.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -262,10 +295,22 @@ _CONFIRMED_REVIEW_ARTIFACTS = frozenset(
     }
 )
 
+_BOUNDED_NL_ARTIFACTS = frozenset(
+    {
+        "bounded_nl_source.txt",
+        "bounded_nl_candidate.json",
+        "bounded_nl_confirmation.json",
+        "bounded_nl_provenance.json",
+    }
+)
+
 _PAYLOAD_ORDER_PREFIX = (
     "confirmed_review_source.txt",
     "confirmed_review_candidate.json",
     "confirmed_review_confirmation.json",
+    "bounded_nl_source.txt",
+    "bounded_nl_candidate.json",
+    "bounded_nl_confirmation.json",
     "input.json",
     "normalization.json",
     "normalized_case.json",
@@ -584,28 +629,31 @@ def artifact_table_entry(
 def payload_order_key(logical_name: str) -> tuple[int, bytes]:
     if logical_name in _PAYLOAD_ORDER_PREFIX:
         return (_PAYLOAD_ORDER_PREFIX.index(logical_name), b"")
+    base = len(_PAYLOAD_ORDER_PREFIX)
     if logical_name.endswith(".input.json") and logical_name.startswith("tool_results/"):
-        return (12, logical_name.encode("utf-8"))
+        return (base, logical_name.encode("utf-8"))
     if logical_name.startswith("tool_results/"):
-        return (13, logical_name.encode("utf-8"))
+        return (base + 1, logical_name.encode("utf-8"))
     if logical_name.startswith("agent_reports/"):
-        return (14, logical_name.encode("utf-8"))
+        return (base + 2, logical_name.encode("utf-8"))
     if logical_name == "disputes.json":
-        return (15, b"")
+        return (base + 3, b"")
     if logical_name == "final_report.json":
-        return (16, b"")
+        return (base + 4, b"")
     if logical_name == "final_report.md":
-        return (17, b"")
+        return (base + 5, b"")
     if logical_name == "confirmed_review_provenance.json":
-        return (18, b"")
+        return (base + 6, b"")
+    if logical_name == "bounded_nl_provenance.json":
+        return (base + 7, b"")
     if logical_name == "budget_state.json":
-        return (19, b"")
+        return (base + 8, b"")
     if logical_name == "isolated_job_state.json":
-        return (20, b"")
+        return (base + 9, b"")
     if logical_name == "stdout.txt":
-        return (21, b"")
+        return (base + 10, b"")
     if logical_name == "stderr.txt":
-        return (22, b"")
+        return (base + 11, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -813,6 +861,15 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         if confirmation.run_id != run_id:
             raise CanonicalStorageError("confirmed-review confirmation run ID mismatch")
         return confirmation
+    if logical_name == "bounded_nl_source.txt":
+        return validate_canonical_text(data)
+    if logical_name == "bounded_nl_candidate.json":
+        return parse_canonical_model(data, BoundedIntakeCandidateV1)
+    if logical_name == "bounded_nl_confirmation.json":
+        bounded_confirmation = parse_canonical_model(data, BoundedIntakeConfirmationV1)
+        if bounded_confirmation.run_id != run_id:
+            raise CanonicalStorageError("bounded-language confirmation run ID mismatch")
+        return bounded_confirmation
     if logical_name in {"input.json", "normalized_case.json"}:
         return parse_canonical_model(data, CaseInput)
     if logical_name == "normalization.json":
@@ -860,6 +917,11 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         if provenance.run_id != run_id:
             raise CanonicalStorageError("confirmed-review provenance run ID mismatch")
         return provenance
+    if logical_name == "bounded_nl_provenance.json":
+        bounded_provenance = parse_canonical_model(data, BoundedNaturalLanguageProvenanceV1)
+        if bounded_provenance.run_id != run_id:
+            raise CanonicalStorageError("bounded-language provenance run ID mismatch")
+        return bounded_provenance
     if logical_name == "budget_state.json":
         state = parse_canonical_model(data, DurableBudgetStateV1)
         if state.run_id != run_id:
@@ -936,6 +998,7 @@ def _validate_source_graph(
     )
     final_report_v2 = final_report_schema_version == FINAL_REPORT_ARTIFACT_V2
     confirmed_names = set(by_name) & _CONFIRMED_REVIEW_ARTIFACTS
+    bounded_names = set(by_name) & _BOUNDED_NL_ARTIFACTS
     input_case = parsed.get("input.json")
     final_report = parsed.get("final_report.json")
     input_marker_present = isinstance(input_case, CaseInput) and (
@@ -973,6 +1036,41 @@ def _validate_source_graph(
     if confirmed_marker and "assignments.json" not in parsed:
         raise CanonicalStorageError(
             "confirmed-review structural revision requires the assignment ledger"
+        )
+    bounded_input_marker_present = isinstance(input_case, CaseInput) and (
+        "bounded_natural_language_review" in input_case.metadata
+    )
+    bounded_input_marker = (
+        input_case.metadata.get("bounded_natural_language_review")
+        if isinstance(input_case, CaseInput)
+        else None
+    )
+    bounded_report_marker_present = isinstance(report_metadata, dict) and (
+        "bounded_natural_language_review" in report_metadata
+    )
+    bounded_report_marker = (
+        report_metadata.get("bounded_natural_language_review")
+        if isinstance(report_metadata, dict)
+        else None
+    )
+    if bounded_input_marker_present != bounded_report_marker_present or (
+        bounded_input_marker_present and bounded_report_marker != bounded_input_marker
+    ):
+        raise CanonicalStorageError("bounded-language input and report markers must match exactly")
+    bounded_marker = bounded_input_marker_present or bounded_report_marker_present
+    if bounded_marker != bool(bounded_names) or (
+        bounded_names and bounded_names != _BOUNDED_NL_ARTIFACTS
+    ):
+        raise CanonicalStorageError(
+            "bounded-language marker and complete artifact set must appear together"
+        )
+    if confirmed_marker and bounded_marker:
+        raise CanonicalStorageError("confirmed intake artifact contracts are mutually exclusive")
+    if bounded_marker and not {"input.json", "final_report.json", "assignments.json"} <= set(
+        by_name
+    ):
+        raise CanonicalStorageError(
+            "bounded-language structural revision requires input, assignment, and final report"
         )
     validate_assignment_execution_correlation(
         cast(Sequence[AgentAssignment], parsed.get("assignments.json", ())),
@@ -1156,6 +1254,74 @@ def _validate_source_graph(
         except (KeyError, ValueError) as exc:
             raise CanonicalStorageError(
                 "confirmed-review structural source-to-report replay failed"
+            ) from exc
+    if bounded_marker:
+        require_payload_sources("bounded_nl_candidate.json", {"bounded_nl_source.txt"})
+        require_payload_sources(
+            "bounded_nl_confirmation.json",
+            {"bounded_nl_source.txt", "bounded_nl_candidate.json"},
+        )
+        require_payload_sources(
+            "bounded_nl_provenance.json",
+            {
+                "bounded_nl_source.txt",
+                "bounded_nl_candidate.json",
+                "bounded_nl_confirmation.json",
+                "input.json",
+                "assignments.json",
+                "final_report.json",
+            },
+        )
+        try:
+            from poker_deliberation.bounded_natural_language_provenance import (
+                verify_bounded_natural_language_structural_provenance,
+            )
+
+            agent_reports = [
+                cast(AgentReport, parsed[logical_name]) for logical_name in report_names
+            ]
+            reports_by_role = {
+                agent_report.agent_role: agent_report for agent_report in agent_reports
+            }
+            execution_records = cast(
+                Sequence[AgentExecutionRecord],
+                parsed["agent_execution_records.json"],
+            )
+            ordered_agent_reports = [
+                reports_by_role[record.agent_role]
+                for record in execution_records
+                if record.agent_role in reports_by_role
+            ]
+            if (
+                len(reports_by_role) != len(agent_reports)
+                or len(ordered_agent_reports) != len(execution_records)
+                or len(agent_reports) != len(execution_records)
+            ):
+                raise CanonicalStorageError(
+                    "bounded-language agent reports do not match executions"
+                )
+            verify_bounded_natural_language_structural_provenance(
+                source_bytes=cast(str, parsed["bounded_nl_source.txt"]).encode("utf-8"),
+                candidate=cast(
+                    BoundedIntakeCandidateV1,
+                    parsed["bounded_nl_candidate.json"],
+                ),
+                confirmation=cast(
+                    BoundedIntakeConfirmationV1,
+                    parsed["bounded_nl_confirmation.json"],
+                ),
+                case=cast(CaseInput, parsed["input.json"]),
+                report=cast(FinalReport, parsed["final_report.json"]),
+                provenance=cast(
+                    BoundedNaturalLanguageProvenanceV1,
+                    parsed["bounded_nl_provenance.json"],
+                ),
+                assignments=cast(Sequence[AgentAssignment], parsed["assignments.json"]),
+                agent_reports=ordered_agent_reports,
+            )
+        except (KeyError, ValueError) as exc:
+            raise CanonicalStorageError(
+                "bounded-language structural source-to-report replay failed"
             ) from exc
 
     for entry in inventories:

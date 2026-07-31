@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "family_id": "poker-bounded-nl-evaluation-json-v1",
+  "fixture_id": "bounded-japanese-nlhe-cash-cases-v1",
+  "source_kind": "repository_fixture",
+  "license_classification": "repository_owned_mit",
+  "usage_classification": "redistribution_allowed",
+  "content_classification": "public",
+  "scoring": "exact-evidence-set-v1",
+  "threshold": "1.0",
+  "source_sha256": "e220dc2c1d4ef697ad4c2d20346a4dcd12a705335cf84b0acd500b4bbc0227f7",
+  "expected_hand_sha256": "d8617f842952a9bece1c3f057735ede8eda56d80d2d7ecf8e8d59257881a0be8",
+  "expected_focal_sha256": "d2428cbceaa4accac628f17340ab0720a2ac901295de3606cf002a271616f7c5",
+  "expected_tool_plan_sha256": "9d86d230feb92b3c29e5c0ad1704117f4e02816f7cddae0acd04df2842799c87",
+  "expected_source_bindings_sha256": "19f45c9799cab1280823ed5333c27d3e19f5fa6ef491590f14e9af23561500a0",
+  "expected_extractor_sha256": "5c64bdcbffa878c31d8b203a7c5aea1e5b82228d83fb66651ec5cbfa3b0b8998",
+  "expected_binding_count": 62,
+  "cases": [
+    {"case_id": "valid-extraction-and-spans", "expected_evidence": ["exact-field-extraction", "exact-source-span-binding"]},
+    {"case_id": "supported-notation-variation", "expected_evidence": ["explicit-variation-preserves-semantics"]},
+    {"case_id": "card-stack-street-conflicts", "expected_evidence": ["conflicts-rejected-with-exact-diagnostic"]},
+    {"case_id": "missing-required-fields", "expected_evidence": ["missing-fields-rejected-without-inference"]},
+    {"case_id": "raise-and-focal-ambiguity", "expected_evidence": ["ambiguity-rejected-without-selection"]},
+    {"case_id": "unsupported-scope", "expected_evidence": ["rake-ante-tournament-site-refused"]},
+    {"case_id": "security-and-unicode-boundary", "expected_evidence": ["encoding-secret-injection-live-assistance-refused"]},
+    {"case_id": "action-count-boundary", "expected_evidence": ["action-limit-rejected"]},
+    {"case_id": "declared-pot-mismatch", "expected_evidence": ["ledger-assertion-mismatch-rejected"]},
+    {"case_id": "hash-tamper", "expected_evidence": ["candidate-and-tool-plan-tamper-rejected"]},
+    {"case_id": "confirmation-replay", "expected_evidence": ["stale-and-cross-run-confirmation-rejected"]},
+    {"case_id": "confirmed-product-and-storage", "expected_evidence": ["exact-tool-evidence", "terminal-storage-replay", "missing-artifact-rejected"]}
+  ]
+}

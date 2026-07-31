@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `9.0.0`
-- source SHA-256: `4b251f6446e993e35dc99b1a7ccc679efc4073d0c3de9c40c6d4d8a02c2c4c9f`
+- schema version: `10.0.0`
+- source SHA-256: `c88ea8f840edbd0d190740c7b5e0324bda9108ff82ee39e4b38fd659137676b2`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -51,6 +51,7 @@
 | `P3-016A` | `RM-016` | `completed` | `RM-006`, `P3-014A` | poker-deliberation.nlhe-range grammar version 1.0.0 for one provenance-qualified opponent range using explicit combos, pairs, canonical descending suited or offsuit classes, optional decimal @ weights represented as integer millionths, pre-blocker overlap rejection, exact hand and action-prefix binding, automatic range_validate then combos execution, and immutable/terminal semantic replay; no plus, intervals, exclusions, natural-language inference, external source import, equity integration, solver, or GTO claim. | The approved bounded grammar, provenance and game-condition binding, exact validation tool, canonical combo product slice, reader replay, documentation, fixtures, and declared tests are implemented. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 | `P3-030A` | `RM-030` | `completed` | `P3-014A`, `P3-016A`, `P3-017A` | Versioned source, candidate, confirmation, authority, provenance, CLI, durable replay, exact-evidence evaluation, and LocalProvider-only adjudication for one complete retrospective NLHE hand and at most one versioned opponent range; no general natural-language or site parser, external provider or model, runtime bridge, external solver, range equity, multiopponent range, GTO, or equilibrium claim. | The approved caller-supplied candidate, explicit hash-bound confirmation, local-only adjudication, provenance replay, deterministic evaluation, documentation, and declared tests are implemented. |
+| `P3-030B` | `RM-030` | `completed` | `P3-030A`, `P3-015A` | Version 1 deterministic parsing for one documented finite Japanese retrospective 2-6 player NLHE cash grammar with integer chip units, zero ante and rake, at most 64 actions, exact UTF-8 half-open source spans, explicit focal call-or-fold decision, hand_validator then hand_pot_ledger then pot_odds execution, six independently confirmed hash domains, LocalProvider-only adjudication, durable provenance replay, and exact-evidence evaluation; no general natural-language or site parser, OCR, tournament, focal all-in or side-pot decision, range inference, external provider or model, runtime bridge, external solver, GTO, or equilibrium claim. | The approved bounded Japanese grammar, exact source-span evidence, six-hash confirmation contract, fixed local product path, durable provenance replay, evaluation fixture, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
 
 ## Current RM state
 
@@ -896,41 +897,60 @@
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the approved caller-supplied candidate and explicit-confirmation path through local-only adjudication and durable provenance replay; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.
+- Status reason: P3-030A implements the caller-supplied candidate path, and P3-030B implements the approved bounded Japanese grammar with exact source-span and six-hash confirmation contracts; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.
 - Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake
+  - bounded_japanese_nlhe_cash_parser
   - natural_language_or_site_parser
   - versioned_nlhe_range_grammar
 - Targets:
   - src/poker_deliberation/confirmed_review_models.py
   - src/poker_deliberation/confirmed_review.py
   - src/poker_deliberation/confirmed_review_evaluation.py
+  - src/poker_deliberation/bounded_natural_language_models.py
+  - src/poker_deliberation/bounded_natural_language.py
+  - src/poker_deliberation/bounded_natural_language_provenance.py
+  - src/poker_deliberation/bounded_natural_language_evaluation.py
   - src/poker_deliberation/orchestrator.py
   - src/poker_deliberation/cli.py
   - src/poker_deliberation/storage/terminal_canonical.py
   - tests/fixtures/confirmed_review/v1/scenarios.json
+  - tests/fixtures/bounded_natural_language/v1/scenarios.json
   - scripts/run_confirmed_review_evaluation.py
+  - scripts/run_bounded_natural_language_evaluation.py
   - docs/confirmed-review-intake.md
+  - docs/bounded-natural-language-intake.md
 - Acceptance criteria:
   - P3-030A admits only one bounded UTF-8 retrospective source and a caller-supplied complete NLHE candidate after explicit source and candidate hash confirmation by a scoped authority for at most 24 hours.
   - P3-030A uses the exact LocalProvider and default tool registry with hand_validator, the approved optional no-rake cash ledger, and automatic range_validate then combos for at most one versioned range.
   - Source, candidate, confirmation, case input, agent and tool evidence, final report, and typed provenance are persisted and replayed fail closed within the existing terminal product path.
   - The repository-owned 17-case exact-evidence evaluation scores 1.0 only when every expected evidence tuple matches exactly.
   - Caller claims remain USER_CLAIM, provider narrative remains UNKNOWN, calculator outputs follow their exactness contracts, and no general parser, external provider, runtime bridge, solver, range equity, multiopponent range, GTO, or equilibrium capability is claimed.
+  - P3-030B accepts only its documented finite Japanese retrospective 2-6 player NLHE cash grammar with zero ante and rake, integer units, at most 64 actions, and one adjacent facing-bet call-or-fold focal decision; ambiguity, missing data, contradictions, extra lines, all-in or side-pot focal decisions, tournament, site input, OCR, ranges, and general language fail closed.
+  - Every P3-030B extracted semantic field is bound to exact UTF-8 half-open source byte spans, and source, candidate, source bindings, focal decision, tool plan, and extractor hash domains must all be explicitly confirmed before any run namespace is created.
+  - P3-030B runs exactly hand_validator, hand_pot_ledger, then pot_odds through the existing LocalProvider, role/context lifecycle, durable storage, terminal report, and provenance replay path without passing raw source text into agent context.
+  - The repository-owned P3-030B scenario fixture gives separate exact scores for field extraction, source spans, diagnostics, end-to-end tool evidence, and storage replay, with acceptance only when all five metrics equal 1.0.
 - Tests:
   - tests/unit/test_confirmed_review_contract.py
   - tests/integration/test_confirmed_review_cli.py
   - tests/integration/test_confirmed_review_product_path.py
   - tests/integration/test_confirmed_review_evaluation.py
   - tests/adversarial/test_confirmed_review_storage_security.py
+  - tests/unit/test_bounded_natural_language_contract.py
+  - tests/integration/test_bounded_natural_language_cli.py
+  - tests/integration/test_bounded_natural_language_product_path.py
+  - tests/integration/test_bounded_natural_language_evaluation.py
+  - tests/adversarial/test_bounded_natural_language_security.py
+  - tests/property/test_bounded_natural_language_metamorphic.py
+  - tests/fault/test_bounded_natural_language_replay.py
 - Decision gate rationale:
-  - P3-030B natural-language or site parser, model selection, ambiguity policy, source rights, privacy, and parser-quality evaluation
+  - Any expansion beyond the P3-030B bounded Japanese grammar into general natural-language, model-assisted, site-specific, or OCR parsing requires a new Decision gate covering ambiguity, source rights, privacy, and parser-quality evaluation
   - P2-025B actual Codex or cross-runtime execution bridge, outbound effects, authentication, budgets, and reconciliation
   - P3-030C external solver, range-equity, multiopponent, GTO, or equilibrium semantics and evidence thresholds
 - Completion-time relations (historical; not current status assertions):
   - P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.
-  - P3-030B remains a separate Decision gate for any general natural-language or site parser.
+  - The approved P3-030B Decision gate is limited to one deterministic bounded Japanese grammar; any general natural-language, model-assisted, site-specific, or OCR parser remains a separate future Decision gate.
   - P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.
   - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
   - P3-030C remains a separate Decision gate for external solver, range-equity, multiopponent, GTO, or equilibrium scope.

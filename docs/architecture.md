@@ -143,6 +143,14 @@ P3-030Aの確認済みレビュー経路では、自然言語source自体をagen
 拒否する。terminal readerはsourceからtyped provenance wrapperまでを再計算する。この境界は
 自然言語の意味抽出、外部provider/solver、Codex/Python bridge、GTO/均衡を追加しない。
 
+P3-030Bはこの経路を変更せず、別のversioned admissionを加える。有限の日本語NLHE cash文型を
+deterministic parserで`CanonicalHand`、exact UTF-8 half-open source bindings、単一の隣接
+facing-bet call/fold focal decision、integer-unit tool planへ投影する。利用者はsource、candidate、
+bindings、focal、tool plan、extractorの6 domain-separated hashを確認する。確認後も
+`CaseInput.raw_text=None`を維持し、実行toolは`hand_validator -> hand_pot_ledger -> pot_odds`に固定する。
+4個のbounded artifactと既存case/context/assignment/agent/tool/report artifactをtyped provenanceで
+相関し、terminal readerがparser再実行を含めてfail closedで検証する。
+
 High-level `implemented / disabled / unavailable / planned` states are centralized in
 `capabilities.py`, exposed by `doctor`, documented in `docs/capabilities.md`, and checked by contract
 tests. The offline public preflight scans only Git-tracked and non-ignored public candidates; it does

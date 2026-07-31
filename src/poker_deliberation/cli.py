@@ -31,6 +31,19 @@ from poker_deliberation.approvals import (
     LocalCliAuthorityProvider,
     read_approval_state_v2,
 )
+from poker_deliberation.bounded_natural_language import (
+    admit_bounded_natural_language_review,
+    create_bounded_confirmation,
+    create_bounded_confirmation_authority,
+    prepare_bounded_natural_language_intake,
+    review_bounded_natural_language_intake,
+)
+from poker_deliberation.bounded_natural_language_models import (
+    MAX_BOUNDED_NL_ARTIFACT_BYTES,
+    MAX_BOUNDED_NL_SOURCE_BYTES,
+    BoundedIntakeConfirmationV1,
+    BoundedIntakePreparationResultV1,
+)
 from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.config import AppConfig
 from poker_deliberation.confirmed_review import (
@@ -102,14 +115,19 @@ def _read_limited_json(path: str, limit: int) -> dict[str, Any]:
     return value
 
 
-def _read_limited_bytes(path: str, limit: int) -> bytes:
+def _read_limited_bytes(
+    path: str,
+    limit: int,
+    *,
+    size_error: str = "CRI_E_SOURCE_SIZE",
+) -> bytes:
     source = Path(path)
     if source.stat().st_size > limit:
-        raise ValueError("CRI_E_SOURCE_SIZE")
+        raise ValueError(size_error)
     with source.open("rb") as stream:
         value = stream.read(limit + 1)
     if len(value) > limit:
-        raise ValueError("CRI_E_SOURCE_SIZE")
+        raise ValueError(size_error)
     return value
 
 
@@ -117,12 +135,16 @@ def _write_canonical_model(path: str, value: Any) -> None:
     Path(path).write_bytes(canonical_json_bytes(value))
 
 
-def _parse_cli_datetime(value: str | None) -> datetime | None:
+def _parse_cli_datetime(
+    value: str | None,
+    *,
+    binding_error: str = "CRI_E_CONFIRMATION_BINDING",
+) -> datetime | None:
     if value is None:
         return None
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ValueError("CRI_E_CONFIRMATION_BINDING")
+        raise ValueError(binding_error)
     return parsed
 
 
@@ -297,6 +319,56 @@ def build_parser() -> argparse.ArgumentParser:
     review_intake.add_argument("--confirmation", required=True)
     review_intake.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
 
+    prepare_bounded = subparsers.add_parser("prepare-bounded-review-intake")
+    prepare_bounded.add_argument("--source", required=True)
+    prepare_bounded.add_argument("--output", required=True)
+    prepare_bounded.add_argument("--intake-id", required=True)
+    prepare_bounded.add_argument("--source-id", required=True)
+    prepare_bounded.add_argument(
+        "--source-kind",
+        choices=["user_supplied", "repository_fixture"],
+        default="user_supplied",
+    )
+    prepare_bounded.add_argument(
+        "--license-classification",
+        choices=["user_supplied_private_analysis", "repository_owned_mit"],
+        default="user_supplied_private_analysis",
+    )
+    prepare_bounded.add_argument(
+        "--usage-classification",
+        choices=["local_analysis_only", "redistribution_allowed"],
+        default="local_analysis_only",
+    )
+    prepare_bounded.add_argument(
+        "--classification",
+        choices=["internal", "public"],
+        default="internal",
+    )
+    prepare_bounded.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    confirm_bounded = subparsers.add_parser("confirm-bounded-review-intake")
+    confirm_bounded.add_argument("--preparation", required=True)
+    confirm_bounded.add_argument("--output", required=True)
+    confirm_bounded.add_argument("--run-id", required=True)
+    confirm_bounded.add_argument("--authority-id", required=True)
+    confirm_bounded.add_argument("--confirmation-id", required=True)
+    confirm_bounded.add_argument("--idempotency-key", required=True)
+    confirm_bounded.add_argument("--expected-source-sha256", required=True)
+    confirm_bounded.add_argument("--expected-candidate-sha256", required=True)
+    confirm_bounded.add_argument("--expected-source-bindings-sha256", required=True)
+    confirm_bounded.add_argument("--expected-focal-sha256", required=True)
+    confirm_bounded.add_argument("--expected-tool-plan-sha256", required=True)
+    confirm_bounded.add_argument("--expected-extractor-sha256", required=True)
+    confirm_bounded.add_argument("--confirmed-at")
+    confirm_bounded.add_argument("--expires-at")
+    confirm_bounded.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    review_bounded = subparsers.add_parser("review-bounded-confirmed-intake")
+    review_bounded.add_argument("--source", required=True)
+    review_bounded.add_argument("--preparation", required=True)
+    review_bounded.add_argument("--confirmation", required=True)
+    review_bounded.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
+
     for command in ("review-hand", "review-strategy"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--file", required=True)
@@ -440,6 +512,105 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 rendered_confirmed_report = render_markdown(report)
             _emit(rendered_confirmed_report, args.format)
+            return 2 if report.run_status == "failed_with_limitations" else 0
+        if args.command == "prepare-bounded-review-intake":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_BOUNDED_NL_SOURCE_BYTES,
+                size_error="BNL_E_SOURCE_SIZE",
+            )
+            bounded_preparation = prepare_bounded_natural_language_intake(
+                source_bytes,
+                intake_id=args.intake_id,
+                source_id=args.source_id,
+                source_kind=args.source_kind,
+                license_classification=args.license_classification,
+                usage_classification=args.usage_classification,
+                classification=args.classification,
+            )
+            _write_canonical_model(args.output, bounded_preparation)
+            _emit(bounded_preparation, args.format)
+            return 0 if bounded_preparation.status == "ready" else 2
+        if args.command == "confirm-bounded-review-intake":
+            bounded_preparation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.preparation,
+                    MAX_BOUNDED_NL_ARTIFACT_BYTES,
+                    size_error="BNL_E_LIMIT",
+                ),
+                BoundedIntakePreparationResultV1,
+            )
+            if bounded_preparation.status != "ready" or bounded_preparation.candidate is None:
+                raise ValueError("BNL_E_CONFIRMATION_MISSING")
+            bounded_authority = create_bounded_confirmation_authority(
+                authority_id=args.authority_id,
+                authority_kind="local_user",
+                authentication="self_asserted",
+            )
+            bounded_confirmation = create_bounded_confirmation(
+                bounded_preparation.candidate,
+                run_id=args.run_id,
+                confirmation_id=args.confirmation_id,
+                idempotency_key=args.idempotency_key,
+                authority=bounded_authority,
+                expected_source_sha256=args.expected_source_sha256,
+                expected_candidate_sha256=args.expected_candidate_sha256,
+                expected_source_bindings_sha256=args.expected_source_bindings_sha256,
+                expected_focal_sha256=args.expected_focal_sha256,
+                expected_tool_plan_sha256=args.expected_tool_plan_sha256,
+                expected_extractor_sha256=args.expected_extractor_sha256,
+                confirmed_at=_parse_cli_datetime(
+                    args.confirmed_at,
+                    binding_error="BNL_E_CONFIRMATION_BINDING",
+                ),
+                expires_at=_parse_cli_datetime(
+                    args.expires_at,
+                    binding_error="BNL_E_CONFIRMATION_BINDING",
+                ),
+            )
+            _write_canonical_model(args.output, bounded_confirmation)
+            _emit(bounded_confirmation, args.format)
+            return 0
+        if args.command == "review-bounded-confirmed-intake":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_BOUNDED_NL_SOURCE_BYTES,
+                size_error="BNL_E_SOURCE_SIZE",
+            )
+            bounded_preparation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.preparation,
+                    MAX_BOUNDED_NL_ARTIFACT_BYTES,
+                    size_error="BNL_E_LIMIT",
+                ),
+                BoundedIntakePreparationResultV1,
+            )
+            if bounded_preparation.status != "ready" or bounded_preparation.candidate is None:
+                raise ValueError("BNL_E_CONFIRMATION_MISSING")
+            bounded_confirmation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.confirmation,
+                    MAX_BOUNDED_NL_ARTIFACT_BYTES,
+                    size_error="BNL_E_LIMIT",
+                ),
+                BoundedIntakeConfirmationV1,
+            )
+            bounded_admission = admit_bounded_natural_language_review(
+                source_bytes,
+                bounded_preparation.candidate,
+                bounded_confirmation,
+            )
+            report = review_bounded_natural_language_intake(
+                bounded_admission,
+                config=AppConfig.from_env(),
+            )
+            if args.format == "json":
+                rendered_bounded_report: object = report
+            elif args.format == "summary":
+                rendered_bounded_report = render_summary(report)
+            else:
+                rendered_bounded_report = render_markdown(report)
+            _emit(rendered_bounded_report, args.format)
             return 2 if report.run_status == "failed_with_limitations" else 0
         if args.command == "calculate":
             if args.analysis_scope != "retrospective":

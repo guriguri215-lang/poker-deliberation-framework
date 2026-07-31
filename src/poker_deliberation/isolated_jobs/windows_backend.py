@@ -56,6 +56,7 @@ _PROC_THREAD_ATTRIBUTE_HANDLE_LIST: Final = 0x00020002
 _PROC_THREAD_ATTRIBUTE_JOB_LIST: Final = 0x0002000D
 _WAIT_OBJECT_0: Final = 0
 _WAIT_TIMEOUT: Final = 258
+_WAIT_FAILED: Final = 0xFFFFFFFF
 _INFINITE: Final = 0xFFFFFFFF
 _PROCESS_QUERY_LIMITED_INFORMATION: Final = 0x1000
 _SYNCHRONIZE: Final = 0x00100000
@@ -247,6 +248,9 @@ _kernel32.UpdateProcThreadAttribute.argtypes = (
 _kernel32.UpdateProcThreadAttribute.restype = wintypes.BOOL
 _kernel32.DeleteProcThreadAttributeList.argtypes = (ctypes.c_void_p,)
 _kernel32.DeleteProcThreadAttributeList.restype = None
+_DELETE_PROC_THREAD_ATTRIBUTE_LIST: Final[Callable[[Any], Any]] = (
+    _kernel32.DeleteProcThreadAttributeList
+)
 _kernel32.CreateProcessW.argtypes = (
     wintypes.LPCWSTR,
     wintypes.LPWSTR,
@@ -260,6 +264,35 @@ _kernel32.CreateProcessW.argtypes = (
     ctypes.POINTER(_PROCESS_INFORMATION),
 )
 _kernel32.CreateProcessW.restype = wintypes.BOOL
+
+
+def _attribute_list_delete_checkpoint(
+    _phase: Literal["before", "after"],
+) -> None:
+    """Test-only fault boundary around the pinned native cleanup call."""
+
+
+def _delete_attribute_list_once(attribute_list: ctypes.c_void_p) -> None:
+    """Call the trusted VOID cleanup once, then propagate checkpoint faults."""
+
+    pending_error: BaseException | None = None
+    try:
+        _attribute_list_delete_checkpoint("before")
+    except BaseException as exc:
+        pending_error = exc
+
+    # Preparation runs in a non-daemon worker. Controller interrupts occur on
+    # the caller thread, so the trusted VOID entrypoint itself is not wrapped
+    # by an ambiguous Python fault shim.
+    _DELETE_PROC_THREAD_ATTRIBUTE_LIST(attribute_list)
+
+    try:
+        _attribute_list_delete_checkpoint("after")
+    except BaseException as exc:
+        if pending_error is None:
+            pending_error = exc
+    if pending_error is not None:
+        raise pending_error
 
 
 def _last_error() -> OSError:
@@ -333,68 +366,67 @@ def _create_suspended_process_in_job(
         raise _last_error()
 
     process_information = _PROCESS_INFORMATION()
-    attribute_delete_attempted = False
     try:
-        handle_list = (wintypes.HANDLE * len(inherited_handles))(*inherited_handles)
-        if not _kernel32.UpdateProcThreadAttribute(
-            attribute_list,
-            0,
-            _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-            ctypes.cast(handle_list, ctypes.c_void_p),
-            ctypes.sizeof(handle_list),
-            None,
-            None,
-        ):
-            raise _last_error()
-        job_list = (wintypes.HANDLE * 1)(job_handle)
-        if not _kernel32.UpdateProcThreadAttribute(
-            attribute_list,
-            0,
-            _PROC_THREAD_ATTRIBUTE_JOB_LIST,
-            ctypes.cast(job_list, ctypes.c_void_p),
-            ctypes.sizeof(job_list),
-            None,
-            None,
-        ):
-            raise _last_error()
+        try:
+            handle_list = (wintypes.HANDLE * len(inherited_handles))(*inherited_handles)
+            if not _kernel32.UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                _PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                ctypes.cast(handle_list, ctypes.c_void_p),
+                ctypes.sizeof(handle_list),
+                None,
+                None,
+            ):
+                raise _last_error()
+            job_list = (wintypes.HANDLE * 1)(job_handle)
+            if not _kernel32.UpdateProcThreadAttribute(
+                attribute_list,
+                0,
+                _PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                ctypes.cast(job_list, ctypes.c_void_p),
+                ctypes.sizeof(job_list),
+                None,
+                None,
+            ):
+                raise _last_error()
 
-        startup = _STARTUPINFOEXW()
-        startup.StartupInfo.cb = ctypes.sizeof(_STARTUPINFOEXW)
-        startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
-        startup.StartupInfo.hStdInput = stdin_handle
-        startup.StartupInfo.hStdOutput = stdout_handle
-        startup.StartupInfo.hStdError = stderr_handle
-        startup.lpAttributeList = attribute_list
-        writable_command_line = ctypes.create_unicode_buffer(command_line)
-        empty_environment = ctypes.create_unicode_buffer(2)
-        creation_flags = (
-            _CREATE_SUSPENDED
-            | _CREATE_NO_WINDOW
-            | _CREATE_UNICODE_ENVIRONMENT
-            | _EXTENDED_STARTUPINFO_PRESENT
-        )
-        if not _kernel32.CreateProcessW(
-            application,
-            writable_command_line,
-            None,
-            None,
-            True,
-            creation_flags,
-            ctypes.cast(empty_environment, ctypes.c_void_p),
-            current_directory,
-            ctypes.byref(startup),
-            ctypes.byref(process_information),
-        ):
-            raise _last_error()
-        result = (
-            int(process_information.hProcess),
-            int(process_information.hThread),
-            int(process_information.dwProcessId),
-            int(process_information.dwThreadId),
-        )
-        attribute_delete_attempted = True
-        _kernel32.DeleteProcThreadAttributeList(attribute_list)
-        return result
+            startup = _STARTUPINFOEXW()
+            startup.StartupInfo.cb = ctypes.sizeof(_STARTUPINFOEXW)
+            startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
+            startup.StartupInfo.hStdInput = stdin_handle
+            startup.StartupInfo.hStdOutput = stdout_handle
+            startup.StartupInfo.hStdError = stderr_handle
+            startup.lpAttributeList = attribute_list
+            writable_command_line = ctypes.create_unicode_buffer(command_line)
+            empty_environment = ctypes.create_unicode_buffer(2)
+            creation_flags = (
+                _CREATE_SUSPENDED
+                | _CREATE_NO_WINDOW
+                | _CREATE_UNICODE_ENVIRONMENT
+                | _EXTENDED_STARTUPINFO_PRESENT
+            )
+            if not _kernel32.CreateProcessW(
+                application,
+                writable_command_line,
+                None,
+                None,
+                True,
+                creation_flags,
+                ctypes.cast(empty_environment, ctypes.c_void_p),
+                current_directory,
+                ctypes.byref(startup),
+                ctypes.byref(process_information),
+            ):
+                raise _last_error()
+            result = (
+                int(process_information.hProcess),
+                int(process_information.hThread),
+                int(process_information.dwProcessId),
+                int(process_information.dwThreadId),
+            )
+        finally:
+            _delete_attribute_list_once(attribute_list)
     except BaseException:
         if process_information.hProcess:
             with suppress(BaseException):
@@ -419,10 +451,7 @@ def _create_suspended_process_in_job(
             with suppress(BaseException):
                 _kernel32.CloseHandle(process_information.hProcess)
         raise
-    finally:
-        if not attribute_delete_attempted:
-            with suppress(BaseException):
-                _kernel32.DeleteProcThreadAttributeList(attribute_list)
+    return result
 
 
 def _set_job_limits(job: int, policy: IsolatedJobPolicyV1) -> None:

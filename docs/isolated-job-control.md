@@ -150,6 +150,9 @@ repository testは次を実Windows processで検証する。
 - preparation worker、caller固有lease、direct context entry、resume、running publication、wait中の
   controller abortを
   含む`BaseException`後のprocess tree cleanup。
+- non-daemon preparation workerが固定したtrusted `DeleteProcThreadAttributeList` entrypointを
+  一度だけ呼び、呼出し前後のfault checkpointで中断してもattribute list、child、process/thread
+  handleを回収する。
 - real approval/context/budget/storageのvertical sliceとterminal exact replay。
 - cancel request/ack/confirm各publication faultとprocess不在後のpermit closure。
 - restart/effect-unknown/reconciliation、partial publication、payload tamper。

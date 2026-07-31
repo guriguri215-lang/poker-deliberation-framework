@@ -168,6 +168,9 @@
   `prepare()` factoryを呼ぶだけではresourceを取得しない。process crash／OS停止ではJob handleの
   close-on-process-exitと`KILL_ON_JOB_CLOSE`に依存し、power-loss durabilityや別processからの
   強制回収を保証しない。
+- attribute-list cleanupはmodule load時に固定したtrusted kernel32 VOID entrypointをnon-daemon
+  preparation workerが一度だけ呼ぶ境界で検証する。そのentrypoint自体の悪意ある差替え、native
+  crash、controller process terminationに対するexact cleanupは保証しない。
 - P2-011B structural resumeはbudget stateだけをverified historyから再構成する。P2-012Bの通常resumeは
   verified `approval_required` checkpointに限定される。P2-013A/Bは
   approval actor/authority/action digest、明示reissue、expiry/revocation recheckを追加するが、

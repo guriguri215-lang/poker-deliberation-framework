@@ -1273,18 +1273,21 @@ def test_atomic_job_create_controller_abort_terminates_assigned_child(
     )
 
 
+@pytest.mark.parametrize("fault_phase", ["before", "after"])
 def test_attribute_list_delete_abort_terminates_created_job_child(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fault_phase: str,
 ) -> None:
     value = request(
         SyntheticOperation.HANG,
-        suffix="attribute-delete-controller-abort",
+        suffix=f"attribute-delete-{fault_phase}-controller-abort",
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
     observed: dict[str, int] = {}
     original_create_process = backend_module._kernel32.CreateProcessW
-    original_delete = backend_module._kernel32.DeleteProcThreadAttributeList
+    original_delete = backend_module._DELETE_PROC_THREAD_ATTRIBUTE_LIST
+    delete_calls = 0
 
     def capture_process(*args: Any) -> bool:
         created = bool(original_create_process(*args))
@@ -1299,11 +1302,18 @@ def test_attribute_list_delete_abort_terminates_created_job_child(
             observed["creation_time"] = backend_module._process_creation_time(
                 int(process_information.hProcess)
             )
+            observed["process_handle"] = int(process_information.hProcess)
+            observed["thread_handle"] = int(process_information.hThread)
         return created
 
-    def interrupt_after_delete(attribute_list: object) -> None:
+    def count_delete(attribute_list: object) -> None:
+        nonlocal delete_calls
+        delete_calls += 1
         original_delete(attribute_list)
-        raise KeyboardInterrupt("synthetic attribute-list delete abort")
+
+    def interrupt_at_checkpoint(phase: str) -> None:
+        if phase == fault_phase:
+            raise KeyboardInterrupt(f"synthetic attribute-list {phase} delete abort")
 
     monkeypatch.setattr(
         backend_module._kernel32,
@@ -1311,9 +1321,14 @@ def test_attribute_list_delete_abort_terminates_created_job_child(
         capture_process,
     )
     monkeypatch.setattr(
-        backend_module._kernel32,
-        "DeleteProcThreadAttributeList",
-        interrupt_after_delete,
+        backend_module,
+        "_DELETE_PROC_THREAD_ATTRIBUTE_LIST",
+        count_delete,
+    )
+    monkeypatch.setattr(
+        backend_module,
+        "_attribute_list_delete_checkpoint",
+        interrupt_at_checkpoint,
     )
     with (
         pytest.raises(KeyboardInterrupt),
@@ -1321,6 +1336,21 @@ def test_attribute_list_delete_abort_terminates_created_job_child(
     ):
         pass
 
+    assert delete_calls == 1
+    assert (
+        backend_module._kernel32.WaitForSingleObject(
+            backend_module.wintypes.HANDLE(observed["process_handle"]),
+            0,
+        )
+        == backend_module._WAIT_FAILED
+    )
+    assert (
+        backend_module._kernel32.WaitForSingleObject(
+            backend_module.wintypes.HANDLE(observed["thread_handle"]),
+            0,
+        )
+        == backend_module._WAIT_FAILED
+    )
     assert (
         WindowsJobBackend.process_identity_status(
             observed["process_id"],
@@ -1340,7 +1370,9 @@ def test_job_list_attribute_failure_refuses_before_process_creation(
         arguments=SyntheticArgumentsV1(duration_ms=5_000),
     )
     original_update = backend_module._kernel32.UpdateProcThreadAttribute
+    original_delete = backend_module._DELETE_PROC_THREAD_ATTRIBUTE_LIST
     update_calls = 0
+    delete_calls = 0
     create_called = False
 
     def fail_job_list(*args: Any) -> bool:
@@ -1356,8 +1388,18 @@ def test_job_list_attribute_failure_refuses_before_process_creation(
         create_called = True
         return False
 
+    def count_delete(attribute_list: object) -> None:
+        nonlocal delete_calls
+        delete_calls += 1
+        original_delete(attribute_list)
+
     monkeypatch.setattr(backend_module._kernel32, "UpdateProcThreadAttribute", fail_job_list)
     monkeypatch.setattr(backend_module._kernel32, "CreateProcessW", observe_create)
+    monkeypatch.setattr(
+        backend_module,
+        "_DELETE_PROC_THREAD_ATTRIBUTE_LIST",
+        count_delete,
+    )
     with (
         pytest.raises(OSError),
         WindowsJobBackend().prepare(
@@ -1368,7 +1410,44 @@ def test_job_list_attribute_failure_refuses_before_process_creation(
         pass
 
     assert update_calls == 2
+    assert delete_calls == 1
     assert create_called is False
+
+
+def test_attribute_list_delete_runs_once_on_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = request(
+        SyntheticOperation.HANG,
+        suffix="attribute-delete-success",
+        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+    )
+    original_delete = backend_module._DELETE_PROC_THREAD_ATTRIBUTE_LIST
+    delete_calls = 0
+
+    def count_delete(attribute_list: object) -> None:
+        nonlocal delete_calls
+        delete_calls += 1
+        original_delete(attribute_list)
+
+    monkeypatch.setattr(
+        backend_module,
+        "_DELETE_PROC_THREAD_ATTRIBUTE_LIST",
+        count_delete,
+    )
+    with WindowsJobBackend().prepare(value, policy_for(tmp_path)) as prepared:
+        assert delete_calls == 1
+        assert (
+            WindowsJobBackend.process_identity_status(
+                prepared.process_id,
+                prepared.creation_time_100ns,
+            )
+            == "same_live_process"
+        )
+
+    assert delete_calls == 1
+    assert prepared._closed is True
 
 
 def test_resume_controller_abort_after_kernel_resume_kills_job_tree(

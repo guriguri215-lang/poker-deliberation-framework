@@ -97,6 +97,8 @@ python scripts/run_bounded_natural_language_evaluation.py \
   --fixture tests/fixtures/bounded_natural_language/v1/scenarios.json \
   --source tests/fixtures/bounded_natural_language/v1/valid-ja.txt \
   --work-root tmp/bounded-nl-evaluation/work \
+  --source-commit <40-or-64-lowercase-hex-commit> \
+  --source-tree <40-or-64-lowercase-hex-tree> \
   --output tmp/bounded-nl-evaluation/result.json
 ```
 
@@ -104,5 +106,7 @@ fixtureはsource、hand、focal decision、tool plan、全source-binding tuple�
 binding件数を含みます。source byteが1つでも異なる場合は全caseをfail closedにし、各spanは固定tuple、
 元source slice、lexeme hashを再計算します。field extraction、source span、diagnostic、end-to-end tool
 evidence、storage replayを別々に採点し、5 metricがすべてexact `1.0`の場合だけ合格します。
+result schema v2はcaller-declared source commit/treeを必須でdigestへ拘束し、v1 resultはread-only互換として
+引き続き検証できます。
 これはversion 1 grammar境界の適合性であり、
 一般自然言語精度、戦略品質、GTO、均衡、release readinessの評価ではありません。

@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import codecs
 import hashlib
 import importlib.metadata
 import json
 import re
+import stat
 import subprocess
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Literal
+from typing import Any, Literal
+
+import yaml  # type: ignore[import-untyped]
 
 CheckStatus = Literal["pass", "review", "fail", "unknown"]
 EvidenceLabel = Literal["FACT", "UNKNOWN"]
@@ -23,6 +28,279 @@ ScanCategory = Literal["secret", "pii"]
 MAX_HISTORY_COMMITS = 10_000
 MAX_BLOB_SCAN_BYTES = 2_000_000
 LARGE_FILE_BYTES = 1_000_000
+RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
+    "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
+)
+EXPECTED_ROADMAP_SCHEMA_VERSION = "11.0.0"
+ROADMAP_MODULE_SHA256 = "379d8ef5a16011bde128e226b50f2c491cc44ab640f5bf71057a7cf4d032106c"
+RANGE_EQUITY_BRIDGE_DOC_SHA256 = "f240baf51dabb3a4d73900cf6d68c8f4fd74a706a0d2c35c11c119e6bf83cda8"
+CAPABILITY_DOCUMENT_PATHS = (
+    "README.md",
+    "docs/capabilities.md",
+    "docs/limitations.md",
+    "docs/range-grammar.md",
+    "docs/range-equity-bridge.md",
+    "docs/roadmap-status.md",
+)
+CAPABILITY_DOCUMENT_SET_SHA256 = "d6a01dd093bbf24a47591ab4f46a2ff8c74ca7d7bac17100302cfe0384c92c39"
+PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
+    "579e032386d3429ce3ff068f003d7f3ea9c42f97a97271a1d9af18dd46b5469f"
+)
+
+
+class _UniqueKeySafeLoader(yaml.SafeLoader):  # type: ignore[misc]
+    """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader,
+    node: Any,
+    deep: bool = False,
+) -> dict[object, object]:
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found an unhashable key",
+                key_node.start_mark,
+            ) from exc
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                f"found duplicate key {key!r}",
+                key_node.start_mark,
+            )
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
+def _strict_tree_equal(left: object, right: object) -> bool:
+    """Compare JSON-like trees without Python's bool/int equality collapse."""
+
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict) and isinstance(right, dict):
+        if len(left) != len(right) or set(left) != set(right):
+            return False
+        return all(_strict_tree_equal(left[key], right[key]) for key in left)
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(
+            _strict_tree_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    return left == right
+
+
+def _assigned_string_constant(path: Path, name: str) -> str | None:
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return None
+    stores = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == name
+    ]
+    blocked_dynamic_names = {
+        "__import__",
+        "eval",
+        "exec",
+        "getattr",
+        "globals",
+        "locals",
+        "setattr",
+        "vars",
+    }
+    for node in ast.walk(module):
+        if isinstance(node, ast.Name) and node.id in blocked_dynamic_names:
+            return None
+        if isinstance(node, ast.Attribute) and node.attr in {
+            *blocked_dynamic_names,
+            "__dict__",
+            "__setattr__",
+            "__setitem__",
+            "update",
+        }:
+            return None
+        if isinstance(node, ast.alias) and (node.asname or node.name.split(".")[-1]) == name:
+            return None
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            and node.name == name
+        ):
+            return None
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names:
+            return None
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.slice, ast.Constant)
+            and node.slice.value == name
+        ):
+            return None
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Store)
+            and node.attr == name
+        ):
+            return None
+    matches: list[str] = []
+    for statement in module.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if (
+            isinstance(target, ast.Name)
+            and target.id == name
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            matches.append(statement.value.value)
+    return matches[0] if len(stores) == 1 and len(matches) == 1 else None
+
+
+def _head_worktree_blob_binding(repo: Path) -> dict[str, object]:
+    raw_tree = _git(repo, "ls-tree", "-r", "-z", "--full-tree", "HEAD")
+    head_blobs: list[tuple[str, str, str]] = []
+    unsupported: list[str] = []
+    for raw_entry in raw_tree.split(b"\0"):
+        if not raw_entry or b"\t" not in raw_entry:
+            continue
+        metadata, raw_path = raw_entry.split(b"\t", 1)
+        parts = metadata.split()
+        path = _decode_path(raw_path)
+        if len(parts) != 3 or parts[1] != b"blob" or parts[0] not in {b"100644", b"100755"}:
+            unsupported.append(path)
+            continue
+        head_blobs.append((path, parts[0].decode("ascii"), parts[2].decode("ascii")))
+
+    index_paths = _tracked_paths(repo)
+    head_paths = [path for path, _mode, _oid in head_blobs]
+    unsafe_paths = [path for path in head_paths if "\n" in path or "\r" in path]
+    observed_oids: list[str] = []
+    hash_error = False
+    if not unsafe_paths:
+        try:
+            raw_observed = _git_input(
+                repo,
+                ("hash-object", "--stdin-paths"),
+                "".join(f"{path}\n" for path in head_paths).encode(
+                    "utf-8",
+                    errors="surrogateescape",
+                ),
+            )
+            observed_oids = raw_observed.decode("ascii").splitlines()
+        except (GitCommandError, UnicodeError):
+            hash_error = True
+    else:
+        hash_error = True
+
+    mismatches = [
+        path
+        for (path, _mode, expected_oid), observed_oid in zip(
+            head_blobs,
+            observed_oids,
+            strict=False,
+        )
+        if observed_oid != expected_oid
+    ]
+    if len(observed_oids) != len(head_blobs):
+        hash_error = True
+    if set(index_paths) != set(head_paths):
+        mismatches.extend(sorted(set(index_paths) ^ set(head_paths)))
+    mismatches.extend(unsupported)
+    mismatches.extend(unsafe_paths)
+    mismatches = sorted(set(mismatches))
+    inventory = [
+        {"path": path, "mode": mode, "head_blob_oid": oid} for path, mode, oid in head_blobs
+    ]
+    return {
+        "tracked_head_blob_match": not hash_error and not mismatches,
+        "tracked_head_blob_count": len(head_blobs),
+        "tracked_head_blob_inventory_sha256": hashlib.sha256(
+            json.dumps(
+                inventory,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8", errors="surrogateescape")
+        ).hexdigest(),
+        "tracked_head_blob_mismatch_paths": mismatches,
+        "tracked_head_blob_hash_error": hash_error,
+    }
+
+
+def _index_flag_binding(repo: Path) -> dict[str, object]:
+    raw = _git(repo, "ls-files", "-v", "-z")
+    flagged: list[dict[str, str]] = []
+    malformed = False
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        if len(record) < 3 or record[1:2] != b" ":
+            malformed = True
+            continue
+        tag = chr(record[0])
+        if tag == "S" or tag.islower():
+            flagged.append({"tag": tag, "path": _decode_path(record[2:])})
+    return {
+        "tracked_index_flags_clean": not malformed and not flagged,
+        "tracked_index_flagged": flagged,
+        "tracked_index_flags_malformed": malformed,
+        "tracked_index_flags_sha256": hashlib.sha256(raw).hexdigest(),
+    }
+
+
+def _repository_binding_snapshot(repo: Path) -> dict[str, object]:
+    commit = _git(repo, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
+    tree = _git(repo, "rev-parse", "--verify", "HEAD^{tree}").decode("ascii").strip()
+    replace_refs = sorted(
+        line
+        for line in _git(
+            repo,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/replace",
+        )
+        .decode("utf-8", errors="surrogateescape")
+        .splitlines()
+        if line
+    )
+    tracked_status = _git(repo, "status", "--porcelain=v1", "--untracked-files=no", "-z")
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", commit) or not re.fullmatch(
+        r"[0-9a-f]{40}|[0-9a-f]{64}", tree
+    ):
+        raise GitCommandError("repository HEAD binding is not a canonical object ID")
+    blob_binding = _head_worktree_blob_binding(repo)
+    flag_binding = _index_flag_binding(repo)
+    tracked_worktree_clean = (
+        not tracked_status
+        and not replace_refs
+        and bool(blob_binding["tracked_head_blob_match"])
+        and bool(flag_binding["tracked_index_flags_clean"])
+    )
+    return {
+        "source_commit_id": commit,
+        "source_tree_id": tree,
+        "tracked_worktree_clean": tracked_worktree_clean,
+        "tracked_status_sha256": hashlib.sha256(tracked_status).hexdigest(),
+        "replace_refs_clean": not replace_refs,
+        "replace_refs": replace_refs,
+        **blob_binding,
+        **flag_binding,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,10 +423,30 @@ class GitCommandError(RuntimeError):
 
 def _git(repo: Path, *args: str, allowed_returncodes: Sequence[int] = (0,)) -> bytes:
     completed = subprocess.run(
-        ["git", *args],
+        ["git", "--no-replace-objects", *args],
         cwd=repo,
         check=False,
         capture_output=True,
+    )
+    if completed.returncode not in allowed_returncodes:
+        command = "git " + " ".join(args)
+        raise GitCommandError(f"{command} failed with exit code {completed.returncode}")
+    return completed.stdout
+
+
+def _git_input(
+    repo: Path,
+    args: Sequence[str],
+    input_bytes: bytes,
+    *,
+    allowed_returncodes: Sequence[int] = (0,),
+) -> bytes:
+    completed = subprocess.run(
+        ["git", "--no-replace-objects", *args],
+        cwd=repo,
+        check=False,
+        capture_output=True,
+        input=input_bytes,
     )
     if completed.returncode not in allowed_returncodes:
         command = "git " + " ".join(args)
@@ -183,6 +481,11 @@ def _safe_worktree_path(repo: Path, git_path: str) -> Path:
     candidate = repo.joinpath(*parts)
     resolved = candidate.resolve(strict=True)
     _validate_worktree_resolution(repo, candidate, resolved)
+    metadata = candidate.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"worktree path is not a regular file: {git_path!r}")
+    if metadata.st_nlink != 1:
+        raise ValueError(f"worktree path has multiple hard links: {git_path!r}")
     return candidate
 
 
@@ -782,15 +1085,42 @@ def _ignored_probe(repo: Path, path: str) -> bool:
     return completed.returncode == 0
 
 
+def _public_document_inventory(repo: Path) -> tuple[list[str], str]:
+    paths = sorted(
+        {
+            path.relative_to(repo).as_posix()
+            for path in (*repo.glob("*.md"), *(repo / "docs").rglob("*.md"))
+            if path.is_file() and path.name != "AGENTS.md"
+        }
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            paths,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return paths, digest
+
+
 def _capability_docs_check(repo: Path) -> CheckResult:
     required = {
-        "README.md": ["docs/capabilities.md", "LocalProvider", "OpenAIAgentsProvider"],
+        "README.md": [
+            "docs/capabilities.md",
+            "docs/range-equity-bridge.md",
+            "LocalProvider",
+            "OpenAIAgentsProvider",
+            "P3-016B",
+        ],
         "docs/capabilities.md": [
             "implemented",
             "disabled",
             "unavailable",
             "planned",
             "full_nlhe_equilibrium",
+            "versioned_nlhe_river_equity_bridge",
+            "P3-016B",
+            "990",
         ],
         "docs/limitations.md": [
             "outbound analyze",
@@ -798,12 +1128,25 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "multiway",
             "site-specific parser",
             "OS-level",
+            "P3-016B",
+            "all-in",
+            "990",
         ],
         "docs/range-grammar.md": [
             "poker-deliberation.nlhe-range",
             "RNG_E_PROVENANCE",
             "millionths",
             "自然言語",
+            "P3-016B",
+            "990",
+        ],
+        "docs/range-equity-bridge.md": [
+            "P3-016B",
+            "range_validate",
+            "holdem_equity",
+            "990",
+            "all-in",
+            "P3-030C",
         ],
     }
     missing: list[str] = []
@@ -814,19 +1157,111 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             continue
         text = path.read_text(encoding="utf-8")
         missing.extend(f"{relative}:{marker}" for marker in markers if marker not in text)
+    document_hashes = {
+        relative: hashlib.sha256((repo / relative).read_bytes()).hexdigest()
+        for relative in CAPABILITY_DOCUMENT_PATHS
+        if (repo / relative).is_file()
+    }
+    document_set_sha256 = hashlib.sha256(
+        json.dumps(
+            document_hashes,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    if (
+        set(document_hashes) != set(CAPABILITY_DOCUMENT_PATHS)
+        or document_set_sha256 != CAPABILITY_DOCUMENT_SET_SHA256
+    ):
+        missing.append("public_capability_documents:canonical_document_set_identity")
+    public_document_paths, public_document_inventory_sha256 = _public_document_inventory(repo)
+    if public_document_inventory_sha256 != PUBLIC_DOCUMENT_INVENTORY_SHA256:
+        missing.append("public_documents:canonical_inventory_identity")
+    bridge_path = repo / "docs/range-equity-bridge.md"
+    if (
+        not bridge_path.is_file()
+        or hashlib.sha256(bridge_path.read_bytes()).hexdigest() != RANGE_EQUITY_BRIDGE_DOC_SHA256
+    ):
+        missing.append("docs/range-equity-bridge.md:canonical_document_identity")
+    bridge_gate = (
+        "P3-030Cは、このbridgeをbounded Japanese call/fold reviewで使用するための"
+        "別Decision gateである。"
+    )
+    bridge_gate_lines = (
+        [
+            line.strip()
+            for line in bridge_path.read_text(encoding="utf-8").splitlines()
+            if "P3-030C" in line
+        ]
+        if bridge_path.is_file()
+        else []
+    )
+    if bridge_gate_lines != [bridge_gate]:
+        missing.append("docs/range-equity-bridge.md:p3_030c_separate_decision_gate")
+    roadmap_path = repo / "src/poker_deliberation/roadmap_status.json"
+    try:
+        roadmap = json.loads(roadmap_path.read_text(encoding="utf-8"))
+        roadmap_schema = roadmap.get("schema_version") if isinstance(roadmap, dict) else None
+    except (OSError, json.JSONDecodeError):
+        roadmap_schema = None
+    if roadmap_schema != EXPECTED_ROADMAP_SCHEMA_VERSION:
+        missing.append("src/poker_deliberation/roadmap_status.json:schema_version")
+    else:
+        readme = repo / "README.md"
+        readme_lines = (
+            set(readme.read_text(encoding="utf-8").splitlines()) if readme.is_file() else set()
+        )
+        if not any(
+            re.fullmatch(
+                rf"\*\*FACT\*\*: milestone/RMの公開状態と技術契約の正は、schema "
+                rf"{re.escape(roadmap_schema)}のpublic projectionである",
+                line.strip(),
+            )
+            for line in readme_lines
+        ):
+            missing.append("README.md:roadmap_schema_statement")
+        roadmap_doc = repo / "docs/roadmap-status.md"
+        roadmap_lines = (
+            {line.strip() for line in roadmap_doc.read_text(encoding="utf-8").splitlines()}
+            if roadmap_doc.is_file()
+            else set()
+        )
+        if f"- schema version: `{roadmap_schema}`" not in roadmap_lines:
+            missing.append("docs/roadmap-status.md:schema_version_field")
+        roadmap_module = repo / "src/poker_deliberation/roadmap.py"
+        if (
+            not roadmap_module.is_file()
+            or hashlib.sha256(roadmap_module.read_bytes()).hexdigest() != ROADMAP_MODULE_SHA256
+            or _assigned_string_constant(roadmap_module, "ROADMAP_SCHEMA_VERSION") != roadmap_schema
+        ):
+            missing.append("src/poker_deliberation/roadmap.py:ROADMAP_SCHEMA_VERSION")
     return CheckResult(
         "capability_documentation",
         "pass" if not missing else "fail",
         "FACT",
         "Tracked capability statements were checked for required implementation-boundary markers.",
-        {"missing_markers": missing},
+        {
+            "missing_markers": missing,
+            "document_set_paths": list(CAPABILITY_DOCUMENT_PATHS),
+            "document_set_sha256": document_set_sha256,
+            "public_document_paths": public_document_paths,
+            "public_document_inventory_sha256": public_document_inventory_sha256,
+        },
     )
 
 
 def _range_grammar_artifacts_check(repo: Path) -> CheckResult:
+    from poker_deliberation.range_equity_evaluation import (
+        load_range_equity_evaluation_fixture,
+    )
+    from poker_deliberation.tools.contracts import tool_contracts
+
     fixture_path = repo / "tests/fixtures/range/v1/cases.json"
     evaluation_path = repo / "evals/datasets/p3_016a/v1/cases.json"
     manifest_path = repo / "tools/manifest.yaml"
+    bridge_fixture_path = repo / "tests/fixtures/range_equity/v1/scenarios.json"
+    bridge_runner_path = repo / "scripts/run_range_equity_evaluation.py"
     failures: list[str] = []
     fixture: dict[str, object] = {}
     evaluation: dict[str, object] = {}
@@ -861,16 +1296,48 @@ def _range_grammar_artifacts_check(repo: Path) -> CheckResult:
             failures.append(f"{label}:license")
     if fixture and evaluation and fixture.get("cases") != evaluation.get("cases"):
         failures.append("fixture_evaluation_case_drift")
-    if not manifest_path.is_file() or "name: range_validate" not in manifest_path.read_text(
-        encoding="utf-8"
+    manifest_value: object = None
+    if manifest_path.is_file():
+        with suppress(OSError, yaml.YAMLError):
+            manifest_value = yaml.load(
+                manifest_path.read_text(encoding="utf-8"),
+                Loader=_UniqueKeySafeLoader,
+            )
+    expected_entries = {contract.name: contract.manifest_entry() for contract in tool_contracts()}
+    observed_entries = manifest_value.get("tools") if isinstance(manifest_value, dict) else None
+    if (
+        not isinstance(manifest_value, dict)
+        or not _strict_tree_equal(manifest_value.get("schema_version"), 2)
+        or manifest_value.get("canonical_source")
+        != "poker_deliberation.tools.contracts.tool_contracts"
+        or not isinstance(observed_entries, list)
     ):
-        failures.append("tool_manifest:range_validate")
+        failures.append("tool_manifest:document")
+        observed_entries = []
+    for tool_name in ("range_validate", "combos", "holdem_equity"):
+        matches = [
+            entry
+            for entry in observed_entries
+            if isinstance(entry, dict) and entry.get("name") == tool_name
+        ]
+        if len(matches) != 1 or not _strict_tree_equal(matches[0], expected_entries[tool_name]):
+            failures.append(f"tool_manifest:{tool_name}")
+    if not bridge_runner_path.is_file():
+        failures.append("range_equity_evaluation:runner_missing")
+    elif hashlib.sha256(bridge_runner_path.read_bytes()).hexdigest() != (
+        RANGE_EQUITY_EVALUATION_RUNNER_SHA256
+    ):
+        failures.append("range_equity_evaluation:runner_identity")
+    try:
+        load_range_equity_evaluation_fixture(bridge_fixture_path)
+    except (OSError, ValueError):
+        failures.append("range_equity_evaluation:fixture_invalid")
     return CheckResult(
         "versioned_range_grammar_artifacts",
         "pass" if not failures else "fail",
         "FACT",
-        "The bounded range grammar fixture, conformance dataset, license, and tool manifest "
-        "identity were checked offline.",
+        "The bounded range grammar and P3-016B evaluation fixtures, runner, license, and tool "
+        "manifest identity were checked offline.",
         {"failures": failures},
     )
 
@@ -887,6 +1354,7 @@ def run_preflight(repo: Path) -> dict[str, object]:
     if not (repo / ".git").exists():
         raise ValueError(f"not a Git repository: {repo}")
 
+    binding_before = _repository_binding_snapshot(repo)
     tracked = _tracked_paths(repo)
     public_worktree = _public_worktree_paths(repo)
     untracked_public = sorted(set(public_worktree) - set(tracked))
@@ -972,6 +1440,11 @@ def run_preflight(repo: Path) -> dict[str, object]:
         item for item in worktree_findings if item.path in example_paths and item.category == "pii"
     ]
     workflow_paths = [path for path in tracked if path.startswith(".github/workflows/")]
+    binding_after = _repository_binding_snapshot(repo)
+    binding_stable = binding_before == binding_after
+    tracked_worktree_clean = bool(binding_before["tracked_worktree_clean"]) and bool(
+        binding_after["tracked_worktree_clean"]
+    )
 
     scan_complete = (
         history_complete and not worktree_skipped and not history_skipped and metadata_complete
@@ -999,6 +1472,18 @@ def run_preflight(repo: Path) -> dict[str, object]:
     pii_label: EvidenceLabel = "UNKNOWN" if pii_status == "unknown" else "FACT"
 
     checks: list[CheckResult] = [
+        CheckResult(
+            "fixed_source_repository_binding",
+            "pass" if binding_stable and tracked_worktree_clean else "fail",
+            "FACT",
+            "HEAD commit/tree and tracked-worktree state were captured before and after the scan.",
+            {
+                "before": binding_before,
+                "after": binding_after,
+                "stable": binding_stable,
+                "tracked_worktree_clean": tracked_worktree_clean,
+            },
+        ),
         CheckResult(
             "tracked_and_history_secret_scan",
             secret_status,
@@ -1134,9 +1619,13 @@ def run_preflight(repo: Path) -> dict[str, object]:
         ),
     ]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "repository": ".",
+        "repository_binding": {
+            **binding_after,
+            "stable_during_scan": binding_stable,
+        },
         "offline": True,
         "external_operations": [],
         "scope": {
@@ -1158,6 +1647,9 @@ def render_preflight_markdown(report: dict[str, object]) -> str:
         "",
         f"- Generated: `{report['generated_at']}`",
         f"- Repository: `{report['repository']}`",
+        "- Repository binding: `"
+        + json.dumps(report.get("repository_binding", {}), sort_keys=True)
+        + "`",
         "- External operations: none",
         "- Publication decision: `human_review_required`",
         "",

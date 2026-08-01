@@ -20,19 +20,30 @@ from poker_deliberation.storage.revision_canonical import canonical_domain_sha25
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "confirmed_review" / "v1" / "scenarios.json"
+SOURCE_COMMIT = "a" * 40
+SOURCE_TREE = "b" * 40
+
+
+def _run(fixture: ConfirmedReviewEvaluationFixtureV1, work_root: Path):
+    return run_confirmed_review_evaluation(
+        fixture,
+        work_root=work_root,
+        source_commit_id=SOURCE_COMMIT,
+        source_tree_id=SOURCE_TREE,
+    )
 
 
 def test_confirmed_review_evaluation_scores_all_declared_cases_exactly(tmp_path) -> None:
     fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
-    result = run_confirmed_review_evaluation(
-        fixture,
-        work_root=tmp_path,
-    )
+    result = _run(fixture, tmp_path)
     assert fixture.family_id == EVALUATION_FAMILY_ID
     assert tuple(item.case_id for item in result.case_results) == REQUIRED_CASE_IDS
     assert all(item.score == "1.0" and item.passed for item in result.case_results)
     assert result.overall_score == "1.0"
     assert result.passed is True
+    assert result.schema_version == "2.0.0"
+    assert result.source_commit_id == SOURCE_COMMIT
+    assert result.source_tree_id == SOURCE_TREE
     assert len(result.result_sha256) == 64
 
 
@@ -62,7 +73,7 @@ def test_fixture_expected_evidence_mutation_fails_closed() -> None:
 )
 def test_forged_evaluation_result_is_rejected(tmp_path, mutation: str) -> None:
     fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
-    result = run_confirmed_review_evaluation(fixture, work_root=tmp_path / mutation)
+    result = _run(fixture, tmp_path / mutation)
     value = result.model_dump(mode="json")
     if mutation == "case":
         value["case_results"][0]["observed_evidence"] = ["forged-evidence"]
@@ -79,7 +90,7 @@ def test_forged_evaluation_result_is_rejected(tmp_path, mutation: str) -> None:
     else:
         value["result_sha256"] = "0" * 64
     with pytest.raises(ValidationError):
-        ConfirmedReviewEvaluationResultV1.model_validate_json(
+        type(result).model_validate_json(
             json.dumps(value),
             strict=True,
         )
@@ -87,7 +98,7 @@ def test_forged_evaluation_result_is_rejected(tmp_path, mutation: str) -> None:
 
 def test_verified_evaluation_result_loader_recomputes_digest(tmp_path) -> None:
     fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
-    result = run_confirmed_review_evaluation(fixture, work_root=tmp_path / "run")
+    result = _run(fixture, tmp_path / "run")
     path = tmp_path / "result.json"
     path.write_text(result.model_dump_json(), encoding="utf-8")
     assert load_confirmed_review_evaluation_result(path) == result
@@ -95,8 +106,8 @@ def test_verified_evaluation_result_loader_recomputes_digest(tmp_path) -> None:
 
 def test_evaluation_reuses_work_root_without_cross_run_collision(tmp_path) -> None:
     fixture = load_confirmed_review_evaluation_fixture(FIXTURE)
-    first = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
-    second = run_confirmed_review_evaluation(fixture, work_root=tmp_path)
+    first = _run(fixture, tmp_path)
+    second = _run(fixture, tmp_path)
     assert second == first
 
 
@@ -108,4 +119,21 @@ def test_evaluation_handler_identity_is_immutable_and_verified(tmp_path, monkeyp
     }
     monkeypatch.setattr(evaluation_module, "_HANDLERS", replacement)
     with pytest.raises(ValueError, match="handler inventory mismatch"):
-        run_confirmed_review_evaluation(fixture, work_root=tmp_path)
+        _run(fixture, tmp_path)
+
+
+def test_v1_result_remains_readable_after_v2_source_binding(tmp_path: Path) -> None:
+    result = _run(load_confirmed_review_evaluation_fixture(FIXTURE), tmp_path / "v2")
+    value = result.model_dump(mode="json")
+    value["schema_version"] = "1.0.0"
+    value.pop("source_commit_id")
+    value.pop("source_tree_id")
+    value["result_sha256"] = canonical_domain_sha256(
+        EVALUATION_FAMILY_ID,
+        {key: item for key, item in value.items() if key != "result_sha256"},
+    )
+    path = tmp_path / "v1.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    loaded = load_confirmed_review_evaluation_result(path)
+    assert isinstance(loaded, ConfirmedReviewEvaluationResultV1)
+    assert loaded.schema_version == "1.0.0"

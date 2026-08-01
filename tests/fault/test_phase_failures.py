@@ -33,7 +33,9 @@ class FailingNormalizationService(NormalizationService):
         raise RuntimeError("forced pure compute failure")
 
 
-def test_pure_phase_failure_does_not_write_its_or_later_artifacts(tmp_path: Path) -> None:
+def test_pure_phase_failure_keeps_only_the_preexecution_namespace_reservation(
+    tmp_path: Path,
+) -> None:
     run_id = "run-normalization-failure"
     orchestrator = Orchestrator(
         AppConfig(runs_dir=tmp_path / "runs"),
@@ -52,7 +54,9 @@ def test_pure_phase_failure_does_not_write_its_or_later_artifacts(tmp_path: Path
     with pytest.raises(ProductRunError) as failure:
         orchestrator.product_store.read_current(run_id)
     assert failure.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
-    assert not (orchestrator.product_store.runs_root / run_id).exists()
+    product_run = orchestrator.product_store.runs_root / run_id
+    assert {item.name for item in product_run.iterdir()} == {".terminal-store"}
+    assert not (product_run / ".terminal-store" / "current.json").exists()
 
 
 class CorruptRoutingService(RoutingService):
@@ -208,4 +212,6 @@ def test_final_write_fault_keeps_known_p2_010b_atomicity_limitation(
     with pytest.raises(ProductRunError) as failure:
         orchestrator.product_store.read_current(run_id)
     assert failure.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
-    assert not (orchestrator.product_store.runs_root / run_id).exists()
+    product_run = orchestrator.product_store.runs_root / run_id
+    assert {item.name for item in product_run.iterdir()} == {".terminal-store"}
+    assert not (product_run / ".terminal-store" / "current.json").exists()

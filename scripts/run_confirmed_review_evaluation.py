@@ -21,11 +21,15 @@ def main() -> int:
     parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--source-tree", required=True)
     args = parser.parse_args()
     fixture = load_confirmed_review_evaluation_fixture(args.fixture)
     result = run_confirmed_review_evaluation(
         fixture,
         work_root=args.work_root.resolve(),
+        source_commit_id=args.source_commit,
+        source_tree_id=args.source_tree,
     )
     if args.output is not None:
         args.output.write_bytes(canonical_json_bytes(result))

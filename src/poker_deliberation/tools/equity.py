@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Iterator
 from itertools import combinations
 
 from poker_deliberation.tools.cards import DECK, evaluate_holdem, normalize_cards
@@ -85,22 +86,29 @@ def holdem_equity(
             f"above limit {max_exact_evaluations}"
         )
     if use_exact:
-        weighted_score = 0.0
-        weighted_total = 0.0
         wins = ties = losses = 0
         evaluations = 0
-        for hero_combo, villain_combo, pair_weight in pairs:
-            excluded = known | set(hero_combo.cards) | set(villain_combo.cards)
-            exact_remaining = tuple(card for card in DECK if card not in excluded)
-            for future_cards in combinations(exact_remaining, cards_to_come):
-                full_board = (*normalized_board, *future_cards)
-                score = _score(hero_combo.cards, villain_combo.cards, full_board)
-                weighted_score += score * pair_weight
-                weighted_total += pair_weight
-                wins += score == 1.0
-                ties += score == 0.5
-                losses += score == 0.0
-                evaluations += 1
+
+        def weighted_score_terms() -> Iterator[float]:
+            nonlocal wins, ties, losses, evaluations
+            for hero_combo, villain_combo, pair_weight in pairs:
+                excluded = known | set(hero_combo.cards) | set(villain_combo.cards)
+                exact_remaining = tuple(card for card in DECK if card not in excluded)
+                pair_score = 0.0
+                for future_cards in combinations(exact_remaining, cards_to_come):
+                    full_board = (*normalized_board, *future_cards)
+                    score = _score(hero_combo.cards, villain_combo.cards, full_board)
+                    pair_score += score
+                    wins += score == 1.0
+                    ties += score == 0.5
+                    losses += score == 0.0
+                    evaluations += 1
+                yield pair_score * pair_weight
+
+        weighted_score = math.fsum(weighted_score_terms())
+        weighted_total = math.fsum(
+            pair_weight * boards_per_pair for _hero, _villain, pair_weight in pairs
+        )
         return {
             "method": "exact_enumeration",
             "exact": True,

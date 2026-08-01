@@ -69,7 +69,13 @@ def test_preflight_scans_removed_history_but_not_ignored_content(tmp_path: Path)
     _git(repo, "commit", "-m", "remove history fixture")
 
     report = run_preflight(repo)
+    assert report["schema_version"] == 2
     assert report["repository"] == "."
+    binding = report["repository_binding"]
+    assert isinstance(binding, dict)
+    assert binding["tracked_worktree_clean"] is True
+    assert binding["stable_during_scan"] is True
+    assert _check(report, "fixed_source_repository_binding")["status"] == "pass"
     secret_check = _check(report, "tracked_and_history_secret_scan")
     assert secret_check["status"] == "unknown"
     assert secret_check["evidence_label"] == "UNKNOWN"
@@ -116,6 +122,88 @@ def test_preflight_scans_removed_history_but_not_ignored_content(tmp_path: Path)
     assert isinstance(inventory_details, dict)
     assert inventory_details["tag_count"] == 0
     assert inventory_details["tags"] == []
+
+    (repo / "README.md").write_text("tracked dirty\n", encoding="utf-8")
+    dirty = run_preflight(repo)
+    dirty_binding = dirty["repository_binding"]
+    assert isinstance(dirty_binding, dict)
+    assert dirty_binding["tracked_worktree_clean"] is False
+    assert _check(dirty, "fixed_source_repository_binding")["status"] == "fail"
+
+
+@pytest.mark.parametrize("flag", ("--skip-worktree", "--assume-unchanged"))
+def test_preflight_rejects_index_flags_and_hidden_tracked_byte_changes(
+    tmp_path: Path,
+    flag: str,
+) -> None:
+    repo = tmp_path / "flagged-fixture"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Fixture Author")
+    _git(repo, "config", "user.email", "fixture" + "@" + "example.invalid")
+    (repo / ".gitignore").write_text(".pytest-tmp/\n", encoding="utf-8")
+    (repo / "LICENSE").write_text("MIT License\n", encoding="utf-8")
+    (repo / "README.md").write_text("fixed source\n", encoding="utf-8")
+    (repo / "requirements.lock").write_text("", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "fixed source fixture")
+    _git(repo, "update-index", flag, "README.md")
+    (repo / "README.md").write_text("hidden changed source\n", encoding="utf-8")
+
+    report = run_preflight(repo)
+    binding = report["repository_binding"]
+    assert isinstance(binding, dict)
+    assert binding["tracked_worktree_clean"] is False
+    assert binding["tracked_index_flags_clean"] is False
+    assert binding["tracked_head_blob_match"] is False
+    assert binding["tracked_head_blob_mismatch_paths"] == ["README.md"]
+    assert _check(report, "fixed_source_repository_binding")["status"] == "fail"
+
+
+def test_repository_binding_rejects_git_replace_refs(tmp_path: Path) -> None:
+    repo = tmp_path / "replace-fixture"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.name", "Fixture Author")
+    _git(repo, "config", "user.email", "fixture" + "@" + "example.invalid")
+    readme = repo / "README.md"
+    readme.write_text("original tree\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "original")
+    original_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    original_tree = subprocess.run(
+        ["git", "--no-replace-objects", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    readme.write_text("replacement tree\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "replacement")
+    replacement_commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo, "replace", original_commit, replacement_commit)
+    _git(repo, "checkout", "--detach", original_commit)
+
+    binding = public_preflight._repository_binding_snapshot(repo)
+
+    assert binding["source_commit_id"] == original_commit
+    assert binding["source_tree_id"] == original_tree
+    assert binding["replace_refs_clean"] is False
+    assert binding["replace_refs"] == [f"refs/replace/{original_commit}"]
+    assert binding["tracked_worktree_clean"] is False
 
 
 def _create_metadata_fixture(repo: Path) -> dict[str, str]:
@@ -403,7 +491,7 @@ def test_incomplete_metadata_scan_keeps_secret_and_pii_unknown(
             raise GitCommandError("synthetic commit read failure")
         if failure == "tag" and args[:2] == ("cat-file", "tag"):
             return b"object invalid\n\n\xff"
-        if failure == "ref" and args and args[0] == "for-each-ref":
+        if failure == "ref" and args and args[0] == "for-each-ref" and args[-1] != "refs/replace":
             raise GitCommandError("synthetic ref enumeration failure")
         return real_git(git_repo, *args, **kwargs)
 

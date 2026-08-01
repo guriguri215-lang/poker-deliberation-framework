@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "10.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "11.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -189,6 +189,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P3-014A",
         "P3-015A",
         "P3-016A",
+        "P3-016B",
         "P3-017A",
         "P3-030A",
         "P3-030B",
@@ -322,7 +323,10 @@ def test_p3_016a_registration_is_versioned_provenance_bound_and_additive() -> No
     milestones = _milestones(load_roadmap())
 
     assert items["RM-016"]["status"] == "in_progress"
-    assert items["RM-016"]["capabilities"] == ["versioned_nlhe_range_grammar"]
+    assert items["RM-016"]["capabilities"] == [
+        "versioned_nlhe_range_grammar",
+        "versioned_nlhe_river_equity_bridge",
+    ]
     assert items["RM-016"]["milestones"] == {
         "entry": "P3-016A",
         "completion": None,
@@ -331,6 +335,14 @@ def test_p3_016a_registration_is_versioned_provenance_bound_and_additive() -> No
     assert milestones["P3-016A"]["dependencies"] == ["RM-006", "P3-014A"]
     assert "poker-deliberation.nlhe-range grammar version 1.0.0" in (milestones["P3-016A"]["scope"])
     assert "no plus, intervals, exclusions" in milestones["P3-016A"]["scope"]
+    assert milestones["P3-016B"]["status"] == "completed"
+    assert milestones["P3-016B"]["dependencies"] == ["P3-016A"]
+    assert "exact-only enumeration capped at 990" in milestones["P3-016B"]["scope"]
+    assert "no natural-language intake" in milestones["P3-016B"]["scope"]
+    assert "all-in" in milestones["P3-016B"]["scope"]
+    assert "deterministic exact-evidence evaluation" in milestones["P3-016B"]["scope"]
+    assert "scripts/run_range_equity_evaluation.py" in items["RM-016"]["targets"]
+    assert "tests/integration/test_range_equity_evaluation.py" in items["RM-016"]["tests"]
     assert items["RM-016"]["decision_gate"]["required"] is True  # type: ignore[index]
     assert items["RM-030"]["status"] == "in_progress"
     assert items["RM-030"]["dependencies"] == ["RM-014"]
@@ -601,7 +613,8 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "10.0.0"
+    assert summary["schema_version"] == "11.0.0"
+    assert "schema 11.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
@@ -610,7 +623,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 19,
+        "completed": 20,
         "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []

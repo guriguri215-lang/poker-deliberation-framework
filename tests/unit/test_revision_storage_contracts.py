@@ -39,6 +39,7 @@ from poker_deliberation.storage.revision_models import (
     StorageRevisionPointerV1,
     ToolBindingV1,
 )
+from poker_deliberation.storage.terminal_canonical import _validate_json_value
 
 NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
 
@@ -200,6 +201,21 @@ def test_canonical_json_rejects_duplicate_keys_nonnfc_and_noncanonical_time() ->
         provenance_bindings=(_local_binding(),),
     )
     assert artifact.exact_bytes == b"{}"
+
+
+def test_canonical_json_maps_excessive_nesting_to_stable_error() -> None:
+    nested: object = None
+    for _ in range(5_000):
+        nested = [nested]
+
+    with pytest.raises(CanonicalStorageError):
+        canonical_json_bytes({"output": nested})
+
+    encoded = b'{"output":' + (b"[" * 5_000) + b"null" + (b"]" * 5_000) + b"}"
+    with pytest.raises(CanonicalStorageError):
+        parse_canonical_json(encoded)
+    with pytest.raises(CanonicalStorageError):
+        _validate_json_value("tool_results/tool-result-depth.json", encoded)
 
 
 @pytest.mark.parametrize(

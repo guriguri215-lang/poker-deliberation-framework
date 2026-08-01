@@ -37,13 +37,28 @@
   external check.
 - No external poker solver, external card library, paid range, or private dataset is bundled.
 - No full NLHE game-tree equilibrium, CFR/CFR+, node locking, or solver exploitability computation.
-- Equity is heads-up NLHE only; multiway and PLO equity are unsupported.
+- Equity is heads-up NLHE only; multiway and PLO equity are unsupported. P3-016Bのversioned
+  range bridgeは、専用admissionを通過したcash river、Heroと単一target、exact-only、最大990
+  evaluationsだけを扱う。
 - P3-016Aのversioned range grammarは、provenanceとexact game-conditionを持つ1 opponent range
   に限り、explicit combo、pair、canonical descending suited/offsuit class、最大6桁の`@` decimal
   weightを受理する。weightはinteger millionthsで保持し、overlapはblocker前に拒否する。
-  `+`、interval、exclusion、colon/sign/exponent weight、複数versioned range、equity integration、
-  import/site/solver-native format、自然言語range inferenceは未実装である。legacy
-  `RangeDefinition`、legacy parser、既存equity semanticsは変更しない。
+  `+`、interval、exclusion、colon/sign/exponent weight、複数versioned range、一般的なequity
+  integration、import/site/solver-native format、自然言語range inferenceは未実装である。
+  P3-016Bは別contractとしてcash riverの単一rangeだけをper-run authorityで直列化したproduct namespace予約、
+  buffer外のexclusive-create pre-execution admission commitment、strict `range_equity_binding.json`、
+  exact-only `holdem_equity`、整数/有理数oracle、
+  complete/failed-prefix semantic replayへ接続する。preflop/flop/turn、Monte Carlo、multiway、call EV、判断推奨は
+  含まず、all-inも受理しない。eligible判定は拘束済みaction prefixの明示的なfold projectionであり、bridge自身は
+  betting legality、stack、uncalled return、side potを再検証しない。legacy `RangeDefinition`、
+  legacy parser、caller-supplied ordinary `holdem_equity` input、既存equity semanticsは変更しない。
+  product namespace予約、record作成、buffer作成は同一per-run kernel authority内で行う。orphan record、
+  予約済みnamespace、同時run-ID競合はbuffer作成・tool実行前に拒否する。pre-execution recordは初回publication前の
+  mutable run bufferからbindingと全markerを同時に除去するdowngradeを検出する。record、全payload、terminal control
+  chainを同じOS権限で一括削除・再構築するwriterに
+  対するkeyed authenticity trust anchorではない。
+  namespace予約後にphaseまたはbuffer writeが失敗した場合、payload revisionやcurrent pointerは公開しないが、
+  空の予約済みproduct namespaceは残り、同じrun IDの自動再利用は許可しない。
 - Legacy `hand_validator` does not fully model straddles, returned uncalled bets, site-specific rake
   timing, side pots, or every jurisdictional minimum-raise rule; its existing semantics remain
   unchanged.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -163,8 +164,8 @@ class BoundedNaturalLanguageMetricV1(_EvaluationModel):
         return self
 
 
-class BoundedNaturalLanguageEvaluationResultV1(_EvaluationModel):
-    schema_version: Literal["1.0.0"] = EVALUATION_SCHEMA_VERSION
+class _BoundedNaturalLanguageEvaluationResultBase(_EvaluationModel):
+    schema_version: str
     family_id: Literal["poker-bounded-nl-evaluation-json-v1"] = EVALUATION_FAMILY_ID
     fixture_id: Literal["bounded-japanese-nlhe-cash-cases-v1"] = (
         "bounded-japanese-nlhe-cash-cases-v1"
@@ -180,7 +181,7 @@ class BoundedNaturalLanguageEvaluationResultV1(_EvaluationModel):
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
-    def exact_result(self) -> BoundedNaturalLanguageEvaluationResultV1:
+    def exact_result(self) -> _BoundedNaturalLanguageEvaluationResultBase:
         if (
             tuple((item.case_id, item.expected_evidence) for item in self.case_results)
             != (REQUIRED_CASE_EVIDENCE)
@@ -201,6 +202,18 @@ class BoundedNaturalLanguageEvaluationResultV1(_EvaluationModel):
         return self
 
 
+class BoundedNaturalLanguageEvaluationResultV1(_BoundedNaturalLanguageEvaluationResultBase):
+    schema_version: Literal["1.0.0"] = EVALUATION_SCHEMA_VERSION
+
+
+class BoundedNaturalLanguageEvaluationResultV2(_BoundedNaturalLanguageEvaluationResultBase):
+    """Additive fixed-source envelope; the V1 result remains readable."""
+
+    schema_version: Literal["2.0.0"] = "2.0.0"
+    source_commit_id: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    source_tree_id: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
 def load_bounded_natural_language_evaluation_fixture(
     path: Path,
 ) -> BoundedNaturalLanguageEvaluationFixtureV1:
@@ -211,10 +224,20 @@ def load_bounded_natural_language_evaluation_fixture(
 
 def load_bounded_natural_language_evaluation_result(
     path: Path,
-) -> BoundedNaturalLanguageEvaluationResultV1:
-    return BoundedNaturalLanguageEvaluationResultV1.model_validate_json(
-        path.read_bytes(), strict=True
+) -> BoundedNaturalLanguageEvaluationResultV1 | BoundedNaturalLanguageEvaluationResultV2:
+    data = path.read_bytes()
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError("bounded-language evaluation result is not JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("bounded-language evaluation result must be an object")
+    model = (
+        BoundedNaturalLanguageEvaluationResultV2
+        if payload.get("schema_version") == "2.0.0"
+        else BoundedNaturalLanguageEvaluationResultV1
     )
+    return model.model_validate_json(data, strict=True)
 
 
 def _prepare(source: bytes, case_id: str) -> BoundedIntakePreparationResultV1:
@@ -544,7 +567,9 @@ def run_bounded_natural_language_evaluation(
     *,
     source_path: Path,
     work_root: Path,
-) -> BoundedNaturalLanguageEvaluationResultV1:
+    source_commit_id: str,
+    source_tree_id: str,
+) -> BoundedNaturalLanguageEvaluationResultV2:
     """Run the fixed repository-owned suite; no caller data or provider is used."""
 
     if tuple(item.case_id for item in fixture.cases) != REQUIRED_CASE_IDS:
@@ -600,23 +625,27 @@ def run_bounded_natural_language_evaluation(
     passed = all(item.passed for item in results) and all(item.score == "1.0" for item in metrics)
     overall_score: Literal["0.0", "1.0"] = "1.0" if passed else "0.0"
     payload = {
-        "schema_version": EVALUATION_SCHEMA_VERSION,
+        "schema_version": "2.0.0",
         "family_id": EVALUATION_FAMILY_ID,
         "fixture_id": fixture.fixture_id,
         "scoring": fixture.scoring,
         "threshold": fixture.threshold,
         "interpretation": "bounded_grammar_contract_only",
         "source_sha256": source_sha256,
+        "source_commit_id": source_commit_id,
+        "source_tree_id": source_tree_id,
         "case_results": tuple(item.model_dump(mode="json") for item in results),
         "metrics": tuple(item.model_dump(mode="json") for item in metrics),
         "overall_score": overall_score,
         "passed": passed,
     }
-    return BoundedNaturalLanguageEvaluationResultV1(
+    return BoundedNaturalLanguageEvaluationResultV2(
         case_results=tuple(results),
         metrics=tuple(metrics),
         overall_score=overall_score,
         passed=passed,
         source_sha256=source_sha256,
+        source_commit_id=source_commit_id,
+        source_tree_id=source_tree_id,
         result_sha256=canonical_domain_sha256(EVALUATION_FAMILY_ID, payload),
     )

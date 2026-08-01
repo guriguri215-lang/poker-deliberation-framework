@@ -932,6 +932,7 @@ _FIXED_RUN_PAYLOAD_ARTIFACTS = frozenset(
         "bounded_nl_candidate.json",
         "bounded_nl_confirmation.json",
         "input.json",
+        "range_equity_binding.json",
         "normalization.json",
         "normalized_case.json",
         "assumptions.json",

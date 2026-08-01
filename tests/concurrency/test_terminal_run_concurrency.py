@@ -28,13 +28,7 @@ def test_two_writers_cannot_last_write_win_the_same_run(tmp_path: Path) -> None:
 
     def attempt(label: str):  # type: ignore[no-untyped-def]
         orchestrator = Orchestrator(config)
-        original = orchestrator._publish_buffer
-
-        def synchronized(run_id, report):  # type: ignore[no-untyped-def]
-            barrier.wait(timeout=10)
-            return original(run_id, report)
-
-        orchestrator._publish_buffer = synchronized  # type: ignore[method-assign]
+        barrier.wait(timeout=10)
         try:
             return orchestrator.run(
                 CaseInput(

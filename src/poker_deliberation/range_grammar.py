@@ -59,6 +59,13 @@ def _canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _canonical_tree_matches(observed: object, expected: object) -> bool:
+    try:
+        return _canonical_json_bytes(observed) == _canonical_json_bytes(expected)
+    except (RecursionError, TypeError, ValueError):
+        return False
+
+
 def action_prefix_sha256(hand: CanonicalHand, as_of_action_index: int) -> str:
     """Hash the exact canonical action prefix used by range conditions."""
 
@@ -466,12 +473,18 @@ def _replay_range_validate_result(result: ToolResult) -> RangeValidationResultV1
         _canonical_json_bytes(result.input),
         strict=True,
     )
+    output_bytes = _canonical_json_bytes(result.output)
     observed = RangeValidationResultV1.model_validate_json(
-        _canonical_json_bytes(result.output),
+        output_bytes,
         strict=True,
     )
+    if _canonical_json_bytes(observed.model_dump(mode="python")) != output_bytes:
+        raise ValueError("range_validate output is not in its unique canonical model form")
     expected = validate_versioned_range(request.hand, request.range_definition)
-    if observed != expected:
+    if observed != expected or not _canonical_tree_matches(
+        observed.model_dump(mode="python"),
+        expected.model_dump(mode="python"),
+    ):
         raise ValueError("range_validate result differs from deterministic replay")
     return observed
 
@@ -488,7 +501,7 @@ def _replay_combos_result(
         result.status is not ToolStatus.SUCCESS
         or result.numeric_exactness is not NumericalExactness.FLOATING_VERIFIED
         or result.contract_version != "2.0.0"
-        or result.input != expected_payload
+        or not _canonical_tree_matches(result.input, expected_payload)
     ):
         raise ValueError("versioned range combos result lacks the required product binding")
     payload = CombosInput.model_validate_json(
@@ -516,11 +529,17 @@ def _replay_combos_result(
         ),
         strict=True,
     )
+    output_bytes = _canonical_json_bytes(result.output)
     observed = CombosOutput.model_validate_json(
-        _canonical_json_bytes(result.output),
+        output_bytes,
         strict=True,
     )
-    if observed != expected:
+    if _canonical_json_bytes(observed.model_dump(mode="python", exclude_none=True)) != output_bytes:
+        raise ValueError("versioned range combos output is not uniquely canonical")
+    if observed != expected or not _canonical_tree_matches(
+        observed.model_dump(mode="python", exclude_none=True),
+        expected.model_dump(mode="python", exclude_none=True),
+    ):
         raise ValueError("versioned range combos result differs from deterministic replay")
     contract = contract_by_name()["combos"]
     evidence = contract.verify_floating(result.input, result.output)
@@ -540,15 +559,40 @@ def _verify_failed_product_result(
     *,
     expected_payload: dict[str, object],
 ) -> None:
+    from poker_deliberation.tools.contracts import (
+        contract_by_name,
+        versioned_range_bridge_failure_error,
+    )
+
+    contract = contract_by_name().get(result.tool_name)
     if (
-        result.status is ToolStatus.SUCCESS
-        or result.contract_version != "2.0.0"
-        or result.input != expected_payload
-        or result.output
+        contract is None
+        or result.status is not ToolStatus.FAILED
+        or result.contract_version != contract.contract_version
+        or not _canonical_tree_matches(result.input, expected_payload)
+        or result.output != {}
         or result.exactness is not Exactness.UNAVAILABLE
         or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
+        or result.assumptions != list(contract.assumptions)
+        or result.version != contract.version
+        or result.model_qualifier is not None
+        or result.method is not None
+        or result.stochastic is not None
+        or result.seed is not None
+        or result.samples is not None
+        or result.iterations is not None
+        or result.confidence_interval is not None
+        or result.confidence_level is not None
+        or result.error_metadata is not None
+        or result.stopping_condition is not None
         or result.verification is not None
-        or not result.error
+        or result.warnings != []
+        or result.error != versioned_range_bridge_failure_error(result.tool_name)
+        or result.reproduce_command
+        != (
+            f"poker-deliberate calculate {result.tool_name} "
+            "--analysis-scope retrospective --input <input.json>"
+        )
     ):
         raise ValueError("failed versioned range product result lacks its exact failure binding")
 
@@ -594,7 +638,11 @@ def verify_versioned_range_tool_chain(
         "hand": case.hand.model_dump(mode="json"),
         "range_definition": definition.model_dump(mode="json"),
     }
-    product_results = [result for result in range_results if result.input == expected_range_payload]
+    product_results = [
+        result
+        for result in range_results
+        if _canonical_tree_matches(result.input, expected_range_payload)
+    ]
     if len(range_results) != 1 or len(product_results) != 1:
         raise ValueError("versioned range product chain requires one bound validation result")
     validation_result = product_results[0]
@@ -622,11 +670,13 @@ def verify_versioned_range_tool_chain(
         tool_inputs = {}
     supplied_validation = tool_inputs.get("range_validate")
     supplied_combos = tool_inputs.get("combos")
-    conflicted = supplied_validation not in (
-        None,
-        {},
-        expected_range_payload,
-    ) or supplied_combos not in (None, {}, expected_combo_payload)
+    conflicted = (
+        supplied_validation not in (None, {})
+        and not _canonical_tree_matches(supplied_validation, expected_range_payload)
+    ) or (
+        supplied_combos not in (None, {})
+        and not _canonical_tree_matches(supplied_combos, expected_combo_payload)
+    )
     if conflicted:
         if combo_results:
             raise ValueError("conflicting versioned range inputs must fail closed")

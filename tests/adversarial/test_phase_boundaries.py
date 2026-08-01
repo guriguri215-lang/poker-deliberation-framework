@@ -16,13 +16,19 @@ from poker_deliberation.phases import (
     ArtifactIntent,
     ArtifactKind,
     PhaseContractError,
+    PhaseFailureCode,
     PhaseId,
+    PhaseStatus,
     make_phase_request,
     validate_tool_research_output,
 )
 from poker_deliberation.phases.contracts import successful_outcome
 from poker_deliberation.phases.executors import ToolResearchExecutor
-from poker_deliberation.phases.models import ContextDispatch, ToolResearchInput
+from poker_deliberation.phases.models import (
+    ContextDispatch,
+    ToolExecutionBinding,
+    ToolResearchInput,
+)
 from poker_deliberation.phases.services import SynthesisService
 from poker_deliberation.providers.base import (
     ProviderAvailability,
@@ -30,6 +36,9 @@ from poker_deliberation.providers.base import (
     ProviderStatus,
 )
 from poker_deliberation.providers.local import LocalProvider
+from poker_deliberation.range_equity import expected_versioned_range_equity_input
+from poker_deliberation.range_grammar import validate_versioned_range
+from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentContext,
@@ -40,6 +49,8 @@ from poker_deliberation.schemas import (
     ToolResult,
     ToolStatus,
 )
+from poker_deliberation.tools.registry import default_registry
+from tests.range_support import versioned_river_equity_case
 
 
 class MaliciousReportProvider:
@@ -334,17 +345,244 @@ def test_successful_tool_result_with_wrong_contract_version_fails_closed() -> No
         ),
     )
     outcome = executor.run(request)
+    assert outcome.status is PhaseStatus.FAILED
+    assert outcome.output is None
+    assert outcome.failure is not None
+    assert outcome.failure.code is PhaseFailureCode.CORRELATION
+    assert "correlation mismatch" in outcome.failure.message
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "requested_by"),
+    [
+        ("range_validate", "versioned-range-product"),
+        ("combos", "versioned-range-product"),
+        ("holdem_equity", "versioned-range-bridge"),
+    ],
+)
+def test_failed_bridge_result_with_wrong_contract_version_fails_phase_correlation(
+    tool_name: str,
+    requested_by: str,
+) -> None:
+    case = versioned_river_equity_case()
+    assert case.hand is not None
+    definition = case.hand.known_ranges[0]
+    assert isinstance(definition, VersionedRangeDefinitionV1)
+    validation_payload = {
+        "schema_version": "1.0.0",
+        "hand": case.hand.model_dump(mode="json"),
+        "range_definition": definition.model_dump(mode="json"),
+    }
+    validation = validate_versioned_range(case.hand, definition)
+    assert validation.status == "success"
+    payloads = {
+        "range_validate": validation_payload,
+        "combos": {"range": validation.canonical_notation, "dead_cards": []},
+        "holdem_equity": expected_versioned_range_equity_input(case, validation),
+    }
+    payload = payloads[tool_name]
+    registry = default_registry()
+    direct = registry.execute(
+        tool_name,
+        payload,
+        contract_version="999.0.0",
+        _bind_versioned_range_failure=True,
+    )
+    assert direct.status is ToolStatus.FAILED
+    assert "contract version mismatch" in (direct.error or "")
+    assert "versioned-range bridge contract" not in (direct.error or "")
+    tool_request = ToolRequest(
+        request_id=f"tool-request-version-{tool_name}",
+        tool_name=tool_name,
+        input=payload,
+        requested_by=requested_by,
+        contract_version="999.0.0",
+    )
+    request = make_phase_request(
+        run_id=f"run-tool-version-{tool_name}",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id=f"phase-tool-version-{tool_name}",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=(f"tool-result-version-{tool_name}",),
+        ),
+    )
+
+    outcome = ToolResearchExecutor(registry, record_sensitive_data=False).run(request)
+
+    assert outcome.status is PhaseStatus.FAILED
+    assert outcome.output is None
+    assert outcome.failure is not None
+    assert outcome.failure.code is PhaseFailureCode.CORRELATION
+
+
+@pytest.mark.parametrize(
+    "requested_by",
+    ["versioned-range-product", "versioned-range-bridge"],
+)
+def test_forged_versioned_range_marker_cannot_bind_non_bridge_failure(
+    requested_by: str,
+) -> None:
+    tool_request = ToolRequest(
+        request_id=f"tool-request-marker-{requested_by}",
+        tool_name="hand_validator",
+        input={},
+        requested_by=requested_by,
+    )
+    request = make_phase_request(
+        run_id="run-tool-marker",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id=f"phase-tool-marker-{requested_by}",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-marker",),
+        ),
+    )
+
+    outcome = ToolResearchExecutor(default_registry(), record_sensitive_data=False).run(request)
+
     assert outcome.output is not None
-    binding = outcome.output.bindings[0]
-    assert binding.requested_contract_version == "2.0.0"
-    assert binding.supported_contract_version == "999.0.0"
-    assert binding.result.status is ToolStatus.FAILED
-    assert "correlation mismatch" in (binding.result.error or "")
+    result = outcome.output.bindings[0].result
+    assert result.status is ToolStatus.FAILED
+    assert result.error is not None
+    assert "ValidationError" in result.error
+    assert "versioned-range bridge contract" not in result.error
+
+
+@pytest.mark.parametrize(
+    ("payload_update", "expected_diagnostic"),
+    [
+        ({"game_type": "PLO"}, "NLHE only"),
+        ({"opponent_ranges": ["QQ"]}, "exactly one villain"),
+    ],
+)
+def test_forged_bridge_marker_preserves_ordinary_equity_diagnostic(
+    payload_update: dict[str, object],
+    expected_diagnostic: str,
+) -> None:
+    payload: dict[str, object] = {
+        "hero_range": "AsAh",
+        "villain_range": "KsKh",
+        "board": ["2c", "3d", "4h", "5s", "6c"],
+        "dead_cards": [],
+        "game_type": "NLHE",
+        "mode": "exact",
+        "max_exact_evaluations": 990,
+    }
+    payload.update(payload_update)
+    tool_request = ToolRequest(
+        request_id="tool-request-forged-bridge",
+        tool_name="holdem_equity",
+        input=payload,
+        requested_by="versioned-range-bridge",
+        contract_version="2.0.0",
+    )
+    request = make_phase_request(
+        run_id="run-tool-forged-bridge",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-forged-bridge",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-forged-bridge",),
+        ),
+    )
+
+    registry = default_registry()
+    direct = registry.execute(
+        "holdem_equity",
+        payload,
+        contract_version="2.0.0",
+        _bind_versioned_range_failure=True,
+    )
+    assert expected_diagnostic in (direct.error or "")
+    assert "versioned-range bridge contract" not in (direct.error or "")
+
+    outcome = ToolResearchExecutor(registry, record_sensitive_data=False).run(request)
+
+    assert outcome.output is not None
+    result = outcome.output.bindings[0].result
+    assert result.status is ToolStatus.FAILED
+    assert result.error is not None
+    assert expected_diagnostic in result.error
+    assert "versioned-range bridge contract" not in result.error
+    binding_payload = outcome.output.bindings[0].model_dump(mode="python")
+    binding_payload["request"]["contract_version"] = "999.0.0"
+    binding_payload["requested_contract_version"] = "999.0.0"
+    with pytest.raises(ValidationError, match="tool result contract version mismatch"):
+        ToolExecutionBinding.model_validate(binding_payload)
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "payload", "requested_by"),
+    [
+        (
+            "combos",
+            {"range": "not-a-range", "dead_cards": []},
+            "versioned-range-product",
+        ),
+        (
+            "holdem_equity",
+            {
+                "hero_range": "not-a-range",
+                "villain_range": "KsKh",
+                "board": ["2c", "3d", "4h", "5s", "6c"],
+                "dead_cards": [],
+                "game_type": "NLHE",
+                "mode": "exact",
+                "max_exact_evaluations": 990,
+            },
+            "versioned-range-bridge",
+        ),
+    ],
+)
+def test_forged_bridge_marker_preserves_invalid_range_diagnostic(
+    tool_name: str,
+    payload: dict[str, object],
+    requested_by: str,
+) -> None:
+    tool_request = ToolRequest(
+        request_id=f"tool-request-invalid-{tool_name}",
+        tool_name=tool_name,
+        input=payload,
+        requested_by=requested_by,
+        contract_version="2.0.0",
+    )
+    request = make_phase_request(
+        run_id=f"run-tool-invalid-{tool_name}",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id=f"phase-tool-invalid-{tool_name}",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=(f"tool-result-invalid-{tool_name}",),
+        ),
+    )
+
+    registry = default_registry()
+    direct = registry.execute(
+        tool_name,
+        payload,
+        contract_version="2.0.0",
+        _bind_versioned_range_failure=True,
+    )
+    assert "unsupported range token" in (direct.error or "")
+    assert "versioned-range bridge contract" not in (direct.error or "")
+
+    outcome = ToolResearchExecutor(registry, record_sensitive_data=False).run(request)
+
+    assert outcome.output is not None
+    result = outcome.output.bindings[0].result
+    assert result.status is ToolStatus.FAILED
+    assert "unsupported range" in (result.error or "")
+    assert "versioned-range bridge contract" not in (result.error or "")
 
 
 def test_tool_binding_from_another_phase_attempt_is_rejected() -> None:
     executor = ToolResearchExecutor(  # type: ignore[arg-type]
-        MismatchedContractRegistry(), record_sensitive_data=False
+        UnsafeResultRegistry(), record_sensitive_data=False
     )
     tool_request = ToolRequest(
         request_id="tool-request-outer",

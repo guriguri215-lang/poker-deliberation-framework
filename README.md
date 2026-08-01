@@ -72,7 +72,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 10.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 11.0.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。
@@ -172,6 +172,20 @@ versioned rangeは[`poker-deliberation.nlhe-range` grammar v1](docs/range-gramma
 明示syntax、source rights、content hash、game condition、action prefix、blockerを検証してから
 canonical comboへ変換します。自然言語からrangeを推測せず、複数range、equityへの自動接続、
 external import、solver/GTO主張はこのsliceに含みません。
+P3-016Bの[専用river range-equity bridge](docs/range-equity-bridge.md)は、明示admissionを通過した
+NLHE cash riverの単一rangeだけを`range_validate`、`combos`、exact-only `holdem_equity`、
+整数/有理数oracle、durable replayへ接続します。通常のrange・confirmed-review経路は拡張しません。
+専用のexact-evidence評価は次で実行し、3 metricすべてが`1.0`の場合だけcontract合格です。
+
+```powershell
+.\.venv\Scripts\python.exe scripts\run_range_equity_evaluation.py `
+  --fixture tests\fixtures\range_equity\v1\scenarios.json `
+  --source-commit COMMIT_SHA `
+  --source-tree TREE_SHA `
+  --work-root tmp\range-equity-evaluation\work `
+  --output tmp\range-equity-evaluation\result.json
+```
+
 承認待ちのCLIはレポートを出力して終了コード3を返します。
 正常完了は0、入力・計算失敗および`failed_with_limitations`は2です。
 
@@ -369,7 +383,9 @@ OS/processのlong-path設定にも左右されます。今回の確認対象は�
 `scripts/public_preflight.py`はtracked worktree、非ignoredなuntracked候補、到達可能なGit履歴の
 blobとcommit/tag/ref metadataを外部通信なしで検査し、秘密・PII候補の値を表示せずredacted指紋だけの
 JSON/Markdown報告を生成します。objectの読取・parse・decodeまたはref列挙が不完全なら`UNKNOWN`を
-保持します。author/committer/tagger identityは機械的候補であり、個人情報の確定判定ではありません。
+保持します。report schema v2は走査前後のHEAD commit/treeとtracked status digestを記録し、tracked dirty
+または走査中のbinding変化を`fail`にします。author/committer/tagger identityは機械的候補であり、
+個人情報の確定判定ではありません。
 ignoredな`user_materials/`と`runs/`の内容は自動走査しません。実行方法と人間判断項目は
 [公開前チェックリスト](docs/public-release-checklist.md)を参照してください。
 

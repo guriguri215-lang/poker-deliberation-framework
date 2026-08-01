@@ -139,8 +139,8 @@ class ConfirmedReviewEvaluationCaseResultV1(_EvaluationModel):
         return self
 
 
-class ConfirmedReviewEvaluationResultV1(_EvaluationModel):
-    schema_version: Literal["1.0.0"] = "1.0.0"
+class _ConfirmedReviewEvaluationResultBase(_EvaluationModel):
+    schema_version: str
     family_id: Literal["poker-confirmed-review-evaluation-json-v1"] = EVALUATION_FAMILY_ID
     fixture_id: Literal["confirmed-review-contract-cases-v1"] = "confirmed-review-contract-cases-v1"
     scoring: Literal["exact-evidence-set-v1"] = "exact-evidence-set-v1"
@@ -151,7 +151,7 @@ class ConfirmedReviewEvaluationResultV1(_EvaluationModel):
     result_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
-    def inventory_score_and_digest_are_exact(self) -> ConfirmedReviewEvaluationResultV1:
+    def inventory_score_and_digest_are_exact(self) -> _ConfirmedReviewEvaluationResultBase:
         inventory = tuple((item.case_id, item.expected_evidence) for item in self.case_results)
         case_ids = tuple(case_id for case_id, _evidence in inventory)
         if (
@@ -172,6 +172,18 @@ class ConfirmedReviewEvaluationResultV1(_EvaluationModel):
         return self
 
 
+class ConfirmedReviewEvaluationResultV1(_ConfirmedReviewEvaluationResultBase):
+    schema_version: Literal["1.0.0"] = "1.0.0"
+
+
+class ConfirmedReviewEvaluationResultV2(_ConfirmedReviewEvaluationResultBase):
+    """Additive fixed-source envelope; the V1 result remains readable."""
+
+    schema_version: Literal["2.0.0"] = "2.0.0"
+    source_commit_id: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+    source_tree_id: str = Field(pattern=r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
 def load_confirmed_review_evaluation_fixture(
     path: Path,
 ) -> ConfirmedReviewEvaluationFixtureV1:
@@ -183,11 +195,20 @@ def load_confirmed_review_evaluation_fixture(
 
 def load_confirmed_review_evaluation_result(
     path: Path,
-) -> ConfirmedReviewEvaluationResultV1:
-    return ConfirmedReviewEvaluationResultV1.model_validate_json(
-        path.read_bytes(),
-        strict=True,
+) -> ConfirmedReviewEvaluationResultV1 | ConfirmedReviewEvaluationResultV2:
+    data = path.read_bytes()
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError as exc:
+        raise ValueError("confirmed-review evaluation result is not JSON") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("confirmed-review evaluation result must be an object")
+    model = (
+        ConfirmedReviewEvaluationResultV2
+        if payload.get("schema_version") == "2.0.0"
+        else ConfirmedReviewEvaluationResultV1
     )
+    return model.model_validate_json(data, strict=True)
 
 
 def _candidate_payload(*, intake_id: str) -> dict[str, Any]:
@@ -863,7 +884,9 @@ def run_confirmed_review_evaluation(
     fixture: ConfirmedReviewEvaluationFixtureV1,
     *,
     work_root: Path,
-) -> ConfirmedReviewEvaluationResultV1:
+    source_commit_id: str,
+    source_tree_id: str,
+) -> ConfirmedReviewEvaluationResultV2:
     current_handlers = tuple(_HANDLERS.items())
     if (
         tuple(_HANDLERS) != REQUIRED_CASE_IDS
@@ -900,11 +923,13 @@ def run_confirmed_review_evaluation(
         result.passed and result.score == EVALUATION_THRESHOLD for result in results
     )
     result_payload = {
-        "schema_version": EVALUATION_SCHEMA_VERSION,
+        "schema_version": "2.0.0",
         "family_id": EVALUATION_FAMILY_ID,
         "fixture_id": "confirmed-review-contract-cases-v1",
         "scoring": "exact-evidence-set-v1",
         "threshold": EVALUATION_THRESHOLD,
+        "source_commit_id": source_commit_id,
+        "source_tree_id": source_tree_id,
         "case_results": tuple(result.model_dump(mode="json") for result in results),
         "overall_score": "1.0" if all_passed else "0.0",
         "passed": all_passed,
@@ -913,7 +938,7 @@ def run_confirmed_review_evaluation(
         EVALUATION_FAMILY_ID,
         result_payload,
     )
-    return ConfirmedReviewEvaluationResultV1.model_validate_json(
+    return ConfirmedReviewEvaluationResultV2.model_validate_json(
         json.dumps(
             {
                 **result_payload,

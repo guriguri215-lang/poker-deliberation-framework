@@ -320,6 +320,18 @@ class HoldemEquityOutput(StrictModel):
         if self.exact:
             if self.method != "exact_enumeration" or self.evaluations is None:
                 raise ValueError("exact enumeration metadata is incomplete")
+            monte_carlo_metadata = (
+                self.confidence_interval_95,
+                self.confidence_interval_method,
+                self.samples,
+                self.seed,
+                self.wins,
+                self.ties,
+                self.losses,
+                self.estimated_exact_evaluations,
+            )
+            if any(value is not None for value in monte_carlo_metadata):
+                raise ValueError("exact enumeration contains Monte Carlo metadata")
             counts = (self.unweighted_wins, self.unweighted_ties, self.unweighted_losses)
             if (
                 any(value is None for value in counts)
@@ -327,11 +339,23 @@ class HoldemEquityOutput(StrictModel):
             ):
                 raise ValueError("exact enumeration counts do not match evaluations")
         else:
+            exact_metadata = (
+                self.evaluations,
+                self.unweighted_wins,
+                self.unweighted_ties,
+                self.unweighted_losses,
+            )
             if (
                 self.method != "monte_carlo"
                 or self.samples is None
                 or self.seed is None
                 or self.confidence_interval_95 is None
+                or self.confidence_interval_method is None
+                or self.wins is None
+                or self.ties is None
+                or self.losses is None
+                or self.estimated_exact_evaluations is None
+                or any(value is not None for value in exact_metadata)
             ):
                 raise ValueError("Monte Carlo metadata is incomplete")
             if sum((self.wins or 0, self.ties or 0, self.losses or 0)) != self.samples:
@@ -669,6 +693,93 @@ COMMON_FAILURES = (
     "hard resource limit violation",
     "strict output schema or invariant failure",
 )
+
+VERSIONED_RANGE_BRIDGE_TOOL_NAMES = frozenset({"range_validate", "combos", "holdem_equity"})
+VERSIONED_RANGE_BRIDGE_CONTRACT_VERSION = "2.0.0"
+
+
+def versioned_range_bridge_failure_input_matches(
+    tool_name: str,
+    payload: dict[str, Any],
+    contract_version: str | None,
+) -> bool:
+    """Return whether a request is a valid deterministic internal bridge input."""
+
+    try:
+        if contract_version != VERSIONED_RANGE_BRIDGE_CONTRACT_VERSION:
+            return False
+        if tool_name == "range_validate" and set(payload) == {
+            "schema_version",
+            "hand",
+            "range_definition",
+        }:
+            from poker_deliberation.range_grammar import validate_versioned_range
+
+            parsed_range = RangeValidateInput.model_validate(payload)
+            return (
+                validate_versioned_range(
+                    parsed_range.hand,
+                    parsed_range.range_definition,
+                ).status
+                == "success"
+            )
+        if tool_name == "combos" and set(payload) == {"range", "dead_cards"}:
+            from poker_deliberation.tools.combinations import parse_weighted_range
+
+            parsed_combos = CombosInput.model_validate(payload)
+            shape_matches = (
+                parsed_combos.hand_class is None
+                and parsed_combos.range is not None
+                and parsed_combos.dead_cards == []
+            )
+            if not shape_matches or parsed_combos.range is None:
+                return False
+            parse_weighted_range(parsed_combos.range, ())
+            return True
+        if tool_name == "holdem_equity" and set(payload) == {
+            "hero_range",
+            "villain_range",
+            "board",
+            "dead_cards",
+            "game_type",
+            "mode",
+            "max_exact_evaluations",
+        }:
+            from poker_deliberation.range_equity_models import RANGE_EQUITY_MAX_EVALUATIONS
+            from poker_deliberation.tools.equity import holdem_equity
+
+            parsed_equity = HoldemEquityInput.model_validate(payload)
+            shape_matches = (
+                parsed_equity.game_type == "NLHE"
+                and parsed_equity.mode == "exact"
+                and len(parsed_equity.board) == 5
+                and parsed_equity.dead_cards == []
+                and parsed_equity.max_exact_evaluations == RANGE_EQUITY_MAX_EVALUATIONS
+                and parsed_equity.opponent_ranges is None
+                and parsed_equity.villain_ranges is None
+            )
+            if not shape_matches:
+                return False
+            output = holdem_equity(
+                hero_range=parsed_equity.hero_range,
+                villain_range=parsed_equity.villain_range,
+                board=tuple(parsed_equity.board),
+                dead_cards=(),
+                mode="exact",
+                max_exact_evaluations=parsed_equity.max_exact_evaluations,
+            )
+            return output.get("exact") is True
+    except (TypeError, ValueError, KeyError, ArithmeticError, RecursionError):
+        return False
+    return False
+
+
+def versioned_range_bridge_failure_error(tool_name: str) -> str:
+    """Return the one replayable failure value for a bridge tool."""
+
+    if tool_name not in VERSIONED_RANGE_BRIDGE_TOOL_NAMES:
+        raise KeyError(tool_name)
+    return f"{tool_name} failed under its deterministic versioned-range bridge contract"
 
 
 def _combos_exactness(output: dict[str, Any]) -> NumericalExactness:

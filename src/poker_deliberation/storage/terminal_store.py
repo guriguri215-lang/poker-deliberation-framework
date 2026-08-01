@@ -50,6 +50,7 @@ from poker_deliberation.budgets.durable_store import (
     reservation_request_sha256,
 )
 from poker_deliberation.budgets.retry import FailureCategory
+from poker_deliberation.storage.directory_durability import sync_directory
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_domain_sha256,
@@ -914,6 +915,26 @@ class TerminalRunStore:
         self._verify_namespace(run_id)
         return run, control, transactions, revisions
 
+    def _sync_bootstrap_namespace(self, run_id: str) -> None:
+        """Durably commit the complete empty product namespace before tool execution."""
+
+        run, control, transactions, revisions = self._paths(run_id)
+        self._verify_namespace(run_id)
+        for label, path in (
+            ("transactions", transactions),
+            ("revisions", revisions),
+            ("control", control),
+            ("run", run),
+            ("runs_root", self.runs_root),
+            ("revision_root", self.revision_root),
+            ("revision_root_parent", self.revision_root.parent),
+        ):
+            sync_directory(
+                path,
+                injector=self.fault_injector,
+                hook=f"bootstrap_namespace.{label}",
+            )
+
     def _prepare(self, request: TerminalPublishRequest) -> _Prepared:
         try:
             validate_run_id(request.run_id)
@@ -958,6 +979,7 @@ class TerminalRunStore:
                     transaction_id=request.transaction_id,
                     previous_manifest_sha256=request.expected_manifest_sha256,
                     previous_pointer_sha256=request.expected_pointer_sha256,
+                    maximum_admission_record_bytes=self.max_artifact_bytes,
                 )
                 if commitments != (
                     request.canonical_input_sha256,
@@ -1195,6 +1217,7 @@ class TerminalRunStore:
                 transaction_id=manifest.transaction_id,
                 previous_manifest_sha256=manifest.previous_manifest_sha256,
                 previous_pointer_sha256=manifest.expected_pointer_sha256,
+                maximum_admission_record_bytes=self.max_artifact_bytes,
             )
             if commitments != (
                 manifest.canonical_input_sha256,

@@ -15,11 +15,23 @@ from tests.bounded_natural_language_support import SOURCE_BYTES, ready_bounded_p
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "bounded_natural_language" / "v1" / "scenarios.json"
 SOURCE = ROOT / "tests" / "fixtures" / "bounded_natural_language" / "v1" / "valid-ja.txt"
+SOURCE_COMMIT = "a" * 40
+SOURCE_TREE = "b" * 40
+
+
+def _run(fixture, *, source_path: Path, work_root: Path):
+    return run_bounded_natural_language_evaluation(
+        fixture,
+        source_path=source_path,
+        work_root=work_root,
+        source_commit_id=SOURCE_COMMIT,
+        source_tree_id=SOURCE_TREE,
+    )
 
 
 def test_bounded_evaluation_scores_every_declared_case_and_metric_exactly(tmp_path) -> None:
     fixture = load_bounded_natural_language_evaluation_fixture(FIXTURE)
-    result = run_bounded_natural_language_evaluation(
+    result = _run(
         fixture,
         source_path=SOURCE,
         work_root=tmp_path / f"e-{uuid4().hex[:8]}",
@@ -28,6 +40,9 @@ def test_bounded_evaluation_scores_every_declared_case_and_metric_exactly(tmp_pa
     assert result.passed is True
     assert result.overall_score == "1.0"
     assert result.interpretation == "bounded_grammar_contract_only"
+    assert result.schema_version == "2.0.0"
+    assert result.source_commit_id == SOURCE_COMMIT
+    assert result.source_tree_id == SOURCE_TREE
     assert all(item.passed and item.score == "1.0" for item in result.case_results)
     assert all(item.score == "1.0" for item in result.metrics)
     assert [item.metric for item in result.metrics] == [
@@ -45,7 +60,7 @@ def test_bounded_evaluation_scores_every_declared_case_and_metric_exactly(tmp_pa
 
 def test_bounded_evaluation_fails_closed_when_repository_source_changes(tmp_path) -> None:
     fixture = load_bounded_natural_language_evaluation_fixture(FIXTURE)
-    baseline = run_bounded_natural_language_evaluation(
+    baseline = _run(
         fixture,
         source_path=SOURCE,
         work_root=tmp_path / "baseline",
@@ -53,7 +68,7 @@ def test_bounded_evaluation_fails_closed_when_repository_source_changes(tmp_path
     changed_source = tmp_path / "changed-source.txt"
     changed_source.write_bytes(SOURCE_BYTES.replace(b"1/2", "1\uff0f2".encode()))
 
-    changed = run_bounded_natural_language_evaluation(
+    changed = _run(
         fixture,
         source_path=changed_source,
         work_root=tmp_path / "changed",

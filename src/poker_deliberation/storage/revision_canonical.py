@@ -59,6 +59,16 @@ from poker_deliberation.normalization import (
 )
 from poker_deliberation.phases.contracts import canonical_sha256 as phase_canonical_sha256
 from poker_deliberation.phases.models import ToolExecutionBinding
+from poker_deliberation.range_equity import (
+    verify_versioned_range_river_equity_binding_artifact,
+    verify_versioned_range_river_equity_case_correlation,
+    verify_versioned_range_river_equity_tool_chain,
+)
+from poker_deliberation.range_equity_models import (
+    RANGE_EQUITY_BINDING_ARTIFACT,
+    RANGE_EQUITY_BINDING_ARTIFACT_SCHEMA,
+    VersionedRangeRiverEquityBindingV1,
+)
 from poker_deliberation.range_grammar import verify_versioned_range_tool_chain
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import (
@@ -181,6 +191,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         CONTROL_CANONICALIZATION,
         "poker-case-input-artifact-v1",
         "case_input",
+    ),
+    RANGE_EQUITY_BINDING_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        RANGE_EQUITY_BINDING_ARTIFACT_SCHEMA,
+        "range_equity_binding",
     ),
     "normalization.json": (
         "application/json",
@@ -314,6 +330,7 @@ _PAYLOAD_ORDER_PREFIX = (
     "input.json",
     "normalization.json",
     "normalized_case.json",
+    RANGE_EQUITY_BINDING_ARTIFACT,
     "assumptions.json",
     "evidence.jsonl",
     "approvals.json",
@@ -386,7 +403,7 @@ def canonical_json_bytes(value: Any) -> bytes:
             separators=(",", ":"),
             allow_nan=False,
         ).encode("utf-8")
-    except (TypeError, ValueError) as exc:
+    except (RecursionError, TypeError, ValueError) as exc:
         if isinstance(exc, CanonicalStorageError):
             raise
         raise CanonicalStorageError("value is not canonical storage JSON") from exc
@@ -420,7 +437,7 @@ def parse_canonical_json(data: bytes) -> Any:
                 CanonicalStorageError(f"non-finite JSON number: {token}")
             ),
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (RecursionError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CanonicalStorageError("invalid canonical JSON") from exc
     if canonical_json_bytes(value) != data:
         raise CanonicalStorageError("JSON bytes are not in canonical storage form")
@@ -872,6 +889,8 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         return bounded_confirmation
     if logical_name in {"input.json", "normalized_case.json"}:
         return parse_canonical_model(data, CaseInput)
+    if logical_name == RANGE_EQUITY_BINDING_ARTIFACT:
+        return parse_canonical_model(data, VersionedRangeRiverEquityBindingV1)
     if logical_name == "normalization.json":
         return parse_canonical_model(data, NormalizationResultV1)
     if logical_name == "assumptions.json":
@@ -1018,6 +1037,32 @@ def _validate_source_graph(
     report_marker = (
         report_metadata.get("confirmed_review") if isinstance(report_metadata, dict) else None
     )
+    if isinstance(input_case, CaseInput) and isinstance(final_report, FinalReport):
+        normalized_case = parsed.get("normalized_case.json", input_case)
+        if not isinstance(normalized_case, CaseInput):
+            raise CanonicalStorageError("range-equity normalized case is not canonical")
+        try:
+            verify_versioned_range_river_equity_case_correlation(
+                input_case,
+                normalized_case,
+                final_report.reconstructed_input,
+            )
+            verify_versioned_range_river_equity_binding_artifact(
+                input_case,
+                normalized_case,
+                final_report.reconstructed_input,
+                cast(
+                    VersionedRangeRiverEquityBindingV1 | None,
+                    parsed.get(RANGE_EQUITY_BINDING_ARTIFACT),
+                ),
+            )
+            verify_versioned_range_river_equity_tool_chain(
+                input_case,
+                final_report.tool_results,
+                run_status=final_report.run_status,
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError("range-equity persisted cases do not correlate") from exc
     if input_marker_present != report_marker_present or (
         input_marker_present and report_marker != input_marker
     ):
@@ -1375,6 +1420,11 @@ def _validate_source_graph(
         "agent_execution_records.json": {"assignments.json", "normalized_case.json"},
         "security_events.json": {"input.json"},
     }
+    if RANGE_EQUITY_BINDING_ARTIFACT in by_name:
+        fixed_dependencies[RANGE_EQUITY_BINDING_ARTIFACT] = {
+            "input.json",
+            "normalized_case.json",
+        }
     for logical_name, dependencies in fixed_dependencies.items():
         if logical_name in by_name:
             require_payload_sources(logical_name, dependencies)
@@ -1406,7 +1456,10 @@ def _validate_source_graph(
     )
     tool_bindings_by_result: dict[str, ToolBindingV1] = {}
     for logical_name in tool_input_names:
-        require_payload_sources(logical_name, {"input.json", "normalized_case.json"})
+        tool_input_dependencies = {"input.json", "normalized_case.json"}
+        if RANGE_EQUITY_BINDING_ARTIFACT in by_name:
+            tool_input_dependencies.add(RANGE_EQUITY_BINDING_ARTIFACT)
+        require_payload_sources(logical_name, tool_input_dependencies)
         entry = by_name[logical_name]
         identifier = cast(
             re.Match[str],
@@ -1671,6 +1724,8 @@ def _validate_source_graph(
             "security_events.json",
             "disputes.json",
         }
+        if RANGE_EQUITY_BINDING_ARTIFACT in by_name:
+            required_base.add(RANGE_EQUITY_BINDING_ARTIFACT)
         if not required_base <= set(by_name):
             raise CanonicalStorageError("final report is missing a required direct ledger")
         require_payload_sources(

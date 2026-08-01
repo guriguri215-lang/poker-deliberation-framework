@@ -1,0 +1,92 @@
+{
+  "schema_version": "1.0.0",
+  "family_id": "poker-versioned-range-river-equity-evaluation-json-v1",
+  "fixture_id": "versioned-range-river-equity-cases-v1",
+  "source_kind": "repository_fixture",
+  "license_classification": "repository_owned_mit",
+  "usage_classification": "redistribution_allowed",
+  "content_classification": "public",
+  "scoring": "exact-evidence-set-v1",
+  "threshold": "1.0",
+  "cases": [
+    {
+      "case_id": "weighted-exact-oracle",
+      "metric": "exact_weight_and_oracle",
+      "expected_evidence": [
+        "fixed-tool-order",
+        "weighted-fraction-3-over-4",
+        "extreme-990-weight-ulp-contract",
+        "exact-monte-carlo-metadata-rejected",
+        "exact-toolresult-envelope-rejected"
+      ]
+    },
+    {
+      "case_id": "tie-policy",
+      "metric": "exact_weight_and_oracle",
+      "expected_evidence": ["tie-fraction-1-over-2"]
+    },
+    {
+      "case_id": "blockers-and-cap",
+      "metric": "exact_weight_and_oracle",
+      "expected_evidence": ["seven-card-blocker-cap-990", "cap-overflow-rejected"]
+    },
+    {
+      "case_id": "invalid-range-boundaries",
+      "metric": "admission_boundaries",
+      "expected_evidence": [
+        "empty-post-blocker-rejected",
+        "grammar-rejected",
+        "version-rejected",
+        "provenance-rejected",
+        "non-json-metadata-rejected"
+      ]
+    },
+    {
+      "case_id": "scope-boundaries",
+      "metric": "admission_boundaries",
+      "expected_evidence": [
+        "street-rejected",
+        "all-in-rejected",
+        "third-eligible-rejected",
+        "multiple-ranges-rejected",
+        "target-mismatch-rejected",
+        "manual-input-rejected",
+        "duplicate-card-rejected"
+      ]
+    },
+    {
+      "case_id": "tamper-and-failure-replay",
+      "metric": "replay_and_storage",
+      "expected_evidence": [
+        "binding-tamper-rejected",
+        "range-mutation-rejected",
+        "partial-tamper-rejected",
+        "malformed-output-reason-code",
+        "post-failure-execution-rejected",
+        "approval-lifecycle-rejected"
+      ]
+    },
+    {
+      "case_id": "storage-and-compatibility",
+      "metric": "replay_and_storage",
+      "expected_evidence": [
+        "terminal-replay-verified",
+        "binding-artifact-persisted",
+        "binding-artifact-removal-rejected",
+        "report-marker-tamper-rejected",
+        "report-case-tamper-rejected",
+        "normalized-case-tamper-rejected",
+        "marker-downgrade-rejected",
+        "reshaped-marker-downgrade-rejected",
+        "preexecution-record-downgrade-rejected",
+        "orphan-record-ordinary-reuse-rejected-preexecution",
+        "orphan-record-case-alias-rejected-preexecution",
+        "failed-prefix-marker-downgrade-rejected",
+        "null-marker-rejected",
+        "ordinary-range-path-unchanged",
+        "legacy-unmarked-run-unchanged",
+        "legacy-manual-exact-run-unchanged"
+      ]
+    }
+  ]
+}

@@ -48,6 +48,15 @@ from poker_deliberation.normalization import (
     normalization_result_json_bytes,
     verify_normalization_binding,
 )
+from poker_deliberation.range_equity import (
+    verify_versioned_range_river_equity_binding_artifact,
+    verify_versioned_range_river_equity_case_correlation,
+    verify_versioned_range_river_equity_tool_chain,
+)
+from poker_deliberation.range_equity_models import (
+    RANGE_EQUITY_BINDING_ARTIFACT,
+    VersionedRangeRiverEquityBindingV1,
+)
 from poker_deliberation.range_grammar import verify_versioned_range_tool_chain
 from poker_deliberation.schemas import (
     AgentAssignment,
@@ -63,6 +72,10 @@ from poker_deliberation.schemas import (
     ToolResult,
 )
 from poker_deliberation.state_machine import ALLOWED_TRANSITIONS, RunState
+from poker_deliberation.storage.range_equity_admission_store import (
+    read_range_equity_admission_record,
+    verify_range_equity_admission_record,
+)
 from poker_deliberation.storage.revision_canonical import (
     CONTROL_CANONICALIZATION,
     JSONL_SERIALIZATION,
@@ -285,6 +298,7 @@ def product_payload_commitments(
     transaction_id: str | None = None,
     previous_manifest_sha256: str | None = None,
     previous_pointer_sha256: str | None = None,
+    maximum_admission_record_bytes: int = 1_000_000,
 ) -> tuple[str, str, str, str, str, str]:
     """Recompute product input, checkpoint, and scalar lineage commitments."""
 
@@ -292,11 +306,13 @@ def product_payload_commitments(
     if not required <= set(payloads):
         raise CanonicalStorageError("product publication lacks a required core payload")
     input_case = parse_canonical_model(payloads["input.json"], CaseInput)
+    normalized_case = input_case
+    if "normalized_case.json" in payloads:
+        normalized_case = parse_canonical_model(payloads["normalized_case.json"], CaseInput)
     if "normalization.json" in payloads:
         if "normalized_case.json" not in payloads:
             raise CanonicalStorageError("normalization payload lacks the normalized case artifact")
         normalization = _parse_normalization_result(payloads["normalization.json"])
-        normalized_case = parse_canonical_model(payloads["normalized_case.json"], CaseInput)
         try:
             verify_normalization_binding(input_case, normalized_case, normalization)
         except ValueError as exc:
@@ -484,7 +500,51 @@ def product_payload_commitments(
         if input_name not in payloads or parse_canonical_json(payloads[input_name]) != result.input:
             raise CanonicalStorageError("tool input/result correlation mismatch")
     try:
+        verify_versioned_range_river_equity_case_correlation(
+            input_case,
+            normalized_case,
+            report.reconstructed_input,
+        )
+        binding_artifact = (
+            _parse_json_model(
+                payloads[RANGE_EQUITY_BINDING_ARTIFACT],
+                VersionedRangeRiverEquityBindingV1,
+            )
+            if RANGE_EQUITY_BINDING_ARTIFACT in payloads
+            else None
+        )
+        verify_versioned_range_river_equity_binding_artifact(
+            input_case,
+            normalized_case,
+            report.reconstructed_input,
+            binding_artifact,
+        )
+        if revision_root is not None:
+            admission_record = read_range_equity_admission_record(
+                Path(revision_root),
+                run_id,
+                maximum_bytes=maximum_admission_record_bytes,
+            )
+            if admission_record is None:
+                if binding_artifact is not None:
+                    raise CanonicalStorageError(
+                        "range-equity payload lacks its pre-execution admission record"
+                    )
+            elif binding_artifact is None:
+                raise CanonicalStorageError(
+                    "range-equity admission record requires its durable payload binding"
+                )
+            else:
+                verify_range_equity_admission_record(admission_record, binding_artifact)
+    except ValueError as exc:
+        raise CanonicalStorageError("range-equity persisted cases do not correlate") from exc
+    try:
         verify_versioned_range_tool_chain(
+            input_case,
+            report.tool_results,
+            run_status=report.run_status,
+        )
+        verify_versioned_range_river_equity_tool_chain(
             input_case,
             report.tool_results,
             run_status=report.run_status,

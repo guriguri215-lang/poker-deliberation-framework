@@ -30,6 +30,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `multiway_or_plo_equity` | **unavailable** | multiway equityとPLO equityは未対応。 |
 | `documented_hand_parser` | **implemented** | version 1のstrictかつprovenance-boundなkey-value/player/action形式だけを保守的に正規化する。対応siteは`none`。 |
 | `versioned_nlhe_range_grammar` | **implemented** | provenance、game condition、blocker、整数millionth weightを検証し、1 opponent rangeをcanonical comboへ変換するbounded grammar v1。 |
+| `versioned_nlhe_river_equity_bridge` | **implemented** | P3-016B専用admissionで、検証済み単一rangeをper-run authorityで直列化したproduct namespace予約、buffer外のexclusive-create pre-execution commitment、strict binding artifact、riverのexact-only heads-up enumeration、有理数oracle、failed-prefixを含むterminal replay、3 metricのexact-evidence評価へ拘束する。all-inや一般equity自動接続ではない。 |
 | `profiled_nlhe_side_pot_ledger` | **implemented** | `generic_nlhe_cash_no_rake_v1`に限り、整数単位のcontribution、uncalled return、side pot、eligibilityを独立oracle付きで計算する。 |
 | `natural_language_or_site_parser` | **unavailable** | 一般自然言語およびsite-specific hand history parserはない。独立したbounded Japanese grammarをこの能力へ拡張しない。 |
 | `bounded_japanese_nlhe_cash_parser` | **implemented** | version 1の文書化済み日本語retrospective NLHE cash grammarを、exact UTF-8 span、6 hash確認、固定LocalProvider、限定tool、durable replayに接続する。一般自然言語・site parserではない。 |
@@ -66,7 +67,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 ## Game、parser、sandbox境界
 
 - 主対象は事後のNLHE cash/tournament review。リアルタイム助言はfail-closedで拒否する。
-- equityはheads-up NLHEだけ。ICMは指定したpayout model、小規模gameは明示した有限modelだけを扱う。
+- equityはheads-up NLHEだけ。P3-016B bridgeはNLHE cash river、Heroと単一range target、最大990 evaluationsに限定する。ICMは指定したpayout model、小規模gameは明示した有限modelだけを扱う。
 - generic free-text parserは文書化key-value grammarだけを扱い、不明行を警告として保存する。
 - bounded Japanese parserはP3-030B version 1の有限文型だけをexact matchし、余分な行、曖昧性、
   欠落、矛盾、未対応scopeをfail closedで拒否する。

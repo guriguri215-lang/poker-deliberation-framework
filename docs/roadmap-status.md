@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `10.0.0`
-- source SHA-256: `c88ea8f840edbd0d190740c7b5e0324bda9108ff82ee39e4b38fd659137676b2`
+- schema version: `11.0.0`
+- source SHA-256: `9cb0ac00b46568e45421fe0ce52e72f18c72263dc3c36828ec73b665af2bf0aa`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -49,6 +49,7 @@
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
 | `P3-015A` | `RM-015` | `completed` | `P3-014A` | Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none. | The approved generic no-rake NLHE cash profile, exact side-pot ledger, independent oracle, product integration, documentation, and declared tests are implemented. |
 | `P3-016A` | `RM-016` | `completed` | `RM-006`, `P3-014A` | poker-deliberation.nlhe-range grammar version 1.0.0 for one provenance-qualified opponent range using explicit combos, pairs, canonical descending suited or offsuit classes, optional decimal @ weights represented as integer millionths, pre-blocker overlap rejection, exact hand and action-prefix binding, automatic range_validate then combos execution, and immutable/terminal semantic replay; no plus, intervals, exclusions, natural-language inference, external source import, equity integration, solver, or GTO claim. | The approved bounded grammar, provenance and game-condition binding, exact validation tool, canonical combo product slice, reader replay, documentation, fixtures, and declared tests are implemented. |
+| `P3-016B` | `RM-016` | `completed` | `P3-016A` | One explicitly admitted retrospective NLHE cash river decision with canonical Hero cards, a five-card board, one provenance-qualified VersionedRangeDefinitionV1 target, only Hero and target eligible, range_validate then combos then holdem_equity ordering, exact-only enumeration capped at 990, exact integer-millionth win/tie/loss aggregation and reduced rational equity, floating-verified legacy projection, domain-separated binding/result hashes, immutable/terminal replay, and deterministic exact-evidence evaluation; no natural-language intake, all-in, call EV or recommendation, multiple ranges, multiway, earlier streets, Monte Carlo, external solver, GTO, or equilibrium claim. | The approved opt-in river range-equity bridge, exact integer/rational oracle, derived exact-only tool chain, per-run-authority-serialized product namespace reservation and buffer-external pre-execution admission commitment, provenance hashes, durable semantic replay, exact-evidence evaluation, documentation, and declared tests are implemented. |
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 | `P3-030A` | `RM-030` | `completed` | `P3-014A`, `P3-016A`, `P3-017A` | Versioned source, candidate, confirmation, authority, provenance, CLI, durable replay, exact-evidence evaluation, and LocalProvider-only adjudication for one complete retrospective NLHE hand and at most one versioned opponent range; no general natural-language or site parser, external provider or model, runtime bridge, external solver, range equity, multiopponent range, GTO, or equilibrium claim. | The approved caller-supplied candidate, explicit hash-bound confirmation, local-only adjudication, provenance replay, deterministic evaluation, documentation, and declared tests are implemented. |
 | `P3-030B` | `RM-030` | `completed` | `P3-030A`, `P3-015A` | Version 1 deterministic parsing for one documented finite Japanese retrospective 2-6 player NLHE cash grammar with integer chip units, zero ante and rake, at most 64 actions, exact UTF-8 half-open source spans, explicit focal call-or-fold decision, hand_validator then hand_pot_ledger then pot_odds execution, six independently confirmed hash domains, LocalProvider-only adjudication, durable provenance replay, and exact-evidence evaluation; no general natural-language or site parser, OCR, tournament, focal all-in or side-pot decision, range inference, external provider or model, runtime bridge, external solver, GTO, or equilibrium claim. | The approved bounded Japanese grammar, exact source-span evidence, six-hash confirmation contract, fixed local product path, durable provenance replay, evaluation fixture, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
@@ -468,25 +469,35 @@
 ### RM-016 — Range grammar and provenance
 
 - Status: `in_progress`
-- Status reason: P3-016A implements the approved bounded version 1 grammar and provenance-bound combos product slice; additional syntax, multiple ranges, equity integration, imports, and natural-language inference remain unimplemented.
+- Status reason: P3-016A implements the bounded version 1 grammar and provenance-bound combos product slice, and P3-016B implements the approved opt-in exact-only cash-river bridge for one range; additional syntax, multiple ranges, earlier-street or multiway equity, imports, and natural-language inference remain unimplemented.
 - Objective: Provide a bounded versioned NLHE range grammar with explicit source rights, exact game-condition provenance, deterministic canonical combos, and reader-verifiable product artifacts.
 - Capabilities:
   - versioned_nlhe_range_grammar
+  - versioned_nlhe_river_equity_bridge
 - Targets:
   - src/poker_deliberation/range_models.py
   - src/poker_deliberation/range_grammar.py
+  - src/poker_deliberation/range_equity_models.py
+  - src/poker_deliberation/range_equity.py
+  - src/poker_deliberation/range_equity_evaluation.py
   - src/poker_deliberation/tools/contracts.py
   - src/poker_deliberation/orchestrator.py
   - scripts/generate_range_fixtures.py
+  - scripts/run_range_equity_evaluation.py
   - tests/fixtures/range/v1/cases.json
+  - tests/fixtures/range_equity/v1/scenarios.json
   - evals/datasets/p3_016a/v1/cases.json
   - docs/range-grammar.md
+  - docs/range-equity-bridge.md
 - Acceptance criteria:
   - Grammar and result version 1.0.0 accept only explicit combos, pairs, canonical descending suited or offsuit classes, comma separators with ASCII horizontal whitespace, and optional @ decimal weights of at most six places.
   - Weights use exact integer millionths; plus, intervals, exclusions, colon weights, signs, exponent notation, leading decimal points, non-ASCII notation, overlap, limits, empty post-blocker ranges, and ambiguous or unsupported syntax fail with stable diagnostics.
   - One non-hero target range is bound to declared source/license/usage/content status, notation SHA-256, NLHE format/table/position/street/stack, as-of action-prefix SHA-256, and hero plus visible-board blockers.
-  - The product path runs exact range_validate before canonical weighted combos, refuses conflicting manual inputs, and immutable and terminal readers deterministically replay both artifacts.
-  - Legacy RangeDefinition, legacy parse_weighted_range, and existing equity behavior remain unchanged; multiple versioned ranges, equity integration, imports, natural-language inference, external solvers, and GTO claims remain outside P3-016A.
+  - The P3-016A product path runs exact range_validate before canonical weighted combos, refuses conflicting manual inputs, and immutable and terminal readers deterministically replay both artifacts.
+  - The separately admitted P3-016B path accepts only retrospective NLHE cash river input with canonical Hero and board cards, one VersionedRangeDefinitionV1 target, only Hero and target eligible, a target bet or raise rather than all-in, and the fixed range_validate then combos then holdem_equity exact-only order capped at 990 evaluations.
+  - P3-016B preserves integer-millionth weights in exact win, tie, and loss totals and a reduced rational equity oracle, labels the unchanged legacy binary64 hero_equity projection floating-verified, domain-hashes source/candidate/tool/oracle/binding/result artifacts, and replays the complete chain in immutable and terminal readers.
+  - The repository-owned P3-016B fixture scores exact weight/oracle, admission boundaries, and replay/storage evidence separately; all three deterministic metrics must equal 1.0.
+  - Legacy RangeDefinition, legacy parse_weighted_range, P3-016A behavior, and existing holdem_equity semantics remain unchanged; all-in, multiple versioned ranges, earlier-street or multiway bridges, Monte Carlo bridge execution, imports, natural-language inference, call EV, external solvers, and GTO claims remain outside P3-016B.
 - Tests:
   - tests/unit/test_range_grammar.py
   - tests/property/test_range_grammar_properties.py
@@ -495,10 +506,17 @@
   - tests/adversarial/test_range_grammar_adversarial.py
   - tests/characterization/test_range_grammar_compatibility.py
   - tests/integration/test_tool_contracts.py
+  - tests/unit/test_range_equity.py
+  - tests/property/test_range_equity_properties.py
+  - tests/integration/test_range_equity_product_path.py
+  - tests/integration/test_range_equity_evaluation.py
+  - tests/adversarial/test_range_equity_security.py
+  - tests/characterization/test_range_equity_compatibility.py
 - Decision gate rationale:
-  - future range syntax, multiple-range semantics, external source/license classes, import formats, and equity integration require a separate approved decision
+  - future range syntax, multiple-range semantics, external source/license classes, import formats, all-in, earlier-street, Monte Carlo, multiway, call-EV, or natural-language equity integration beyond the approved P3-016B bridge requires a separate approved decision
 - Relations:
   - P3-016A is additive to the legacy RangeDefinition and parser and does not change existing equity semantics.
+  - P3-016B is additive to P3-016A and the legacy holdem_equity contract; it is reachable only through its dedicated deterministic admission and does not widen ordinary range or confirmed-review paths.
   - Natural-language hand or range intake and end-to-end report integration are deferred to RM-030.
 
 ### RM-017 — Executable evaluation harness
@@ -947,13 +965,13 @@
 - Decision gate rationale:
   - Any expansion beyond the P3-030B bounded Japanese grammar into general natural-language, model-assisted, site-specific, or OCR parsing requires a new Decision gate covering ambiguity, source rights, privacy, and parser-quality evaluation
   - P2-025B actual Codex or cross-runtime execution bridge, outbound effects, authentication, budgets, and reconciliation
-  - P3-030C external solver, range-equity, multiopponent, GTO, or equilibrium semantics and evidence thresholds
+  - P3-030C bounded-language consumption of P3-016B, equity-to-call-EV and ledger binding, external solver, multiopponent, GTO, or equilibrium semantics and evidence thresholds
 - Completion-time relations (historical; not current status assertions):
   - P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.
   - The approved P3-030B Decision gate is limited to one deterministic bounded Japanese grammar; any general natural-language, model-assisted, site-specific, or OCR parser remains a separate future Decision gate.
   - P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.
   - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
-  - P3-030C remains a separate Decision gate for external solver, range-equity, multiopponent, GTO, or equilibrium scope.
+  - P3-030C remains a separate Decision gate for consuming the P3-016B bridge in bounded Japanese call-or-fold review, equity-to-call-EV and ledger binding, multiopponent or broader range semantics, external solver, GTO, or equilibrium scope.
 
 ## Synchronization contract
 

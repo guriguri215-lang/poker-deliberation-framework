@@ -62,6 +62,7 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["local_data_cleanup_executor"] == "implemented"
     assert states["offline_evaluation_harness"] == "implemented"
     assert states["versioned_nlhe_range_grammar"] == "implemented"
+    assert states["versioned_nlhe_river_equity_bridge"] == "implemented"
     assert states["confirmed_natural_language_review_intake"] == "implemented"
     assert states["bounded_japanese_nlhe_cash_parser"] == "implemented"
     assert states["natural_language_or_site_parser"] == "unavailable"
@@ -180,6 +181,16 @@ def test_equity_contract_executes_heads_up_nlhe_and_rejects_plo_and_multiway() -
         "holdem_equity",
         {**base_input, "opponent_ranges": ["KcKd", "QcQd"]},
     )
+    bound_plo = registry.execute(
+        "holdem_equity",
+        {**base_input, "game_type": "PLO"},
+        _bind_versioned_range_failure=True,
+    )
+    bound_multiway = registry.execute(
+        "holdem_equity",
+        {**base_input, "opponent_ranges": ["KcKd", "QcQd"]},
+        _bind_versioned_range_failure=True,
+    )
 
     assert heads_up.status is ToolStatus.SUCCESS
     assert heads_up.output["exact"] is True
@@ -187,6 +198,10 @@ def test_equity_contract_executes_heads_up_nlhe_and_rejects_plo_and_multiway() -
     assert "NLHE only" in str(plo.error)
     assert multiway.status is ToolStatus.FAILED
     assert "exactly one villain" in str(multiway.error)
+    assert bound_plo.status is ToolStatus.FAILED
+    assert "NLHE only" in str(bound_plo.error)
+    assert bound_multiway.status is ToolStatus.FAILED
+    assert "exactly one villain" in str(bound_multiway.error)
 
 
 def test_parser_contract_accepts_documented_grammar_but_not_site_history() -> None:

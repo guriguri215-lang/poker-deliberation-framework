@@ -27,9 +27,12 @@ from poker_deliberation.schemas import (
 from poker_deliberation.tools.best_response import best_response_to_fixed_strategy
 from poker_deliberation.tools.combinations import combo_summary, parse_weighted_range
 from poker_deliberation.tools.contracts import (
+    VERSIONED_RANGE_BRIDGE_TOOL_NAMES,
     RangeValidateInput,
     ToolContract,
     contract_by_name,
+    versioned_range_bridge_failure_error,
+    versioned_range_bridge_failure_input_matches,
 )
 from poker_deliberation.tools.equity import holdem_equity
 from poker_deliberation.tools.ev_tree import evaluate_ev_tree
@@ -56,6 +59,12 @@ from poker_deliberation.tools.strategy_math import (
 )
 
 ToolFunction = Callable[[dict[str, Any]], dict[str, Any]]
+
+
+def _failure_error(tool_name: str, diagnostic: str, *, bind_versioned_range: bool) -> str:
+    if not bind_versioned_range or tool_name not in VERSIONED_RANGE_BRIDGE_TOOL_NAMES:
+        return diagnostic
+    return versioned_range_bridge_failure_error(tool_name)
 
 
 class ToolByteLimitError(RuntimeError):
@@ -163,6 +172,7 @@ class ToolRegistry:
         payload: dict[str, Any],
         *,
         contract_version: str | None = None,
+        _bind_versioned_range_failure: bool = False,
         _raise_on_byte_limit: bool = False,
         _budget_observed_at_ns: int | None = None,
         _run_deadline_ns: int | None = None,
@@ -222,6 +232,17 @@ class ToolRegistry:
         known_definition = self._tools.get(name)
         known_contract = known_definition.contract if known_definition is not None else None
         payload_size = canonical_json_utf8_size(payload)
+        _bind_versioned_range_failure = (
+            _bind_versioned_range_failure
+            and payload_size <= self.max_payload_bytes
+            and known_contract is not None
+            and contract_version == known_contract.contract_version
+            and versioned_range_bridge_failure_input_matches(
+                name,
+                payload,
+                contract_version,
+            )
+        )
         if payload_size > self.max_payload_bytes:
             if _raise_on_byte_limit:
                 raise ToolByteLimitError(
@@ -236,7 +257,11 @@ class ToolRegistry:
                 exactness=Exactness.UNAVAILABLE,
                 numeric_exactness=NumericalExactness.UNAVAILABLE,
                 contract_version=(known_contract.contract_version if known_contract else "1.0.0"),
-                error=f"tool input exceeds hard limit {self.max_payload_bytes} bytes",
+                error=_failure_error(
+                    name,
+                    f"tool input exceeds hard limit {self.max_payload_bytes} bytes",
+                    bind_versioned_range=_bind_versioned_range_failure,
+                ),
             )
         if known_definition is None:
             return ToolResult(
@@ -307,7 +332,15 @@ class ToolRegistry:
                     assumptions=list(definition.assumptions),
                     version=definition.version,
                     duration_seconds=duration,
-                    error=f"tool output exceeds hard limit {self.max_output_bytes} bytes",
+                    error=_failure_error(
+                        name,
+                        f"tool output exceeds hard limit {self.max_output_bytes} bytes",
+                        bind_versioned_range=_bind_versioned_range_failure,
+                    ),
+                    reproduce_command=(
+                        f"poker-deliberate calculate {name} --analysis-scope retrospective "
+                        "--input <input.json>"
+                    ),
                 )
             unavailable = bool(output.get("unavailable", False))
             numeric_exactness = (
@@ -359,9 +392,17 @@ class ToolRegistry:
                     assumptions=list(definition.assumptions),
                     version=definition.version,
                     duration_seconds=duration,
-                    error=(
-                        "tool plus verification exceeded post-execution runtime limit "
-                        f"{self.max_duration_seconds} seconds"
+                    error=_failure_error(
+                        name,
+                        (
+                            "tool plus verification exceeded post-execution runtime limit "
+                            f"{self.max_duration_seconds} seconds"
+                        ),
+                        bind_versioned_range=_bind_versioned_range_failure,
+                    ),
+                    reproduce_command=(
+                        f"poker-deliberate calculate {name} --analysis-scope retrospective "
+                        "--input <input.json>"
                     ),
                 )
             return ToolResult(
@@ -414,7 +455,11 @@ class ToolRegistry:
                 assumptions=list(definition.assumptions),
                 version=definition.version,
                 duration_seconds=self._failure_duration_seconds(started),
-                error=f"{type(exc).__name__}: {exc}",
+                error=_failure_error(
+                    name,
+                    f"{type(exc).__name__}: {exc}",
+                    bind_versioned_range=_bind_versioned_range_failure,
+                ),
                 reproduce_command=(
                     f"poker-deliberate calculate {name} --analysis-scope retrospective "
                     "--input <input.json>"
@@ -433,6 +478,7 @@ class ToolRegistry:
         active_runtime_ns: int | None = None,
         runtime_not_before_ns: int | None = None,
         observation_sink: list[int] | None = None,
+        _bind_versioned_range_failure: bool = False,
     ) -> ToolResult:
         """Execute with typed byte-limit signaling for the orchestrated phase boundary."""
 
@@ -440,6 +486,7 @@ class ToolRegistry:
             name,
             payload,
             contract_version=contract_version,
+            _bind_versioned_range_failure=_bind_versioned_range_failure,
             _raise_on_byte_limit=True,
             _budget_observed_at_ns=budget_observed_at_ns,
             _run_deadline_ns=run_deadline_ns,

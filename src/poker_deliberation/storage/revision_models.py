@@ -94,6 +94,7 @@ Serialization = Literal[
 ]
 OriginKind = Literal[
     "case_input",
+    "range_equity_binding",
     "confirmed_review_source",
     "confirmed_review_candidate",
     "confirmed_review_confirmation",

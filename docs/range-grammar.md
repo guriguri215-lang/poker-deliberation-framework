@@ -2,8 +2,9 @@
 
 P3-016Aは`poker-deliberation.nlhe-range` version `1.0.0`のbounded grammarと、
 その入力・検証結果・製品実行のbindingを実装する。この機能は1人のnon-hero playerに対する
-1つの明示rangeを扱う。自然言語からrangeを推測せず、solver、import format、site固有format、
-equity計算、GTOまたは均衡の主張を追加しない。
+1つの明示rangeを扱う。P3-016Bは、このV1 artifactを変更せず、明示的にadmitされたNLHE cash
+riverだけを既存`holdem_equity`のexact enumerationへ接続する別contractである。自然言語から
+rangeを推測せず、solver、import format、site固有format、GTOまたは均衡の主張を追加しない。
 
 ## FACT: versioned envelope
 
@@ -78,6 +79,45 @@ immutable revision preflightとterminal readerは`range_validate`を再計算す
 `combos`入力、output、floating verification metadataも再計算する。保存済みhash同士だけが
 整合していても、意味上の再計算と異なるartifactは拒否する。
 
+## FACT: P3-016B river equity bridge
+
+P3-016Bは通常の`Orchestrator.run()`から自動発動しない。呼出側はまず
+`admit_versioned_range_river_equity()`でcandidateを検証し、そのadmissionを
+`run_versioned_range_river_equity()`へ渡す。callerがmarkerまたはtool inputを手動指定する経路は
+拒否する。
+
+admissionは次をすべて要求する。
+
+- `kind=calculation`、`analysis_scope=retrospective`、NLHE cash
+- canonicalなHero 2 cardsとriver board 5 cards
+- 1個の`VersionedRangeDefinitionV1`と1人のnon-Hero target
+- bound action prefixの末尾がtargetによるriver betまたはraise（all-inは非対象）
+- 判断時点のeligible playerがHeroとtargetだけ
+- tool planが`range_validate`, `combos`, `holdem_equity`の順序だけ
+- 手動tool input、raw text、realized result、free-form claim/evidence/assumptionがない
+
+実行時は`range_validate`成功後に`combos`を実行し、その成功後だけ`holdem_equity`を実行する。
+equity payloadはHero cards、canonical weighted opponent combos、boardから機械生成し、
+`game_type=NLHE`、`mode=exact`、`max_exact_evaluations=990`へ固定する。Monte Carlo fieldや
+`opponent_ranges`/`villain_ranges`の別経路は使用しない。
+
+7枚の既知cardでblockしたNLHE river opponent rangeの最大合法combo数は990である。bridgeは
+各canonical comboについてhand strengthを完全列挙し、integer-millionth weightを次の有理数へ
+集約する。
+
+```text
+equity = (2 * win_weight + tie_weight) / (2 * total_weight)
+```
+
+このfractionとwin/tie/lossのcombo/weight totalsは`exact`である。既存`holdem_equity`の
+`hero_equity`はbinary64 accumulationの互換projectionなので、引き続き`floating-verified`である。
+exact enumerationを実数表現までexactと読み替えない。
+
+source range、candidate、validation input/output、combos input/output、equity input/output、oracle、
+binding、resultは独立したSHA-256 domainでhashする。terminal readerとimmutable revision readerは
+V1 range chainに加え、admission、tool順序、derived payload、outcome count、有理数oracle、128 ULP
+projectionを再計算する。検証済みrangeと異なるrangeをequityへ渡すartifactはfail closedになる。
+
 ## FACT: limits and diagnostics
 
 | resource | hard limit |
@@ -107,8 +147,10 @@ repository-owned MIT fixtureとconformance datasetは同じdeclared case setか�
 
 既存`RangeDefinition`、`parse_weighted_range`、`combos` direct input、`holdem_equity`の意味は
 変更しない。legacy parserが受け入れていたcolon weight、case normalization、rank reversalなどを
-version 1 grammarへ暗黙移行しない。P3-016Aの製品sliceはversioned rangeがある場合だけ発動する。
+version 1 grammarへ暗黙移行しない。P3-016Aの製品sliceは従来どおり`combos`で終了し、P3-016Bは
+別markerと専用admissionがある場合だけ発動する。
 
-複数versioned range、versioned rangeからequityへの自動接続、external range取得、自然言語
-hand/range intake、adjudicated reportとの新しい統合経路は未実装である。自然言語からcanonical
-hand/range、calculator、adjudication、reportへ進む将来候補はRM-030として別にdecision-gateする。
+複数versioned range、preflop/flop/turn bridge、Monte Carlo bridge、multiway、external range取得、
+自然言語hand/range intake、call EV、call/fold推奨、adjudicated reportとの新しい統合経路は未実装で
+ある。自然言語からcanonical hand/range、calculator、adjudication、reportへ進む将来候補は
+RM-030として別にdecision-gateする。

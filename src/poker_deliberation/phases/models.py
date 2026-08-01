@@ -291,16 +291,17 @@ class ToolExecutionBinding(PhasePayload):
             raise ValueError("validated tool result input correlation mismatch")
         if self.materialized_result_input_sha256 != canonical_sha256(self.result.input):
             raise ValueError("materialized tool result input hash mismatch")
+        if self.requested_contract_version != self.request.contract_version:
+            raise ValueError("tool request contract version binding mismatch")
         if self.result_contract_version != self.result.contract_version:
             raise ValueError("tool result contract version binding mismatch")
         if self.supported_contract_version != self.result_contract_version:
             raise ValueError("tool supported contract version binding mismatch")
         if (
-            self.result.status.value == "success"
-            and self.requested_contract_version is not None
+            self.requested_contract_version is not None
             and self.result_contract_version != self.requested_contract_version
         ):
-            raise ValueError("successful tool result contract version mismatch")
+            raise ValueError("tool result contract version mismatch")
         return self
 
 

@@ -64,6 +64,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         "canonicalizes one opponent range before combo expansion.",
     ),
     Capability(
+        "versioned_nlhe_river_equity_bridge",
+        "implemented",
+        "P3-016B binds one validated versioned opponent range to exact-only heads-up river "
+        "enumeration, an exact integer/rational oracle, a per-run-authority-serialized product "
+        "namespace reservation and pre-execution admission commitment, and durable semantic "
+        "replay.",
+    ),
+    Capability(
         "profiled_nlhe_side_pot_ledger",
         "implemented",
         "generic_nlhe_cash_no_rake_v1 provides an integer contribution, uncalled-return, "

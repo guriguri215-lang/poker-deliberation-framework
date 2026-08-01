@@ -1,31 +1,32 @@
-"""Run the fixed bounded-Japanese intake evaluation into an ignored artifact."""
+"""Run the deterministic P3-016B exact-evidence evaluation."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
 
-from poker_deliberation.bounded_natural_language_evaluation import (
-    load_bounded_natural_language_evaluation_fixture,
-    run_bounded_natural_language_evaluation,
+from poker_deliberation.range_equity_evaluation import (
+    load_range_equity_evaluation_fixture,
+    run_range_equity_evaluation,
 )
 from poker_deliberation.storage.revision_canonical import canonical_json_bytes
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "range_equity" / "v1" / "scenarios.json"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fixture", type=Path, required=True)
-    parser.add_argument("--source", type=Path, required=True)
-    parser.add_argument("--work-root", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fixture", type=Path, default=DEFAULT_FIXTURE)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--source-tree", required=True)
+    parser.add_argument("--work-root", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    fixture = load_bounded_natural_language_evaluation_fixture(args.fixture)
-    result = run_bounded_natural_language_evaluation(
+    fixture = load_range_equity_evaluation_fixture(args.fixture)
+    result = run_range_equity_evaluation(
         fixture,
-        source_path=args.source,
-        work_root=args.work_root,
+        work_root=args.work_root.resolve(),
         source_commit_id=args.source_commit,
         source_tree_id=args.source_tree,
     )

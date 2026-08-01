@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -8,8 +10,10 @@ import pytest
 from poker_deliberation import public_preflight
 from poker_deliberation.public_preflight import (
     GitCommandError,
+    _capability_docs_check,
     _decode_scannable,
     _identity_findings,
+    _range_grammar_artifacts_check,
     _safe_worktree_path,
     _scan_history,
     _scan_tag_metadata,
@@ -18,6 +22,8 @@ from poker_deliberation.public_preflight import (
     _validated_output_path,
     scan_text,
 )
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_secret_candidate_is_redacted_and_fingerprinted() -> None:
@@ -91,6 +97,307 @@ def test_preflight_output_cannot_escape_repository(tmp_path: Path) -> None:
         _validated_output_path(repo, tmp_path / "outside.json")
 
 
+def _copy_preflight_contract_surface(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    public_documents = sorted(
+        {
+            path.relative_to(ROOT).as_posix()
+            for path in (*ROOT.glob("*.md"), *(ROOT / "docs").rglob("*.md"))
+            if path.is_file() and path.name != "AGENTS.md"
+        }
+    )
+    for relative in (
+        *public_documents,
+        "src/poker_deliberation/roadmap.py",
+        "src/poker_deliberation/roadmap_status.json",
+        "tests/fixtures/range/v1/cases.json",
+        "evals/datasets/p3_016a/v1/cases.json",
+        "tests/fixtures/range_equity/v1/scenarios.json",
+        "scripts/run_range_equity_evaluation.py",
+        "tools/manifest.yaml",
+    ):
+        source = ROOT / relative
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return repo
+
+
+def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    assert _capability_docs_check(repo).status == "pass"
+
+    readme = repo / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8").replace("schema 11.0.0", "schema 10.0"),
+        encoding="utf-8",
+    )
+    assert _capability_docs_check(repo).status == "fail"
+
+    shutil.copyfile(ROOT / "README.md", readme)
+    bridge = repo / "docs/range-equity-bridge.md"
+    bridge.write_text(
+        bridge.read_text(encoding="utf-8").replace("P3-030C", "future milestone"),
+        encoding="utf-8",
+    )
+    assert _capability_docs_check(repo).status == "fail"
+
+    shutil.copyfile(ROOT / "docs/range-equity-bridge.md", bridge)
+    bridge.write_text(
+        bridge.read_text(encoding="utf-8").replace(
+            "別Decision gateである。",
+            "別Decision gateではない。",
+        ),
+        encoding="utf-8",
+    )
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    replacements = {
+        "README.md": ("schema 11.0.0", "schema 10.0.0\n<!-- schema 11.0.0 -->"),
+        "docs/roadmap-status.md": (
+            "schema version: `11.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `11.0.0` -->",
+        ),
+        "src/poker_deliberation/roadmap.py": (
+            'ROADMAP_SCHEMA_VERSION = "11.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "11.0.0"',
+        ),
+        "src/poker_deliberation/roadmap_status.json": (
+            '"schema_version": "11.0.0"',
+            '"schema_version": "10.0.0"',
+        ),
+    }
+    for relative, (old, new) in replacements.items():
+        path = repo / relative
+        path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_computed_schema_reassignment(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    roadmap_module = repo / "src/poker_deliberation/roadmap.py"
+    roadmap_module.write_text(
+        roadmap_module.read_text(encoding="utf-8")
+        + '\nROADMAP_SCHEMA_VERSION = str(10) + ".0.0"\n',
+        encoding="utf-8",
+    )
+
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_globals_schema_reassignment(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    roadmap_module = repo / "src/poker_deliberation/roadmap.py"
+    roadmap_module.write_text(
+        roadmap_module.read_text(encoding="utf-8")
+        + '\nglobals()["ROADMAP_SCHEMA_VERSION"] = "10.0.0"\n',
+        encoding="utf-8",
+    )
+
+    assert _capability_docs_check(repo).status == "fail"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        "\nfrom os import name as ROADMAP_SCHEMA_VERSION\n",
+        '\nkey = "ROADMAP_SCHEMA_" + "VERSION"\nsys.modules[__name__].__dict__[key] = "10.0.0"\n',
+        '\nkey = "ROADMAP_SCHEMA_VERSION"\ngetter = globals.__call__\ngetter()[key] = "10.0.0"\n',
+    ),
+)
+def test_capability_preflight_rejects_indirect_schema_mutation(
+    tmp_path: Path,
+    payload: str,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    roadmap_module = repo / "src/poker_deliberation/roadmap.py"
+    roadmap_module.write_text(
+        roadmap_module.read_text(encoding="utf-8") + payload,
+        encoding="utf-8",
+    )
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_contradictory_p3_030c_sentence(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    bridge = repo / "docs/range-equity-bridge.md"
+    bridge.write_text(
+        bridge.read_text(encoding="utf-8")
+        + "\nP3-030Cは、このbridgeをbounded Japanese call/fold reviewで使用するための"
+        "別Decision gateではない。\n",
+        encoding="utf-8",
+    )
+
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_contradiction_without_p3_literal(tmp_path: Path) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    bridge = repo / "docs/range-equity-bridge.md"
+    bridge.write_text(
+        bridge.read_text(encoding="utf-8")
+        + "\nThis bridge is not a separate Decision gate and is already approved.\n",
+        encoding="utf-8",
+    )
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_contradiction_in_another_public_document(
+    tmp_path: Path,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    readme = repo / "README.md"
+    readme.write_text(
+        readme.read_text(encoding="utf-8")
+        + "\nThe bridge is already used for bounded Japanese call/fold review; "
+        "no separate Decision gate is needed.\n",
+        encoding="utf-8",
+    )
+
+    assert _capability_docs_check(repo).status == "fail"
+
+
+def test_capability_preflight_rejects_additional_public_document(tmp_path: Path) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    extra = repo / "docs/other-public.md"
+    extra.write_text("P3-030C is not a separate Decision gate.\n", encoding="utf-8")
+
+    result = _capability_docs_check(repo)
+
+    assert result.status == "fail"
+    assert "public_documents:canonical_inventory_identity" in result.details["missing_markers"]
+
+
+def test_range_artifact_preflight_detects_bridge_evaluation_removal(tmp_path: Path) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    assert _range_grammar_artifacts_check(repo).status == "pass"
+
+    (repo / "tests/fixtures/range_equity/v1/scenarios.json").unlink()
+    result = _range_grammar_artifacts_check(repo)
+
+    assert result.status == "fail"
+    assert "range_equity_evaluation:fixture_invalid" in result.details["failures"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "evidence",
+        "license",
+        "runner",
+        "runner_exit",
+        "manifest_truncate",
+        "manifest_command",
+        "manifest_schema_float",
+        "manifest_bool_int",
+        "manifest_duplicate_command",
+        "range_validate",
+        "combos",
+        "holdem_equity",
+    ),
+)
+def test_range_artifact_preflight_rejects_same_size_bridge_contract_tamper(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    fixture_path = repo / "tests/fixtures/range_equity/v1/scenarios.json"
+    runner_path = repo / "scripts/run_range_equity_evaluation.py"
+    manifest_path = repo / "tools/manifest.yaml"
+    if mutation in {"evidence", "license"}:
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        if mutation == "evidence":
+            fixture["cases"][0]["expected_evidence"] = ["forged-evidence"]
+        else:
+            fixture["license_classification"] = "proprietary"
+        fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+    elif mutation == "runner":
+        runner_path.write_text("", encoding="utf-8")
+    elif mutation == "runner_exit":
+        runner_path.write_text(
+            runner_path.read_text(encoding="utf-8").replace(
+                "return 0 if result.passed else 2",
+                "return 0",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "manifest_truncate":
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+        marker = "- name: holdem_equity"
+        manifest_path.write_text(
+            manifest_text[: manifest_text.index(marker) + len(marker)] + "\n",
+            encoding="utf-8",
+        )
+    elif mutation == "manifest_command":
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "poker-deliberate calculate holdem_equity",
+                "poker-deliberate calculate range_validate",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "manifest_schema_float":
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                "schema_version: 2",
+                "schema_version: 2.0",
+                1,
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "manifest_bool_int":
+        manifest_text = manifest_path.read_text(encoding="utf-8")
+        start = manifest_text.index("- name: range_validate")
+        end = manifest_text.index("\n- name: ", start + 1)
+        block = manifest_text[start:end].replace(
+            "additionalProperties: false",
+            "additionalProperties: 0",
+            1,
+        )
+        manifest_path.write_text(
+            manifest_text[:start] + block + manifest_text[end:],
+            encoding="utf-8",
+        )
+    elif mutation == "manifest_duplicate_command":
+        command = (
+            "  command: poker-deliberate calculate holdem_equity "
+            "--analysis-scope retrospective --input INPUT.json"
+        )
+        forged = (
+            "  command: poker-deliberate calculate range_validate "
+            "--analysis-scope retrospective --input INPUT.json\n" + command
+        )
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(command, forged, 1),
+            encoding="utf-8",
+        )
+    else:
+        manifest_path.write_text(
+            manifest_path.read_text(encoding="utf-8").replace(
+                f"- name: {mutation}", "- name: removed"
+            ),
+            encoding="utf-8",
+        )
+
+    result = _range_grammar_artifacts_check(repo)
+
+    assert result.status == "fail"
+
+
 def test_safe_worktree_path_allows_only_an_unredirected_repository_file(
     tmp_path: Path,
 ) -> None:
@@ -104,6 +411,26 @@ def test_safe_worktree_path_allows_only_an_unredirected_repository_file(
         _safe_worktree_path(repo, "../outside.txt")
     with pytest.raises(ValueError, match="escapes repository"):
         _safe_worktree_path(repo, str(path.resolve()))
+
+
+def test_worktree_scan_rejects_external_hardlink_without_reading(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.txt"
+    outside.write_text("external-fixture@example.invalid\n", encoding="utf-8")
+    repo = (tmp_path / "repo").resolve()
+    repo.mkdir()
+    linked = repo / "public.txt"
+    try:
+        os.link(outside, linked)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="multiple hard links"):
+        _safe_worktree_path(repo, "public.txt")
+    findings, large_files, skipped = _scan_worktree(repo, ["public.txt"])
+
+    assert findings == []
+    assert large_files == []
+    assert skipped == ["public.txt"]
 
 
 @pytest.mark.parametrize(

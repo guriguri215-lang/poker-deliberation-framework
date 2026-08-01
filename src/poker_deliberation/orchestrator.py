@@ -180,6 +180,19 @@ from poker_deliberation.phases.revision_coordinator import (
 )
 from poker_deliberation.phases.services import PurePhaseService
 from poker_deliberation.providers import AgentProvider, LocalProvider
+from poker_deliberation.range_equity import (
+    VersionedRangeRiverEquityAdmissionV1,
+    VersionedRangeRiverEquityError,
+    admit_versioned_range_river_equity,
+    build_versioned_range_river_equity_result,
+    expected_versioned_range_equity_input,
+    versioned_range_river_equity_binding,
+)
+from poker_deliberation.range_equity_models import (
+    RANGE_EQUITY_BINDING_ARTIFACT,
+    RANGE_EQUITY_MARKER,
+    RangeEquityDiagnosticCode,
+)
 from poker_deliberation.range_grammar import validate_versioned_range
 from poker_deliberation.range_models import RangeValidationResultV1, VersionedRangeDefinitionV1
 from poker_deliberation.reporting import render_markdown
@@ -217,6 +230,10 @@ from poker_deliberation.storage.legacy_migration import (
     same_legacy_snapshot,
 )
 from poker_deliberation.storage.lifecycle_hooks import build_terminal_lifecycle_audit
+from poker_deliberation.storage.range_equity_admission_store import (
+    commit_range_equity_admission_record,
+    read_range_equity_admission_record,
+)
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_domain_sha256,
@@ -227,6 +244,7 @@ from poker_deliberation.storage.revision_canonical import (
 from poker_deliberation.storage.revision_canonical import (
     canonical_json_bytes as canonical_storage_json_bytes,
 )
+from poker_deliberation.storage.revision_lock import AuthorityLease
 from poker_deliberation.storage.revision_models import RunStorageError
 from poker_deliberation.storage.revision_store import RunRevisionStore, inspect_root_initialization
 from poker_deliberation.storage.run_store import BufferedRunStore
@@ -910,7 +928,151 @@ class Orchestrator:
             return "product"
         if matches["legacy"]:
             return "legacy"
+        control = self.revision_runs_root / ".revision-control"
+        if control.is_dir():
+            try:
+                admission_record = read_range_equity_admission_record(
+                    self.revision_runs_root,
+                    run_id,
+                    maximum_bytes=self.budget_policy.max_artifact_bytes,
+                )
+            except (CanonicalStorageError, OSError) as exc:
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.RUN_CORRUPT,
+                    stage="namespace_admission_record",
+                    read_status=RunReadStatus.CORRUPT,
+                ) from exc
+            if admission_record is not None:
+                return "range_equity_admission"
         return None
+
+    def _current_product_or_none(self, run_id: str) -> VerifiedRunReadV2 | None:
+        try:
+            return self.product_store.read_current(run_id)
+        except ProductRunError as exc:
+            if exc.failure.code is ProductRunFailureCode.RUN_NOT_FOUND:
+                return None
+            raise
+
+    def _new_run_authority(self, run_id: str) -> AuthorityLease:
+        try:
+            _marker, marker_sha = self.product_store.foundation._ownership(run_id)
+            return self.product_store.foundation._authority(
+                run_id,
+                marker_sha,
+                bootstrap=True,
+            )
+        except RunStorageError as exc:
+            code = (
+                ProductRunFailureCode.RUN_LOCKED
+                if exc.failure.code.value == "run_locked"
+                else ProductRunFailureCode.LOCK_UNAVAILABLE
+            )
+            raise self._product_error(
+                run_id,
+                code,
+                stage="new_run_authority",
+            ) from exc
+        except (CanonicalStorageError, OSError) as exc:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="new_run_reservation",
+                read_status=RunReadStatus.CORRUPT,
+            ) from exc
+
+    def _reserve_new_run_under_authority(self, case: CaseInput, run_id: str) -> None:
+        binding = versioned_range_river_equity_binding(case)
+        try:
+            namespace = self._namespace_kind(run_id)
+            if namespace is not None or self.store.exists(run_id):
+                code = (
+                    ProductRunFailureCode.LEGACY_RUN_UNVERIFIED
+                    if namespace == "legacy"
+                    else ProductRunFailureCode.RUN_CONFLICT
+                )
+                status = RunReadStatus.LEGACY_UNVERIFIED if namespace == "legacy" else None
+                raise self._product_error(
+                    run_id,
+                    code,
+                    stage="new_run_namespace",
+                    read_status=status,
+                )
+            self.product_store._bootstrap_namespace(run_id)
+            self.product_store._sync_bootstrap_namespace(run_id)
+            if binding is not None:
+                commit_range_equity_admission_record(
+                    self.revision_runs_root,
+                    run_id,
+                    binding,
+                    maximum_bytes=self.budget_policy.max_artifact_bytes,
+                )
+            self.store.create_run(run_id)
+        except ProductRunError:
+            raise
+        except RunStorageError as exc:
+            code = (
+                ProductRunFailureCode.RUN_LOCKED
+                if exc.failure.code.value == "run_locked"
+                else ProductRunFailureCode.LOCK_UNAVAILABLE
+            )
+            raise self._product_error(
+                run_id,
+                code,
+                stage="new_run_reservation",
+            ) from exc
+        except FileExistsError as exc:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_CONFLICT,
+                stage="new_run_reservation",
+            ) from exc
+        except (CanonicalStorageError, OSError) as exc:
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="new_run_reservation",
+                read_status=RunReadStatus.CORRUPT,
+            ) from exc
+
+    def _reserve_new_run(self, case: CaseInput, run_id: str) -> None:
+        """Reserve one product namespace before any run-local tool execution."""
+
+        with self._new_run_authority(run_id):
+            self._reserve_new_run_under_authority(case, run_id)
+
+    def _reserve_legacy_migration_destination(self, run_id: str) -> None:
+        """Atomically reserve an empty product namespace for one legacy migration."""
+
+        try:
+            _marker, marker_sha = self.product_store.foundation._ownership(run_id)
+            with self.product_store.foundation._authority(
+                run_id,
+                marker_sha,
+                bootstrap=True,
+            ):
+                if self._namespace_kind(run_id) is not None or self.store.exists(run_id):
+                    raise legacy_failure(
+                        run_id,
+                        ProductRunFailureCode.MIGRATION_CONFLICT,
+                        stage="migration_destination_reservation",
+                    )
+                self.product_store._bootstrap_namespace(run_id)
+        except ProductRunError:
+            raise
+        except RunStorageError as exc:
+            raise legacy_failure(
+                run_id,
+                ProductRunFailureCode.MIGRATION_CONFLICT,
+                stage="migration_destination_authority",
+            ) from exc
+        except (CanonicalStorageError, OSError) as exc:
+            raise legacy_failure(
+                run_id,
+                ProductRunFailureCode.MIGRATION_CONFLICT,
+                stage="migration_destination_reservation",
+            ) from exc
 
     def _tool_versions(self) -> tuple[ToolContractVersionV2, ...]:
         values = []
@@ -1112,7 +1274,7 @@ class Orchestrator:
         previous = (
             previous_read
             if previous_read is not None
-            else self.product_store.read_current(run_id)
+            else self._current_product_or_none(run_id)
             if namespace == "product"
             else None
         )
@@ -1340,8 +1502,65 @@ class Orchestrator:
                     return _failure(_PhaseRevisionFailureCode.APPLY_FAILED)
                 return _failure(_PhaseRevisionFailureCode.APPLY_UNKNOWN)
 
+    def run_versioned_range_river_equity(
+        self,
+        admission: VersionedRangeRiverEquityAdmissionV1,
+        *,
+        run_id: str | None = None,
+    ) -> FinalReport:
+        """Execute a strictly admitted, exact-only river range-equity bridge."""
+
+        verified = admit_versioned_range_river_equity(admission.candidate)
+        if (
+            verified.candidate != admission.candidate
+            or verified.binding != admission.binding
+            or verified.case != admission.case
+        ):
+            raise VersionedRangeRiverEquityError(
+                RangeEquityDiagnosticCode.PROVENANCE,
+                "admission",
+                "admission differs from deterministic reconstruction",
+            )
+        actual_run_id = run_id or new_run_id()
+        try:
+            return self._run(
+                CaseInput.model_validate(verified.case.model_dump(mode="python"), strict=True),
+                actual_run_id,
+                normalization=None,
+            )
+        except BudgetLimitError as exc:
+            machine = self._run_machines.get(actual_run_id)
+            if machine is not None and machine.state is not RunState.FAILED_WITH_LIMITATIONS:
+                machine.events.append(
+                    StateEvent(
+                        source=machine.state,
+                        target=RunState.FAILED_WITH_LIMITATIONS,
+                        reason=f"strict budget failure: {exc.failure.code}",
+                    )
+                )
+                machine.state = RunState.FAILED_WITH_LIMITATIONS
+            limitation = f"strict budget failure: {exc.failure.code}"
+            return FinalReport(
+                run_id=actual_run_id,
+                run_status="failed_with_limitations",
+                conclusion="The run stopped because a strict budget boundary was reached.",
+                reconstructed_input=redact_sensitive(
+                    verified.case.model_dump(mode="json"),
+                    enabled=not self.config.record_sensitive_data,
+                ),
+                data_quality=[limitation],
+                limitations=[limitation],
+                confidence=ConfidenceGrade.D,
+            )
+
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
+        if RANGE_EQUITY_MARKER in case.metadata:
+            raise VersionedRangeRiverEquityError(
+                RangeEquityDiagnosticCode.PROVENANCE,
+                f"case.metadata.{RANGE_EQUITY_MARKER}",
+                "use run_versioned_range_river_equity with a verified admission",
+            )
         if "confirmed_review" in case.metadata:
             raise ConfirmedReviewError(
                 ConfirmedReviewDiagnosticCode.CONFIRMATION_MISSING,
@@ -1599,6 +1818,167 @@ class Orchestrator:
             ) in zip(current, expected, strict=True)
         )
 
+    def _prepare_confirmed_review_run(
+        self,
+        admission: ConfirmedReviewAdmission,
+    ) -> FinalReport | None:
+        run_id = admission.confirmation.run_id
+        case = CaseInput.model_validate(admission.case.model_dump(mode="python"))
+        self._initialize_product_storage(run_id)
+        with self._new_run_authority(run_id):
+            namespace = self._namespace_kind(run_id)
+            if namespace is not None:
+                if namespace != "product":
+                    raise ConfirmedReviewError(
+                        ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
+                        "confirmation.run_id",
+                    )
+                current = self.product_store.read_current(run_id)
+                expected = {
+                    "confirmed_review_source.txt": admission.source_bytes,
+                    "confirmed_review_candidate.json": canonical_storage_json_bytes(
+                        admission.candidate
+                    ),
+                    "confirmed_review_confirmation.json": canonical_storage_json_bytes(
+                        admission.confirmation
+                    ),
+                }
+                try:
+                    exact_replay = all(
+                        current.payload_bytes(name) == payload for name, payload in expected.items()
+                    )
+                except KeyError:
+                    exact_replay = False
+                if not exact_replay:
+                    raise ConfirmedReviewError(
+                        ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
+                        "confirmation.idempotency_key",
+                    )
+                return self._exact_terminal_report(current)
+            hand_payload = (
+                admission.case.hand.model_dump(mode="json")
+                if admission.case.hand is not None
+                else {}
+            )
+            hand_definition = self.registry._tools.get("hand_validator")
+            hand_contract = hand_definition.contract if hand_definition is not None else None
+            try:
+                if hand_definition is None or hand_contract is None:
+                    raise ValueError("hand validator contract is unavailable")
+                validated_hand = hand_contract.input_model.model_validate(hand_payload)
+                hand_output = hand_definition.function(
+                    validated_hand.model_dump(mode="python", exclude_unset=True)
+                )
+                hand_contract.output_model.model_validate(hand_output)
+            except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
+                hand_output = {}
+            if hand_output.get("valid") is not True:
+                raise ConfirmedReviewError(
+                    ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING,
+                    "candidate.hand",
+                )
+            if "hand_pot_ledger" in admission.case.requested_tools:
+                raw_tool_inputs = admission.case.metadata.get("tool_inputs", {})
+                ledger_payload = (
+                    raw_tool_inputs.get("hand_pot_ledger", {})
+                    if isinstance(raw_tool_inputs, dict)
+                    else {}
+                )
+                if not isinstance(ledger_payload, dict) or admission.case.hand is None:
+                    raise ConfirmedReviewError(
+                        ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                        "candidate.ledger_profile",
+                    )
+                ledger_validation = self.registry.execute(
+                    "hand_pot_ledger",
+                    {
+                        **ledger_payload,
+                        "hand": admission.case.hand.model_dump(mode="json"),
+                    },
+                    contract_version=self.tool_contract_versions.get("hand_pot_ledger"),
+                )
+                if ledger_validation.status is not ToolStatus.SUCCESS:
+                    raise ConfirmedReviewError(
+                        ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
+                        "candidate.ledger_profile",
+                    )
+            self._reserve_new_run_under_authority(case, run_id)
+        return None
+
+    def _prepare_bounded_natural_language_run(
+        self,
+        admission: BoundedNaturalLanguageAdmission,
+    ) -> FinalReport | None:
+        run_id = admission.confirmation.run_id
+        case = CaseInput.model_validate(admission.case.model_dump(mode="python"))
+        self._initialize_product_storage(run_id)
+        with self._new_run_authority(run_id):
+            namespace = self._namespace_kind(run_id)
+            if namespace is not None:
+                if namespace != "product":
+                    raise BoundedNaturalLanguageError(
+                        BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_REPLAY,
+                        "confirmation.run_id",
+                    )
+                current = self.product_store.read_current(run_id)
+                expected = {
+                    "bounded_nl_source.txt": admission.source_bytes,
+                    "bounded_nl_candidate.json": canonical_storage_json_bytes(admission.candidate),
+                    "bounded_nl_confirmation.json": canonical_storage_json_bytes(
+                        admission.confirmation
+                    ),
+                }
+                try:
+                    exact_replay = all(
+                        current.payload_bytes(name) == payload for name, payload in expected.items()
+                    )
+                except KeyError:
+                    exact_replay = False
+                if not exact_replay:
+                    raise BoundedNaturalLanguageError(
+                        BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_REPLAY,
+                        "confirmation.idempotency_key",
+                    )
+                return self._exact_terminal_report(current)
+            hand = admission.case.hand
+            raw_inputs = admission.case.metadata.get("tool_inputs")
+            if hand is None or not isinstance(raw_inputs, dict):
+                raise BoundedNaturalLanguageError(
+                    BoundedNaturalLanguageDiagnosticCode.TOOL,
+                    "candidate.tool_plan",
+                )
+            ledger_input = raw_inputs.get("hand_pot_ledger")
+            pot_odds_input = raw_inputs.get("pot_odds")
+            if not isinstance(ledger_input, dict) or not isinstance(pot_odds_input, dict):
+                raise BoundedNaturalLanguageError(
+                    BoundedNaturalLanguageDiagnosticCode.TOOL,
+                    "candidate.tool_plan",
+                )
+            preflight_inputs = {
+                "hand_validator": hand.model_dump(mode="json"),
+                "hand_pot_ledger": {
+                    **ledger_input,
+                    "hand": hand.model_dump(mode="json"),
+                },
+                "pot_odds": pot_odds_input,
+            }
+            for tool_name in BOUNDED_NL_TOOL_ORDER:
+                result = self.registry.execute(
+                    tool_name,
+                    preflight_inputs[tool_name],
+                    contract_version=self.tool_contract_versions.get(tool_name),
+                )
+                if result.status is not ToolStatus.SUCCESS or (
+                    result.numeric_exactness is NumericalExactness.FLOATING_VERIFIED
+                    and (result.verification is None or not result.verification.passed)
+                ):
+                    raise BoundedNaturalLanguageError(
+                        BoundedNaturalLanguageDiagnosticCode.TOOL,
+                        f"candidate.tool_plan.{tool_name}",
+                    )
+            self._reserve_new_run_under_authority(case, run_id)
+        return None
+
     def run_confirmed_review(
         self,
         admission: ConfirmedReviewAdmission,
@@ -1661,86 +2041,16 @@ class Orchestrator:
                 ConfirmedReviewDiagnosticCode.RUNTIME_BUDGET,
                 "runtime.budget",
             )
-        namespace = self._namespace_kind(run_id)
-        if namespace is not None:
-            if namespace != "product":
-                raise ConfirmedReviewError(
-                    ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
-                    "confirmation.run_id",
-                )
-            current = self.product_store.read_current(run_id)
-            expected = {
-                "confirmed_review_source.txt": admission.source_bytes,
-                "confirmed_review_candidate.json": canonical_storage_json_bytes(
-                    admission.candidate
-                ),
-                "confirmed_review_confirmation.json": canonical_storage_json_bytes(
-                    admission.confirmation
-                ),
-            }
-            try:
-                exact_replay = all(
-                    current.payload_bytes(name) == payload for name, payload in expected.items()
-                )
-            except KeyError:
-                exact_replay = False
-            if not exact_replay:
-                raise ConfirmedReviewError(
-                    ConfirmedReviewDiagnosticCode.CONFIRMATION_REPLAY,
-                    "confirmation.idempotency_key",
-                )
-            return self._exact_terminal_report(current)
-        hand_payload = (
-            admission.case.hand.model_dump(mode="json") if admission.case.hand is not None else {}
-        )
-        hand_definition = self.registry._tools.get("hand_validator")
-        hand_contract = hand_definition.contract if hand_definition is not None else None
-        try:
-            if hand_definition is None or hand_contract is None:
-                raise ValueError("hand validator contract is unavailable")
-            validated_hand = hand_contract.input_model.model_validate(hand_payload)
-            hand_output = hand_definition.function(
-                validated_hand.model_dump(mode="python", exclude_unset=True)
-            )
-            hand_contract.output_model.model_validate(hand_output)
-        except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
-            hand_output = {}
-        if hand_output.get("valid") is not True:
-            raise ConfirmedReviewError(
-                ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING,
-                "candidate.hand",
-            )
-        if "hand_pot_ledger" in admission.case.requested_tools:
-            raw_tool_inputs = admission.case.metadata.get("tool_inputs", {})
-            ledger_payload = (
-                raw_tool_inputs.get("hand_pot_ledger", {})
-                if isinstance(raw_tool_inputs, dict)
-                else {}
-            )
-            if not isinstance(ledger_payload, dict) or admission.case.hand is None:
-                raise ConfirmedReviewError(
-                    ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
-                    "candidate.ledger_profile",
-                )
-            ledger_validation = self.registry.execute(
-                "hand_pot_ledger",
-                {
-                    **ledger_payload,
-                    "hand": admission.case.hand.model_dump(mode="json"),
-                },
-                contract_version=self.tool_contract_versions.get("hand_pot_ledger"),
-            )
-            if ledger_validation.status is not ToolStatus.SUCCESS:
-                raise ConfirmedReviewError(
-                    ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
-                    "candidate.ledger_profile",
-                )
+        replay = self._prepare_confirmed_review_run(admission)
+        if replay is not None:
+            return replay
         self._confirmed_review_admissions[run_id] = admission
         try:
             return self._run(
                 CaseInput.model_validate(admission.case.model_dump(mode="python")),
                 run_id,
                 normalization=None,
+                new_run_reserved=True,
             )
         finally:
             self._confirmed_review_admissions.pop(run_id, None)
@@ -1807,75 +2117,16 @@ class Orchestrator:
                 BoundedNaturalLanguageDiagnosticCode.RUNTIME_BUDGET,
                 "runtime.budget",
             )
-        namespace = self._namespace_kind(run_id)
-        if namespace is not None:
-            if namespace != "product":
-                raise BoundedNaturalLanguageError(
-                    BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_REPLAY,
-                    "confirmation.run_id",
-                )
-            current = self.product_store.read_current(run_id)
-            expected = {
-                "bounded_nl_source.txt": admission.source_bytes,
-                "bounded_nl_candidate.json": canonical_storage_json_bytes(admission.candidate),
-                "bounded_nl_confirmation.json": canonical_storage_json_bytes(
-                    admission.confirmation
-                ),
-            }
-            try:
-                exact_replay = all(
-                    current.payload_bytes(name) == payload for name, payload in expected.items()
-                )
-            except KeyError:
-                exact_replay = False
-            if not exact_replay:
-                raise BoundedNaturalLanguageError(
-                    BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_REPLAY,
-                    "confirmation.idempotency_key",
-                )
-            return self._exact_terminal_report(current)
-        hand = admission.case.hand
-        raw_inputs = admission.case.metadata.get("tool_inputs")
-        if hand is None or not isinstance(raw_inputs, dict):
-            raise BoundedNaturalLanguageError(
-                BoundedNaturalLanguageDiagnosticCode.TOOL,
-                "candidate.tool_plan",
-            )
-        ledger_input = raw_inputs.get("hand_pot_ledger")
-        pot_odds_input = raw_inputs.get("pot_odds")
-        if not isinstance(ledger_input, dict) or not isinstance(pot_odds_input, dict):
-            raise BoundedNaturalLanguageError(
-                BoundedNaturalLanguageDiagnosticCode.TOOL,
-                "candidate.tool_plan",
-            )
-        preflight_inputs = {
-            "hand_validator": hand.model_dump(mode="json"),
-            "hand_pot_ledger": {
-                **ledger_input,
-                "hand": hand.model_dump(mode="json"),
-            },
-            "pot_odds": pot_odds_input,
-        }
-        for tool_name in BOUNDED_NL_TOOL_ORDER:
-            result = self.registry.execute(
-                tool_name,
-                preflight_inputs[tool_name],
-                contract_version=self.tool_contract_versions.get(tool_name),
-            )
-            if result.status is not ToolStatus.SUCCESS or (
-                result.numeric_exactness is NumericalExactness.FLOATING_VERIFIED
-                and (result.verification is None or not result.verification.passed)
-            ):
-                raise BoundedNaturalLanguageError(
-                    BoundedNaturalLanguageDiagnosticCode.TOOL,
-                    f"candidate.tool_plan.{tool_name}",
-                )
+        replay = self._prepare_bounded_natural_language_run(admission)
+        if replay is not None:
+            return replay
         self._bounded_nl_admissions[run_id] = admission
         try:
             return self._run(
                 CaseInput.model_validate(admission.case.model_dump(mode="python")),
                 run_id,
                 normalization=None,
+                new_run_reserved=True,
             )
         finally:
             self._bounded_nl_admissions.pop(run_id, None)
@@ -1886,6 +2137,7 @@ class Orchestrator:
         actual_run_id: str,
         *,
         normalization: NormalizationResultV1 | None,
+        new_run_reserved: bool = False,
     ) -> FinalReport:
         try:
             validate_run_id(actual_run_id)
@@ -1896,21 +2148,8 @@ class Orchestrator:
                 stage="new_run_preflight",
             ) from exc
         self._initialize_product_storage(actual_run_id)
-        namespace = self._namespace_kind(actual_run_id)
-        if namespace is not None:
-            code = (
-                ProductRunFailureCode.LEGACY_RUN_UNVERIFIED
-                if namespace == "legacy"
-                else ProductRunFailureCode.RUN_CONFLICT
-            )
-            status = RunReadStatus.LEGACY_UNVERIFIED if namespace == "legacy" else None
-            raise self._product_error(
-                actual_run_id,
-                code,
-                stage="new_run_namespace",
-                read_status=status,
-            )
-        self.store.create_run(actual_run_id)
+        if not new_run_reserved:
+            self._reserve_new_run(case, actual_run_id)
         confirmed_admission = self._confirmed_review_admissions.get(actual_run_id)
         bounded_admission = self._bounded_nl_admissions.get(actual_run_id)
         if confirmed_admission is not None and bounded_admission is not None:
@@ -1999,6 +2238,13 @@ class Orchestrator:
         safe_case = intake.safe_case
         data_quality.extend(intake.data_quality)
         self.store.write_json(actual_run_id, "input.json", safe_case)
+        range_equity_admission_binding = versioned_range_river_equity_binding(case)
+        if range_equity_admission_binding is not None:
+            self.store.write_json(
+                actual_run_id,
+                RANGE_EQUITY_BINDING_ARTIFACT,
+                range_equity_admission_binding,
+            )
         self.store.write_text(actual_run_id, "evidence.jsonl", "")
         for record in intake.accepted_evidence:
             evidence.add(record)
@@ -2699,7 +2945,10 @@ class Orchestrator:
         auto_range_payload: dict[str, object] | None = None
         auto_range_request: ToolRequest | None = None
         auto_combo_payload: dict[str, object] | None = None
+        auto_equity_payload: dict[str, object] | None = None
+        auto_equity_request: ToolRequest | None = None
         skip_versioned_combos = False
+        range_equity_binding = versioned_range_river_equity_binding(case)
         if case.hand is not None and "combos" in case.requested_tools and versioned_ranges:
             if len(versioned_ranges) != 1:
                 data_quality.append(
@@ -2723,6 +2972,7 @@ class Orchestrator:
                     request_id=_new_internal_id("tool-request"),
                     tool_name="range_validate",
                     input=auto_range_payload,
+                    requested_by="versioned-range-product",
                     contract_version=self.tool_contract_versions.get("range_validate"),
                 )
                 auto_range_validation = validate_versioned_range(
@@ -2866,11 +3116,34 @@ class Orchestrator:
                         request_id=_new_internal_id("tool-request"),
                         tool_name=tool_name,
                         input=auto_combo_payload,
+                        requested_by="versioned-range-product",
                         contract_version=self.tool_contract_versions.get(tool_name),
                     )
                 )
                 continue
             if tool_name == "combos" and versioned_ranges and skip_versioned_combos:
+                continue
+            if tool_name == "holdem_equity" and range_equity_binding is not None:
+                if skip_versioned_combos or auto_range_validation is None:
+                    continue
+                auto_equity_payload = expected_versioned_range_equity_input(
+                    case,
+                    auto_range_validation,
+                )
+                supplied_payload = tool_inputs.get(tool_name)
+                if supplied_payload not in (None, {}, auto_equity_payload):
+                    data_quality.append(
+                        "REQ_E_PROVENANCE: conflicting holdem_equity input was refused"
+                    )
+                    auto_equity_payload = None
+                    continue
+                auto_equity_request = ToolRequest(
+                    request_id=_new_internal_id("tool-request"),
+                    tool_name=tool_name,
+                    input=auto_equity_payload,
+                    requested_by="versioned-range-bridge",
+                    contract_version=self.tool_contract_versions.get(tool_name),
+                )
                 continue
             payload = tool_inputs.get(tool_name, {})
             if not isinstance(payload, dict):
@@ -2999,6 +3272,119 @@ class Orchestrator:
                     completed=False,
                     machine=machine,
                 )
+        if range_equity_binding is not None:
+            if auto_equity_request is None or auto_equity_payload is None:
+                raise PhaseContractError(
+                    "versioned range river equity admission lacks its derived equity request"
+                )
+            if not machine.enforce_runtime():
+                data_quality.append("strict runtime refused before versioned range river equity")
+                _append_observed_budget_failure(data_quality, machine)
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            try:
+                equity_tools_output = self._execute_tool_requests(
+                    run_id=actual_run_id,
+                    requests=(auto_equity_request,),
+                    existing_results=tool_results,
+                    machine=machine,
+                )
+            except BudgetLimitError as exc:
+                data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range river equity usage settlement failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            data_quality.extend(equity_tools_output.data_quality)
+            if len(equity_tools_output.bindings) != 1:
+                raise PhaseContractError(
+                    "versioned range river equity requires one bound equity result"
+                )
+            equity_result = equity_tools_output.bindings[0].result
+            tool_results.append(equity_result)
+            self.store.write_json(
+                actual_run_id,
+                f"tool_results/{equity_result.result_id}.json",
+                equity_result,
+            )
+            self.store.write_json(
+                actual_run_id,
+                f"tool_results/{equity_result.result_id}.input.json",
+                equity_result.input,
+            )
+            if equity_tools_output.budget_failure is not None:
+                data_quality.append(
+                    f"strict budget failure: {equity_tools_output.budget_failure.code}"
+                )
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range river equity budget refused",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            if equity_result.status is not ToolStatus.SUCCESS:
+                data_quality.append("versioned range river equity tool failed closed")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "versioned range river equity tool failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            build_versioned_range_river_equity_result(case, tool_results)
         if not machine.enforce_runtime():
             data_quality.append("maximum runtime exceeded after tool execution")
             _append_observed_budget_failure(data_quality, machine)
@@ -3232,7 +3618,7 @@ class Orchestrator:
         pause_before_return: bool = False,
     ) -> FinalReport:
         namespace = self._namespace_kind(run_id)
-        previous = self.product_store.read_current(run_id) if namespace == "product" else None
+        previous = self._current_product_or_none(run_id) if namespace == "product" else None
         planned_revision = 1 if previous is None else previous.revision + 1
         transaction_id = self.terminal_id_factory("txn")
         confirmed_admission = self._confirmed_review_admissions.get(run_id)
@@ -3583,6 +3969,7 @@ class Orchestrator:
                 ProductRunFailureCode.MIGRATION_CONFLICT,
                 stage="migration_destination",
             )
+        self._reserve_legacy_migration_destination(destination_run_id)
         identity_sha = canonical_domain_sha256(
             "poker-legacy-copy-identity-v2",
             {
@@ -3641,7 +4028,20 @@ class Orchestrator:
         )
         frozen = self.product_store.freeze_budget_binding(request)
 
-        def verify_source_unchanged() -> None:
+        def verify_migration_authority() -> None:
+            destination_namespace = self._namespace_kind(destination_run_id)
+            if (
+                destination_namespace != "product"
+                or self._current_product_or_none(destination_run_id) is not None
+                or self.store.exists(destination_run_id)
+            ):
+                raise legacy_failure(
+                    destination_run_id,
+                    ProductRunFailureCode.MIGRATION_CONFLICT,
+                    stage="migration_destination_revalidation",
+                    filesystem_effect="staging_orphan",
+                    reconciliation_required=True,
+                )
             try:
                 observed = self.legacy_adapter.inspect(source_run_id)
             except ProductRunError as exc:
@@ -3663,7 +4063,7 @@ class Orchestrator:
 
         self.product_store.publish(
             frozen,
-            pre_manifest_verifier=verify_source_unchanged,
+            pre_manifest_verifier=verify_migration_authority,
         )
         migrated = self.product_store.read_current(destination_run_id)
         if (

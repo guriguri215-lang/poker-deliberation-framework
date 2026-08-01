@@ -66,4 +66,5 @@ read-only replayになります。confirmationの有効期間は最大24時間�
 `scripts/run_confirmed_review_evaluation.py`が17件の宣言済みケースを実行し、各ケースのobserved
 evidenceがexpected evidenceと完全一致した場合だけexact score `1.0`を与えます。ケースや証拠の
 欠落・重複・追加・不一致はfail closedで`0.0`です。この得点は自然言語抽出精度や戦略品質を
-測りません。
+測りません。result schema v2はcaller-declared source commit/treeを必須でdigestへ拘束し、v1 resultは
+read-only互換として引き続き検証できます。

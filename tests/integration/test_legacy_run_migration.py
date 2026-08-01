@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.range_equity import admit_versioned_range_river_equity
 from poker_deliberation.schemas import CaseInput, FinalReport
 from poker_deliberation.storage.run_store import RunStore
 from poker_deliberation.storage.terminal_models import (
@@ -15,6 +17,7 @@ from poker_deliberation.storage.terminal_models import (
     ProductRunFailureCode,
     RunReadStatus,
 )
+from tests.range_support import versioned_river_equity_case
 
 
 def _config(tmp_path: Path) -> AppConfig:
@@ -185,3 +188,79 @@ def test_source_change_during_copy_leaves_no_published_current(
         config.revision_runs_dir / "runs" / "run-legacy-copy" / ".terminal-store" / "current.json"
     )
     assert not current.exists()
+
+
+def test_migration_cannot_publish_into_reserved_range_equity_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    _legacy_source(config)
+    migration = Orchestrator(config)
+    bridge = Orchestrator(config)
+    destination = "run-migration-bridge-race"
+    migration_ready_to_reserve = Event()
+    release_migration = Event()
+    bridge_tool_entered = Event()
+    release_bridge = Event()
+    migration_results: list[object] = []
+    bridge_results: list[object] = []
+    original_reserve = migration._reserve_legacy_migration_destination
+    original_execute = bridge.registry.execute
+
+    def pausing_reserve(run_id: str) -> None:
+        migration_ready_to_reserve.set()
+        assert release_migration.wait(timeout=20)
+        original_reserve(run_id)
+
+    def pausing_execute(tool_name: str, *args: object, **kwargs: object):
+        if not bridge_tool_entered.is_set():
+            bridge_tool_entered.set()
+            assert release_bridge.wait(timeout=20)
+        return original_execute(tool_name, *args, **kwargs)
+
+    monkeypatch.setattr(migration, "_reserve_legacy_migration_destination", pausing_reserve)
+    monkeypatch.setattr(bridge.registry, "execute", pausing_execute)
+
+    def migrate() -> None:
+        try:
+            migration_results.append(
+                migration.migrate_legacy_run(
+                    "run-legacy-source",
+                    destination,
+                    source_quiescence_acknowledged=True,
+                )
+            )
+        except ProductRunError as exc:
+            migration_results.append(exc)
+
+    def run_bridge() -> None:
+        try:
+            admission = admit_versioned_range_river_equity(versioned_river_equity_case())
+            bridge_results.append(
+                bridge.run_versioned_range_river_equity(admission, run_id=destination)
+            )
+        except ProductRunError as exc:
+            bridge_results.append(exc)
+
+    migration_thread = Thread(target=migrate)
+    bridge_thread = Thread(target=run_bridge)
+    migration_thread.start()
+    assert migration_ready_to_reserve.wait(timeout=20)
+    bridge_thread.start()
+    assert bridge_tool_entered.wait(timeout=20)
+    release_migration.set()
+    migration_thread.join(timeout=30)
+    release_bridge.set()
+    bridge_thread.join(timeout=30)
+
+    assert not migration_thread.is_alive()
+    assert not bridge_thread.is_alive()
+    assert len(migration_results) == 1
+    assert isinstance(migration_results[0], ProductRunError)
+    assert migration_results[0].failure.code is ProductRunFailureCode.MIGRATION_CONFLICT
+    assert len(bridge_results) == 1
+    assert not isinstance(bridge_results[0], ProductRunError)
+    current = bridge.product_store.read_current(destination)
+    assert current.read_status is RunReadStatus.SUCCEEDED
+    assert current.reachable_revisions == (1,)

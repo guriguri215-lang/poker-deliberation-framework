@@ -34,10 +34,13 @@ from poker_deliberation.context_lifecycle import (
 )
 from poker_deliberation.phases.contracts import (
     PhaseContractError,
+    PhaseFailure,
+    PhaseFailureCode,
     PhaseId,
     PhaseOutcome,
     PhaseRequest,
     canonical_sha256,
+    failed_outcome,
     revalidate_request,
     successful_outcome,
 )
@@ -58,13 +61,34 @@ from poker_deliberation.schemas import (
     EpistemicLabel,
     Exactness,
     NumericalExactness,
+    ToolRequest,
     ToolResult,
     ToolStatus,
 )
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools import ToolByteLimitError, ToolRegistry
+from poker_deliberation.tools.contracts import versioned_range_bridge_failure_input_matches
 
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _binds_versioned_range_failure(request: ToolRequest) -> bool:
+    """Accept the internal failure envelope only for its exact request shapes."""
+
+    expected_requester = {
+        "range_validate": "versioned-range-product",
+        "combos": "versioned-range-product",
+        "holdem_equity": "versioned-range-bridge",
+    }.get(request.tool_name)
+    return (
+        request.requested_by == expected_requester
+        and request.requires_approval is False
+        and versioned_range_bridge_failure_input_matches(
+            request.tool_name,
+            request.input,
+            request.contract_version,
+        )
+    )
 
 
 class _ProviderAnalysisFailed(RuntimeError):
@@ -723,9 +747,10 @@ class ToolResearchExecutor:
                     warnings.append(f"{tool_request.tool_name}: strict budget refused execution")
             if request_is_safe and budget_failure is None:
                 try:
+                    bind_versioned_range_failure = _binds_versioned_range_failure(tool_request)
                     phase_execute = getattr(self.registry, "execute_for_phase", None)
-                    raw_value = (
-                        phase_execute(
+                    if callable(phase_execute):
+                        raw_value = phase_execute(
                             tool_request.tool_name,
                             dict(tool_request.input),
                             contract_version=tool_request.contract_version,
@@ -745,14 +770,21 @@ class ToolResearchExecutor:
                                 max(effect_observations) if effect_observations else None
                             ),
                             observation_sink=effect_observations,
+                            _bind_versioned_range_failure=bind_versioned_range_failure,
                         )
-                        if callable(phase_execute)
-                        else self.registry.execute(
+                    elif bind_versioned_range_failure:
+                        raw_value = self.registry.execute(
+                            tool_request.tool_name,
+                            dict(tool_request.input),
+                            contract_version=tool_request.contract_version,
+                            _bind_versioned_range_failure=bind_versioned_range_failure,
+                        )
+                    else:
+                        raw_value = self.registry.execute(
                             tool_request.tool_name,
                             dict(tool_request.input),
                             contract_version=tool_request.contract_version,
                         )
-                    )
                     raw_result = ToolResult.model_validate(raw_value)
                 except ToolByteLimitError as exc:
                     budget_failure = BudgetFailure(
@@ -809,28 +841,25 @@ class ToolResearchExecutor:
                         raw_result.tool_name != tool_request.tool_name
                         or raw_result.input != tool_request.input
                         or (
-                            raw_result.status is ToolStatus.SUCCESS
-                            and tool_request.contract_version is not None
+                            tool_request.contract_version is not None
                             and raw_result.contract_version != tool_request.contract_version
                         )
                     ):
-                        warnings.append(
-                            f"{tool_request.tool_name}: tool result correlation mismatch"
+                        return failed_outcome(
+                            isolated,
+                            PhaseFailure(
+                                code=PhaseFailureCode.CORRELATION,
+                                phase_id=PhaseId.TOOL_RESEARCH,
+                                attempt_id=isolated.attempt_id,
+                                retryable=False,
+                                message=(
+                                    f"{tool_request.tool_name}: tool result correlation mismatch"
+                                ),
+                            ),
                         )
-                        result = ToolResult(
-                            result_id=fallback_result_id,
-                            tool_name=tool_request.tool_name,
-                            input=dict(tool_request.input),
-                            status=ToolStatus.FAILED,
-                            exactness=Exactness.UNAVAILABLE,
-                            numeric_exactness=NumericalExactness.UNAVAILABLE,
-                            contract_version=supported_contract_version,
-                            error="tool result correlation mismatch",
-                        )
-                    else:
-                        result = ToolResult.model_validate(
-                            redact_sensitive(raw_result, enabled=not self.record_sensitive_data)
-                        )
+                    result = ToolResult.model_validate(
+                        redact_sensitive(raw_result, enabled=not self.record_sensitive_data)
+                    )
             else:
                 result = ToolResult(
                     result_id=fallback_result_id,

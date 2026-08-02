@@ -359,6 +359,55 @@ def test_failed_terminal_rejects_coordinated_direct_tool_envelope_tamper(
         )
 
 
+def test_failed_terminal_correlates_allowed_tool_failure_code_to_report(
+    tmp_path: Path,
+) -> None:
+    admitted = admission(run_id="run-river-failed-tool-code-correlation")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+    assert report.run_status == "failed_with_limitations"
+    assert report.tool_results[-1].error == "strict budget failure: tool_input_exceeded"
+    assert [item for item in report.data_quality if item.startswith("strict budget failure: ")] == [
+        report.tool_results[-1].error
+    ]
+    read = orchestrator.product_store.read_current(report.run_id)
+    original_payloads = {
+        item.inventory.logical_name: item.exact_bytes
+        for item in read.payloads
+        if item.inventory.logical_name != "lifecycle_audit.json"
+    }
+
+    for code in (
+        "clock_rollback",
+        "runtime_exceeded",
+        "tool_output_exceeded",
+        "run_exceeded",
+        "usage_malformed",
+    ):
+        payloads = dict(original_payloads)
+        final_report = json.loads(payloads["final_report.json"])
+        failed_tool = final_report["tool_results"][-1]
+        failed_tool["error"] = f"strict budget failure: {code}"
+        payloads["final_report.json"] = canonical_json_bytes(final_report)
+        logical_name = f"tool_results/{failed_tool['result_id']}.json"
+        stored_tool = json.loads(payloads[logical_name])
+        stored_tool["error"] = failed_tool["error"]
+        payloads[logical_name] = canonical_json_bytes(stored_tool)
+
+        with pytest.raises(CanonicalStorageError):
+            product_payload_commitments(
+                payloads,
+                run_id=report.run_id,
+                status="failed",
+                revision=read.revision,
+                revision_root=orchestrator.product_store.revision_root,
+                transaction_id=read.transaction_id,
+            )
+
+
 def test_terminal_reader_requires_preexecution_admission_record(tmp_path: Path) -> None:
     orchestrator, report, _read, _payloads = _completed(tmp_path)
     record_path = (

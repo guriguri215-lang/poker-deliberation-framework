@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -172,3 +174,43 @@ def test_evaluation_loaded_module_origins_are_checkout_bound(tmp_path: Path) -> 
     verify_bounded_river_call_ev_evaluation_module_origins(ROOT)
     with pytest.raises(ValueError, match="module origin mismatch"):
         verify_bounded_river_call_ev_evaluation_module_origins(tmp_path)
+
+
+def test_evaluation_loaded_module_origin_check_covers_tool_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "poker_deliberation.tools.hand_pot_ledger"
+    foreign_module = ModuleType(module_name)
+    foreign_module.__file__ = str(tmp_path / "foreign" / "hand_pot_ledger.py")
+    monkeypatch.setitem(sys.modules, module_name, foreign_module)
+
+    with pytest.raises(ValueError, match="module origin mismatch"):
+        verify_bounded_river_call_ev_evaluation_module_origins(ROOT)
+
+
+def test_evaluation_rechecks_loaded_module_origins_after_handlers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_checkout(monkeypatch)
+    calls: list[Path] = []
+
+    def record_origin_check(repository_root: Path) -> None:
+        calls.append(repository_root)
+
+    monkeypatch.setattr(
+        evaluation_module,
+        "verify_bounded_river_call_ev_evaluation_module_origins",
+        record_origin_check,
+    )
+    result = run_bounded_river_call_ev_evaluation(
+        load_bounded_river_call_ev_evaluation_fixture(FIXTURE),
+        repository_root=tmp_path,
+        work_root=tmp_path / "run",
+        source_commit_id=COMMIT_ID,
+        source_tree_id=TREE_ID,
+    )
+
+    assert result.passed is True
+    assert calls == [tmp_path, tmp_path]

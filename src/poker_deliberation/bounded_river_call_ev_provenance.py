@@ -308,6 +308,14 @@ def _validate_report_semantics(
         _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "report.tool_results")
     if len({item.result_id for item in report.tool_results}) != len(report.tool_results):
         _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "report.tool_results")
+    failed_tool_results = [item for item in report.tool_results if item.status is ToolStatus.FAILED]
+    if failed_tool_results:
+        expected_failure = failed_tool_results[-1].error
+        strict_budget_evidence = [
+            item for item in report.data_quality if item.startswith("strict budget failure: ")
+        ]
+        if expected_failure is None or strict_budget_evidence != [expected_failure]:
+            _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "report.data_quality")
     if any(
         item.duration_seconds > _TOOL_MAX_DURATION_SECONDS
         or item.created_at.tzinfo is None

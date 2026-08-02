@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
@@ -186,15 +187,24 @@ def verify_bounded_river_call_ev_evaluation_checkout(
 
 
 def verify_bounded_river_call_ev_evaluation_module_origins(repository_root: Path) -> None:
-    """Require every loaded implementation module to originate in the claimed checkout."""
+    """Require the full loaded package closure to originate in the claimed checkout."""
 
     package_root = (repository_root.resolve() / "src" / "poker_deliberation").resolve()
-    package_file = getattr(poker_deliberation, "__file__", None)
-    if package_file is None or Path(package_file).resolve() != package_root / "__init__.py":
-        raise ValueError("bounded river call-EV evaluation module origin mismatch")
     for module_name in _EVALUATION_IMPLEMENTATION_MODULES:
-        module_file = getattr(importlib.import_module(module_name), "__file__", None)
-        if module_file is None or not Path(module_file).resolve().is_relative_to(package_root):
+        importlib.import_module(module_name)
+    for module_name, module in tuple(sys.modules.items()):
+        if module_name != "poker_deliberation" and not module_name.startswith(
+            "poker_deliberation."
+        ):
+            continue
+        module_file = getattr(module, "__file__", None)
+        if module_file is None:
+            raise ValueError("bounded river call-EV evaluation module origin mismatch")
+        resolved = Path(module_file).resolve()
+        if module_name == "poker_deliberation":
+            if module is not poker_deliberation or resolved != package_root / "__init__.py":
+                raise ValueError("bounded river call-EV evaluation module origin mismatch")
+        elif not resolved.is_relative_to(package_root):
             raise ValueError("bounded river call-EV evaluation module origin mismatch")
 
 
@@ -1090,6 +1100,7 @@ def run_bounded_river_call_ev_evaluation(
                 passed=passed,
             )
         )
+    verify_bounded_river_call_ev_evaluation_module_origins(repository_root)
     metrics: list[BoundedRiverCallEvEvaluationMetricV1] = []
     for metric_name in REQUIRED_METRICS:
         selected = tuple(item for item in case_results if item.metric == metric_name)

@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
-from poker_deliberation.bounded_river_call_ev_evaluation import (
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = ROOT / "src"
+source_root_text = str(SOURCE_ROOT)
+sys.path[:] = [source_root_text, *(item for item in sys.path if item != source_root_text)]
+
+from poker_deliberation.bounded_river_call_ev_evaluation import (  # noqa: E402
     load_bounded_river_call_ev_evaluation_fixture,
     run_bounded_river_call_ev_evaluation,
 )
-from poker_deliberation.storage.revision_canonical import canonical_json_bytes
+from poker_deliberation.storage.revision_canonical import canonical_json_bytes  # noqa: E402
 
-ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_FIXTURE = ROOT / "tests" / "fixtures" / "bounded_river_call_ev" / "v1" / "scenarios.json"
 
 

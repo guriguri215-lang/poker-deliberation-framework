@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1008,6 +1008,7 @@ def _validate_confirmed_report_projection(
     storage_revision: int | None,
     storage_transaction_id: str | None,
     require_storage_authority: bool,
+    additional_runtime_stage_tool_prefixes: Mapping[str, Sequence[str]] | None = None,
 ) -> None:
     if (
         report.alternatives
@@ -1063,6 +1064,18 @@ def _validate_confirmed_report_projection(
         },
     }
     actual_tool_names = [result.tool_name for result in report.tool_results]
+    additional_runtime_stages = {
+        item: list(prefix)
+        for item, prefix in (additional_runtime_stage_tool_prefixes or {}).items()
+    }
+    if any(
+        not item or prefix != list(expected_tool_names[: len(prefix)])
+        for item, prefix in additional_runtime_stages.items()
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.runtime_stage_contract",
+        )
     pre_provider_tool_names = (
         ["hand_validator"] if expected_tool_names[:1] == ["hand_validator"] else []
     )
@@ -1093,10 +1106,13 @@ def _validate_confirmed_report_projection(
         "strict runtime refused before requested tool execution",
         "maximum runtime exceeded after tool execution",
         "confirmed terminal publication refused with less than 0.25 seconds remaining",
+        *additional_runtime_stages,
     }
 
     def runtime_stage_consistent(item: str) -> bool:
         record_count = len(report.agent_execution_records)
+        if item in additional_runtime_stages:
+            return all_records_completed and actual_tool_names == additional_runtime_stages[item]
         if item == "strict runtime refused before hand validation":
             return record_count == 0 and not actual_tool_names
         if item == "provider analysis skipped because round budget is zero":
@@ -1223,7 +1239,7 @@ def _validate_confirmed_report_projection(
         )
 
     def runtime_data_quality(item: str) -> bool:
-        if item in _CONFIRMED_RUNTIME_DATA_QUALITY:
+        if item in primary_runtime_stages or item in _CONFIRMED_RUNTIME_DATA_QUALITY:
             return runtime_stage_consistent(item)
         for prefix in ("strict usage settlement failed: ", "strict budget failure: "):
             if item.startswith(prefix):

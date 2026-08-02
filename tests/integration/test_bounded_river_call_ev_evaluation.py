@@ -14,6 +14,7 @@ from poker_deliberation.bounded_river_call_ev_evaluation import (
     load_bounded_river_call_ev_evaluation_fixture,
     run_bounded_river_call_ev_evaluation,
     verify_bounded_river_call_ev_evaluation_checkout,
+    verify_bounded_river_call_ev_evaluation_module_origins,
 )
 from poker_deliberation.range_equity_models import canonical_domain_sha256
 
@@ -36,6 +37,11 @@ def _clean_checkout(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, ...], st
         return responses[arguments]
 
     monkeypatch.setattr(evaluation_module, "_git_stdout", git_stdout)
+    monkeypatch.setattr(
+        evaluation_module,
+        "verify_bounded_river_call_ev_evaluation_module_origins",
+        lambda _root: None,
+    )
     return responses
 
 
@@ -160,3 +166,9 @@ def test_evaluation_cli_checkout_binding_fails_closed(
             source_commit_id=COMMIT_ID,
             source_tree_id=TREE_ID,
         )
+
+
+def test_evaluation_loaded_module_origins_are_checkout_bound(tmp_path: Path) -> None:
+    verify_bounded_river_call_ev_evaluation_module_origins(ROOT)
+    with pytest.raises(ValueError, match="module origin mismatch"):
+        verify_bounded_river_call_ev_evaluation_module_origins(tmp_path)

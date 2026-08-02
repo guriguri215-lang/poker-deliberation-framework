@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+import poker_deliberation
 from poker_deliberation.bounded_natural_language import (
     prepare_bounded_natural_language_intake,
 )
@@ -125,6 +127,16 @@ REQUIRED_METRICS: tuple[EvaluationMetric, ...] = (
     "runtime_replay",
 )
 _SOURCE_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+_EVALUATION_IMPLEMENTATION_MODULES = (
+    "poker_deliberation.bounded_natural_language",
+    "poker_deliberation.bounded_river_call_ev",
+    "poker_deliberation.bounded_river_call_ev_evaluation",
+    "poker_deliberation.bounded_river_call_ev_provenance",
+    "poker_deliberation.orchestrator",
+    "poker_deliberation.range_equity",
+    "poker_deliberation.storage.bounded_river_call_ev_admission_store",
+    "poker_deliberation.storage.range_equity_admission_store",
+)
 
 
 def _git_stdout(repository_root: Path, *arguments: str) -> str:
@@ -171,6 +183,19 @@ def verify_bounded_river_call_ev_evaluation_checkout(
         or flagged
     ):
         raise ValueError("bounded river call-EV evaluation checkout binding mismatch")
+
+
+def verify_bounded_river_call_ev_evaluation_module_origins(repository_root: Path) -> None:
+    """Require every loaded implementation module to originate in the claimed checkout."""
+
+    package_root = (repository_root.resolve() / "src" / "poker_deliberation").resolve()
+    package_file = getattr(poker_deliberation, "__file__", None)
+    if package_file is None or Path(package_file).resolve() != package_root / "__init__.py":
+        raise ValueError("bounded river call-EV evaluation module origin mismatch")
+    for module_name in _EVALUATION_IMPLEMENTATION_MODULES:
+        module_file = getattr(importlib.import_module(module_name), "__file__", None)
+        if module_file is None or not Path(module_file).resolve().is_relative_to(package_root):
+            raise ValueError("bounded river call-EV evaluation module origin mismatch")
 
 
 class _EvaluationModel(BaseModel):
@@ -810,20 +835,28 @@ def _confirmation_and_tool_replay(context: _EvaluationContext) -> tuple[str, ...
     return tuple(evidence)
 
 
-def _preexecution_guard_refuses_before_dispatch(context: _EvaluationContext) -> bool:
-    admitted = _admission("QcJc", "river-eval-preexecution-guard")
-    orchestrator = Orchestrator(_config(context.root, "preexecution-guard"))
+def _preexecution_guard_refuses_before_dispatch(
+    context: _EvaluationContext,
+    *,
+    missing_record: Literal["bounded", "range"],
+) -> bool:
+    admitted = _admission("QcJc", f"river-eval-preexecution-{missing_record}")
+    orchestrator = Orchestrator(_config(context.root, f"preexecution-{missing_record}"))
     run_id = admitted.confirmation.run_id
     orchestrator._initialize_product_storage(run_id)
     with orchestrator._new_run_authority(run_id):
         orchestrator._reserve_new_run_under_authority(admitted.case, run_id)
-    bounded_record_path = (
+    journal_directory = {
+        "bounded": "bounded-river-call-ev-admissions",
+        "range": "range-equity-admissions",
+    }[missing_record]
+    record_path = (
         orchestrator.product_store.revision_root
         / ".revision-control"
-        / "bounded-river-call-ev-admissions"
+        / journal_directory
         / f"{run_lock_key_sha256(run_id)}.json"
     )
-    bounded_record_path.unlink()
+    record_path.unlink()
     orchestrator._bounded_river_call_ev_admissions[run_id] = admitted
     try:
         orchestrator._run(
@@ -842,7 +875,11 @@ def _preexecution_guard_refuses_before_dispatch(context: _EvaluationContext) -> 
     artifact_names = {
         item.inventory.logical_name for item in orchestrator.store.verified_payloads(run_id)
     }
-    return refused and not any(name.startswith("tool_results/") for name in artifact_names)
+    return (
+        refused
+        and "bounded_river_call_ev_source.txt" not in artifact_names
+        and not any(name.startswith("tool_results/") for name in artifact_names)
+    )
 
 
 def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str, ...]:
@@ -899,7 +936,14 @@ def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str
         )
     if (
         records_verified
-        and _preexecution_guard_refuses_before_dispatch(context)
+        and _preexecution_guard_refuses_before_dispatch(
+            context,
+            missing_record="bounded",
+        )
+        and _preexecution_guard_refuses_before_dispatch(
+            context,
+            missing_record="range",
+        )
         and tuple(item.tool_name for item in report.tool_results)
         == BOUNDED_RIVER_CALL_EV_TOOL_ORDER
         and "bounded_river_call_ev_binding.json" in artifact_names
@@ -1008,6 +1052,7 @@ def run_bounded_river_call_ev_evaluation(
     source_commit_id: str,
     source_tree_id: str,
 ) -> BoundedRiverCallEvEvaluationResultV1:
+    verify_bounded_river_call_ev_evaluation_module_origins(repository_root)
     verify_bounded_river_call_ev_evaluation_checkout(
         repository_root,
         source_commit_id=source_commit_id,
@@ -1095,4 +1140,5 @@ __all__ = [
     "load_bounded_river_call_ev_evaluation_fixture",
     "run_bounded_river_call_ev_evaluation",
     "verify_bounded_river_call_ev_evaluation_checkout",
+    "verify_bounded_river_call_ev_evaluation_module_origins",
 ]

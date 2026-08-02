@@ -10,6 +10,9 @@
   ledger hash、Fraction oracle、16/128/32 ULP境界、成功またはfail-closed prefixをterminal replayで
   再検査する。raw sourceは保存対象だがagent contextには含めず、context runtime、classification、
   lineage、expiry、role/tool allowlist、budget mismatchを拒否する。
+- source span/hashだけではなく、source bytesからhand、focal、bindings、pot assertionをcalculator-freeで
+  再構成しcandidateと完全一致させる。失敗terminalも実行済みtool prefix、strict budget code、direct-tool
+  failure envelope、agent record、data quality、limitationsがcanonical runtime projectionと一致しなければ拒否する。
 - P3-030B bounded Japanese intakeは最大65,536-byteのUTF-8/NFC/LF sourceと有限の全行grammarだけを
   受理する。BOM、invalid UTF-8、CR、control/format文字、credential形状、real-time助言、unknown行、
   欠落、重複、矛盾、曖昧raise、action/resource超過、未対応scopeをstable codeでfail closedにし、

@@ -1746,7 +1746,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C is an implementation candidate for one confirmed river range/equity/no-rake call-EV product slice; general natural-language or site parsing and actual runtime or solver integrations remain unimplemented. The milestone table remains authoritative for current status.",
+      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice; RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing and actual runtime or solver integrations remain unimplemented. The milestone table remains authoritative for current status.",
       "dependencies": [
         "RM-014"
       ],

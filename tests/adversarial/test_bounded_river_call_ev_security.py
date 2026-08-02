@@ -7,18 +7,25 @@ from pathlib import Path
 import pytest
 
 import poker_deliberation.bounded_natural_language as bounded_nl_module
+from poker_deliberation.bounded_natural_language import (
+    bounded_candidate_sha256,
+    prepare_bounded_natural_language_intake,
+)
 from poker_deliberation.bounded_river_call_ev import (
     BoundedRiverCallEvError,
+    _candidate_from_components,
     admit_bounded_river_call_ev_review,
     build_bounded_river_call_ev_result,
     create_bounded_river_call_ev_authority,
     create_bounded_river_call_ev_confirmation,
+    expected_bounded_river_tool_inputs,
     prepare_bounded_river_call_ev_intake,
     verify_bounded_river_call_ev_candidate,
     verify_bounded_river_call_ev_tool_chain,
 )
 from poker_deliberation.orchestrator import Orchestrator
-from poker_deliberation.schemas import Exactness, NumericalExactness, ToolStatus
+from poker_deliberation.schemas import Exactness, NumericalExactness, ToolResult, ToolStatus
+from poker_deliberation.tools import default_registry
 from tests.bounded_river_call_ev_support import (
     admission,
     app_config,
@@ -177,6 +184,25 @@ def test_order_numeric_and_partial_prefix_tamper_fail_closed(tmp_path: Path) -> 
             run_status="failed_with_limitations",
         )
 
+    bounded = admitted.candidate.projection.bounded_candidate
+    plan = bounded.projection.tool_plan
+    mismatched_plan = plan.model_copy(
+        update={"pot_before_bet_units": plan.pot_before_bet_units + 1}
+    )
+    mismatched_bounded_projection = bounded.projection.model_copy(
+        update={"tool_plan": mismatched_plan}
+    )
+    mismatched_bounded = bounded.model_copy(update={"projection": mismatched_bounded_projection})
+    mismatched_projection = admitted.candidate.projection.model_copy(
+        update={"bounded_candidate": mismatched_bounded}
+    )
+    mismatched_admission = replace(
+        admitted,
+        candidate=admitted.candidate.model_copy(update={"projection": mismatched_projection}),
+    )
+    with pytest.raises(BoundedRiverCallEvError, match="BRC_E_LEDGER"):
+        build_bounded_river_call_ev_result(mismatched_admission, results)
+
 
 @pytest.mark.parametrize(
     ("index", "update"),
@@ -264,3 +290,143 @@ def test_admission_and_terminal_replay_do_not_reenter_bounded_nl_calculators(
 
     assert report.run_status == "completed"
     assert orchestrator.run_bounded_river_call_ev_review(replayed) == report
+
+
+def test_source_semantics_are_reconstructed_before_p3_030c_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = river_source()
+    changed_source = source.replace(b"As Kd", b"Ac Kd", 1)
+
+    def prepare(value: bytes):
+        result = prepare_bounded_natural_language_intake(
+            value,
+            intake_id="intake-source-semantic-replay",
+            source_id="fixture-source-semantic-replay",
+            source_kind="repository_fixture",
+            license_classification="repository_owned_mit",
+            usage_classification="redistribution_allowed",
+            classification="public",
+        )
+        assert result.source is not None and result.candidate is not None
+        return result
+
+    source_preparation = prepare(source)
+    changed_preparation = prepare(changed_source)
+    changed_projection = changed_preparation.candidate.projection
+    hybrid_projection = changed_projection.model_copy(
+        update={
+            "source": source_preparation.source,
+            "source_bindings": source_preparation.candidate.projection.source_bindings,
+            "source_bindings_sha256": (
+                source_preparation.candidate.projection.source_bindings_sha256
+            ),
+        },
+        deep=True,
+    )
+    hybrid_bounded = changed_preparation.candidate.model_copy(
+        update={
+            "projection": hybrid_projection,
+            "candidate_sha256": bounded_candidate_sha256(hybrid_projection),
+        },
+        deep=True,
+    )
+    candidate = _candidate_from_components(
+        source,
+        hybrid_bounded,
+        range_definition(changed_source),
+    )
+    confirmation = create_bounded_river_call_ev_confirmation(
+        candidate,
+        run_id="run-river-source-semantic-replay",
+        confirmation_id="confirmation-river-source-semantic-replay",
+        idempotency_key="idempotency-river-source-semantic-replay",
+        authority=create_bounded_river_call_ev_authority(
+            authority_id="local-test-user",
+            authority_kind="local_user",
+            authentication="self_asserted",
+        ),
+        expected_hashes=candidate_hashes(candidate),
+    )
+
+    def forbidden_registry(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("source semantic replay must remain calculator-free")
+
+    monkeypatch.setattr(bounded_nl_module, "default_registry", forbidden_registry)
+    with pytest.raises(BoundedRiverCallEvError, match="BRC_E_SOURCE"):
+        admit_bounded_river_call_ev_review(source, candidate, confirmation)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("output", {"forged": True}),
+        ("exactness", Exactness.EXACT),
+        ("numeric_exactness", NumericalExactness.EXACT),
+        ("contract_version", "2.0.1"),
+        ("assumptions", ["forged"]),
+        ("version", "2.0.0"),
+        ("model_qualifier", "forged"),
+        ("method", "forged"),
+        ("stochastic", False),
+        ("seed", 1),
+        ("samples", 1),
+        ("iterations", 1),
+        ("confidence_interval", (0.0, 1.0)),
+        ("confidence_level", 0.95),
+        ("error_metadata", {"metric": "forged", "value": 0.0, "unit": "unit"}),
+        ("stopping_condition", "forged"),
+        (
+            "verification",
+            {
+                "method": "forged",
+                "checks": ["forged"],
+                "tolerance": {
+                    "kind": "absolute",
+                    "absolute": 0.0,
+                    "unit": "unit",
+                    "rationale": "forged",
+                },
+                "passed": True,
+            },
+        ),
+        ("duration_seconds", 0.1),
+        ("warnings", ["forged"]),
+        ("error", "fixture failure"),
+        ("reproduce_command", "forged"),
+    ],
+)
+def test_failed_direct_tool_envelope_is_strict(
+    field: str,
+    value: object,
+) -> None:
+    admitted = admission(run_id="run-river-failed-direct-envelope")
+    expected_inputs = expected_bounded_river_tool_inputs(admitted)
+    successful_hand = default_registry().execute(
+        "hand_validator",
+        expected_inputs["hand_validator"],
+    )
+    failed_ledger = ToolResult(
+        tool_name="hand_pot_ledger",
+        input=expected_inputs["hand_pot_ledger"],
+        status=ToolStatus.FAILED,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        contract_version="2.0.0",
+        error="strict budget failure: tool_input_exceeded",
+    )
+    tool_results = [successful_hand, failed_ledger]
+    verify_bounded_river_call_ev_tool_chain(
+        admitted,
+        tool_results,
+        run_status="failed_with_limitations",
+    )
+    forged = list(tool_results)
+    forged[-1] = forged[-1].model_copy(update={field: value}, deep=True)
+
+    with pytest.raises(BoundedRiverCallEvError, match="BRC_E_TOOL_PLAN"):
+        verify_bounded_river_call_ev_tool_chain(
+            admitted,
+            forged,
+            run_status="failed_with_limitations",
+        )

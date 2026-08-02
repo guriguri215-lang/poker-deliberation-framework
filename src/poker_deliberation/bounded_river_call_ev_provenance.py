@@ -28,7 +28,9 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BoundedRiverCallEvResultV1,
 )
 from poker_deliberation.confirmed_review import (
+    _CONFIRMED_SOLVER_LIMITATION,
     _expected_agent_context_fields,
+    _validate_confirmed_report_projection,
     _validate_reproduction_steps,
 )
 from poker_deliberation.context_lifecycle import context_payload
@@ -315,6 +317,51 @@ def _validate_report_semantics(
         for item in report.tool_results
     ):
         _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "report.tool_results")
+    runtime_projection = report.model_copy(
+        update={
+            "alternatives": [],
+            "confidence": ConfidenceGrade.C,
+            "limitations": list(
+                dict.fromkeys([*report.data_quality, _CONFIRMED_SOLVER_LIMITATION])
+            ),
+        },
+        deep=True,
+    )
+    try:
+        _validate_confirmed_report_projection(
+            runtime_projection,
+            expected_agent_count=len(assignments),
+            expected_tool_names=BOUNDED_RIVER_CALL_EV_TOOL_ORDER,
+            storage_root=storage_root,
+            storage_revision=storage_revision,
+            storage_transaction_id=storage_transaction_id,
+            require_storage_authority=True,
+            additional_runtime_stage_tool_prefixes={
+                "strict runtime refused before bounded river hand_pot_ledger": (
+                    BOUNDED_RIVER_CALL_EV_TOOL_ORDER[:1]
+                ),
+                "strict runtime refused before bounded river pot_odds": (
+                    BOUNDED_RIVER_CALL_EV_TOOL_ORDER[:2]
+                ),
+                "strict runtime refused before versioned range validation": (
+                    BOUNDED_RIVER_CALL_EV_TOOL_ORDER[:3]
+                ),
+                "strict runtime refused before requested tool execution": (
+                    BOUNDED_RIVER_CALL_EV_TOOL_ORDER[:4]
+                ),
+                "strict runtime refused before versioned range river equity": (
+                    BOUNDED_RIVER_CALL_EV_TOOL_ORDER[:5]
+                ),
+                "strict runtime refused before bounded river call-EV": (
+                    BOUNDED_RIVER_CALL_EV_TOOL_ORDER[:6]
+                ),
+            },
+        )
+    except ValueError as exc:
+        raise BoundedRiverCallEvError(
+            BoundedRiverCallEvDiagnosticCode.REPLAY,
+            "report.runtime_projection",
+        ) from exc
     if report.run_status == "completed":
         if result is None:
             _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "bounded_river_call_ev_result.json")

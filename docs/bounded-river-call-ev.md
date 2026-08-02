@@ -35,7 +35,9 @@ candidate schema、confirmation、binding、result、provenanceはいずれもve
 authority scope、run ID、confirmation/idempotency ID、UTC confirmation/expiryも拘束する。最大有効期間は
 24時間である。source/range変更、期限切れ、cross-run/case-fold alias replay、manual tool inputとの競合は
 fail closedになる。P3-016B recordとP3-030C recordをbuffer/tool executionより先にexclusive-createし、
-preflightはcalculatorを走らせない。各toolは次の順で一度だけ実行する。
+preflightはcalculatorを走らせない。source bytesからhand、focal、source bindings、宣言済みpot assertionを
+純粋parser replayで再構成してcandidateと完全一致させ、ledger依存値は後続の単一`hand_pot_ledger`実行結果と
+相関する。各toolは次の順で一度だけ実行する。
 
 ```text
 hand_validator
@@ -85,7 +87,7 @@ terminal runは次の7 artifactを既存case、assignment、context、agent、to
 - `bounded_river_call_ev_result.json`
 - `bounded_river_call_ev_provenance.json`
 
-readerはsource parserと両admission、tool input/output、exact oracle、ULP、failed prefix、role/context、storage
+readerはcalculator-free source semantic parser replayと両admission、tool input/output、exact oracle、ULP、failed prefix、role/context、storage
 authorityを再実行する。missing/extra/reordered/tampered artifact、source/range mutation、record欠落、context
 runtime/role/allowlist/expiry/lineage mismatchを拒否する。SHA-256はcorruption/correlation検出用であり、同じ
 OS権限のwriterに対する暗号学的authenticityを提供しない。
@@ -108,10 +110,11 @@ review-bounded-river-call-ev-confirmed-intake
 `tests/fixtures/bounded_river_call_ev/v1/scenarios.json`と
 `scripts/run_bounded_river_call_ev_evaluation.py`は、exact decision math、admission/security、runtime/replayの
 3 metricをexact evidence setで採点する。全metric、全case、overallが`1.0`の場合だけ合格し、resultは
-対象commit SHA/tree SHAとcanonical result hashへ拘束する。専用runnerは指定されたcommit/treeを現在の
-`HEAD`/treeと比較し、dirty worktree/index、replace ref、assume-unchanged/skip-worktree flagがある場合は
-評価前に拒否する。また両pre-execution admission recordを実読・binding検証し、record欠落をtool artifact
-生成前に拒否する隔離caseを実行する。
+対象commit SHA/tree SHAとcanonical result hashへ拘束する。専用runnerはcandidateの`src`をimport pathの先頭へ置き、
+評価に使うpackage/evaluator/orchestrator/range/storage moduleがすべてそのcheckout由来であることも検証する。
+指定されたcommit/treeを現在の`HEAD`/treeと比較し、dirty worktree/index、replace ref、
+assume-unchanged/skip-worktree flagがある場合は評価前に拒否する。また2つのpre-execution admission recordを
+別々の隔離caseで削除し、いずれもsource/tool artifact生成前に拒否されることを確認する。
 
 ## 非目標
 

@@ -2719,7 +2719,8 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                data_quality.extend(tool_phase_outcome.output.data_quality)
+                if bounded_river_admission is None:
+                    data_quality.extend(tool_phase_outcome.output.data_quality)
                 validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
                 self.store.write_json(
@@ -3268,7 +3269,8 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                data_quality.extend(bounded_prefix_output.data_quality)
+                if bounded_river_admission is None:
+                    data_quality.extend(bounded_prefix_output.data_quality)
                 if len(bounded_prefix_output.bindings) != 1:
                     raise PhaseContractError(
                         "bounded river prerequisite returned an invalid binding count"
@@ -3415,7 +3417,8 @@ class Orchestrator:
                     completed=False,
                     machine=machine,
                 )
-            data_quality.extend(range_output.data_quality)
+            if bounded_river_admission is None:
+                data_quality.extend(range_output.data_quality)
             validation = range_output.bindings[0].result
             tool_results.append(validation)
             self.store.write_json(
@@ -3617,7 +3620,8 @@ class Orchestrator:
                 completed=False,
                 machine=machine,
             )
-        data_quality.extend(requested_tools_output.data_quality)
+        if bounded_river_admission is None:
+            data_quality.extend(requested_tools_output.data_quality)
         tool_results.extend(binding.result for binding in requested_tools_output.bindings)
         for result in tool_results:
             self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
@@ -3728,7 +3732,8 @@ class Orchestrator:
                     completed=False,
                     machine=machine,
                 )
-            data_quality.extend(equity_tools_output.data_quality)
+            if bounded_river_admission is None:
+                data_quality.extend(equity_tools_output.data_quality)
             if len(equity_tools_output.bindings) != 1:
                 raise PhaseContractError(
                     "versioned range river equity requires one bound equity result"
@@ -3852,7 +3857,8 @@ class Orchestrator:
                     completed=False,
                     machine=machine,
                 )
-            data_quality.extend(call_ev_output.data_quality)
+            if bounded_river_admission is None:
+                data_quality.extend(call_ev_output.data_quality)
             if len(call_ev_output.bindings) != 1:
                 raise PhaseContractError("bounded river call-EV requires one tool result")
             call_ev_result = call_ev_output.bindings[0].result

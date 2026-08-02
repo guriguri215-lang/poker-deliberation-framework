@@ -155,7 +155,8 @@ P3-030Cも加算的な専用admissionである。P3-030B candidateとfocal、別
 prefix、P3-016B binding/exact oracle、P3-015A ledger plan、zero-rake call-EV modelを独立hashへ
 投影し、12 hashの明示確認とbuffer外admission recordをrun namespaceに先行させる。実行順は
 `hand_validator -> hand_pot_ledger -> pot_odds -> range_validate -> combos -> holdem_equity ->
-raked_call_ev`で、preflightはcalculatorを実行せずregistry identityと契約だけを検査する。
+raked_call_ev`で、preflightはcalculatorを実行せずregistry identity、契約、sourceから純粋再構成した
+hand/focal/bindingsとcandidateの完全一致を検査する。ledger由来unitsは単一のproduct ledger結果に相関する。
 `CaseInput.raw_text=None`、exact LocalProvider、P2-024A context envelope、math-auditorだけの7-tool
 allowlistを維持し、7個のP3-030C artifactと既存P3-016B bindingをterminal readerが再相関する。
 普通のP2-012A structural revision経路はこのterminal専用artifact familyを受理しない。

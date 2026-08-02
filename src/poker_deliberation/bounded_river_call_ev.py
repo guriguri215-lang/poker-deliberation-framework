@@ -60,6 +60,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BoundedRiverToolSupportV1,
     ExactRationalV1,
 )
+from poker_deliberation.budgets import BudgetFailureCode
 from poker_deliberation.range_equity import (
     VersionedRangeRiverEquityAdmissionV1,
     admit_versioned_range_river_equity,
@@ -110,6 +111,16 @@ _DIRECT_TOOL_NAMES = (
     "raked_call_ev",
 )
 _DIRECT_TOOL_MAX_DURATION_SECONDS = 30.0
+_DIRECT_TOOL_FAILURE_CODES = frozenset(
+    {
+        BudgetFailureCode.CLOCK_ROLLBACK,
+        BudgetFailureCode.RUNTIME_EXCEEDED,
+        BudgetFailureCode.TOOL_INPUT_EXCEEDED,
+        BudgetFailureCode.TOOL_OUTPUT_EXCEEDED,
+        BudgetFailureCode.RUN_EXCEEDED,
+        BudgetFailureCode.USAGE_MALFORMED,
+    }
+)
 
 
 class BoundedRiverCallEvError(ValueError):
@@ -1066,6 +1077,42 @@ def _verify_direct_successes(
             )
 
 
+def _verify_failed_direct_tool_result(result: ToolResult) -> None:
+    name = result.tool_name
+    if name not in _DIRECT_TOOL_NAMES:
+        _fail(BoundedRiverCallEvDiagnosticCode.TOOL_PLAN, "tool_results.failure")
+    contract = contract_by_name()[name]
+    allowed_errors = {f"strict budget failure: {code.value}" for code in _DIRECT_TOOL_FAILURE_CODES}
+    if (
+        result.status is not ToolStatus.FAILED
+        or result.output
+        or result.exactness is not Exactness.UNAVAILABLE
+        or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
+        or result.contract_version != contract.contract_version
+        or result.assumptions
+        or result.version != contract.version
+        or result.model_qualifier is not None
+        or result.method is not None
+        or result.stochastic is not None
+        or result.seed is not None
+        or result.samples is not None
+        or result.iterations is not None
+        or result.confidence_interval is not None
+        or result.confidence_level is not None
+        or result.error_metadata is not None
+        or result.stopping_condition is not None
+        or result.verification is not None
+        or result.duration_seconds != 0.0
+        or result.warnings
+        or result.error not in allowed_errors
+        or result.reproduce_command is not None
+    ):
+        _fail(
+            BoundedRiverCallEvDiagnosticCode.TOOL_PLAN,
+            f"tool_results.{name}.failure",
+        )
+
+
 def build_bounded_river_call_ev_result(
     admission: BoundedRiverCallEvAdmission,
     tool_results: list[ToolResult] | tuple[ToolResult, ...],
@@ -1092,8 +1139,35 @@ def build_bounded_river_call_ev_result(
             "tool_results.hand_pot_ledger.output",
         ) from exc
     plan = admission.candidate.projection.bounded_candidate.projection.tool_plan
+    try:
+        facing_ledger = ledger.ledger_actions[plan.facing_action_index]
+        hero_ledger = ledger.ledger_actions[plan.hero_action_index]
+    except IndexError as exc:
+        raise BoundedRiverCallEvError(
+            BoundedRiverCallEvDiagnosticCode.LEDGER,
+            "tool_results.hand_pot_ledger.focal_indexes",
+        ) from exc
+    hero_before_units = hero_ledger.street_contribution_units_after - hero_ledger.committed_units
+    call_cost_units = facing_ledger.current_bet_units_after - hero_before_units
+    pot_before_units = facing_ledger.pot_units_after - facing_ledger.committed_units
+    opponent_bet_units = facing_ledger.committed_units
+    contestable_units = pot_before_units + opponent_bet_units + call_cost_units
+    hero_stack_before = hero_ledger.remaining_stack_units_after + hero_ledger.committed_units
     if (
         ledger.chip_unit != plan.ledger_profile.chip_unit
+        or any(remaining == 0 for remaining in ledger.remaining_stacks_units.values())
+        or facing_ledger.action not in {"bet", "raise"}
+        or hero_ledger.actor != "Hero"
+        or hero_ledger.action not in {"call", "fold"}
+        or call_cost_units <= 0
+        or pot_before_units < 0
+        or opponent_bet_units <= 0
+        or hero_stack_before <= call_cost_units
+        or (hero_ledger.action == "call" and hero_ledger.committed_units != call_cost_units)
+        or plan.pot_before_bet_units != pot_before_units
+        or plan.opponent_bet_units != opponent_bet_units
+        or plan.call_cost_units != call_cost_units
+        or plan.contestable_pot_units != contestable_units
         or _domain_hash(
             f"{BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID}:ledger-output",
             ledger.model_dump(mode="json"),
@@ -1241,19 +1315,10 @@ def verify_bounded_river_call_ev_tool_chain(
                 expected_input=expected_input,
                 expected_output=direct_oracles[result.tool_name],
             )
-        elif (
-            result is not tool_results[-1]
-            or result.status is not ToolStatus.FAILED
-            or result.output
-            or result.exactness is not Exactness.UNAVAILABLE
-            or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
-            or result.verification is not None
-            or not result.error
-        ):
-            _fail(
-                BoundedRiverCallEvDiagnosticCode.TOOL_PLAN,
-                f"tool_results.{result.tool_name}.failure",
-            )
+        elif result is not tool_results[-1]:
+            _fail(BoundedRiverCallEvDiagnosticCode.TOOL_PLAN, "tool_results.failed_prefix")
+        else:
+            _verify_failed_direct_tool_result(result)
     range_results = [
         result for result in tool_results if result.tool_name in RANGE_EQUITY_TOOL_PLAN
     ]

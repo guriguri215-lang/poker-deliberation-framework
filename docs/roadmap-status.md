@@ -4,7 +4,7 @@
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
 - schema version: `12.0.0`
-- source SHA-256: `41246b9f1d34fae0600a3265e45fef60d31673287eb18257f0be46c5765e49dc`
+- source SHA-256: `d797694c046da2eaea478923a1c0a0ce1bac28796636d8cacd24b7d07372e873`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -916,7 +916,7 @@
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C is an implementation candidate for one confirmed river range/equity/no-rake call-EV product slice; general natural-language or site parsing and actual runtime or solver integrations remain unimplemented. The milestone table remains authoritative for current status.
+- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice; RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing and actual runtime or solver integrations remain unimplemented. The milestone table remains authoritative for current status.
 - Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake

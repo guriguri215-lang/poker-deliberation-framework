@@ -424,6 +424,8 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
     assert "milestone table remains authoritative for current status" in str(
         items["RM-030"]["status_reason"]
     )
+    assert "P3-030C completes the bounded" in str(items["RM-030"]["status_reason"])
+    assert "P3-030C is an implementation candidate" not in str(items["RM-030"]["status_reason"])
     assert "At P3-030A completion, P2-028A had not started" in str(items["RM-030"]["relations"])
     assert "Completion-time relations (historical; not current status assertions)" in rendered
     assert "- Relations:" in rendered

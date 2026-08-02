@@ -123,6 +123,14 @@ def _copy_preflight_contract_surface(tmp_path: Path) -> Path:
     return repo
 
 
+def test_public_document_inventory_excludes_removed_local_planning_docs() -> None:
+    paths, digest = public_preflight._public_document_inventory(ROOT)
+
+    assert "PLAN.md" not in paths
+    assert "PROGRESS.md" not in paths
+    assert digest == public_preflight.PUBLIC_DOCUMENT_INVENTORY_SHA256
+
+
 def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
     tmp_path: Path,
 ) -> None:

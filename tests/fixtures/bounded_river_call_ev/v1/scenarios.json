@@ -51,6 +51,7 @@
         "canonical-context-only-with-lineage-expiry-and-budget",
         "preexecution-record-and-seven-tool-order",
         "typed-terminal-artifacts-and-immutable-replay",
+        "independent-budget-failure-evidence-and-replay",
         "artifact-removal-and-context-tamper-refused",
         "p3-016b-binding-reused-without-generic-marker-bypass"
       ]

@@ -35,11 +35,14 @@ from poker_deliberation.bounded_river_call_ev import (
     verify_bounded_river_call_ev_tool_chain,
 )
 from poker_deliberation.bounded_river_call_ev_models import (
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_TOOL_ORDER,
+    BoundedRiverCallEvBudgetFailureEvidenceV1,
     BoundedRiverCallEvCandidateV1,
     BoundedRiverCallEvDiagnosticCode,
     BoundedRiverCallEvResultV1,
 )
+from poker_deliberation.budgets import BudgetPolicyV2, canonical_json_utf8_size
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.range_equity_models import canonical_domain_sha256
@@ -49,6 +52,10 @@ from poker_deliberation.schemas import Exactness, NumericalExactness, ToolStatus
 from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
     read_bounded_river_call_ev_admission_record,
     verify_bounded_river_call_ev_admission_record,
+)
+from poker_deliberation.storage.bounded_river_call_ev_failure_store import (
+    read_bounded_river_call_ev_budget_failure_evidence,
+    verify_bounded_river_call_ev_budget_failure_evidence,
 )
 from poker_deliberation.storage.range_equity_admission_store import (
     read_range_equity_admission_record,
@@ -116,6 +123,7 @@ REQUIRED_CASE_EVIDENCE = (
             "canonical-context-only-with-lineage-expiry-and-budget",
             "preexecution-record-and-seven-tool-order",
             "typed-terminal-artifacts-and-immutable-replay",
+            "independent-budget-failure-evidence-and-replay",
             "artifact-removal-and-context-tamper-refused",
             "p3-016b-binding-reused-without-generic-marker-bypass",
         ),
@@ -136,7 +144,81 @@ _EVALUATION_IMPLEMENTATION_MODULES = (
     "poker_deliberation.orchestrator",
     "poker_deliberation.range_equity",
     "poker_deliberation.storage.bounded_river_call_ev_admission_store",
+    "poker_deliberation.storage.bounded_river_call_ev_failure_store",
     "poker_deliberation.storage.range_equity_admission_store",
+)
+_EVALUATION_TOOL_EXPORTS = (
+    (
+        "poker_deliberation.tools",
+        "default_registry",
+        "poker_deliberation.tools.registry",
+        "default_registry",
+    ),
+    (
+        "poker_deliberation.orchestrator",
+        "default_registry",
+        "poker_deliberation.tools.registry",
+        "default_registry",
+    ),
+    (
+        "poker_deliberation.orchestrator",
+        "ToolRegistry",
+        "poker_deliberation.tools.registry",
+        "ToolRegistry",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "validate_hand",
+        "poker_deliberation.tools.hand_validator",
+        "validate_hand",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "calculate_hand_pot_ledger",
+        "poker_deliberation.tools.hand_pot_ledger",
+        "calculate_hand_pot_ledger",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "pot_odds",
+        "poker_deliberation.tools.pot_odds",
+        "pot_odds",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "parse_weighted_range",
+        "poker_deliberation.tools.combinations",
+        "parse_weighted_range",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "combo_summary",
+        "poker_deliberation.tools.combinations",
+        "combo_summary",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "holdem_equity",
+        "poker_deliberation.tools.equity",
+        "holdem_equity",
+    ),
+    (
+        "poker_deliberation.tools.registry",
+        "raked_call_ev",
+        "poker_deliberation.tools.strategy_math",
+        "raked_call_ev",
+    ),
+)
+_EVALUATION_RUNTIME_FUNCTIONS = MappingProxyType(
+    {
+        "hand_validator": "_hand_validator_tool",
+        "hand_pot_ledger": "calculate_hand_pot_ledger",
+        "pot_odds": None,
+        "range_validate": "_range_validate_tool",
+        "combos": "_combo_tool",
+        "holdem_equity": "_equity_tool",
+        "raked_call_ev": None,
+    }
 )
 
 
@@ -206,6 +288,31 @@ def verify_bounded_river_call_ev_evaluation_module_origins(repository_root: Path
                 raise ValueError("bounded river call-EV evaluation module origin mismatch")
         elif not resolved.is_relative_to(package_root):
             raise ValueError("bounded river call-EV evaluation module origin mismatch")
+    registry_module = importlib.import_module("poker_deliberation.tools.registry")
+    for owner_name, owner_attr, source_name, source_attr in _EVALUATION_TOOL_EXPORTS:
+        owner = importlib.import_module(owner_name)
+        source = importlib.import_module(source_name)
+        if getattr(owner, owner_attr, None) is not getattr(source, source_attr, None):
+            raise ValueError("bounded river call-EV evaluation callable origin mismatch")
+    registry = registry_module.default_registry()
+    runtime = {
+        name: function
+        for name, _definition, function, _contract in registry.runtime_identity_snapshot()
+        if name in _EVALUATION_RUNTIME_FUNCTIONS
+    }
+    if set(runtime) != set(_EVALUATION_RUNTIME_FUNCTIONS):
+        raise ValueError("bounded river call-EV evaluation callable inventory mismatch")
+    for tool_name, expected_attr in _EVALUATION_RUNTIME_FUNCTIONS.items():
+        function = runtime[tool_name]
+        code = getattr(function, "__code__", None)
+        if code is None or not Path(code.co_filename).resolve().is_relative_to(package_root):
+            raise ValueError("bounded river call-EV evaluation callable origin mismatch")
+        if expected_attr is not None and function is not getattr(
+            registry_module,
+            expected_attr,
+            None,
+        ):
+            raise ValueError("bounded river call-EV evaluation callable identity mismatch")
 
 
 class _EvaluationModel(BaseModel):
@@ -972,6 +1079,48 @@ def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str
     if typed <= artifact_names and replay == report:
         evidence.append("typed-terminal-artifacts-and-immutable-replay")
 
+    failed_admission = _admission("QcJc", "river-eval-be")
+    failed_orchestrator = Orchestrator(
+        _config(context.root, "be"),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    failed_report = failed_orchestrator.run_bounded_river_call_ev_review(failed_admission)
+    failed_read = failed_orchestrator.product_store.read_current(failed_report.run_id)
+    failure_records = read_bounded_river_call_ev_budget_failure_evidence(
+        failed_orchestrator.product_store.revision_root,
+        failed_report.run_id,
+        maximum_bytes=failed_orchestrator.budget_policy.max_artifact_bytes,
+    )
+    failure_admission_record = read_bounded_river_call_ev_admission_record(
+        failed_orchestrator.product_store.revision_root,
+        failed_report.run_id,
+        maximum_bytes=failed_orchestrator.budget_policy.max_artifact_bytes,
+    )
+    failure_artifact = parse_canonical_model(
+        failed_read.payload_bytes(BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT),
+        BoundedRiverCallEvBudgetFailureEvidenceV1,
+    )
+    failure_verified = False
+    if len(failure_records) == 1 and failure_admission_record is not None:
+        verify_bounded_river_call_ev_budget_failure_evidence(
+            failure_records[0],
+            binding=failed_admission.binding,
+            admission_record=failure_admission_record,
+            result=failed_report.tool_results[-1],
+            policy=failed_orchestrator.budget_policy,
+        )
+        failure_verified = (
+            failed_report.run_status == "failed_with_limitations"
+            and failure_artifact == failure_records[0]
+            and failure_artifact.failure_code.value == "tool_input_exceeded"
+            and failure_artifact.failure.observed
+            == canonical_json_utf8_size(failed_report.tool_results[-1].input)
+            and failure_artifact.failure.limit
+            == failed_orchestrator.budget_policy.max_tool_input_bytes
+        )
+    if failure_verified:
+        evidence.append("independent-budget-failure-evidence-and-replay")
+
     payloads = {
         item.inventory.logical_name: item.exact_bytes
         for item in read.payloads
@@ -987,6 +1136,7 @@ def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str
             revision=read.revision,
             revision_root=orchestrator.product_store.revision_root,
             transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
         )
     except CanonicalStorageError:
         removal_refused = True
@@ -1006,6 +1156,7 @@ def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str
             revision=read.revision,
             revision_root=orchestrator.product_store.revision_root,
             transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
         )
     except CanonicalStorageError:
         context_refused = True

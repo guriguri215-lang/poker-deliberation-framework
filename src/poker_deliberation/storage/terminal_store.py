@@ -750,6 +750,13 @@ class TerminalRunStore:
     def runs_root(self) -> Path:
         return self.revision_root / "runs"
 
+    def _base_budget_policy(self) -> BudgetPolicyV2 | None:
+        durable_policy = getattr(self.budget, "policy", None)
+        base_policy = getattr(durable_policy, "base_policy", None)
+        if base_policy is None:
+            return None
+        return BudgetPolicyV2.model_validate(base_policy.model_dump(mode="python"), strict=True)
+
     def planned_payload_path(
         self,
         run_id: str,
@@ -980,6 +987,7 @@ class TerminalRunStore:
                     previous_manifest_sha256=request.expected_manifest_sha256,
                     previous_pointer_sha256=request.expected_pointer_sha256,
                     maximum_admission_record_bytes=self.max_artifact_bytes,
+                    budget_policy=self._base_budget_policy(),
                 )
                 if commitments != (
                     request.canonical_input_sha256,
@@ -1218,6 +1226,7 @@ class TerminalRunStore:
                 previous_manifest_sha256=manifest.previous_manifest_sha256,
                 previous_pointer_sha256=manifest.expected_pointer_sha256,
                 maximum_admission_record_bytes=self.max_artifact_bytes,
+                budget_policy=self._base_budget_policy(),
             )
             if commitments != (
                 manifest.canonical_input_sha256,

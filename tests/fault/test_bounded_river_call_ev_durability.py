@@ -7,6 +7,9 @@ from pathlib import Path
 import pytest
 
 import poker_deliberation.storage.bounded_river_call_ev_admission_store as admission_store
+import poker_deliberation.storage.bounded_river_call_ev_failure_store as failure_store
+from poker_deliberation.bounded_river_call_ev import BoundedRiverCallEvError
+from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.storage.revision_canonical import CanonicalStorageError
 from poker_deliberation.storage.terminal_models import (
@@ -100,3 +103,49 @@ def test_same_run_reservation_serializes_before_tool_execution(
     assert failures == []
     assert len(reports) == 1
     assert reports[0].run_status == "completed"
+
+
+def test_budget_failure_record_sync_stops_before_terminal_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    admitted = admission(run_id="run-river-budget-record-sync")
+    original_sync = failure_store.sync_directory
+
+    def fail_record_parent(
+        path: Path,
+        *,
+        injector: Callable[[str], None] | None = None,
+        hook: str = "directory_sync",
+    ) -> None:
+        if hook == "bounded_river_call_ev_failure.record_parent":
+            raise CanonicalStorageError("synthetic failure-record directory sync failure")
+        original_sync(path, injector=injector, hook=hook)
+
+    monkeypatch.setattr(failure_store, "sync_directory", fail_record_parent)
+
+    with pytest.raises(BoundedRiverCallEvError, match="BRC_E_STORAGE"):
+        orchestrator.run_bounded_river_call_ev_review(admitted)
+
+    run_id = admitted.confirmation.run_id
+    product_run = orchestrator.product_store.runs_root / run_id
+    assert not (product_run / ".terminal-store" / "current.json").exists()
+    artifact_names = {
+        item.inventory.logical_name for item in orchestrator.store.verified_payloads(run_id)
+    }
+    assert "bounded_river_call_ev_budget_failure.json" not in artifact_names
+    assert len([name for name in artifact_names if name.startswith("tool_results/")]) == 2
+    assert (
+        len(
+            failure_store.read_bounded_river_call_ev_budget_failure_evidence(
+                orchestrator.revision_runs_root,
+                run_id,
+                maximum_bytes=orchestrator.budget_policy.max_artifact_bytes,
+            )
+        )
+        == 1
+    )

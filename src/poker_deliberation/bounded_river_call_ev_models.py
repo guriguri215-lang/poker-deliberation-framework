@@ -13,6 +13,7 @@ from poker_deliberation.bounded_natural_language_models import (
     BoundedIntakeCandidateV1,
     BoundedSourceProvenanceV1,
 )
+from poker_deliberation.budgets.contracts import BudgetFailure, BudgetFailureCode
 from poker_deliberation.range_equity_models import (
     RANGE_EQUITY_MAX_EVALUATIONS,
     RANGE_EQUITY_TOOL_PLAN,
@@ -69,6 +70,7 @@ BINDING_HASH_DOMAIN = "poker-bounded-river-call-ev-binding-json-v1"
 RESULT_HASH_DOMAIN = "poker-bounded-river-call-ev-result-json-v1"
 PROVENANCE_HASH_DOMAIN = "poker-bounded-river-call-ev-provenance-json-v1"
 ADMISSION_RECORD_HASH_DOMAIN = "poker-bounded-river-call-ev-admission-record-json-v1"
+FAILURE_EVIDENCE_HASH_DOMAIN = "poker-bounded-river-call-ev-budget-failure-evidence-json-v1"
 TOOL_RESULT_HASH_DOMAIN = "poker-bounded-river-call-ev-tool-result-json-v1"
 
 BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT = "bounded_river_call_ev_source.txt"
@@ -78,6 +80,7 @@ BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT = "bounded_river_call_ev_range.json"
 BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT = "bounded_river_call_ev_binding.json"
 BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT = "bounded_river_call_ev_result.json"
 BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT = "bounded_river_call_ev_provenance.json"
+BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT = "bounded_river_call_ev_budget_failure.json"
 
 BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT_SCHEMA = "poker-bounded-river-call-ev-source-artifact-v1"
 BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT_SCHEMA = (
@@ -92,7 +95,13 @@ BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT_SCHEMA = "poker-bounded-river-call-ev-resu
 BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT_SCHEMA = (
     "poker-bounded-river-call-ev-provenance-artifact-v1"
 )
+BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT_SCHEMA = (
+    "poker-bounded-river-call-ev-budget-failure-evidence-artifact-v1"
+)
 BOUNDED_RIVER_CALL_EV_ADMISSION_RECORD_SCHEMA = "poker-bounded-river-call-ev-admission-record-v1"
+BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_RECORD_SCHEMA: Literal[
+    "poker-bounded-river-call-ev-budget-failure-evidence-v1"
+] = "poker-bounded-river-call-ev-budget-failure-evidence-v1"
 
 MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES = 1_500_000
 MAX_BOUNDED_RIVER_CALL_EV_RUN_BYTES = 15_000_000
@@ -449,6 +458,66 @@ class BoundedRiverCallEvAdmissionRecordV1(_BoundedRiverModel):
         return self
 
 
+class BoundedRiverCallEvBudgetFailureEvidenceV1(_BoundedRiverModel):
+    """Append-only evidence for one refused P3-030C tool attempt."""
+
+    schema_version: Literal["1.0.0"] = BOUNDED_RIVER_CALL_EV_SCHEMA_VERSION
+    record_schema: Literal["poker-bounded-river-call-ev-budget-failure-evidence-v1"] = (
+        BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_RECORD_SCHEMA
+    )
+    run_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    binding_sha256: str = Field(pattern=_SHA256_PATTERN)
+    admission_record_sha256: str = Field(pattern=_SHA256_PATTERN)
+    phase_attempt_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    tool_ordinal: int = Field(ge=0, lt=len(BOUNDED_RIVER_CALL_EV_TOOL_ORDER))
+    stage: Literal[
+        "hand_validator",
+        "hand_pot_ledger",
+        "pot_odds",
+        "range_validate",
+        "combos",
+        "holdem_equity",
+        "raked_call_ev",
+    ]
+    tool_name: Literal[
+        "hand_validator",
+        "hand_pot_ledger",
+        "pot_odds",
+        "range_validate",
+        "combos",
+        "holdem_equity",
+        "raked_call_ev",
+    ]
+    tool_request_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    tool_request_sha256: str = Field(pattern=_SHA256_PATTERN)
+    request_input_sha256: str = Field(pattern=_SHA256_PATTERN)
+    result_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    tool_result_sha256: str = Field(pattern=_SHA256_PATTERN)
+    tool_result_bytes_sha256: str = Field(pattern=_SHA256_PATTERN)
+    budget_policy_sha256: str = Field(pattern=_SHA256_PATTERN)
+    failure_code: BudgetFailureCode
+    failure: BudgetFailure
+    usage_observed_at_ns: int | None = Field(default=None, ge=0)
+    record_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+    @model_validator(mode="after")
+    def evidence_correlates(self) -> BoundedRiverCallEvBudgetFailureEvidenceV1:
+        if (
+            self.stage != self.tool_name
+            or self.tool_name != BOUNDED_RIVER_CALL_EV_TOOL_ORDER[self.tool_ordinal]
+            or self.failure_code is not self.failure.code
+        ):
+            raise ValueError(BoundedRiverCallEvDiagnosticCode.REPLAY.value)
+        payload = self.model_dump(mode="json")
+        payload.pop("record_sha256")
+        if self.record_sha256 != canonical_domain_sha256(
+            FAILURE_EVIDENCE_HASH_DOMAIN,
+            payload,
+        ):
+            raise ValueError(BoundedRiverCallEvDiagnosticCode.REPLAY.value)
+        return self
+
+
 class BoundedRiverToolSupportV1(_BoundedRiverModel):
     result_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
     tool_name: Literal[
@@ -566,6 +635,7 @@ __all__ += [
     "CONFIRMATION_HASH_DOMAIN",
     "EQUITY_MODEL_HASH_DOMAIN",
     "EXTRACTOR_HASH_DOMAIN",
+    "FAILURE_EVIDENCE_HASH_DOMAIN",
     "FOCAL_HASH_DOMAIN",
     "MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES",
     "MAX_BOUNDED_RIVER_CALL_EV_CONFIRMATION_LIFETIME_SECONDS",

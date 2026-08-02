@@ -83,6 +83,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_MARKER,
     BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
@@ -255,6 +256,9 @@ from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
     commit_bounded_river_call_ev_admission_record,
     read_bounded_river_call_ev_admission_record,
     verify_bounded_river_call_ev_admission_record,
+)
+from poker_deliberation.storage.bounded_river_call_ev_failure_store import (
+    commit_bounded_river_call_ev_budget_failure_evidence,
 )
 from poker_deliberation.storage.legacy_migration import (
     LegacyRunAdapter,
@@ -1136,6 +1140,43 @@ class Orchestrator:
                 "preexecution_admission",
             ) from exc
 
+    def _commit_bounded_river_budget_failure(
+        self,
+        run_id: str,
+        output: ToolResearchOutput,
+    ) -> None:
+        """Persist one independent typed failure before buffered tool artifacts."""
+
+        failure = output.budget_failure
+        admission = self._bounded_river_call_ev_admissions.get(run_id)
+        if failure is None or admission is None:
+            return
+        if len(output.bindings) != 1:
+            raise PhaseContractError(
+                "bounded river budget failure requires one tool execution binding"
+            )
+        try:
+            record = commit_bounded_river_call_ev_budget_failure_evidence(
+                self.revision_runs_root,
+                run_id,
+                admission.binding,
+                output.bindings[0],
+                failure,
+                self.budget_policy,
+                usage_observed_at_ns=output.usage_observed_at_ns,
+                maximum_bytes=self.budget_policy.max_artifact_bytes,
+            )
+            self.store.write_json(
+                run_id,
+                BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+                record,
+            )
+        except (CanonicalStorageError, OSError) as exc:
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.STORAGE,
+                "budget_failure_evidence",
+            ) from exc
+
     def _reserve_legacy_migration_destination(self, run_id: str) -> None:
         """Atomically reserve an empty product namespace for one legacy migration."""
 
@@ -1425,6 +1466,7 @@ class Orchestrator:
             transaction_id=transaction_id,
             previous_manifest_sha256=(None if previous is None else previous.manifest_sha256),
             previous_pointer_sha256=(None if previous is None else previous.current_pointer_sha256),
+            budget_policy=self.budget_policy,
         )
         created_at = published_at if previous is None else previous.manifest.created_at
         request = TerminalPublishRequest(
@@ -2721,6 +2763,10 @@ class Orchestrator:
                     )
                 if bounded_river_admission is None:
                     data_quality.extend(tool_phase_outcome.output.data_quality)
+                self._commit_bounded_river_budget_failure(
+                    actual_run_id,
+                    tool_phase_outcome.output,
+                )
                 validation = tool_phase_outcome.output.bindings[0].result
                 tool_results.append(validation)
                 self.store.write_json(
@@ -3275,6 +3321,10 @@ class Orchestrator:
                     raise PhaseContractError(
                         "bounded river prerequisite returned an invalid binding count"
                     )
+                self._commit_bounded_river_budget_failure(
+                    actual_run_id,
+                    bounded_prefix_output,
+                )
                 result = bounded_prefix_output.bindings[0].result
                 tool_results.append(result)
                 self.store.write_json(
@@ -3419,6 +3469,7 @@ class Orchestrator:
                 )
             if bounded_river_admission is None:
                 data_quality.extend(range_output.data_quality)
+            self._commit_bounded_river_budget_failure(actual_run_id, range_output)
             validation = range_output.bindings[0].result
             tool_results.append(validation)
             self.store.write_json(
@@ -3622,6 +3673,7 @@ class Orchestrator:
             )
         if bounded_river_admission is None:
             data_quality.extend(requested_tools_output.data_quality)
+        self._commit_bounded_river_budget_failure(actual_run_id, requested_tools_output)
         tool_results.extend(binding.result for binding in requested_tools_output.bindings)
         for result in tool_results:
             self.store.write_json(actual_run_id, f"tool_results/{result.result_id}.json", result)
@@ -3738,6 +3790,7 @@ class Orchestrator:
                 raise PhaseContractError(
                     "versioned range river equity requires one bound equity result"
                 )
+            self._commit_bounded_river_budget_failure(actual_run_id, equity_tools_output)
             equity_result = equity_tools_output.bindings[0].result
             tool_results.append(equity_result)
             self.store.write_json(
@@ -3861,6 +3914,7 @@ class Orchestrator:
                 data_quality.extend(call_ev_output.data_quality)
             if len(call_ev_output.bindings) != 1:
                 raise PhaseContractError("bounded river call-EV requires one tool result")
+            self._commit_bounded_river_budget_failure(actual_run_id, call_ev_output)
             call_ev_result = call_ev_output.bindings[0].result
             tool_results.append(call_ev_result)
             self.store.write_json(

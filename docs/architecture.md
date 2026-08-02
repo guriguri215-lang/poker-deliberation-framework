@@ -159,6 +159,9 @@ raked_call_ev`で、preflightはcalculatorを実行せずregistry identity、契
 hand/focal/bindingsとcandidateの完全一致を検査する。ledger由来unitsは単一のproduct ledger結果に相関する。
 `CaseInput.raw_text=None`、exact LocalProvider、P2-024A context envelope、math-auditorだけの7-tool
 allowlistを維持し、7個のP3-030C artifactと既存P3-016B bindingをterminal readerが再相関する。
+成功runの7 artifactは不変である。tool budget拒否runだけは、typed failure artifactと
+`.revision-control/bounded-river-call-ev-budget-failures/`の先行exclusive recordを加算し、
+terminal payload内部の自己整合だけでは失敗原因を変更できないようにする。
 普通のP2-012A structural revision経路はこのterminal専用artifact familyを受理しない。
 
 High-level `implemented / disabled / unavailable / planned` states are centralized in

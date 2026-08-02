@@ -31,6 +31,8 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT_SCHEMA,
     BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT_SCHEMA,
     BOUNDED_RIVER_CALL_EV_MARKER,
     BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT_SCHEMA,
@@ -41,6 +43,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT_SCHEMA,
     BoundedRiverCallEvBindingV1,
+    BoundedRiverCallEvBudgetFailureEvidenceV1,
     BoundedRiverCallEvCandidateV1,
     BoundedRiverCallEvConfirmationV1,
     BoundedRiverCallEvProvenanceV1,
@@ -196,6 +199,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         CONTROL_CANONICALIZATION,
         BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT_SCHEMA,
         "bounded_river_call_ev_confirmation",
+    ),
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_budget_failure_evidence",
     ),
     "confirmed_review_source.txt": (
         "text/plain",
@@ -396,6 +405,7 @@ _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS = frozenset(
 )
 _BOUNDED_RIVER_CALL_EV_TERMINAL_ARTIFACTS = frozenset(
     {
+        BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
         BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
         BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
     }
@@ -744,26 +754,28 @@ def payload_order_key(logical_name: str) -> tuple[int, bytes]:
         return (base + 2, logical_name.encode("utf-8"))
     if logical_name == BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT:
         return (base + 3, b"")
-    if logical_name == "disputes.json":
+    if logical_name == BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT:
         return (base + 4, b"")
-    if logical_name == "final_report.json":
+    if logical_name == "disputes.json":
         return (base + 5, b"")
-    if logical_name == "final_report.md":
+    if logical_name == "final_report.json":
         return (base + 6, b"")
-    if logical_name == "confirmed_review_provenance.json":
+    if logical_name == "final_report.md":
         return (base + 7, b"")
-    if logical_name == "bounded_nl_provenance.json":
+    if logical_name == "confirmed_review_provenance.json":
         return (base + 8, b"")
-    if logical_name == BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT:
+    if logical_name == "bounded_nl_provenance.json":
         return (base + 9, b"")
-    if logical_name == "budget_state.json":
+    if logical_name == BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT:
         return (base + 10, b"")
-    if logical_name == "isolated_job_state.json":
+    if logical_name == "budget_state.json":
         return (base + 11, b"")
-    if logical_name == "stdout.txt":
+    if logical_name == "isolated_job_state.json":
         return (base + 12, b"")
-    if logical_name == "stderr.txt":
+    if logical_name == "stdout.txt":
         return (base + 13, b"")
+    if logical_name == "stderr.txt":
+        return (base + 14, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -1055,6 +1067,14 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         if river_result.run_id != run_id:
             raise CanonicalStorageError("bounded river call-EV result run ID mismatch")
         return river_result
+    if logical_name == BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT:
+        failure_evidence = parse_canonical_model(
+            data,
+            BoundedRiverCallEvBudgetFailureEvidenceV1,
+        )
+        if failure_evidence.run_id != run_id:
+            raise CanonicalStorageError("bounded river call-EV budget failure run ID mismatch")
+        return failure_evidence
     if logical_name == BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT:
         river_provenance = parse_canonical_model(data, BoundedRiverCallEvProvenanceV1)
         if river_provenance.run_id != run_id:

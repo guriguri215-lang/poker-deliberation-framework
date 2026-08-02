@@ -967,6 +967,7 @@ _FIXED_RUN_REPORT_ARTIFACTS = frozenset(
         "bounded_nl_provenance.json",
         "bounded_river_call_ev_result.json",
         "bounded_river_call_ev_provenance.json",
+        "bounded_river_call_ev_budget_failure.json",
     }
 )
 

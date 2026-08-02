@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -9,6 +10,8 @@ from pydantic import TypeAdapter
 
 from poker_deliberation.bounded_river_call_ev import BoundedRiverCallEvError, _admit_at
 from poker_deliberation.bounded_river_call_ev_models import (
+    FAILURE_EVIDENCE_HASH_DOMAIN,
+    TOOL_RESULT_HASH_DOMAIN,
     BoundedRiverCallEvCandidateV1,
     BoundedRiverCallEvConfirmationV1,
     BoundedRiverCallEvProvenanceV1,
@@ -19,6 +22,8 @@ from poker_deliberation.bounded_river_call_ev_provenance import (
 )
 from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.orchestrator import Orchestrator
+from poker_deliberation.range_equity_models import canonical_domain_sha256
+from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import AgentAssignment, AgentReport
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
@@ -55,6 +60,7 @@ def _replay(orchestrator, report, read, payloads) -> None:
         revision=read.revision,
         revision_root=orchestrator.product_store.revision_root,
         transaction_id=read.transaction_id,
+        budget_policy=orchestrator.budget_policy,
     )
 
 
@@ -287,6 +293,7 @@ def test_failed_terminal_rejects_context_semantic_tamper(tmp_path: Path) -> None
             revision=read.revision,
             revision_root=orchestrator.product_store.revision_root,
             transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
         )
 
 
@@ -320,6 +327,7 @@ def test_failed_terminal_rejects_coordinated_data_quality_and_limitation_tamper(
             revision=read.revision,
             revision_root=orchestrator.product_store.revision_root,
             transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
         )
 
 
@@ -356,6 +364,7 @@ def test_failed_terminal_rejects_coordinated_direct_tool_envelope_tamper(
             revision=read.revision,
             revision_root=orchestrator.product_store.revision_root,
             transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
         )
 
 
@@ -379,6 +388,15 @@ def test_failed_terminal_correlates_allowed_tool_failure_code_to_report(
         for item in read.payloads
         if item.inventory.logical_name != "lifecycle_audit.json"
     }
+    product_payload_commitments(
+        original_payloads,
+        run_id=report.run_id,
+        status="failed",
+        revision=read.revision,
+        revision_root=orchestrator.product_store.revision_root,
+        transaction_id=read.transaction_id,
+        budget_policy=orchestrator.budget_policy,
+    )
 
     for code in (
         "clock_rollback",
@@ -405,7 +423,130 @@ def test_failed_terminal_correlates_allowed_tool_failure_code_to_report(
                 revision=read.revision,
                 revision_root=orchestrator.product_store.revision_root,
                 transaction_id=read.transaction_id,
+                budget_policy=orchestrator.budget_policy,
             )
+
+
+def test_failed_terminal_rejects_coherent_budget_cause_rewrite(tmp_path: Path) -> None:
+    admitted = admission(run_id="run-river-failed-coherent")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+    read = orchestrator.product_store.read_current(report.run_id)
+    payloads = {
+        item.inventory.logical_name: item.exact_bytes
+        for item in read.payloads
+        if item.inventory.logical_name != "lifecycle_audit.json"
+    }
+    actual = "strict budget failure: tool_input_exceeded"
+    forged = "strict budget failure: tool_output_exceeded"
+    final_report = json.loads(payloads["final_report.json"])
+    failed_tool = final_report["tool_results"][-1]
+    failed_tool["error"] = forged
+    final_report["data_quality"] = [
+        item.replace(actual, forged) for item in final_report["data_quality"]
+    ]
+    final_report["limitations"] = [
+        item.replace(actual, forged) for item in final_report["limitations"]
+    ]
+    final_bytes = canonical_json_bytes(final_report)
+    payloads["final_report.json"] = final_bytes
+    payloads["final_report.md"] = render_markdown(
+        parse_canonical_model(final_bytes, type(report))
+    ).encode("utf-8")
+
+    tool_name = f"tool_results/{failed_tool['result_id']}.json"
+    stored_tool = json.loads(payloads[tool_name])
+    stored_tool["error"] = forged
+    stored_tool_bytes = canonical_json_bytes(stored_tool)
+    payloads[tool_name] = stored_tool_bytes
+
+    evidence = json.loads(payloads["bounded_river_call_ev_budget_failure.json"])
+    evidence["failure_code"] = "tool_output_exceeded"
+    evidence["failure"].update(
+        {
+            "code": "tool_output_exceeded",
+            "resource": "tool_output_bytes",
+            "message": "tool_output_bytes exceeded its strict budget",
+            "limit": orchestrator.budget_policy.max_tool_output_bytes,
+            "observed": orchestrator.budget_policy.max_tool_output_bytes + 1,
+        }
+    )
+    evidence["tool_result_sha256"] = canonical_domain_sha256(
+        TOOL_RESULT_HASH_DOMAIN,
+        stored_tool,
+    )
+    evidence["tool_result_bytes_sha256"] = hashlib.sha256(stored_tool_bytes).hexdigest()
+    evidence_payload = dict(evidence)
+    evidence_payload.pop("record_sha256")
+    evidence["record_sha256"] = canonical_domain_sha256(
+        FAILURE_EVIDENCE_HASH_DOMAIN,
+        evidence_payload,
+    )
+    payloads["bounded_river_call_ev_budget_failure.json"] = canonical_json_bytes(evidence)
+
+    with pytest.raises(CanonicalStorageError, match="independent evidence"):
+        product_payload_commitments(
+            payloads,
+            run_id=report.run_id,
+            status="failed",
+            revision=read.revision,
+            revision_root=orchestrator.product_store.revision_root,
+            transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
+        )
+
+
+def test_failed_terminal_requires_typed_budget_failure_artifact(tmp_path: Path) -> None:
+    admitted = admission(run_id="run-river-failed-evidence-missing")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+    read = orchestrator.product_store.read_current(report.run_id)
+    payloads = {
+        item.inventory.logical_name: item.exact_bytes
+        for item in read.payloads
+        if item.inventory.logical_name
+        not in {"lifecycle_audit.json", "bounded_river_call_ev_budget_failure.json"}
+    }
+
+    with pytest.raises(CanonicalStorageError, match="independent evidence"):
+        product_payload_commitments(
+            payloads,
+            run_id=report.run_id,
+            status="failed",
+            revision=read.revision,
+            revision_root=orchestrator.product_store.revision_root,
+            transaction_id=read.transaction_id,
+            budget_policy=orchestrator.budget_policy,
+        )
+
+
+def test_failed_terminal_reader_requires_external_budget_failure_record(
+    tmp_path: Path,
+) -> None:
+    admitted = admission(run_id="run-river-failed-anchor-missing")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+    record_path = (
+        orchestrator.product_store.revision_root
+        / ".revision-control"
+        / "bounded-river-call-ev-budget-failures"
+        / f"{run_lock_key_sha256(report.run_id)}.1.json"
+    )
+    assert record_path.is_file()
+    record_path.unlink()
+
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_CORRUPT
 
 
 def test_terminal_reader_requires_preexecution_admission_record(tmp_path: Path) -> None:

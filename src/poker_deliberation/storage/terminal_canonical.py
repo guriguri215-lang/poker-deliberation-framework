@@ -34,17 +34,20 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_MARKER,
     BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
     BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
     BoundedRiverCallEvBindingV1,
+    BoundedRiverCallEvBudgetFailureEvidenceV1,
     BoundedRiverCallEvCandidateV1,
     BoundedRiverCallEvConfirmationV1,
     BoundedRiverCallEvProvenanceV1,
     BoundedRiverCallEvResultV1,
 )
+from poker_deliberation.budgets.contracts import BudgetPolicyV2
 from poker_deliberation.confirmed_review_models import (
     ConfirmedReviewProvenanceV1,
     ReviewIntakeCandidateV1,
@@ -91,6 +94,10 @@ from poker_deliberation.state_machine import ALLOWED_TRANSITIONS, RunState
 from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
     read_bounded_river_call_ev_admission_record,
     verify_bounded_river_call_ev_admission_record,
+)
+from poker_deliberation.storage.bounded_river_call_ev_failure_store import (
+    read_bounded_river_call_ev_budget_failure_evidence,
+    verify_bounded_river_call_ev_budget_failure_evidence,
 )
 from poker_deliberation.storage.range_equity_admission_store import (
     read_range_equity_admission_record,
@@ -173,6 +180,7 @@ _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS = frozenset(
 )
 _BOUNDED_RIVER_CALL_EV_TERMINAL_ARTIFACTS = frozenset(
     {
+        BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
         BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
         BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
     }
@@ -337,6 +345,7 @@ def product_payload_commitments(
     previous_manifest_sha256: str | None = None,
     previous_pointer_sha256: str | None = None,
     maximum_admission_record_bytes: int = 1_000_000,
+    budget_policy: BudgetPolicyV2 | None = None,
 ) -> tuple[str, str, str, str, str, str]:
     """Recompute product input, checkpoint, and scalar lineage commitments."""
 
@@ -612,12 +621,23 @@ def product_payload_commitments(
     bounded_names = set(payloads) & _BOUNDED_NL_ARTIFACTS
     bounded_river_names = set(payloads) & _BOUNDED_RIVER_CALL_EV_ARTIFACTS
     if bounded_river_marker:
+        successful_artifacts = _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS | {
+            BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+            BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+        }
         allowed_sets = (
-            {_BOUNDED_RIVER_CALL_EV_ARTIFACTS}
+            {successful_artifacts}
             if report.run_status == "completed"
             else {
                 _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS,
                 _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS | {BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT},
+                _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS
+                | {BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT},
+                _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS
+                | {
+                    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+                    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+                },
             }
         )
         if frozenset(bounded_river_names) not in allowed_sets:
@@ -824,11 +844,23 @@ def product_payload_commitments(
             if BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT in payloads
             else None
         )
+        bounded_river_failure_evidence = (
+            _parse_json_model(
+                payloads[BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT],
+                BoundedRiverCallEvBudgetFailureEvidenceV1,
+            )
+            if BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT in payloads
+            else None
+        )
         if (
             bounded_river_confirmation.run_id != run_id
             or bounded_river_binding.run_id != run_id
             or (bounded_river_result is not None and bounded_river_result.run_id != run_id)
             or (bounded_river_provenance is not None and bounded_river_provenance.run_id != run_id)
+            or (
+                bounded_river_failure_evidence is not None
+                and bounded_river_failure_evidence.run_id != run_id
+            )
             or bounded_river_candidate.projection.range_definition != bounded_river_range
             or binding_artifact != bounded_river_candidate.projection.range_equity_binding
         ):
@@ -846,6 +878,43 @@ def product_payload_commitments(
             bounded_river_admission_record,
             bounded_river_binding,
         )
+        if budget_policy is None:
+            raise CanonicalStorageError(
+                "bounded river call-EV payload requires its exact budget policy"
+            )
+        external_failure_records = read_bounded_river_call_ev_budget_failure_evidence(
+            Path(revision_root),
+            run_id,
+            maximum_bytes=maximum_admission_record_bytes,
+        )
+        budget_failed_results = [
+            item
+            for item in report.tool_results
+            if item.status.value == "failed"
+            and (item.error or "").startswith("strict budget failure: ")
+        ]
+        if budget_failed_results:
+            if (
+                len(budget_failed_results) != 1
+                or len(external_failure_records) != 1
+                or bounded_river_failure_evidence is None
+                or canonical_json_bytes(bounded_river_failure_evidence)
+                != canonical_json_bytes(external_failure_records[0])
+            ):
+                raise CanonicalStorageError(
+                    "bounded river call-EV budget failure lacks independent evidence"
+                )
+            verify_bounded_river_call_ev_budget_failure_evidence(
+                external_failure_records[0],
+                binding=bounded_river_binding,
+                admission_record=bounded_river_admission_record,
+                result=budget_failed_results[0],
+                policy=budget_policy,
+            )
+        elif external_failure_records or bounded_river_failure_evidence is not None:
+            raise CanonicalStorageError(
+                "bounded river call-EV has uncorrelated budget failure evidence"
+            )
         reports_by_role = {agent_report.agent_role: agent_report for agent_report in agent_reports}
         ordered_agent_reports = [
             reports_by_role[record.agent_role]

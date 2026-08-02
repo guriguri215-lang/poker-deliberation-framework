@@ -7,6 +7,7 @@ from types import ModuleType
 import pytest
 
 import poker_deliberation.bounded_river_call_ev_evaluation as evaluation_module
+import poker_deliberation.tools.registry as registry_module
 from poker_deliberation.bounded_river_call_ev_evaluation import (
     EVALUATION_FAMILY_ID,
     REQUIRED_CASE_IDS,
@@ -186,6 +187,30 @@ def test_evaluation_loaded_module_origin_check_covers_tool_dependency(
     monkeypatch.setitem(sys.modules, module_name, foreign_module)
 
     with pytest.raises(ValueError, match="module origin mismatch"):
+        verify_bounded_river_call_ev_evaluation_module_origins(ROOT)
+
+
+def test_evaluation_rejects_stale_foreign_registry_callable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    namespace: dict[str, object] = {}
+    foreign_path = tmp_path / "foreign" / "hand_pot_ledger.py"
+    exec(
+        compile(
+            "def calculate_hand_pot_ledger(payload):\n    return payload\n",
+            str(foreign_path),
+            "exec",
+        ),
+        namespace,
+    )
+    monkeypatch.setattr(
+        registry_module,
+        "calculate_hand_pot_ledger",
+        namespace["calculate_hand_pot_ledger"],
+    )
+
+    with pytest.raises(ValueError, match="callable origin mismatch"):
         verify_bounded_river_call_ev_evaluation_module_origins(ROOT)
 
 

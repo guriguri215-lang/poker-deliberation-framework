@@ -87,6 +87,15 @@ terminal runは次の7 artifactを既存case、assignment、context、agent、to
 - `bounded_river_call_ev_result.json`
 - `bounded_river_call_ev_provenance.json`
 
+tool budget拒否時だけ、成功artifact 7個を拡張せずに
+`bounded_river_call_ev_budget_failure.json`を加算的に保存する。このversioned recordは
+admission record、phase attempt、tool ordinal/name、request/result hash、budget policy hash、
+failure code/resource/limit/observedを拘束する。同一canonical bytesをterminal payloadより先に
+`.revision-control/bounded-river-call-ev-budget-failures/`へexclusive-createしてfsyncするため、
+report、ToolResult、Markdown、failure artifactを同じ別codeへ整合的に再生成してもreaderは拒否する。
+外部recordだけが残るcrash prefix、record欠落・余剰・別run/ordinal、policy/bytes不一致もfail closedである。
+これはsame-OS-privilege writerに対する暗号学的authenticityの主張ではない。
+
 readerはcalculator-free source semantic parser replayと両admission、tool input/output、exact oracle、ULP、failed prefix、role/context、storage
 authorityを再実行する。missing/extra/reordered/tampered artifact、source/range mutation、record欠落、context
 runtime/role/allowlist/expiry/lineage mismatchを拒否する。SHA-256はcorruption/correlation検出用であり、同じ
@@ -111,7 +120,9 @@ review-bounded-river-call-ev-confirmed-intake
 `scripts/run_bounded_river_call_ev_evaluation.py`は、exact decision math、admission/security、runtime/replayの
 3 metricをexact evidence setで採点する。全metric、全case、overallが`1.0`の場合だけ合格し、resultは
 対象commit SHA/tree SHAとcanonical result hashへ拘束する。専用runnerはcandidateの`src`をimport pathの先頭へ置き、
-評価に使うpackage/evaluator/orchestrator/range/storage moduleがすべてそのcheckout由来であることも検証する。
+評価に使うpackage/evaluator/orchestrator/range/storage moduleがすべてそのcheckout由来であることに加え、
+7-tool registryが実際に保持するcallableのidentity、export identity、`__code__.co_filename`も同じcheckoutへ
+拘束する。moduleをlocalに再importしてもregistryにforeign callableが残るstale bindingは拒否する。
 指定されたcommit/treeを現在の`HEAD`/treeと比較し、dirty worktree/index、replace ref、
 assume-unchanged/skip-worktree flagがある場合は評価前に拒否する。また2つのpre-execution admission recordを
 別々の隔離caseで削除し、いずれもsource/tool artifact生成前に拒否されることを確認する。

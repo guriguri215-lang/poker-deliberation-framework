@@ -91,6 +91,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         "natural-language or site parser.",
     ),
     Capability(
+        "bounded_japanese_river_call_ev_review",
+        "implemented",
+        "P3-030C binds one terminal river fold history and one explicit opponent range to "
+        "the no-rake ledger, exact-only heads-up equity, exact Fraction call-EV oracle, "
+        "LocalProvider context controls, and durable semantic replay.",
+    ),
+    Capability(
         "confirmed_natural_language_review_intake",
         "implemented",
         "A caller-supplied complete projection can be explicitly hash-confirmed, admitted to "

@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `11.0.0`
-- source SHA-256: `9cb0ac00b46568e45421fe0ce52e72f18c72263dc3c36828ec73b665af2bf0aa`
+- schema version: `12.0.0`
+- source SHA-256: `d797694c046da2eaea478923a1c0a0ce1bac28796636d8cacd24b7d07372e873`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -53,6 +53,7 @@
 | `P3-017A` | `RM-017` | `completed` | `RM-006`, `RM-007`, `RM-012`, `P2-025A` | Strict versioned offline dataset, scorer, provenance, runtime-inventory, per-case outcome, structured-failure, and summary contracts with a repository-owned synthetic MIT fixture and deterministic exact-evidence scoring; no provider, solver, bridge, or external dataset execution. | The canonical synthetic fixture, deterministic runner and scorer, provenance-bound result, documentation, and declared tests are implemented. |
 | `P3-030A` | `RM-030` | `completed` | `P3-014A`, `P3-016A`, `P3-017A` | Versioned source, candidate, confirmation, authority, provenance, CLI, durable replay, exact-evidence evaluation, and LocalProvider-only adjudication for one complete retrospective NLHE hand and at most one versioned opponent range; no general natural-language or site parser, external provider or model, runtime bridge, external solver, range equity, multiopponent range, GTO, or equilibrium claim. | The approved caller-supplied candidate, explicit hash-bound confirmation, local-only adjudication, provenance replay, deterministic evaluation, documentation, and declared tests are implemented. |
 | `P3-030B` | `RM-030` | `completed` | `P3-030A`, `P3-015A` | Version 1 deterministic parsing for one documented finite Japanese retrospective 2-6 player NLHE cash grammar with integer chip units, zero ante and rake, at most 64 actions, exact UTF-8 half-open source spans, explicit focal call-or-fold decision, hand_validator then hand_pot_ledger then pot_odds execution, six independently confirmed hash domains, LocalProvider-only adjudication, durable provenance replay, and exact-evidence evaluation; no general natural-language or site parser, OCR, tournament, focal all-in or side-pot decision, range inference, external provider or model, runtime bridge, external solver, GTO, or equilibrium claim. | The approved bounded Japanese grammar, exact source-span evidence, six-hash confirmation contract, fixed local product path, durable provenance replay, evaluation fixture, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
+| `P3-030C` | `RM-030` | `completed` | `P2-024A`, `P3-015A`, `P3-016B`, `P3-017A`, `P3-030B` | One confirmed P3-030B river focal decision and one separate provenance-qualified VersionedRangeDefinitionV1 for the facing actor, exact P3-015A no-rake ledger, pot_odds, P3-016B exact-only heads-up river equity, Fraction required-equity and call-EV oracles, raked_call_ev with rake_percent zero, model-limited call/fold comparison, exact LocalProvider role/context/tool controls, typed terminal replay, and deterministic exact-evidence evaluation; no general natural language, actual Codex/Python runtime bridge, multiple ranges, multiway or earlier-street equity, Monte Carlo, all-in, side pot, rake, ante, external solver, GTO, equilibrium, or unconditional recommendation. | The approved bounded river call-or-fold integration, twelve-hash confirmation, exact seven-tool local path, Fraction and ULP oracles, context and provenance controls, typed terminal replay, deterministic evaluation, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
 
 ## Current RM state
 
@@ -915,11 +916,12 @@
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the caller-supplied candidate path, and P3-030B implements the approved bounded Japanese grammar with exact source-span and six-hash confirmation contracts; general natural-language or site parsing and the remaining external or solver integrations are not implemented. Relations use explicit temporal wording where historical status is relevant, while the milestone table remains authoritative for current status.
+- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice; RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing and actual runtime or solver integrations remain unimplemented. The milestone table remains authoritative for current status.
 - Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake
   - bounded_japanese_nlhe_cash_parser
+  - bounded_japanese_river_call_ev_review
   - natural_language_or_site_parser
   - versioned_nlhe_range_grammar
 - Targets:
@@ -930,15 +932,22 @@
   - src/poker_deliberation/bounded_natural_language.py
   - src/poker_deliberation/bounded_natural_language_provenance.py
   - src/poker_deliberation/bounded_natural_language_evaluation.py
+  - src/poker_deliberation/bounded_river_call_ev_models.py
+  - src/poker_deliberation/bounded_river_call_ev.py
+  - src/poker_deliberation/bounded_river_call_ev_provenance.py
+  - src/poker_deliberation/bounded_river_call_ev_evaluation.py
   - src/poker_deliberation/orchestrator.py
   - src/poker_deliberation/cli.py
   - src/poker_deliberation/storage/terminal_canonical.py
   - tests/fixtures/confirmed_review/v1/scenarios.json
   - tests/fixtures/bounded_natural_language/v1/scenarios.json
+  - tests/fixtures/bounded_river_call_ev/v1/scenarios.json
   - scripts/run_confirmed_review_evaluation.py
   - scripts/run_bounded_natural_language_evaluation.py
+  - scripts/run_bounded_river_call_ev_evaluation.py
   - docs/confirmed-review-intake.md
   - docs/bounded-natural-language-intake.md
+  - docs/bounded-river-call-ev.md
 - Acceptance criteria:
   - P3-030A admits only one bounded UTF-8 retrospective source and a caller-supplied complete NLHE candidate after explicit source and candidate hash confirmation by a scoped authority for at most 24 hours.
   - P3-030A uses the exact LocalProvider and default tool registry with hand_validator, the approved optional no-rake cash ledger, and automatic range_validate then combos for at most one versioned range.
@@ -949,6 +958,11 @@
   - Every P3-030B extracted semantic field is bound to exact UTF-8 half-open source byte spans, and source, candidate, source bindings, focal decision, tool plan, and extractor hash domains must all be explicitly confirmed before any run namespace is created.
   - P3-030B runs exactly hand_validator, hand_pot_ledger, then pot_odds through the existing LocalProvider, role/context lifecycle, durable storage, terminal report, and provenance replay path without passing raw source text into agent context.
   - The repository-owned P3-030B scenario fixture gives separate exact scores for field extraction, source spans, diagnostics, end-to-end tool evidence, and storage replay, with acceptance only when all five metrics equal 1.0.
+  - P3-030C accepts only a final river call-or-fold focal response from P3-030B, a five-card board, two Hero cards, zero ante and rake, no all-in or side pot, no later action, exactly one separate VersionedRangeDefinitionV1 for the facing actor, and exactly Hero plus that actor eligible at the focal point.
+  - P3-030C binds source, bounded candidate, source bindings, focal decision, extractor, tool plan, range definition, range target, P3-016B range binding, equity model, call-EV model, and the complete candidate to independent confirmation hashes with scoped authority, run identity, expiry, and idempotency.
+  - P3-030C commits its admission before executing each tool once in the exact hand_validator, hand_pot_ledger, pot_odds, range_validate, combos, holdem_equity, raked_call_ev order; manual conflicts, reordered or tampered prefixes, non-exact equity metadata, and binary64 projections outside the declared ULP bounds fail closed.
+  - P3-030C stores exact reduced rational equity, required equity call_cost divided by pot_after_bet plus call_cost, no-rake call EV equity times contestable pot minus call_cost, zero focal fold EV, call-minus-fold EV, and only a model-limited CALCULATED comparison; range accuracy stays USER_CLAIM or ASSUMPTION and UNKNOWN, and strategic interpretation stays INFERENCE.
+  - P3-030C uses exact LocalProvider assignments and P2-024A context envelopes without raw source text, persists seven typed integration artifacts plus the reused P3-016B binding, and requires all three deterministic evaluation metrics to equal 1.0.
 - Tests:
   - tests/unit/test_confirmed_review_contract.py
   - tests/integration/test_confirmed_review_cli.py
@@ -962,16 +976,23 @@
   - tests/adversarial/test_bounded_natural_language_security.py
   - tests/property/test_bounded_natural_language_metamorphic.py
   - tests/fault/test_bounded_natural_language_replay.py
+  - tests/unit/test_bounded_river_call_ev_contract.py
+  - tests/integration/test_bounded_river_call_ev_cli.py
+  - tests/integration/test_bounded_river_call_ev_product_path.py
+  - tests/integration/test_bounded_river_call_ev_evaluation.py
+  - tests/adversarial/test_bounded_river_call_ev_security.py
+  - tests/adversarial/test_bounded_river_call_ev_terminal_security.py
+  - tests/fault/test_bounded_river_call_ev_durability.py
 - Decision gate rationale:
   - Any expansion beyond the P3-030B bounded Japanese grammar into general natural-language, model-assisted, site-specific, or OCR parsing requires a new Decision gate covering ambiguity, source rights, privacy, and parser-quality evaluation
   - P2-025B actual Codex or cross-runtime execution bridge, outbound effects, authentication, budgets, and reconciliation
-  - P3-030C bounded-language consumption of P3-016B, equity-to-call-EV and ledger binding, external solver, multiopponent, GTO, or equilibrium semantics and evidence thresholds
+  - Any wider range/equity/call-EV scope beyond P3-030C, including multiple ranges, multiway or earlier streets, nonzero rake, all-in or side pots, external solver, GTO, or equilibrium semantics
 - Completion-time relations (historical; not current status assertions):
   - P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.
-  - The approved P3-030B Decision gate is limited to one deterministic bounded Japanese grammar; any general natural-language, model-assisted, site-specific, or OCR parser remains a separate future Decision gate.
+  - The approved P3-030B grammar remains finite, and P3-030C consumes it only for one confirmed river range/equity/no-rake call-EV slice; any general natural-language, model-assisted, site-specific, or OCR parser remains a separate future Decision gate.
   - P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.
   - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
-  - P3-030C remains a separate Decision gate for consuming the P3-016B bridge in bounded Japanese call-or-fold review, equity-to-call-EV and ledger binding, multiopponent or broader range semantics, external solver, GTO, or equilibrium scope.
+  - P3-030C reuses P3-015A and P3-016B without widening them; multiple ranges, multiway or earlier-street equity, external solver, GTO, and equilibrium remain outside this milestone.
 
 ## Synchronization contract
 

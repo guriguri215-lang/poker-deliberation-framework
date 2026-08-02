@@ -749,6 +749,7 @@ def _parse_candidate(
     *,
     intake_id: str,
     bindings: list[BoundedSourceBindingV1],
+    replay_tool_plan: BoundedToolPlanV1 | None = None,
 ) -> BoundedIntakeCandidateV1:
     byte_offsets = _byte_offsets(text)
     header_count: int | None = None
@@ -1249,37 +1250,6 @@ def _parse_candidate(
         "rule_profile": profile.model_dump(mode="json"),
         "hand": hand.model_dump(mode="json"),
     }
-    registry = default_registry()
-    ledger_result = registry.execute("hand_pot_ledger", ledger_input)
-    if ledger_result.status is not ToolStatus.SUCCESS:
-        _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.hand_pot_ledger")
-    try:
-        ledger = HandPotLedgerOutputV1.model_validate(ledger_result.output, strict=True)
-    except ValidationError:
-        _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.hand_pot_ledger")
-    if any(remaining == 0 for remaining in ledger.remaining_stacks_units.values()):
-        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.all_in")
-    facing_ledger = ledger.ledger_actions[facing_index]
-    hero_ledger = ledger.ledger_actions[hero_index]
-    if (
-        facing_ledger.action not in {"bet", "raise"}
-        or hero_ledger.actor != "Hero"
-        or hero_ledger.action not in {"call", "fold"}
-    ):
-        _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "focal_decision")
-    hero_before_units = hero_ledger.street_contribution_units_after - hero_ledger.committed_units
-    call_cost_units = facing_ledger.current_bet_units_after - hero_before_units
-    pot_before_units = facing_ledger.pot_units_after - facing_ledger.committed_units
-    opponent_bet_units = facing_ledger.committed_units
-    if call_cost_units <= 0 or pot_before_units < 0 or opponent_bet_units <= 0:
-        _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.pot_odds")
-    hero_stack_before = hero_ledger.remaining_stack_units_after + hero_ledger.committed_units
-    if hero_stack_before <= call_cost_units:
-        _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.all_in")
-    if hero_action.action == "call" and hero_ledger.committed_units != call_cost_units:
-        _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "focal_decision.call")
-    contestable_units = pot_before_units + opponent_bet_units + call_cost_units
-
     assertion_values = BoundedDeclaredPotAssertionsV1(
         pot_before_bet=(
             None
@@ -1306,10 +1276,129 @@ def _parse_candidate(
             )
         ),
     )
+    if replay_tool_plan is None:
+        registry = default_registry()
+        ledger_result = registry.execute("hand_pot_ledger", ledger_input)
+        if ledger_result.status is not ToolStatus.SUCCESS:
+            _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.hand_pot_ledger")
+        try:
+            ledger = HandPotLedgerOutputV1.model_validate(ledger_result.output, strict=True)
+        except ValidationError:
+            _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.hand_pot_ledger")
+        if any(remaining == 0 for remaining in ledger.remaining_stacks_units.values()):
+            _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.all_in")
+        facing_ledger = ledger.ledger_actions[facing_index]
+        hero_ledger = ledger.ledger_actions[hero_index]
+        if (
+            facing_ledger.action not in {"bet", "raise"}
+            or hero_ledger.actor != "Hero"
+            or hero_ledger.action not in {"call", "fold"}
+        ):
+            _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "focal_decision")
+        hero_before_units = (
+            hero_ledger.street_contribution_units_after - hero_ledger.committed_units
+        )
+        call_cost_units = facing_ledger.current_bet_units_after - hero_before_units
+        pot_before_units = facing_ledger.pot_units_after - facing_ledger.committed_units
+        opponent_bet_units = facing_ledger.committed_units
+        if call_cost_units <= 0 or pot_before_units < 0 or opponent_bet_units <= 0:
+            _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "tool_plan.pot_odds")
+        hero_stack_before = hero_ledger.remaining_stack_units_after + hero_ledger.committed_units
+        if hero_stack_before <= call_cost_units:
+            _fail(BoundedNaturalLanguageDiagnosticCode.UNSUPPORTED, "focal_decision.all_in")
+        if hero_action.action == "call" and hero_ledger.committed_units != call_cost_units:
+            _fail(BoundedNaturalLanguageDiagnosticCode.LEDGER, "focal_decision.call")
+        contestable_units = pot_before_units + opponent_bet_units + call_cost_units
+        pot_odds_input = BoundedPotOddsInputV1(
+            pot_before_bet=_float(
+                chip_unit * pot_before_units,
+                field_path="tool_plan.pot_odds.pot_before_bet",
+            ),
+            opponent_bet=_float(
+                chip_unit * opponent_bet_units,
+                field_path="tool_plan.pot_odds.opponent_bet",
+            ),
+            call_cost=_float(
+                chip_unit * call_cost_units,
+                field_path="tool_plan.pot_odds.call_cost",
+            ),
+            expected_rake=0.0,
+        )
+        pot_odds_payload = pot_odds_input.model_dump(mode="json")
+        pot_odds_result = registry.execute("pot_odds", pot_odds_payload)
+        if (
+            pot_odds_result.status is not ToolStatus.SUCCESS
+            or pot_odds_result.verification is None
+            or not pot_odds_result.verification.passed
+        ):
+            _fail(BoundedNaturalLanguageDiagnosticCode.TOOL, "tool_plan.pot_odds")
+        provisional_plan = BoundedToolPlanV1(
+            ordered_tools=BOUNDED_NL_TOOL_ORDER,
+            ledger_profile=profile,
+            facing_action_index=facing_index,
+            hero_action_index=hero_index,
+            pot_before_bet_units=pot_before_units,
+            opponent_bet_units=opponent_bet_units,
+            call_cost_units=call_cost_units,
+            contestable_pot_units=contestable_units,
+            ledger_input_sha256=_domain_sha256(
+                BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":ledger-input",
+                ledger_input,
+            ),
+            ledger_output_sha256=_domain_sha256(
+                BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":ledger-output",
+                ledger_result.output,
+            ),
+            pot_odds_input=pot_odds_input,
+            pot_odds_input_sha256=_domain_sha256(
+                BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":pot-odds-input",
+                pot_odds_payload,
+            ),
+            tool_plan_sha256="0" * 64,
+        )
+        tool_plan = provisional_plan.model_copy(
+            update={"tool_plan_sha256": bounded_tool_plan_sha256(provisional_plan)}
+        )
+    else:
+        tool_plan = replay_tool_plan
+        pot_odds_payload = tool_plan.pot_odds_input.model_dump(mode="json")
+        if (
+            tool_plan.ledger_profile != profile
+            or tool_plan.facing_action_index != facing_index
+            or tool_plan.hero_action_index != hero_index
+            or tool_plan.ledger_input_sha256
+            != _domain_sha256(
+                BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":ledger-input",
+                ledger_input,
+            )
+            or tool_plan.pot_odds_input.expected_rake != 0.0
+            or tool_plan.pot_odds_input.pot_before_bet
+            != _float(
+                chip_unit * tool_plan.pot_before_bet_units,
+                field_path="tool_plan.pot_odds.pot_before_bet",
+            )
+            or tool_plan.pot_odds_input.opponent_bet
+            != _float(
+                chip_unit * tool_plan.opponent_bet_units,
+                field_path="tool_plan.pot_odds.opponent_bet",
+            )
+            or tool_plan.pot_odds_input.call_cost
+            != _float(
+                chip_unit * tool_plan.call_cost_units,
+                field_path="tool_plan.pot_odds.call_cost",
+            )
+            or tool_plan.pot_odds_input_sha256
+            != _domain_sha256(
+                BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":pot-odds-input",
+                pot_odds_payload,
+            )
+        ):
+            _fail(BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "tool_plan")
+
     expected_assertions = {
-        "pot_before_bet": pot_before_units,
-        "call_cost": call_cost_units,
-        "contestable_pot": contestable_units,
+        "pot_before_bet": tool_plan.pot_before_bet_units,
+        "call_cost": tool_plan.call_cost_units,
+        "contestable_pot": tool_plan.contestable_pot_units,
     }
     for name, assertion_value in assertions.items():
         if (
@@ -1321,59 +1410,9 @@ def _parse_candidate(
             != expected_assertions[name]
         ):
             _fail(
-                BoundedNaturalLanguageDiagnosticCode.POT_MISMATCH, f"declared_pot_assertions.{name}"
+                BoundedNaturalLanguageDiagnosticCode.POT_MISMATCH,
+                f"declared_pot_assertions.{name}",
             )
-
-    pot_odds_input = BoundedPotOddsInputV1(
-        pot_before_bet=_float(
-            chip_unit * pot_before_units,
-            field_path="tool_plan.pot_odds.pot_before_bet",
-        ),
-        opponent_bet=_float(
-            chip_unit * opponent_bet_units,
-            field_path="tool_plan.pot_odds.opponent_bet",
-        ),
-        call_cost=_float(
-            chip_unit * call_cost_units,
-            field_path="tool_plan.pot_odds.call_cost",
-        ),
-        expected_rake=0.0,
-    )
-    pot_odds_payload = pot_odds_input.model_dump(mode="json")
-    pot_odds_result = registry.execute("pot_odds", pot_odds_payload)
-    if (
-        pot_odds_result.status is not ToolStatus.SUCCESS
-        or pot_odds_result.verification is None
-        or not pot_odds_result.verification.passed
-    ):
-        _fail(BoundedNaturalLanguageDiagnosticCode.TOOL, "tool_plan.pot_odds")
-    provisional_plan = BoundedToolPlanV1(
-        ordered_tools=BOUNDED_NL_TOOL_ORDER,
-        ledger_profile=profile,
-        facing_action_index=facing_index,
-        hero_action_index=hero_index,
-        pot_before_bet_units=pot_before_units,
-        opponent_bet_units=opponent_bet_units,
-        call_cost_units=call_cost_units,
-        contestable_pot_units=contestable_units,
-        ledger_input_sha256=_domain_sha256(
-            BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":ledger-input",
-            ledger_input,
-        ),
-        ledger_output_sha256=_domain_sha256(
-            BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":ledger-output",
-            ledger_result.output,
-        ),
-        pot_odds_input=pot_odds_input,
-        pot_odds_input_sha256=_domain_sha256(
-            BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID + ":pot-odds-input",
-            pot_odds_payload,
-        ),
-        tool_plan_sha256="0" * 64,
-    )
-    tool_plan = provisional_plan.model_copy(
-        update={"tool_plan_sha256": bounded_tool_plan_sha256(provisional_plan)}
-    )
     bindings_tuple = tuple(bindings)
     bindings_sha256 = _domain_sha256(
         BOUNDED_NL_BINDINGS_CANONICALIZATION_ID,
@@ -1513,6 +1552,40 @@ def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedInta
         _fail(
             BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
             "candidate.extractor_sha256",
+        )
+    return candidate
+
+
+def verify_bounded_source_candidate(
+    source_bytes: bytes,
+    candidate: BoundedIntakeCandidateV1,
+) -> BoundedIntakeCandidateV1:
+    """Reconstruct source semantics without re-running calculator-backed steps."""
+
+    candidate = verify_bounded_candidate(candidate)
+    projection = candidate.projection
+    source, text = validate_bounded_source(
+        source_bytes,
+        source_id=projection.source.source_id,
+        source_kind=projection.source.source_kind,
+        license_classification=projection.source.license_classification,
+        usage_classification=projection.source.usage_classification,
+        classification=projection.source.classification,
+    )
+    if source != projection.source:
+        _fail(BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "source")
+    replayed = _parse_candidate(
+        source_bytes,
+        text,
+        source,
+        intake_id=projection.intake_id,
+        bindings=[],
+        replay_tool_plan=projection.tool_plan,
+    )
+    if replayed != candidate:
+        _fail(
+            BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
+            "candidate.source_semantics",
         )
     return candidate
 

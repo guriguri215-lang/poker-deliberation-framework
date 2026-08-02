@@ -931,6 +931,11 @@ _FIXED_RUN_PAYLOAD_ARTIFACTS = frozenset(
         "bounded_nl_source.txt",
         "bounded_nl_candidate.json",
         "bounded_nl_confirmation.json",
+        "bounded_river_call_ev_source.txt",
+        "bounded_river_call_ev_range.json",
+        "bounded_river_call_ev_candidate.json",
+        "bounded_river_call_ev_confirmation.json",
+        "bounded_river_call_ev_binding.json",
         "input.json",
         "range_equity_binding.json",
         "normalization.json",
@@ -960,6 +965,9 @@ _FIXED_RUN_REPORT_ARTIFACTS = frozenset(
         "final_report.md",
         "confirmed_review_provenance.json",
         "bounded_nl_provenance.json",
+        "bounded_river_call_ev_result.json",
+        "bounded_river_call_ev_provenance.json",
+        "bounded_river_call_ev_budget_failure.json",
     }
 )
 

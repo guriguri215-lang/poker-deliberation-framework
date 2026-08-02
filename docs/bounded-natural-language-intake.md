@@ -85,7 +85,9 @@ report、storage revisionを再相関します。artifact欠落、改ざん、cr
 一般自然言語、site hand history、画像/PDF/OCR、tournament、ante/rake、straddle、range抽出、
 real-time助言、focal all-in、focal side pot、short call、複数focal decision、外部provider/model、
 Codex/Python runtime bridge、外部solver、range equity、multiway range、GTO・均衡は未実装です。
-P3-030Aのcaller-supplied candidate経路は変更せず併存します。
+P3-030Aのcaller-supplied candidate経路は変更せず併存します。P3-030CはこのP3-030B grammarを
+変更せず、terminal river fold履歴に別入力rangeを明示確認してexact equity/no-rake call EVへ接続する
+別contractです。
 
 ## 決定論的評価
 

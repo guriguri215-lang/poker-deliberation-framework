@@ -139,7 +139,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 11.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 12.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -155,8 +155,8 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
     shutil.copyfile(ROOT / "docs/range-equity-bridge.md", bridge)
     bridge.write_text(
         bridge.read_text(encoding="utf-8").replace(
-            "別Decision gateである。",
-            "別Decision gateではない。",
+            "P3-016B自身のcontractや通常経路は",
+            "P3-016B自身のcontractや通常経路も",
         ),
         encoding="utf-8",
     )
@@ -168,17 +168,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 11.0.0", "schema 10.0.0\n<!-- schema 11.0.0 -->"),
+        "README.md": ("schema 12.0.0", "schema 10.0.0\n<!-- schema 12.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `11.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `11.0.0` -->",
+            "schema version: `12.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `12.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "11.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "11.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "12.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "12.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "11.0.0"',
+            '"schema_version": "12.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }
@@ -238,41 +238,38 @@ def test_capability_preflight_rejects_indirect_schema_mutation(
     assert _capability_docs_check(repo).status == "fail"
 
 
-def test_capability_preflight_rejects_contradictory_p3_030c_sentence(
+def test_capability_preflight_rejects_contradictory_p3_030c_bridge_sentence(
     tmp_path: Path,
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     bridge = repo / "docs/range-equity-bridge.md"
     bridge.write_text(
         bridge.read_text(encoding="utf-8")
-        + "\nP3-030Cは、このbridgeをbounded Japanese call/fold reviewで使用するための"
-        "別Decision gateではない。\n",
+        + "\nP3-030CはP3-016B自身のcontractと通常経路を変更する。\n",
         encoding="utf-8",
     )
 
     assert _capability_docs_check(repo).status == "fail"
 
 
-def test_capability_preflight_rejects_contradiction_without_p3_literal(tmp_path: Path) -> None:
+def test_capability_preflight_rejects_untracked_public_claim(tmp_path: Path) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     bridge = repo / "docs/range-equity-bridge.md"
     bridge.write_text(
         bridge.read_text(encoding="utf-8")
-        + "\nThis bridge is not a separate Decision gate and is already approved.\n",
+        + "\nThis bridge now supports general multiway strategy.\n",
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
 
 
-def test_capability_preflight_rejects_contradiction_in_another_public_document(
+def test_capability_preflight_rejects_modified_other_public_document(
     tmp_path: Path,
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8")
-        + "\nThe bridge is already used for bounded Japanese call/fold review; "
-        "no separate Decision gate is needed.\n",
+        readme.read_text(encoding="utf-8") + "\nP3-030C provides GTO strategy.\n",
         encoding="utf-8",
     )
 
@@ -282,7 +279,7 @@ def test_capability_preflight_rejects_contradiction_in_another_public_document(
 def test_capability_preflight_rejects_additional_public_document(tmp_path: Path) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     extra = repo / "docs/other-public.md"
-    extra.write_text("P3-030C is not a separate Decision gate.\n", encoding="utf-8")
+    extra.write_text("P3-030C supports general natural language.\n", encoding="utf-8")
 
     result = _capability_docs_check(repo)
 

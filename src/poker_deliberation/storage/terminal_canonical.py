@@ -30,6 +30,24 @@ from poker_deliberation.bounded_natural_language_models import (
     BoundedIntakeConfirmationV1,
     BoundedNaturalLanguageProvenanceV1,
 )
+from poker_deliberation.bounded_river_call_ev_models import (
+    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_MARKER,
+    BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+    BoundedRiverCallEvBindingV1,
+    BoundedRiverCallEvBudgetFailureEvidenceV1,
+    BoundedRiverCallEvCandidateV1,
+    BoundedRiverCallEvConfirmationV1,
+    BoundedRiverCallEvProvenanceV1,
+    BoundedRiverCallEvResultV1,
+)
+from poker_deliberation.budgets.contracts import BudgetPolicyV2
 from poker_deliberation.confirmed_review_models import (
     ConfirmedReviewProvenanceV1,
     ReviewIntakeCandidateV1,
@@ -58,6 +76,7 @@ from poker_deliberation.range_equity_models import (
     VersionedRangeRiverEquityBindingV1,
 )
 from poker_deliberation.range_grammar import verify_versioned_range_tool_chain
+from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
@@ -72,6 +91,14 @@ from poker_deliberation.schemas import (
     ToolResult,
 )
 from poker_deliberation.state_machine import ALLOWED_TRANSITIONS, RunState
+from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
+    read_bounded_river_call_ev_admission_record,
+    verify_bounded_river_call_ev_admission_record,
+)
+from poker_deliberation.storage.bounded_river_call_ev_failure_store import (
+    read_bounded_river_call_ev_budget_failure_evidence,
+    verify_bounded_river_call_ev_budget_failure_evidence,
+)
 from poker_deliberation.storage.range_equity_admission_store import (
     read_range_equity_admission_record,
     verify_range_equity_admission_record,
@@ -141,6 +168,25 @@ _BOUNDED_NL_ARTIFACTS = frozenset(
         "bounded_nl_confirmation.json",
         "bounded_nl_provenance.json",
     }
+)
+_BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS = frozenset(
+    {
+        BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
+    }
+)
+_BOUNDED_RIVER_CALL_EV_TERMINAL_ARTIFACTS = frozenset(
+    {
+        BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+    }
+)
+_BOUNDED_RIVER_CALL_EV_ARTIFACTS = (
+    _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS | _BOUNDED_RIVER_CALL_EV_TERMINAL_ARTIFACTS
 )
 _AGENT_REPORT_ARTIFACT = re.compile(
     r"^agent_reports/(?P<identifier>[A-Za-z0-9][A-Za-z0-9._-]{0,127})\.json$"
@@ -299,6 +345,7 @@ def product_payload_commitments(
     previous_manifest_sha256: str | None = None,
     previous_pointer_sha256: str | None = None,
     maximum_admission_record_bytes: int = 1_000_000,
+    budget_policy: BudgetPolicyV2 | None = None,
 ) -> tuple[str, str, str, str, str, str]:
     """Recompute product input, checkpoint, and scalar lineage commitments."""
 
@@ -499,6 +546,24 @@ def product_payload_commitments(
         input_name = f"tool_results/{result.result_id}.input.json"
         if input_name not in payloads or parse_canonical_json(payloads[input_name]) != result.input:
             raise CanonicalStorageError("tool input/result correlation mismatch")
+    report_metadata = report.reconstructed_input.get("metadata")
+    bounded_river_input_marker_present = BOUNDED_RIVER_CALL_EV_MARKER in input_case.metadata
+    bounded_river_report_marker_present = isinstance(report_metadata, dict) and (
+        BOUNDED_RIVER_CALL_EV_MARKER in report_metadata
+    )
+    bounded_river_report_marker = (
+        report_metadata.get(BOUNDED_RIVER_CALL_EV_MARKER)
+        if isinstance(report_metadata, dict)
+        else None
+    )
+    if bounded_river_input_marker_present != bounded_river_report_marker_present or (
+        bounded_river_input_marker_present
+        and bounded_river_report_marker != input_case.metadata[BOUNDED_RIVER_CALL_EV_MARKER]
+    ):
+        raise CanonicalStorageError(
+            "bounded river call-EV input and report markers must match exactly"
+        )
+    bounded_river_marker = bounded_river_input_marker_present or bounded_river_report_marker_present
     try:
         verify_versioned_range_river_equity_case_correlation(
             input_case,
@@ -538,23 +603,61 @@ def product_payload_commitments(
                 verify_range_equity_admission_record(admission_record, binding_artifact)
     except ValueError as exc:
         raise CanonicalStorageError("range-equity persisted cases do not correlate") from exc
-    try:
-        verify_versioned_range_tool_chain(
-            input_case,
-            report.tool_results,
-            run_status=report.run_status,
-        )
-        verify_versioned_range_river_equity_tool_chain(
-            input_case,
-            report.tool_results,
-            run_status=report.run_status,
-        )
-    except ValueError as exc:
-        raise CanonicalStorageError("versioned range tool chain replay failed") from exc
+    if not bounded_river_marker:
+        try:
+            verify_versioned_range_tool_chain(
+                input_case,
+                report.tool_results,
+                run_status=report.run_status,
+            )
+            verify_versioned_range_river_equity_tool_chain(
+                input_case,
+                report.tool_results,
+                run_status=report.run_status,
+            )
+        except ValueError as exc:
+            raise CanonicalStorageError("versioned range tool chain replay failed") from exc
     confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS
     bounded_names = set(payloads) & _BOUNDED_NL_ARTIFACTS
+    bounded_river_names = set(payloads) & _BOUNDED_RIVER_CALL_EV_ARTIFACTS
+    if bounded_river_marker:
+        successful_artifacts = _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS | {
+            BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+            BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+        }
+        allowed_sets = (
+            {successful_artifacts}
+            if report.run_status == "completed"
+            else {
+                _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS,
+                _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS | {BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT},
+                _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS
+                | {BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT},
+                _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS
+                | {
+                    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+                    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+                },
+            }
+        )
+        if frozenset(bounded_river_names) not in allowed_sets:
+            raise CanonicalStorageError(
+                "bounded river call-EV marker lacks its exact terminal artifact set"
+            )
+        if not {
+            "input.json",
+            "final_report.json",
+            "assignments.json",
+            RANGE_EQUITY_BINDING_ARTIFACT,
+        } <= set(payloads):
+            raise CanonicalStorageError(
+                "bounded river call-EV payload lacks a required canonical ledger"
+            )
+    elif bounded_river_names:
+        raise CanonicalStorageError(
+            "bounded river call-EV artifacts require their exact case marker"
+        )
     input_marker_present = "confirmed_review" in input_case.metadata
-    report_metadata = report.reconstructed_input.get("metadata")
     report_marker_present = isinstance(report_metadata, dict) and (
         "confirmed_review" in report_metadata
     )
@@ -648,7 +751,7 @@ def product_payload_commitments(
         raise CanonicalStorageError(
             "bounded-language marker and complete artifact set must appear together"
         )
-    if confirmed_marker and bounded_marker:
+    if sum((confirmed_marker, bounded_marker, bounded_river_marker)) > 1:
         raise CanonicalStorageError("confirmed intake artifact contracts are mutually exclusive")
     if bounded_marker:
         if "assignments.json" not in payloads:
@@ -702,6 +805,202 @@ def product_payload_commitments(
             )
         except ValueError as exc:
             raise CanonicalStorageError("bounded-language source-to-report replay failed") from exc
+
+    if bounded_river_marker:
+        if revision_root is None or revision is None or transaction_id is None:
+            raise CanonicalStorageError(
+                "bounded river call-EV payload requires exact terminal storage authority"
+            )
+        source_bytes = payloads[BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT]
+        bounded_river_range = _parse_json_model(
+            payloads[BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT],
+            VersionedRangeDefinitionV1,
+        )
+        bounded_river_candidate = _parse_json_model(
+            payloads[BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT],
+            BoundedRiverCallEvCandidateV1,
+        )
+        bounded_river_confirmation = _parse_json_model(
+            payloads[BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT],
+            BoundedRiverCallEvConfirmationV1,
+        )
+        bounded_river_binding = _parse_json_model(
+            payloads[BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT],
+            BoundedRiverCallEvBindingV1,
+        )
+        bounded_river_result = (
+            _parse_json_model(
+                payloads[BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT],
+                BoundedRiverCallEvResultV1,
+            )
+            if BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT in payloads
+            else None
+        )
+        bounded_river_provenance = (
+            _parse_json_model(
+                payloads[BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT],
+                BoundedRiverCallEvProvenanceV1,
+            )
+            if BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT in payloads
+            else None
+        )
+        bounded_river_failure_evidence = (
+            _parse_json_model(
+                payloads[BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT],
+                BoundedRiverCallEvBudgetFailureEvidenceV1,
+            )
+            if BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT in payloads
+            else None
+        )
+        if (
+            bounded_river_confirmation.run_id != run_id
+            or bounded_river_binding.run_id != run_id
+            or (bounded_river_result is not None and bounded_river_result.run_id != run_id)
+            or (bounded_river_provenance is not None and bounded_river_provenance.run_id != run_id)
+            or (
+                bounded_river_failure_evidence is not None
+                and bounded_river_failure_evidence.run_id != run_id
+            )
+            or bounded_river_candidate.projection.range_definition != bounded_river_range
+            or binding_artifact != bounded_river_candidate.projection.range_equity_binding
+        ):
+            raise CanonicalStorageError("bounded river call-EV artifact correlation mismatch")
+        bounded_river_admission_record = read_bounded_river_call_ev_admission_record(
+            Path(revision_root),
+            run_id,
+            maximum_bytes=maximum_admission_record_bytes,
+        )
+        if bounded_river_admission_record is None:
+            raise CanonicalStorageError(
+                "bounded river call-EV payload lacks its pre-execution admission record"
+            )
+        verify_bounded_river_call_ev_admission_record(
+            bounded_river_admission_record,
+            bounded_river_binding,
+        )
+        if budget_policy is None:
+            raise CanonicalStorageError(
+                "bounded river call-EV payload requires its exact budget policy"
+            )
+        external_failure_records = read_bounded_river_call_ev_budget_failure_evidence(
+            Path(revision_root),
+            run_id,
+            maximum_bytes=maximum_admission_record_bytes,
+        )
+        budget_failed_results = [
+            item
+            for item in report.tool_results
+            if item.status.value == "failed"
+            and (item.error or "").startswith("strict budget failure: ")
+        ]
+        if budget_failed_results:
+            if (
+                len(budget_failed_results) != 1
+                or len(external_failure_records) != 1
+                or bounded_river_failure_evidence is None
+                or canonical_json_bytes(bounded_river_failure_evidence)
+                != canonical_json_bytes(external_failure_records[0])
+            ):
+                raise CanonicalStorageError(
+                    "bounded river call-EV budget failure lacks independent evidence"
+                )
+            verify_bounded_river_call_ev_budget_failure_evidence(
+                external_failure_records[0],
+                binding=bounded_river_binding,
+                admission_record=bounded_river_admission_record,
+                result=budget_failed_results[0],
+                policy=budget_policy,
+            )
+        elif external_failure_records or bounded_river_failure_evidence is not None:
+            raise CanonicalStorageError(
+                "bounded river call-EV has uncorrelated budget failure evidence"
+            )
+        reports_by_role = {agent_report.agent_role: agent_report for agent_report in agent_reports}
+        ordered_agent_reports = [
+            reports_by_role[record.agent_role]
+            for record in execution_records
+            if record.agent_role in reports_by_role
+        ]
+        if len(ordered_agent_reports) != len(execution_records) or len(agent_reports) != len(
+            execution_records
+        ):
+            raise CanonicalStorageError(
+                "bounded river call-EV agent reports do not match executions"
+            )
+        try:
+            from poker_deliberation.bounded_river_call_ev import (
+                _admit_at as admit_bounded_river_call_ev_at,
+            )
+            from poker_deliberation.bounded_river_call_ev import (
+                verify_bounded_river_call_ev_tool_chain,
+            )
+
+            admitted_at = (
+                bounded_river_provenance.admitted_at
+                if bounded_river_provenance is not None
+                else bounded_river_confirmation.confirmed_at
+            )
+            bounded_river_admission = admit_bounded_river_call_ev_at(
+                source_bytes,
+                bounded_river_candidate,
+                bounded_river_confirmation,
+                admitted_at=admitted_at,
+            )
+            if (
+                bounded_river_admission.case != input_case
+                or bounded_river_admission.binding != bounded_river_binding
+            ):
+                raise ValueError("admitted bounded river call-EV case differs")
+            expected_result = verify_bounded_river_call_ev_tool_chain(
+                bounded_river_admission,
+                report.tool_results,
+                run_status=report.run_status,
+            )
+            if expected_result != bounded_river_result:
+                raise ValueError("bounded river call-EV result differs from replay")
+            from poker_deliberation.bounded_river_call_ev_provenance import (
+                verify_bounded_river_call_ev_structural_provenance,
+            )
+
+            verify_bounded_river_call_ev_structural_provenance(
+                source_bytes=source_bytes,
+                candidate=bounded_river_candidate,
+                confirmation=bounded_river_confirmation,
+                case=input_case,
+                result=bounded_river_result,
+                report=report,
+                admitted_at=admitted_at,
+                assignments=assignments,
+                agent_reports=ordered_agent_reports,
+                storage_root=revision_root,
+                storage_revision=revision,
+                storage_transaction_id=transaction_id,
+            )
+            if report.run_status == "completed":
+                if bounded_river_result is None or bounded_river_provenance is None:
+                    raise ValueError("completed bounded river call-EV payload is incomplete")
+                from poker_deliberation.bounded_river_call_ev_provenance import (
+                    verify_bounded_river_call_ev_provenance,
+                )
+
+                verify_bounded_river_call_ev_provenance(
+                    source_bytes=source_bytes,
+                    candidate=bounded_river_candidate,
+                    confirmation=bounded_river_confirmation,
+                    case=input_case,
+                    result=bounded_river_result,
+                    report=report,
+                    provenance=bounded_river_provenance,
+                    assignments=assignments,
+                    agent_reports=ordered_agent_reports,
+                    storage_root=revision_root,
+                    storage_revision=revision,
+                    storage_transaction_id=transaction_id,
+                )
+        except ValueError as exc:
+            raise CanonicalStorageError(
+                "bounded river call-EV source-to-report replay failed"
+            ) from exc
 
     context_bindings = [
         {
@@ -886,6 +1185,12 @@ def _parse_normalization_result(data: bytes) -> NormalizationResultV1:
 
 def _validate_json_value(logical_name: str, data: bytes) -> None:
     single_models: dict[str, type[BaseModel]] = {
+        BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT: VersionedRangeDefinitionV1,
+        BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT: BoundedRiverCallEvCandidateV1,
+        BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT: BoundedRiverCallEvConfirmationV1,
+        BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT: BoundedRiverCallEvBindingV1,
+        BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT: BoundedRiverCallEvResultV1,
+        BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT: BoundedRiverCallEvProvenanceV1,
         "confirmed_review_candidate.json": ReviewIntakeCandidateV1,
         "confirmed_review_confirmation.json": ReviewIntakeConfirmationV1,
         "confirmed_review_provenance.json": ConfirmedReviewProvenanceV1,

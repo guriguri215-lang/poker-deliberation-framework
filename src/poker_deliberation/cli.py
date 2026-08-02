@@ -44,6 +44,18 @@ from poker_deliberation.bounded_natural_language_models import (
     BoundedIntakeConfirmationV1,
     BoundedIntakePreparationResultV1,
 )
+from poker_deliberation.bounded_river_call_ev import (
+    admit_bounded_river_call_ev_review,
+    create_bounded_river_call_ev_authority,
+    create_bounded_river_call_ev_confirmation,
+    prepare_bounded_river_call_ev_intake,
+    review_bounded_river_call_ev_intake,
+)
+from poker_deliberation.bounded_river_call_ev_models import (
+    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+    BoundedRiverCallEvConfirmationV1,
+    BoundedRiverCallEvPreparationResultV1,
+)
 from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.config import AppConfig
 from poker_deliberation.confirmed_review import (
@@ -67,6 +79,7 @@ from poker_deliberation.normalization import (
 )
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
+from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.reporting import render_markdown, render_summary
 from poker_deliberation.roadmap import roadmap_summary
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
@@ -369,6 +382,66 @@ def build_parser() -> argparse.ArgumentParser:
     review_bounded.add_argument("--confirmation", required=True)
     review_bounded.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
 
+    prepare_river_ev = subparsers.add_parser("prepare-bounded-river-call-ev-intake")
+    prepare_river_ev.add_argument("--source", required=True)
+    prepare_river_ev.add_argument("--range", required=True)
+    prepare_river_ev.add_argument("--output", required=True)
+    prepare_river_ev.add_argument("--intake-id", required=True)
+    prepare_river_ev.add_argument("--source-id", required=True)
+    prepare_river_ev.add_argument(
+        "--source-kind",
+        choices=["user_supplied", "repository_fixture"],
+        default="user_supplied",
+    )
+    prepare_river_ev.add_argument(
+        "--license-classification",
+        choices=["user_supplied_private_analysis", "repository_owned_mit"],
+        default="user_supplied_private_analysis",
+    )
+    prepare_river_ev.add_argument(
+        "--usage-classification",
+        choices=["local_analysis_only", "redistribution_allowed"],
+        default="local_analysis_only",
+    )
+    prepare_river_ev.add_argument(
+        "--classification",
+        choices=["internal", "public"],
+        default="internal",
+    )
+    prepare_river_ev.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    confirm_river_ev = subparsers.add_parser("confirm-bounded-river-call-ev-intake")
+    confirm_river_ev.add_argument("--preparation", required=True)
+    confirm_river_ev.add_argument("--output", required=True)
+    confirm_river_ev.add_argument("--run-id", required=True)
+    confirm_river_ev.add_argument("--authority-id", required=True)
+    confirm_river_ev.add_argument("--confirmation-id", required=True)
+    confirm_river_ev.add_argument("--idempotency-key", required=True)
+    for hash_name in (
+        "source",
+        "bounded-candidate",
+        "source-bindings",
+        "focal",
+        "extractor",
+        "tool-plan",
+        "range-definition",
+        "range-target",
+        "range-binding",
+        "equity-model",
+        "call-ev-model",
+        "candidate",
+    ):
+        confirm_river_ev.add_argument(f"--expected-{hash_name}-sha256", required=True)
+    confirm_river_ev.add_argument("--confirmed-at")
+    confirm_river_ev.add_argument("--expires-at")
+    confirm_river_ev.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    review_river_ev = subparsers.add_parser("review-bounded-river-call-ev-confirmed-intake")
+    review_river_ev.add_argument("--source", required=True)
+    review_river_ev.add_argument("--preparation", required=True)
+    review_river_ev.add_argument("--confirmation", required=True)
+    review_river_ev.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
+
     for command in ("review-hand", "review-strategy"):
         subparser = subparsers.add_parser(command)
         subparser.add_argument("--file", required=True)
@@ -611,6 +684,123 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 rendered_bounded_report = render_markdown(report)
             _emit(rendered_bounded_report, args.format)
+            return 2 if report.run_status == "failed_with_limitations" else 0
+        if args.command == "prepare-bounded-river-call-ev-intake":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_BOUNDED_NL_SOURCE_BYTES,
+                size_error="BRC_E_SOURCE",
+            )
+            range_definition = parse_canonical_model(
+                _read_limited_bytes(
+                    args.range,
+                    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+                    size_error="BRC_E_STORAGE",
+                ),
+                VersionedRangeDefinitionV1,
+            )
+            river_preparation = prepare_bounded_river_call_ev_intake(
+                source_bytes,
+                range_definition,
+                intake_id=args.intake_id,
+                source_id=args.source_id,
+                source_kind=args.source_kind,
+                license_classification=args.license_classification,
+                usage_classification=args.usage_classification,
+                classification=args.classification,
+            )
+            _write_canonical_model(args.output, river_preparation)
+            _emit(river_preparation, args.format)
+            return 0 if river_preparation.status == "ready" else 2
+        if args.command == "confirm-bounded-river-call-ev-intake":
+            river_preparation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.preparation,
+                    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+                    size_error="BRC_E_STORAGE",
+                ),
+                BoundedRiverCallEvPreparationResultV1,
+            )
+            if river_preparation.status != "ready" or river_preparation.candidate is None:
+                raise ValueError("BRC_E_CONFIRMATION_BINDING")
+            river_authority = create_bounded_river_call_ev_authority(
+                authority_id=args.authority_id,
+                authority_kind="local_user",
+                authentication="self_asserted",
+            )
+            expected_hashes = (
+                args.expected_source_sha256,
+                args.expected_bounded_candidate_sha256,
+                args.expected_source_bindings_sha256,
+                args.expected_focal_sha256,
+                args.expected_extractor_sha256,
+                args.expected_tool_plan_sha256,
+                args.expected_range_definition_sha256,
+                args.expected_range_target_sha256,
+                args.expected_range_binding_sha256,
+                args.expected_equity_model_sha256,
+                args.expected_call_ev_model_sha256,
+                args.expected_candidate_sha256,
+            )
+            river_confirmation = create_bounded_river_call_ev_confirmation(
+                river_preparation.candidate,
+                run_id=args.run_id,
+                confirmation_id=args.confirmation_id,
+                idempotency_key=args.idempotency_key,
+                authority=river_authority,
+                expected_hashes=expected_hashes,
+                confirmed_at=_parse_cli_datetime(
+                    args.confirmed_at,
+                    binding_error="BRC_E_CONFIRMATION_BINDING",
+                ),
+                expires_at=_parse_cli_datetime(
+                    args.expires_at,
+                    binding_error="BRC_E_CONFIRMATION_BINDING",
+                ),
+            )
+            _write_canonical_model(args.output, river_confirmation)
+            _emit(river_confirmation, args.format)
+            return 0
+        if args.command == "review-bounded-river-call-ev-confirmed-intake":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_BOUNDED_NL_SOURCE_BYTES,
+                size_error="BRC_E_SOURCE",
+            )
+            river_preparation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.preparation,
+                    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+                    size_error="BRC_E_STORAGE",
+                ),
+                BoundedRiverCallEvPreparationResultV1,
+            )
+            if river_preparation.status != "ready" or river_preparation.candidate is None:
+                raise ValueError("BRC_E_CONFIRMATION_BINDING")
+            river_confirmation = parse_canonical_model(
+                _read_limited_bytes(
+                    args.confirmation,
+                    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+                    size_error="BRC_E_STORAGE",
+                ),
+                BoundedRiverCallEvConfirmationV1,
+            )
+            river_admission = admit_bounded_river_call_ev_review(
+                source_bytes,
+                river_preparation.candidate,
+                river_confirmation,
+            )
+            report = review_bounded_river_call_ev_intake(
+                river_admission,
+                config=AppConfig.from_env(),
+            )
+            if args.format == "json":
+                rendered_river_report: object = report
+            elif args.format == "summary":
+                rendered_river_report = render_summary(report)
+            else:
+                rendered_river_report = render_markdown(report)
+            _emit(rendered_river_report, args.format)
             return 2 if report.run_status == "failed_with_limitations" else 0
         if args.command == "calculate":
             if args.analysis_scope != "retrospective":

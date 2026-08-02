@@ -70,6 +70,32 @@ from poker_deliberation.bounded_natural_language_models import (
 from poker_deliberation.bounded_natural_language_provenance import (
     build_bounded_natural_language_provenance,
 )
+from poker_deliberation.bounded_river_call_ev import (
+    BoundedRiverCallEvAdmission,
+    BoundedRiverCallEvError,
+    admit_bounded_river_call_ev_review,
+    bounded_river_call_ev_binding,
+    build_bounded_river_call_ev_result,
+    expected_bounded_river_tool_inputs,
+)
+from poker_deliberation.bounded_river_call_ev_models import (
+    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_MARKER,
+    BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_TOOL_ORDER,
+    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+    MAX_BOUNDED_RIVER_CALL_EV_RUN_BYTES,
+    BoundedRiverCallEvDiagnosticCode,
+    BoundedRiverCallEvResultV1,
+)
+from poker_deliberation.bounded_river_call_ev_provenance import (
+    build_bounded_river_call_ev_provenance,
+)
 from poker_deliberation.budgets import (
     BudgetLimitError,
     BudgetPolicyV2,
@@ -191,6 +217,7 @@ from poker_deliberation.range_equity import (
 from poker_deliberation.range_equity_models import (
     RANGE_EQUITY_BINDING_ARTIFACT,
     RANGE_EQUITY_MARKER,
+    RANGE_EQUITY_TOOL_PLAN,
     RangeEquityDiagnosticCode,
 )
 from poker_deliberation.range_grammar import validate_versioned_range
@@ -208,6 +235,7 @@ from poker_deliberation.schemas import (
     Claim,
     ConfidenceGrade,
     Dispute,
+    EpistemicLabel,
     EvidenceRecord,
     FinalReport,
     NumericalExactness,
@@ -222,6 +250,10 @@ from poker_deliberation.security import (
     screen_case,
 )
 from poker_deliberation.state_machine import RunState, StateEvent, WorkflowStateMachine
+from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
+    commit_bounded_river_call_ev_admission_record,
+    read_bounded_river_call_ev_admission_record,
+)
 from poker_deliberation.storage.legacy_migration import (
     LegacyRunAdapter,
     legacy_copy_payloads,
@@ -678,6 +710,8 @@ class Orchestrator:
         self._approval_v2_payloads: dict[str, dict[str, bytes]] = {}
         self._confirmed_review_admissions: dict[str, ConfirmedReviewAdmission] = {}
         self._bounded_nl_admissions: dict[str, BoundedNaturalLanguageAdmission] = {}
+        self._bounded_river_call_ev_admissions: dict[str, BoundedRiverCallEvAdmission] = {}
+        self._bounded_river_call_ev_results: dict[str, BoundedRiverCallEvResultV1] = {}
         self._confirmed_review_provider = self.provider
         self._confirmed_review_registry = self.registry
         self._confirmed_review_registry_sha256 = canonical_domain_sha256(
@@ -931,6 +965,11 @@ class Orchestrator:
         control = self.revision_runs_root / ".revision-control"
         if control.is_dir():
             try:
+                bounded_river_record = read_bounded_river_call_ev_admission_record(
+                    self.revision_runs_root,
+                    run_id,
+                    maximum_bytes=self.budget_policy.max_artifact_bytes,
+                )
                 admission_record = read_range_equity_admission_record(
                     self.revision_runs_root,
                     run_id,
@@ -943,6 +982,8 @@ class Orchestrator:
                     stage="namespace_admission_record",
                     read_status=RunReadStatus.CORRUPT,
                 ) from exc
+            if bounded_river_record is not None:
+                return "bounded_river_call_ev_admission"
             if admission_record is not None:
                 return "range_equity_admission"
         return None
@@ -984,6 +1025,13 @@ class Orchestrator:
 
     def _reserve_new_run_under_authority(self, case: CaseInput, run_id: str) -> None:
         binding = versioned_range_river_equity_binding(case)
+        bounded_river_binding = bounded_river_call_ev_binding(case)
+        if bounded_river_binding is not None and binding is None:
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.RANGE,
+                f"case.metadata.{RANGE_EQUITY_MARKER}",
+                "P3-030C requires its admitted P3-016B binding",
+            )
         try:
             namespace = self._namespace_kind(run_id)
             if namespace is not None or self.store.exists(run_id):
@@ -1006,6 +1054,13 @@ class Orchestrator:
                     self.revision_runs_root,
                     run_id,
                     binding,
+                    maximum_bytes=self.budget_policy.max_artifact_bytes,
+                )
+            if bounded_river_binding is not None:
+                commit_bounded_river_call_ev_admission_record(
+                    self.revision_runs_root,
+                    run_id,
+                    bounded_river_binding,
                     maximum_bytes=self.budget_policy.max_artifact_bytes,
                 )
             self.store.create_run(run_id)
@@ -1555,6 +1610,12 @@ class Orchestrator:
 
     def run(self, case: CaseInput, *, run_id: str | None = None) -> FinalReport:
         case = CaseInput.model_validate(case.model_dump(mode="python"))
+        if BOUNDED_RIVER_CALL_EV_MARKER in case.metadata:
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.CONFIRMATION_BINDING,
+                f"case.metadata.{BOUNDED_RIVER_CALL_EV_MARKER}",
+                "use run_bounded_river_call_ev_review with a verified admission",
+            )
         if RANGE_EQUITY_MARKER in case.metadata:
             raise VersionedRangeRiverEquityError(
                 RangeEquityDiagnosticCode.PROVENANCE,
@@ -1979,6 +2040,63 @@ class Orchestrator:
             self._reserve_new_run_under_authority(case, run_id)
         return None
 
+    def _prepare_bounded_river_call_ev_run(
+        self,
+        admission: BoundedRiverCallEvAdmission,
+    ) -> FinalReport | None:
+        run_id = admission.confirmation.run_id
+        case = CaseInput.model_validate(admission.case.model_dump(mode="python"))
+        self._initialize_product_storage(run_id)
+        with self._new_run_authority(run_id):
+            namespace = self._namespace_kind(run_id)
+            if namespace is not None:
+                if namespace != "product":
+                    raise BoundedRiverCallEvError(
+                        BoundedRiverCallEvDiagnosticCode.CONFIRMATION_REPLAY,
+                        "confirmation.run_id",
+                    )
+                current = self.product_store.read_current(run_id)
+                expected = {
+                    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT: admission.source_bytes,
+                    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT: canonical_storage_json_bytes(
+                        admission.candidate
+                    ),
+                    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT: canonical_storage_json_bytes(
+                        admission.confirmation
+                    ),
+                    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT: canonical_storage_json_bytes(
+                        admission.candidate.projection.range_definition
+                    ),
+                    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT: canonical_storage_json_bytes(
+                        admission.binding
+                    ),
+                }
+                try:
+                    exact_replay = all(
+                        current.payload_bytes(name) == payload for name, payload in expected.items()
+                    )
+                except KeyError:
+                    exact_replay = False
+                if not exact_replay:
+                    raise BoundedRiverCallEvError(
+                        BoundedRiverCallEvDiagnosticCode.CONFIRMATION_REPLAY,
+                        "confirmation.idempotency_key",
+                    )
+                return self._exact_terminal_report(current)
+            if tuple(admission.case.requested_tools) != BOUNDED_RIVER_CALL_EV_TOOL_ORDER:
+                raise BoundedRiverCallEvError(
+                    BoundedRiverCallEvDiagnosticCode.TOOL_PLAN,
+                    "candidate.tool_plan",
+                )
+            described = {item["name"] for item in self.registry.describe()}
+            if not set(BOUNDED_RIVER_CALL_EV_TOOL_ORDER).issubset(described):
+                raise BoundedRiverCallEvError(
+                    BoundedRiverCallEvDiagnosticCode.TOOL_PLAN,
+                    "runtime.registry",
+                )
+            self._reserve_new_run_under_authority(case, run_id)
+        return None
+
     def run_confirmed_review(
         self,
         admission: ConfirmedReviewAdmission,
@@ -2131,6 +2249,82 @@ class Orchestrator:
         finally:
             self._bounded_nl_admissions.pop(run_id, None)
 
+    def run_bounded_river_call_ev_review(
+        self,
+        admission: BoundedRiverCallEvAdmission,
+    ) -> FinalReport:
+        """Execute one confirmed bounded river call/fold EV comparison locally."""
+
+        verified = admit_bounded_river_call_ev_review(
+            admission.source_bytes,
+            admission.candidate,
+            admission.confirmation,
+        )
+        if (
+            verified.source_bytes != admission.source_bytes
+            or verified.candidate != admission.candidate
+            or verified.confirmation != admission.confirmation
+            or verified.binding != admission.binding
+            or verified.range_equity_admission != admission.range_equity_admission
+            or verified.case != admission.case
+        ):
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.CONFIRMATION_BINDING,
+                "admission",
+            )
+        admission = verified
+        run_id = admission.confirmation.run_id
+        if not self._confirmed_review_runtime_is_exact():
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        availability = self.provider.availability()
+        if (
+            type(self.provider) is not LocalProvider
+            or self.provider is not self._confirmed_review_provider
+            or availability.provider != "local"
+            or availability.version != "1.0.0"
+            or self._registry_was_injected
+            or type(self.registry) is not ToolRegistry
+            or self.registry is not self._confirmed_review_registry
+            or type(self.analysis_executor) is not AnalysisExecutor
+            or self.analysis_executor.provider is not self.provider
+            or type(self.tool_research_executor) is not ToolResearchExecutor
+            or self.tool_research_executor.registry is not self.registry
+            or canonical_domain_sha256(
+                "poker-confirmed-review-registry-v1",
+                self.registry.describe(),
+            )
+            != self._confirmed_review_registry_sha256
+        ):
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.LOCAL_PROVIDER,
+                "runtime",
+            )
+        if (
+            self.budget_policy.max_artifact_bytes > MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES
+            or self.budget_policy.max_run_bytes > MAX_BOUNDED_RIVER_CALL_EV_RUN_BYTES
+        ):
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.BUDGET,
+                "runtime.budget",
+            )
+        replay = self._prepare_bounded_river_call_ev_run(admission)
+        if replay is not None:
+            return replay
+        self._bounded_river_call_ev_admissions[run_id] = admission
+        try:
+            return self._run(
+                CaseInput.model_validate(admission.case.model_dump(mode="python")),
+                run_id,
+                normalization=None,
+                new_run_reserved=True,
+            )
+        finally:
+            self._bounded_river_call_ev_admissions.pop(run_id, None)
+            self._bounded_river_call_ev_results.pop(run_id, None)
+
     def _run(
         self,
         case: CaseInput,
@@ -2152,7 +2346,14 @@ class Orchestrator:
             self._reserve_new_run(case, actual_run_id)
         confirmed_admission = self._confirmed_review_admissions.get(actual_run_id)
         bounded_admission = self._bounded_nl_admissions.get(actual_run_id)
-        if confirmed_admission is not None and bounded_admission is not None:
+        bounded_river_admission = self._bounded_river_call_ev_admissions.get(actual_run_id)
+        if (
+            sum(
+                item is not None
+                for item in (confirmed_admission, bounded_admission, bounded_river_admission)
+            )
+            > 1
+        ):
             raise PhaseContractError("multiple confirmed intake contracts share one run")
         if confirmed_admission is not None:
             if confirmed_admission.confirmation.run_id != actual_run_id:
@@ -2195,6 +2396,37 @@ class Orchestrator:
                 actual_run_id,
                 "bounded_nl_confirmation.json",
                 bounded_admission.confirmation,
+            )
+        if bounded_river_admission is not None:
+            if bounded_river_admission.confirmation.run_id != actual_run_id:
+                raise BoundedRiverCallEvError(
+                    BoundedRiverCallEvDiagnosticCode.CONFIRMATION_BINDING,
+                    "confirmation.run_id",
+                )
+            self.store.write_text(
+                actual_run_id,
+                BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+                bounded_river_admission.source_bytes.decode("utf-8", errors="strict"),
+            )
+            self.store.write_json(
+                actual_run_id,
+                BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+                bounded_river_admission.candidate,
+            )
+            self.store.write_json(
+                actual_run_id,
+                BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+                bounded_river_admission.confirmation,
+            )
+            self.store.write_json(
+                actual_run_id,
+                BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+                bounded_river_admission.candidate.projection.range_definition,
+            )
+            self.store.write_json(
+                actual_run_id,
+                BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
+                bounded_river_admission.binding,
             )
         machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
         self._run_machines[actual_run_id] = machine
@@ -2931,6 +3163,114 @@ class Orchestrator:
             )
             tool_inputs = {}
         already_run = {result.tool_name for result in tool_results}
+        if bounded_river_admission is not None:
+            if (
+                case != bounded_river_admission.case
+                or bounded_river_call_ev_binding(case) != bounded_river_admission.binding
+                or tuple(case.requested_tools) != BOUNDED_RIVER_CALL_EV_TOOL_ORDER
+            ):
+                raise BoundedRiverCallEvError(
+                    BoundedRiverCallEvDiagnosticCode.CONFIRMATION_BINDING,
+                    "runtime.case",
+                )
+            expected_bounded_inputs = expected_bounded_river_tool_inputs(bounded_river_admission)
+            bounded_prefix_requests = tuple(
+                ToolRequest(
+                    request_id=_new_internal_id("tool-request"),
+                    tool_name=tool_name,
+                    input=expected_bounded_inputs[tool_name],
+                    requested_by="bounded-river-call-ev",
+                    contract_version=self.tool_contract_versions.get(tool_name),
+                )
+                for tool_name in ("hand_pot_ledger", "pot_odds")
+            )
+            if not machine.enforce_runtime():
+                data_quality.append("strict runtime refused before bounded river ledger tools")
+                _append_observed_budget_failure(data_quality, machine)
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            try:
+                bounded_prefix_output = self._execute_tool_requests(
+                    run_id=actual_run_id,
+                    requests=bounded_prefix_requests,
+                    existing_results=tool_results,
+                    machine=machine,
+                )
+            except BudgetLimitError as exc:
+                data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "bounded river ledger usage settlement failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            data_quality.extend(bounded_prefix_output.data_quality)
+            prefix_results = [binding.result for binding in bounded_prefix_output.bindings]
+            tool_results.extend(prefix_results)
+            for result in prefix_results:
+                self.store.write_json(
+                    actual_run_id,
+                    f"tool_results/{result.result_id}.json",
+                    result,
+                )
+                self.store.write_json(
+                    actual_run_id,
+                    f"tool_results/{result.result_id}.input.json",
+                    result.input,
+                )
+            if bounded_prefix_output.budget_failure is not None or any(
+                result.status is not ToolStatus.SUCCESS for result in prefix_results
+            ):
+                if bounded_prefix_output.budget_failure is not None:
+                    data_quality.append(
+                        f"strict budget failure: {bounded_prefix_output.budget_failure.code}"
+                    )
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "bounded river ledger prerequisite failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            already_run.update(result.tool_name for result in prefix_results)
         requested_tool_calls: list[ToolRequest] = []
         versioned_ranges = (
             [
@@ -2947,6 +3287,7 @@ class Orchestrator:
         auto_combo_payload: dict[str, object] | None = None
         auto_equity_payload: dict[str, object] | None = None
         auto_equity_request: ToolRequest | None = None
+        auto_call_ev_request: ToolRequest | None = None
         skip_versioned_combos = False
         range_equity_binding = versioned_range_river_equity_binding(case)
         if case.hand is not None and "combos" in case.requested_tools and versioned_ranges:
@@ -3094,7 +3435,9 @@ class Orchestrator:
                     "versioned range validation differs from deterministic preflight"
                 )
         for tool_name in case.requested_tools:
-            if tool_name in already_run and tool_name == "hand_validator":
+            if tool_name in already_run and (
+                tool_name == "hand_validator" or bounded_river_admission is not None
+            ):
                 continue
             if tool_name == "range_validate" and auto_range_payload is not None:
                 continue
@@ -3142,6 +3485,26 @@ class Orchestrator:
                     tool_name=tool_name,
                     input=auto_equity_payload,
                     requested_by="versioned-range-bridge",
+                    contract_version=self.tool_contract_versions.get(tool_name),
+                )
+                continue
+            if tool_name == "raked_call_ev" and bounded_river_admission is not None:
+                expected_bounded_inputs = expected_bounded_river_tool_inputs(
+                    bounded_river_admission
+                )
+                auto_call_ev_payload = expected_bounded_inputs["raked_call_ev"]
+                supplied_payload = tool_inputs.get(tool_name)
+                if supplied_payload != auto_call_ev_payload:
+                    raise BoundedRiverCallEvError(
+                        BoundedRiverCallEvDiagnosticCode.TOOL_PLAN,
+                        "case.metadata.tool_inputs.raked_call_ev",
+                        "manual or mutated call-EV input was refused",
+                    )
+                auto_call_ev_request = ToolRequest(
+                    request_id=_new_internal_id("tool-request"),
+                    tool_name=tool_name,
+                    input=auto_call_ev_payload,
+                    requested_by="bounded-river-call-ev",
                     contract_version=self.tool_contract_versions.get(tool_name),
                 )
                 continue
@@ -3384,7 +3747,120 @@ class Orchestrator:
                     completed=False,
                     machine=machine,
                 )
-            build_versioned_range_river_equity_result(case, tool_results)
+            range_tool_results = [
+                result for result in tool_results if result.tool_name in RANGE_EQUITY_TOOL_PLAN
+            ]
+            if bounded_river_admission is not None:
+                build_versioned_range_river_equity_result(
+                    bounded_river_admission.range_equity_admission.case,
+                    range_tool_results,
+                )
+            else:
+                build_versioned_range_river_equity_result(case, range_tool_results)
+        if bounded_river_admission is not None:
+            if auto_call_ev_request is None:
+                raise BoundedRiverCallEvError(
+                    BoundedRiverCallEvDiagnosticCode.TOOL_PLAN,
+                    "raked_call_ev",
+                    "the derived no-rake call-EV request is missing",
+                )
+            if not machine.enforce_runtime():
+                data_quality.append("strict runtime refused before bounded river call-EV")
+                _append_observed_budget_failure(data_quality, machine)
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            try:
+                call_ev_output = self._execute_tool_requests(
+                    run_id=actual_run_id,
+                    requests=(auto_call_ev_request,),
+                    existing_results=tool_results,
+                    machine=machine,
+                )
+            except BudgetLimitError as exc:
+                data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "bounded river call-EV usage settlement failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            data_quality.extend(call_ev_output.data_quality)
+            if len(call_ev_output.bindings) != 1:
+                raise PhaseContractError("bounded river call-EV requires one tool result")
+            call_ev_result = call_ev_output.bindings[0].result
+            tool_results.append(call_ev_result)
+            self.store.write_json(
+                actual_run_id,
+                f"tool_results/{call_ev_result.result_id}.json",
+                call_ev_result,
+            )
+            self.store.write_json(
+                actual_run_id,
+                f"tool_results/{call_ev_result.result_id}.input.json",
+                call_ev_result.input,
+            )
+            if call_ev_output.budget_failure is not None or (
+                call_ev_result.status is not ToolStatus.SUCCESS
+            ):
+                if call_ev_output.budget_failure is not None:
+                    data_quality.append(
+                        f"strict budget failure: {call_ev_output.budget_failure.code}"
+                    )
+                machine.transition(
+                    RunState.FAILED_WITH_LIMITATIONS,
+                    "bounded river call-EV failed",
+                )
+                return self._synthesize(
+                    actual_run_id,
+                    case,
+                    data_quality,
+                    list(case.claims),
+                    reports,
+                    execution_records,
+                    tool_results,
+                    disputes,
+                    evidence.all(),
+                    approvals,
+                    security_events,
+                    completed=False,
+                    machine=machine,
+                )
+            bounded_result = build_bounded_river_call_ev_result(
+                bounded_river_admission,
+                tool_results,
+            )
+            self._bounded_river_call_ev_results[actual_run_id] = bounded_result
+            self.store.write_json(
+                actual_run_id,
+                BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+                bounded_result,
+            )
         if not machine.enforce_runtime():
             data_quality.append("maximum runtime exceeded after tool execution")
             _append_observed_budget_failure(data_quality, machine)
@@ -3599,6 +4075,55 @@ class Orchestrator:
             raise PhaseContractError("synthesis requested an illegal next state")
         return synthesis_outcome.output.report
 
+    @staticmethod
+    def _apply_bounded_river_call_ev_report(
+        report: FinalReport,
+        result: BoundedRiverCallEvResultV1 | None,
+    ) -> FinalReport:
+        if result is None or report.run_status != "completed":
+            return report
+        action_ja = {"call": "コール", "fold": "フォールド", "tie": "同値"}[
+            result.action_comparison
+        ]
+        report.conclusion = (
+            "明示確認された1つの相手レンジ、レーキ0、将来ベッティングなしの限定モデルでは、"
+            f"{action_ja}がcall/fold比較結果です。"
+        )
+        claim_id = f"bounded-river-comparison-{result.run_id}"
+        if all(claim.claim_id != claim_id for claim in report.claim_assessments):
+            report.claim_assessments.append(
+                Claim(
+                    claim_id=claim_id,
+                    text=(
+                        "限定モデルのcall-minus-fold EVは "
+                        f"{result.call_minus_fold_ev_units.numerator}/"
+                        f"{result.call_minus_fold_ev_units.denominator} chip unitsで、"
+                        f"比較結果は{action_ja}です。"
+                    ),
+                    label=EpistemicLabel.CALCULATED,
+                    confidence=ConfidenceGrade.A,
+                    limitations=[
+                        "明示された単一レンジ、river heads-up、レーキ0、"
+                        "将来ベッティングなしのモデル内だけで有効です。",
+                        "GTO、均衡、一般戦略、実戦レンジの正確性を示しません。",
+                    ],
+                )
+            )
+        report.alternatives = [
+            (
+                "call EV: "
+                f"{result.call_ev_units.numerator}/{result.call_ev_units.denominator} chip units"
+            ),
+            "fold EV: 0/1 chip units (focal decision時点基準)",
+        ]
+        for limitation in (
+            "range sourceはUSER_CLAIMまたはASSUMPTIONであり、実戦での正確性はUNKNOWNです。",
+            "戦略的解釈はINFERENCEであり、外部solverやGTO/均衡の主張ではありません。",
+        ):
+            if limitation not in report.limitations:
+                report.limitations.append(limitation)
+        return FinalReport.model_validate(report.model_dump(mode="python"))
+
     def _synthesize(
         self,
         run_id: str,
@@ -3623,8 +4148,18 @@ class Orchestrator:
         transaction_id = self.terminal_id_factory("txn")
         confirmed_admission = self._confirmed_review_admissions.get(run_id)
         bounded_admission = self._bounded_nl_admissions.get(run_id)
-        strict_admission_present = confirmed_admission is not None or bounded_admission is not None
-        if confirmed_admission is not None and bounded_admission is not None:
+        bounded_river_admission = self._bounded_river_call_ev_admissions.get(run_id)
+        strict_admission_present = any(
+            item is not None
+            for item in (confirmed_admission, bounded_admission, bounded_river_admission)
+        )
+        if (
+            sum(
+                item is not None
+                for item in (confirmed_admission, bounded_admission, bounded_river_admission)
+            )
+            > 1
+        ):
             raise PhaseContractError("multiple confirmed intake contracts share one run")
         if completed and strict_admission_present:
             try:
@@ -3662,6 +4197,10 @@ class Orchestrator:
             planned_revision=planned_revision,
             transaction_id=transaction_id,
         )
+        report = self._apply_bounded_river_call_ev_report(
+            report,
+            self._bounded_river_call_ev_results.get(run_id),
+        )
         if not machine.enforce_runtime():
             runtime_message = "maximum runtime exceeded during final synthesis"
             if runtime_message not in data_quality:
@@ -3685,6 +4224,10 @@ class Orchestrator:
                 machine=machine,
                 planned_revision=planned_revision,
                 transaction_id=transaction_id,
+            )
+            report = self._apply_bounded_river_call_ev_report(
+                report,
+                self._bounded_river_call_ev_results.get(run_id),
             )
         self.store.write_json(run_id, "agent_execution_records.json", execution_records)
         self.store.write_json(run_id, "security_events.json", security_events)
@@ -3716,6 +4259,10 @@ class Orchestrator:
                 machine=machine,
                 planned_revision=planned_revision,
                 transaction_id=transaction_id,
+            )
+            report = self._apply_bounded_river_call_ev_report(
+                report,
+                self._bounded_river_call_ev_results.get(run_id),
             )
             self.store.write_json(run_id, "state.json", machine.snapshot())
             self.store.write_json(run_id, "final_report.json", report)
@@ -3772,6 +4319,38 @@ class Orchestrator:
                 run_id,
                 "bounded_nl_provenance.json",
                 bounded_provenance,
+            )
+        if bounded_river_admission is not None and report.run_status == "completed":
+            bounded_river_result = self._bounded_river_call_ev_results.get(run_id)
+            if bounded_river_result is None:
+                raise BoundedRiverCallEvError(
+                    BoundedRiverCallEvDiagnosticCode.REPLAY,
+                    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+                )
+            raw_assignments = self.store.read_json(run_id, "assignments.json")
+            if not isinstance(raw_assignments, list):
+                raise self._product_error(
+                    run_id,
+                    ProductRunFailureCode.ARTIFACT_SCHEMA_ERROR,
+                    stage="bounded_river_call_ev_provenance",
+                )
+            assignments = [
+                AgentAssignment.model_validate(assignment) for assignment in raw_assignments
+            ]
+            bounded_river_provenance = build_bounded_river_call_ev_provenance(
+                bounded_river_admission,
+                bounded_river_result,
+                report,
+                assignments=assignments,
+                agent_reports=reports,
+                storage_root=self.product_store.revision_root,
+                storage_revision=planned_revision,
+                storage_transaction_id=transaction_id,
+            )
+            self.store.write_json(
+                run_id,
+                BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+                bounded_river_provenance,
             )
         self._publication_plans[run_id] = (planned_revision, transaction_id)
         try:

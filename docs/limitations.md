@@ -7,6 +7,12 @@
   external model/provider/solver、GTO/均衡は拒否する。12件のfixtureで5個のexact metricが`1.0`でも、
   固定source/hash/span oracleに対するversion 1 grammar contractへの適合だけを意味し、一般自然言語
   精度や戦略品質を示さない。
+- P3-030CはP3-030Bを一般化しない。受理するのはriverでHeroが実際にfoldして完了した履歴、
+  board 5枚、Hero 2枚、zero ante/rake、no all-in/side pot/future action、focal時点でHeroと
+  facing actorだけがeligible、別入力の明示確認済み`VersionedRangeDefinitionV1` 1個だけである。
+  比較はそのrangeとno-rake/no-future-betting modelに条件付けたcounterfactual call EVであり、
+  実戦rangeの正確性、一般戦略、無条件の推奨、GTO、均衡を意味しない。P3-030B grammarはterminal
+  foldを必要とするため、実際のcallで終わる履歴をP3-030Cのために拡張していない。
 - P3-030Aの確認済みレビュー入力は、一般自然言語parserではない。呼出側が完全な
   `CanonicalHand`と任意の単一`VersionedRangeDefinitionV1`を提示し、利用者または検証済み
   application authorityがsource/candidate hashを明示確認した場合だけ、retrospectiveかつ

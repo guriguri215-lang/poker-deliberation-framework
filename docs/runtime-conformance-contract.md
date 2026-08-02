@@ -6,6 +6,8 @@ P2-025Aは、Codexネイティブ実行面とPythonオーケストレーター�
 比較するstrict versioned contractである。`runtime_conformance_contract`は**implemented**だが、
 `codex_python_runtime_bridge`は**unavailable**のままである。PythonはCodex roleを起動せず、
 Codex実行をPython `AgentExecutionRecord`やrun artifactとして捏造しない。
+P3-030Cは既存Python `LocalProvider`、assignment、P2-024A context、tool allowlistを利用するだけで、
+この状態を変更せず、実Codex/Python bridgeや並列Codex product runtimeを実装したとは扱わない。
 
 ## Schemaとcanonicalization
 

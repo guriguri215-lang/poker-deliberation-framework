@@ -129,6 +129,48 @@ class VersionedRangeRiverEquityBindingV1(_RangeEquityModel):
         return self
 
 
+class VersionedRangeRiverEquityOracleProjectionV1(_RangeEquityModel):
+    """Exact oracle data exposed additively for a previously admitted bridge case."""
+
+    schema_version: Literal["1.0.0"] = RANGE_EQUITY_SCHEMA_VERSION
+    contract_id: Literal["poker-versioned-range-river-equity"] = RANGE_EQUITY_CONTRACT_ID
+    contract_version: Literal["1.0.0"] = RANGE_EQUITY_CONTRACT_VERSION
+    binding_sha256: str = Field(pattern=_SHA256_PATTERN)
+    oracle_sha256: str = Field(pattern=_SHA256_PATTERN)
+    range_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    target_player_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    hero_player_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    combo_count: int = Field(ge=1, le=RANGE_EQUITY_MAX_EVALUATIONS)
+    total_weight_millionths: int = Field(ge=1, le=1_326_000_000)
+    win_combo_count: int = Field(ge=0, le=RANGE_EQUITY_MAX_EVALUATIONS)
+    tie_combo_count: int = Field(ge=0, le=RANGE_EQUITY_MAX_EVALUATIONS)
+    loss_combo_count: int = Field(ge=0, le=RANGE_EQUITY_MAX_EVALUATIONS)
+    win_weight_millionths: int = Field(ge=0, le=1_326_000_000)
+    tie_weight_millionths: int = Field(ge=0, le=1_326_000_000)
+    loss_weight_millionths: int = Field(ge=0, le=1_326_000_000)
+    equity_numerator: int = Field(ge=0)
+    equity_denominator: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def totals_and_fraction_match(self) -> VersionedRangeRiverEquityOracleProjectionV1:
+        if (
+            self.win_combo_count + self.tie_combo_count + self.loss_combo_count != self.combo_count
+            or self.win_weight_millionths + self.tie_weight_millionths + self.loss_weight_millionths
+            != self.total_weight_millionths
+        ):
+            raise ValueError(f"{RangeEquityDiagnosticCode.ORACLE.value}: oracle totals mismatch")
+        expected = Fraction(
+            2 * self.win_weight_millionths + self.tie_weight_millionths,
+            2 * self.total_weight_millionths,
+        )
+        if (self.equity_numerator, self.equity_denominator) != (
+            expected.numerator,
+            expected.denominator,
+        ):
+            raise ValueError(f"{RangeEquityDiagnosticCode.ORACLE.value}: equity fraction mismatch")
+        return self
+
+
 class VersionedRangeRiverEquityAdmissionRecordV1(_RangeEquityModel):
     """Minimal append-only commitment written before bridge tool execution."""
 
@@ -297,6 +339,7 @@ __all__ = [
     "RangeEquityDiagnosticCode",
     "VersionedRangeRiverEquityAdmissionRecordV1",
     "VersionedRangeRiverEquityBindingV1",
+    "VersionedRangeRiverEquityOracleProjectionV1",
     "VersionedRangeRiverEquityResultV1",
     "canonical_domain_sha256",
 ]

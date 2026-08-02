@@ -107,7 +107,8 @@ reportの3 projectionをbinding artifactへ相関し、schema-invalidまたは�
 
 P3-016Bはrange syntax、複数range、preflop/flop/turn equity、multiway、all-in、自然言語parse、call EV、
 call/fold助言、rake model、external source import、external solver、GTO、均衡を追加しない。
-P3-030Cは、このbridgeをbounded Japanese call/fold reviewで使用するための別Decision gateである。
+P3-030Cは別の専用admissionとしてこのbridgeを再利用するが、P3-016B自身のcontractや通常経路は
+変更しない。P3-030Cの限定統合は`docs/bounded-river-call-ev.md`に記載する。
 
 ## 決定論的評価
 

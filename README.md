@@ -27,6 +27,11 @@ exact UTF-8 source span付きで決定的に抽出します。6 hashの明示確
 site/OCR、tournament、range、外部model/solverではありません。詳細は
 [`docs/bounded-natural-language-intake.md`](docs/bounded-natural-language-intake.md)を参照してください。
 
+P3-030CはP3-030Bのriver terminal-fold入力だけを、別入力で明示確認した1つの相手range、
+P3-016B exact heads-up equity、zero-rake call EVへ加算的に接続します。確認済みrangeとno-future-betting
+model内のcall/fold比較だけを`CALCULATED`として保存し、一般戦略、GTO、実戦rangeの正確性は主張しません。
+詳細は[`docs/bounded-river-call-ev.md`](docs/bounded-river-call-ev.md)を参照してください。
+
 P3-015Aの`hand_pot_ledger`は、明示した`generic_nlhe_cash_no_rake_v1`だけを対象に、
 caller-declared chip unitの整数ledger、uncalled return、side pot、fold eligibility、
 full-raise reopeningを独立`Fraction` oracle付きで計算します。rake、straddle、site profile、
@@ -72,7 +77,7 @@ typed retry、cooperative cancellation、RM-028 evidence interfaceを追加し�
 rootとterminal revision rootを束縛し、publication前のreservationとpointer publication後の
 settlementを検証します。通常経路のprovider/tool実行は引き続きserial、automatic retry 0です。
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 11.0.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 12.0.0のpublic projectionである
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 このprojection単体はcandidate固有のcommitやtest実行を証明しません。status更新は同一schema
 更新検証、参照path/testのtracked検証、repository gateを別途要求します。

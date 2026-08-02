@@ -95,6 +95,14 @@ by the contract.
   polarized river range against a bluff-catcher with no rake.
 - Raked call EV uses `equity * (pot_after_bet + call_cost - rake) - call_cost` with a declared
   percentage/cap and no future betting. Bluff EV likewise uses a single-street call-or-fold model.
+- P3-030Cではledger integer unitsとP3-016B reduced rational equityを正とし、required equityを
+  `Fraction(call_cost, pot_after_bet + call_cost)`、no-rake call EVを
+  `equity * (pot_after_bet + call_cost) - call_cost`で独立再計算する。fold EVはfocal decision時点の
+  `0`である。既存`pot_odds`、exact-only`holdem_equity`、`raked_call_ev(rake_percent=0,
+  rake_capなし)`のbinary64 projectionはそれぞれ16、128、32 ULP以内だけを成功とする。
+  call/foldの大小はこの明示range・zero-rake・no-future-betting model内の`CALCULATED`であり、
+  range sourceは`USER_CLAIM`または`ASSUMPTION`、戦略解釈は`INFERENCE`、実戦range精度は
+  `UNKNOWN`である。
 - Bayes output is a deterministic binary64 evaluation conditional on the supplied prior and
   likelihoods; it does not validate or infer those empirical inputs.
 - Caller parameters cannot lift hard caps on samples, complete-enumeration evaluations

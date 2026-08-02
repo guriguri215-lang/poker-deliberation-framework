@@ -12,6 +12,12 @@ paths and allowlist/payload mismatches are rejected. The orchestrator validates 
 context lifecycle contract and provider availability, then materializes a fresh `AgentContext` for
 the unchanged three-argument provider API. See `docs/context-lifecycle.md`.
 
+P3-030Cの専用product pathでは、bounded parserのraw sourceをintakeにも渡さない。全roleはcanonical
+hand/focal/range/equity/call-EV artifactの必要なtop-level keyだけを受け、math-auditorのallowlistは
+`hand_validator`、`hand_pot_ledger`、`pot_odds`、`range_validate`、`combos`、`holdem_equity`、
+`raked_call_ev`の完全一致、他roleは空である。これはPython `LocalProvider`のserial executionであり、
+Codex sub-agent実行やruntime bridgeではない。
+
 ## Report contract
 
 An `AgentReport` includes conclusions, claims, assumptions, evidence IDs, tool-result IDs, formulas,

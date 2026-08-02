@@ -31,20 +31,21 @@ LARGE_FILE_BYTES = 1_000_000
 RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
     "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
 )
-EXPECTED_ROADMAP_SCHEMA_VERSION = "11.0.0"
-ROADMAP_MODULE_SHA256 = "379d8ef5a16011bde128e226b50f2c491cc44ab640f5bf71057a7cf4d032106c"
-RANGE_EQUITY_BRIDGE_DOC_SHA256 = "f240baf51dabb3a4d73900cf6d68c8f4fd74a706a0d2c35c11c119e6bf83cda8"
+EXPECTED_ROADMAP_SCHEMA_VERSION = "12.0.0"
+ROADMAP_MODULE_SHA256 = "ce77719249a87348444c4b6419e6fa7ff07d78486eeb9c664a73bc5dd533ea0b"
+RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
+    "docs/bounded-river-call-ev.md",
     "docs/capabilities.md",
     "docs/limitations.md",
     "docs/range-grammar.md",
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "d6a01dd093bbf24a47591ab4f46a2ff8c74ca7d7bac17100302cfe0384c92c39"
+CAPABILITY_DOCUMENT_SET_SHA256 = "cec6f5fbd0730ae01988a756991955d6b8753c58a22492764128094fe84bb8a3"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
-    "deb442bf0ddb60edc8653b5446c58c354a355a17f2e92d96c4900aee6a19b957"
+    "13600d7ad58b1ef49de02335ff184517cf9165e80fa21d217b87919af9e98854"
 )
 
 
@@ -1148,6 +1149,16 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "all-in",
             "P3-030C",
         ],
+        "docs/bounded-river-call-ev.md": [
+            "P3-030C",
+            "VersionedRangeDefinitionV1",
+            "raked_call_ev",
+            "Fraction",
+            "LocalProvider",
+            "CALCULATED",
+            "UNKNOWN",
+            "実Codex/Python runtime",
+        ],
     }
     missing: list[str] = []
     for relative, markers in required.items():
@@ -1184,10 +1195,10 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         or hashlib.sha256(bridge_path.read_bytes()).hexdigest() != RANGE_EQUITY_BRIDGE_DOC_SHA256
     ):
         missing.append("docs/range-equity-bridge.md:canonical_document_identity")
-    bridge_gate = (
-        "P3-030Cは、このbridgeをbounded Japanese call/fold reviewで使用するための"
-        "別Decision gateである。"
-    )
+    bridge_gate_lines_expected = [
+        "P3-030Cは別の専用admissionとしてこのbridgeを再利用するが、P3-016B自身のcontractや通常経路は",
+        "変更しない。P3-030Cの限定統合は`docs/bounded-river-call-ev.md`に記載する。",
+    ]
     bridge_gate_lines = (
         [
             line.strip()
@@ -1197,8 +1208,8 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         if bridge_path.is_file()
         else []
     )
-    if bridge_gate_lines != [bridge_gate]:
-        missing.append("docs/range-equity-bridge.md:p3_030c_separate_decision_gate")
+    if bridge_gate_lines != bridge_gate_lines_expected:
+        missing.append("docs/range-equity-bridge.md:p3_030c_additive_bridge_boundary")
     roadmap_path = repo / "src/poker_deliberation/roadmap_status.json"
     try:
         roadmap = json.loads(roadmap_path.read_text(encoding="utf-8"))

@@ -28,6 +28,7 @@ from poker_deliberation.range_equity_models import (
     VALIDATION_OUTPUT_HASH_DOMAIN,
     RangeEquityDiagnosticCode,
     VersionedRangeRiverEquityBindingV1,
+    VersionedRangeRiverEquityOracleProjectionV1,
     VersionedRangeRiverEquityResultV1,
     canonical_domain_sha256,
 )
@@ -625,6 +626,59 @@ def admit_versioned_range_river_equity(
     )
 
 
+def exact_versioned_range_river_equity_oracle(
+    case: CaseInput,
+) -> VersionedRangeRiverEquityOracleProjectionV1:
+    """Return the exact integer/rational oracle for one admitted P3-016B case."""
+
+    binding = _binding_from_case(case)
+    if binding is None:
+        _fail(RangeEquityDiagnosticCode.SCHEMA, "case.metadata", "bridge marker is missing")
+    admitted = admit_versioned_range_river_equity(_candidate_without_marker(case))
+    if admitted.binding != binding or admitted.case != case:
+        _fail(
+            RangeEquityDiagnosticCode.PROVENANCE,
+            "case.metadata",
+            "admission binding does not match the canonical candidate",
+        )
+    hand, definition = _one_definition(case)
+    hero_cards, board = _canonical_known_cards(hand)
+    validation = validate_versioned_range(hand, definition)
+    oracle = _oracle_totals(hero_cards, board, validation)
+    oracle_payload = _oracle_payload(
+        hand=hand,
+        definition=definition,
+        validation=validation,
+        hero_cards=hero_cards,
+        board=board,
+        oracle=oracle,
+    )
+    oracle_sha256 = canonical_domain_sha256(ORACLE_HASH_DOMAIN, oracle_payload)
+    if oracle_sha256 != binding.oracle_sha256 or hand.hero_player_id is None:
+        _fail(
+            RangeEquityDiagnosticCode.ORACLE,
+            "metadata.versioned_range_river_equity.oracle_sha256",
+            "admitted oracle hash differs from replay",
+        )
+    return VersionedRangeRiverEquityOracleProjectionV1(
+        binding_sha256=binding.binding_sha256,
+        oracle_sha256=oracle_sha256,
+        range_id=definition.range_id,
+        target_player_id=definition.target_player_id,
+        hero_player_id=hand.hero_player_id,
+        combo_count=validation.combo_count,
+        total_weight_millionths=validation.total_weight_millionths,
+        win_combo_count=oracle.win_combo_count,
+        tie_combo_count=oracle.tie_combo_count,
+        loss_combo_count=oracle.loss_combo_count,
+        win_weight_millionths=oracle.win_weight_millionths,
+        tie_weight_millionths=oracle.tie_weight_millionths,
+        loss_weight_millionths=oracle.loss_weight_millionths,
+        equity_numerator=oracle.equity.numerator,
+        equity_denominator=oracle.equity.denominator,
+    )
+
+
 def expected_versioned_range_equity_input(
     case: CaseInput,
     validation: RangeValidationResultV1,
@@ -1084,6 +1138,7 @@ __all__ = [
     "VersionedRangeRiverEquityError",
     "admit_versioned_range_river_equity",
     "build_versioned_range_river_equity_result",
+    "exact_versioned_range_river_equity_oracle",
     "expected_versioned_range_equity_input",
     "verify_versioned_range_river_equity_binding_artifact",
     "verify_versioned_range_river_equity_case_correlation",

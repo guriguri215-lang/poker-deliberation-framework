@@ -94,6 +94,12 @@ payload/source hash、policy/envelope hash、expiry、producer/consumer runtime�
 `LocalProvider`、CLI exit code、既存run artifact名、calculation caseのprovider非実行、blind decision
 isolationは維持する。外部送信は追加しない。
 
+P3-030C product pathはこのschema/versionを変更せず、parser境界で得たcanonical hand/focal/range、
+equity/call-EV bindingとhash/provenanceだけからrole別contextを再構成する。raw sourceはintake roleを
+含む全agent contextから除外し、math-auditorだけに固定7-tool allowlistを与える。producer/consumer
+runtime、classification、source/payload/policy/envelope hash、attempt/parent lineage、expiry、budget、
+roleまたはallowlistの不一致はtool実行前またはterminal replayで拒否する。
+
 ## P2-012A provenance boundary
 
 P2-012A は raw `ContextEnvelope` や provider payload を保存しない。許可された payload の

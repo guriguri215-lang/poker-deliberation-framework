@@ -1,5 +1,15 @@
 # Security
 
+- P3-030Cはsource、bounded candidate、source bindings、focal、extractor、tool plan、range
+  definition、range target、P3-016B binding、equity model、call-EV model、complete candidateの
+  12 domain-separated SHA-256を確認へ拘束する。confirmationはscoped authority、run ID、
+  idempotency、最大24時間のexpiryを持ち、source/range mutation、cross-run replay、大小文字だけの
+  run alias、manual tool input conflictを実行前に拒否する。
+- P3-030CはP3-016B admissionを迂回せず、両admission recordをbuffer/tool executionより先に
+  exclusive-createする。各calculatorは一度だけ固定順で走り、exact cap、exact-only metadata、
+  ledger hash、Fraction oracle、16/128/32 ULP境界、成功またはfail-closed prefixをterminal replayで
+  再検査する。raw sourceは保存対象だがagent contextには含めず、context runtime、classification、
+  lineage、expiry、role/tool allowlist、budget mismatchを拒否する。
 - P3-030B bounded Japanese intakeは最大65,536-byteのUTF-8/NFC/LF sourceと有限の全行grammarだけを
   受理する。BOM、invalid UTF-8、CR、control/format文字、credential形状、real-time助言、unknown行、
   欠落、重複、矛盾、曖昧raise、action/resource超過、未対応scopeをstable codeでfail closedにし、

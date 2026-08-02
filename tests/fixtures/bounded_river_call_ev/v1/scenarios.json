@@ -1,0 +1,59 @@
+{
+  "schema_version": "1.0.0",
+  "family_id": "poker-bounded-river-call-ev-evaluation-json-v1",
+  "fixture_id": "bounded-river-call-ev-cases-v1",
+  "source_kind": "repository_fixture",
+  "license_classification": "repository_owned_mit",
+  "usage_classification": "redistribution_allowed",
+  "content_classification": "public",
+  "scoring": "exact-evidence-set-v1",
+  "threshold": "1.0",
+  "cases": [
+    {
+      "case_id": "exact-decision-math",
+      "metric": "exact_decision_math",
+      "expected_evidence": [
+        "call-positive-exact-and-ulp",
+        "fold-positive-exact-and-ulp",
+        "zero-delta-exact-and-ulp",
+        "actual-fold-counterfactual-call-ev",
+        "three-and-six-player-heads-up-at-focal",
+        "blocker-reduction-and-empty-range-refusal"
+      ]
+    },
+    {
+      "case_id": "intake-and-range-boundaries",
+      "metric": "admission_security",
+      "expected_evidence": [
+        "range-grammar-version-provenance-refused",
+        "range-target-action-prefix-street-refused",
+        "unsupported-source-and-card-boundaries-refused",
+        "multiple-opponent-and-multiple-range-shapes-refused"
+      ]
+    },
+    {
+      "case_id": "confirmation-and-tool-replay",
+      "metric": "admission_security",
+      "expected_evidence": [
+        "all-independent-hash-domains-bound",
+        "expiry-source-and-range-mutation-refused",
+        "cross-run-replay-refused",
+        "manual-input-and-tool-order-refused",
+        "ulp-and-partial-prefix-tamper-refused",
+        "exact-cap-and-monte-carlo-metadata-refused"
+      ]
+    },
+    {
+      "case_id": "context-storage-and-compatibility",
+      "metric": "runtime_replay",
+      "expected_evidence": [
+        "local-provider-role-and-tool-allowlists",
+        "canonical-context-only-with-lineage-expiry-and-budget",
+        "preexecution-record-and-seven-tool-order",
+        "typed-terminal-artifacts-and-immutable-replay",
+        "artifact-removal-and-context-tamper-refused",
+        "p3-016b-binding-reused-without-generic-marker-bypass"
+      ]
+    }
+  ]
+}

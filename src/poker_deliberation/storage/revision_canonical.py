@@ -24,6 +24,28 @@ from poker_deliberation.bounded_natural_language_models import (
     BoundedIntakeConfirmationV1,
     BoundedNaturalLanguageProvenanceV1,
 )
+from poker_deliberation.bounded_river_call_ev_models import (
+    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_MARKER,
+    BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT_SCHEMA,
+    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT_SCHEMA,
+    BoundedRiverCallEvBindingV1,
+    BoundedRiverCallEvCandidateV1,
+    BoundedRiverCallEvConfirmationV1,
+    BoundedRiverCallEvProvenanceV1,
+    BoundedRiverCallEvResultV1,
+)
 from poker_deliberation.budgets.durable_models import (
     DURABLE_BUDGET_ARTIFACT_SCHEMA,
     DURABLE_BUDGET_PRODUCER_ID,
@@ -70,6 +92,7 @@ from poker_deliberation.range_equity_models import (
     VersionedRangeRiverEquityBindingV1,
 )
 from poker_deliberation.range_grammar import verify_versioned_range_tool_chain
+from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import (
     AgentAssignment,
@@ -150,6 +173,30 @@ _WINDOWS_RESERVED = frozenset(
 
 _ArtifactTableValue = tuple[str, str, str, str]
 _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
+    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT: (
+        "text/plain",
+        TEXT_SERIALIZATION,
+        BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_source",
+    ),
+    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_range",
+    ),
+    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_candidate",
+    ),
+    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_confirmation",
+    ),
     "confirmed_review_source.txt": (
         "text/plain",
         TEXT_SERIALIZATION,
@@ -197,6 +244,12 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         CONTROL_CANONICALIZATION,
         RANGE_EQUITY_BINDING_ARTIFACT_SCHEMA,
         "range_equity_binding",
+    ),
+    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_binding",
     ),
     "normalization.json": (
         "application/json",
@@ -276,6 +329,18 @@ _FIXED_ARTIFACT_TABLE: dict[str, _ArtifactTableValue] = {
         BOUNDED_NL_PROVENANCE_ARTIFACT_SCHEMA,
         "bounded_nl_provenance",
     ),
+    BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_result",
+    ),
+    BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT: (
+        "application/json",
+        CONTROL_CANONICALIZATION,
+        BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT_SCHEMA,
+        "bounded_river_call_ev_provenance",
+    ),
     "budget_state.json": (
         "application/json",
         CONTROL_CANONICALIZATION,
@@ -320,7 +385,30 @@ _BOUNDED_NL_ARTIFACTS = frozenset(
     }
 )
 
+_BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS = frozenset(
+    {
+        BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
+    }
+)
+_BOUNDED_RIVER_CALL_EV_TERMINAL_ARTIFACTS = frozenset(
+    {
+        BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
+        BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+    }
+)
+_BOUNDED_RIVER_CALL_EV_ARTIFACTS = (
+    _BOUNDED_RIVER_CALL_EV_BASE_ARTIFACTS | _BOUNDED_RIVER_CALL_EV_TERMINAL_ARTIFACTS
+)
+
 _PAYLOAD_ORDER_PREFIX = (
+    BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT,
     "confirmed_review_source.txt",
     "confirmed_review_candidate.json",
     "confirmed_review_confirmation.json",
@@ -331,6 +419,7 @@ _PAYLOAD_ORDER_PREFIX = (
     "normalization.json",
     "normalized_case.json",
     RANGE_EQUITY_BINDING_ARTIFACT,
+    BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
     "assumptions.json",
     "evidence.jsonl",
     "approvals.json",
@@ -653,24 +742,28 @@ def payload_order_key(logical_name: str) -> tuple[int, bytes]:
         return (base + 1, logical_name.encode("utf-8"))
     if logical_name.startswith("agent_reports/"):
         return (base + 2, logical_name.encode("utf-8"))
-    if logical_name == "disputes.json":
+    if logical_name == BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT:
         return (base + 3, b"")
-    if logical_name == "final_report.json":
+    if logical_name == "disputes.json":
         return (base + 4, b"")
-    if logical_name == "final_report.md":
+    if logical_name == "final_report.json":
         return (base + 5, b"")
-    if logical_name == "confirmed_review_provenance.json":
+    if logical_name == "final_report.md":
         return (base + 6, b"")
-    if logical_name == "bounded_nl_provenance.json":
+    if logical_name == "confirmed_review_provenance.json":
         return (base + 7, b"")
-    if logical_name == "budget_state.json":
+    if logical_name == "bounded_nl_provenance.json":
         return (base + 8, b"")
-    if logical_name == "isolated_job_state.json":
+    if logical_name == BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT:
         return (base + 9, b"")
-    if logical_name == "stdout.txt":
+    if logical_name == "budget_state.json":
         return (base + 10, b"")
-    if logical_name == "stderr.txt":
+    if logical_name == "isolated_job_state.json":
         return (base + 11, b"")
+    if logical_name == "stdout.txt":
+        return (base + 12, b"")
+    if logical_name == "stderr.txt":
+        return (base + 13, b"")
     raise CanonicalStorageError("logical artifact has no approved dependency order")
 
 
@@ -869,6 +962,17 @@ def _local_data_binding(artifact: RevisionArtifactV1) -> LocalDataBindingV1:
 def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
     logical_name = artifact.logical_name
     data = artifact.exact_bytes
+    if logical_name == BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT:
+        return validate_canonical_text(data)
+    if logical_name == BOUNDED_RIVER_CALL_EV_RANGE_ARTIFACT:
+        return parse_canonical_model(data, VersionedRangeDefinitionV1)
+    if logical_name == BOUNDED_RIVER_CALL_EV_CANDIDATE_ARTIFACT:
+        return parse_canonical_model(data, BoundedRiverCallEvCandidateV1)
+    if logical_name == BOUNDED_RIVER_CALL_EV_CONFIRMATION_ARTIFACT:
+        river_confirmation = parse_canonical_model(data, BoundedRiverCallEvConfirmationV1)
+        if river_confirmation.run_id != run_id:
+            raise CanonicalStorageError("bounded river call-EV confirmation run ID mismatch")
+        return river_confirmation
     if logical_name == "confirmed_review_source.txt":
         return validate_canonical_text(data)
     if logical_name == "confirmed_review_candidate.json":
@@ -891,6 +995,11 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         return parse_canonical_model(data, CaseInput)
     if logical_name == RANGE_EQUITY_BINDING_ARTIFACT:
         return parse_canonical_model(data, VersionedRangeRiverEquityBindingV1)
+    if logical_name == BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT:
+        binding = parse_canonical_model(data, BoundedRiverCallEvBindingV1)
+        if binding.run_id != run_id:
+            raise CanonicalStorageError("bounded river call-EV binding run ID mismatch")
+        return binding
     if logical_name == "normalization.json":
         return parse_canonical_model(data, NormalizationResultV1)
     if logical_name == "assumptions.json":
@@ -941,6 +1050,16 @@ def _validated_payload(artifact: RevisionArtifactV1, run_id: str) -> Any:
         if bounded_provenance.run_id != run_id:
             raise CanonicalStorageError("bounded-language provenance run ID mismatch")
         return bounded_provenance
+    if logical_name == BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT:
+        river_result = parse_canonical_model(data, BoundedRiverCallEvResultV1)
+        if river_result.run_id != run_id:
+            raise CanonicalStorageError("bounded river call-EV result run ID mismatch")
+        return river_result
+    if logical_name == BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT:
+        river_provenance = parse_canonical_model(data, BoundedRiverCallEvProvenanceV1)
+        if river_provenance.run_id != run_id:
+            raise CanonicalStorageError("bounded river call-EV provenance run ID mismatch")
+        return river_provenance
     if logical_name == "budget_state.json":
         state = parse_canonical_model(data, DurableBudgetStateV1)
         if state.run_id != run_id:
@@ -1018,8 +1137,12 @@ def _validate_source_graph(
     final_report_v2 = final_report_schema_version == FINAL_REPORT_ARTIFACT_V2
     confirmed_names = set(by_name) & _CONFIRMED_REVIEW_ARTIFACTS
     bounded_names = set(by_name) & _BOUNDED_NL_ARTIFACTS
+    bounded_river_names = set(by_name) & _BOUNDED_RIVER_CALL_EV_ARTIFACTS
     input_case = parsed.get("input.json")
     final_report = parsed.get("final_report.json")
+    bounded_river_input_marker = isinstance(input_case, CaseInput) and (
+        BOUNDED_RIVER_CALL_EV_MARKER in input_case.metadata
+    )
     input_marker_present = isinstance(input_case, CaseInput) and (
         "confirmed_review" in input_case.metadata
     )
@@ -1031,6 +1154,13 @@ def _validate_source_graph(
         if isinstance(final_report, FinalReport)
         else None
     )
+    bounded_river_report_marker = isinstance(report_metadata, dict) and (
+        BOUNDED_RIVER_CALL_EV_MARKER in report_metadata
+    )
+    if bounded_river_names or bounded_river_input_marker or bounded_river_report_marker:
+        raise CanonicalStorageError(
+            "bounded river call-EV artifacts require the terminal publication contract"
+        )
     report_marker_present = isinstance(report_metadata, dict) and (
         "confirmed_review" in report_metadata
     )

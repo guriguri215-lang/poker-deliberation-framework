@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -16,6 +17,7 @@ from pydantic import BaseModel, ValidationError
 from poker_deliberation.bounded_natural_language import (
     prepare_bounded_natural_language_intake,
     verify_bounded_candidate,
+    verify_bounded_source_candidate,
 )
 from poker_deliberation.bounded_natural_language_models import (
     BOUNDED_NL_EXTRACTOR_ID,
@@ -80,13 +82,17 @@ from poker_deliberation.schemas import (
     ConfidenceGrade,
     EpistemicLabel,
     Exactness,
+    FinalReport,
     FocalDecision,
     NumericalExactness,
     Street,
     ToolResult,
     ToolStatus,
+    VerificationMetadata,
 )
+from poker_deliberation.security import redact_sensitive
 from poker_deliberation.storage.revision_canonical import canonical_json_bytes, validate_run_id
+from poker_deliberation.tools.contracts import contract_by_name
 from poker_deliberation.tools.hand_pot_ledger import (
     HandPotLedgerOutputV1,
     calculate_hand_pot_ledger,
@@ -95,6 +101,15 @@ from poker_deliberation.tools.hand_validator import validate_hand
 from poker_deliberation.tools.numeric import close_ulps
 from poker_deliberation.tools.pot_odds import pot_odds
 from poker_deliberation.tools.strategy_math import raked_call_ev
+
+_CONTROL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_DIRECT_TOOL_NAMES = (
+    "hand_validator",
+    "hand_pot_ledger",
+    "pot_odds",
+    "raked_call_ev",
+)
+_DIRECT_TOOL_MAX_DURATION_SECONDS = 30.0
 
 
 class BoundedRiverCallEvError(ValueError):
@@ -118,6 +133,14 @@ def _fail(
     detail: str = "refused",
 ) -> NoReturn:
     raise BoundedRiverCallEvError(code, field_path, detail)
+
+
+def _validate_control_id(value: object, field_path: str) -> str:
+    if not isinstance(value, str) or _CONTROL_ID_RE.fullmatch(value) is None:
+        _fail(BoundedRiverCallEvDiagnosticCode.CONFIRMATION_BINDING, field_path)
+    if redact_sensitive(value) != value:
+        _fail(BoundedRiverCallEvDiagnosticCode.CONFIRMATION_AUTHORITY, field_path)
+    return value
 
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
@@ -541,6 +564,7 @@ def create_bounded_river_call_ev_authority(
     authority_kind: str,
     authentication: str,
 ) -> BoundedRiverCallEvConfirmationAuthorityV1:
+    _validate_control_id(authority_id, "confirmation.authority.authority_id")
     try:
         return BoundedRiverCallEvConfirmationAuthorityV1.model_validate(
             {
@@ -592,6 +616,13 @@ def create_bounded_river_call_ev_confirmation(
         BoundedRiverCallEvConfirmationAuthorityV1,
         field_path="confirmation.authority",
     )
+    for value, field_path in (
+        (run_id, "confirmation.run_id"),
+        (confirmation_id, "confirmation.confirmation_id"),
+        (idempotency_key, "confirmation.idempotency_key"),
+        (authority.authority_id, "confirmation.authority.authority_id"),
+    ):
+        _validate_control_id(value, field_path)
     try:
         validate_run_id(run_id)
     except ValueError as exc:
@@ -759,21 +790,23 @@ def _admit_at(
         field_path="confirmation",
     )
     p = candidate.projection
-    replay = prepare_bounded_natural_language_intake(
-        source_bytes,
-        intake_id=p.bounded_candidate.projection.intake_id,
-        source_id=p.bounded_candidate.projection.source.source_id,
-        source_kind=p.bounded_candidate.projection.source.source_kind,
-        license_classification=p.bounded_candidate.projection.source.license_classification,
-        usage_classification=p.bounded_candidate.projection.source.usage_classification,
-        classification=p.bounded_candidate.projection.source.classification,
-    )
-    if (
-        replay.status != "ready"
-        or replay.candidate != p.bounded_candidate
-        or _source_hash(source_bytes) != p.source_sha256
-    ):
+    try:
+        replay_candidate = verify_bounded_source_candidate(
+            source_bytes,
+            p.bounded_candidate,
+        )
+    except ValueError:
         _fail(BoundedRiverCallEvDiagnosticCode.SOURCE, "source")
+    if replay_candidate != p.bounded_candidate or _source_hash(source_bytes) != p.source_sha256:
+        _fail(BoundedRiverCallEvDiagnosticCode.SOURCE, "source")
+    for value, field_path in (
+        (confirmation.run_id, "confirmation.run_id"),
+        (confirmation.intake_id, "confirmation.intake_id"),
+        (confirmation.confirmation_id, "confirmation.confirmation_id"),
+        (confirmation.idempotency_key, "confirmation.idempotency_key"),
+        (confirmation.authority.authority_id, "confirmation.authority.authority_id"),
+    ):
+        _validate_control_id(value, field_path)
     expected_candidate = _candidate_from_components(
         source_bytes,
         p.bounded_candidate,
@@ -876,6 +909,163 @@ def _tool_hash(result: ToolResult) -> str:
     return _model_hash(TOOL_RESULT_HASH_DOMAIN, result)
 
 
+def _direct_tool_oracles(
+    admission: BoundedRiverCallEvAdmission,
+) -> tuple[dict[str, dict[str, object]], dict[str, dict[str, object]]]:
+    expected_inputs = expected_bounded_river_tool_inputs(admission)
+    hand = admission.case.hand
+    if hand is None:
+        _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "case.hand")
+    pot_input = expected_inputs["pot_odds"]
+    call_ev_input = expected_inputs["raked_call_ev"]
+    ledger_output = calculate_hand_pot_ledger(expected_inputs["hand_pot_ledger"])
+    ledger_output = HandPotLedgerOutputV1.model_validate(ledger_output).model_dump(mode="json")
+    oracles: dict[str, dict[str, object]] = {
+        "hand_validator": validate_hand(hand),
+        "hand_pot_ledger": cast(dict[str, object], ledger_output),
+        "pot_odds": cast(
+            dict[str, object],
+            pot_odds(
+                pot_before_bet=cast(float, pot_input["pot_before_bet"]),
+                opponent_bet=cast(float, pot_input["opponent_bet"]),
+                call_cost=cast(float, pot_input["call_cost"]),
+                expected_rake=cast(float, pot_input["expected_rake"]),
+            ),
+        ),
+        "raked_call_ev": cast(
+            dict[str, object],
+            raked_call_ev(
+                equity=cast(float, call_ev_input["equity"]),
+                pot_after_bet=cast(float, call_ev_input["pot_after_bet"]),
+                call_cost=cast(float, call_ev_input["call_cost"]),
+                rake_percent=cast(float, call_ev_input["rake_percent"]),
+                rake_cap=(
+                    None
+                    if call_ev_input.get("rake_cap") is None
+                    else cast(float, call_ev_input["rake_cap"])
+                ),
+            ),
+        ),
+    }
+    return expected_inputs, oracles
+
+
+def _expected_direct_tool_warnings(
+    output: dict[str, object],
+    numeric_exactness: NumericalExactness,
+) -> list[str]:
+    warnings: list[str] = []
+    warning = output.get("warning")
+    if warning:
+        warnings.append(str(warning))
+    many = output.get("warnings")
+    if isinstance(many, list):
+        warnings.extend(str(item) for item in many)
+    if numeric_exactness in {
+        NumericalExactness.EXACT_UNDER_MODEL,
+        NumericalExactness.FLOATING_VERIFIED,
+    }:
+        warnings.append(
+            "legacy exactness='exact' is only a compatibility projection; "
+            f"use numeric_exactness='{numeric_exactness.value}'"
+        )
+    return warnings
+
+
+def _verify_successful_direct_tool_result(
+    admission: BoundedRiverCallEvAdmission,
+    result: ToolResult,
+    *,
+    expected_input: dict[str, object],
+    expected_output: dict[str, object],
+) -> None:
+    name = result.tool_name
+    if name not in _DIRECT_TOOL_NAMES:
+        _fail(BoundedRiverCallEvDiagnosticCode.TOOL_PLAN, "tool_results")
+    contract = contract_by_name()[name]
+    try:
+        contract.input_model.model_validate_json(
+            canonical_json_bytes(expected_input),
+            strict=True,
+        )
+        contract.output_model.model_validate_json(
+            canonical_json_bytes(expected_output),
+            strict=True,
+        )
+        numeric = contract.resolve_numeric_exactness(expected_output)
+        verification = None
+        if numeric is NumericalExactness.FLOATING_VERIFIED:
+            evidence = contract.verify_floating(expected_input, expected_output)
+            verification = VerificationMetadata(
+                method="executed tool-specific invariant checks",
+                checks=list(evidence.checks),
+                observations=list(evidence.observations),
+                tolerance=evidence.tolerance,
+                passed=True,
+            )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise BoundedRiverCallEvError(
+            BoundedRiverCallEvDiagnosticCode.REPLAY,
+            f"tool_results.{name}.oracle",
+        ) from exc
+    expected_exactness = Exactness.EXACT
+    expected_method = (
+        str(expected_output["method"]) if expected_output.get("method") is not None else None
+    )
+    if result.input != expected_input:
+        _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, f"tool_results.{name}.input")
+    if result.output != expected_output:
+        code = (
+            BoundedRiverCallEvDiagnosticCode.NUMERIC
+            if name in {"pot_odds", "raked_call_ev"}
+            else BoundedRiverCallEvDiagnosticCode.REPLAY
+        )
+        _fail(code, f"tool_results.{name}.output")
+    if (
+        result.status is not ToolStatus.SUCCESS
+        or result.exactness is not expected_exactness
+        or result.numeric_exactness is not numeric
+        or result.contract_version != contract.contract_version
+        or result.version != contract.version
+        or result.assumptions != list(contract.assumptions)
+        or result.model_qualifier != contract.model_qualifier
+        or result.method != expected_method
+        or result.stochastic is not None
+        or result.seed is not None
+        or result.samples is not None
+        or result.iterations is not None
+        or result.confidence_interval is not None
+        or result.confidence_level is not None
+        or result.error_metadata is not None
+        or result.stopping_condition is not None
+        or result.verification != verification
+        or result.duration_seconds > _DIRECT_TOOL_MAX_DURATION_SECONDS
+        or result.warnings != _expected_direct_tool_warnings(expected_output, numeric)
+        or result.error is not None
+        or result.reproduce_command
+        != (
+            f"poker-deliberate calculate {name} --analysis-scope retrospective --input <input.json>"
+        )
+        or (name == "hand_validator" and result.output.get("valid") is not True)
+    ):
+        _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, f"tool_results.{name}")
+
+
+def _verify_direct_successes(
+    admission: BoundedRiverCallEvAdmission,
+    tool_results: list[ToolResult] | tuple[ToolResult, ...],
+) -> None:
+    expected_inputs, direct_oracles = _direct_tool_oracles(admission)
+    for result in tool_results:
+        if result.tool_name in direct_oracles and result.status is ToolStatus.SUCCESS:
+            _verify_successful_direct_tool_result(
+                admission,
+                result,
+                expected_input=expected_inputs[result.tool_name],
+                expected_output=direct_oracles[result.tool_name],
+            )
+
+
 def build_bounded_river_call_ev_result(
     admission: BoundedRiverCallEvAdmission,
     tool_results: list[ToolResult] | tuple[ToolResult, ...],
@@ -885,6 +1075,7 @@ def build_bounded_river_call_ev_result(
         result.status is not ToolStatus.SUCCESS for result in tool_results
     ):
         _fail(BoundedRiverCallEvDiagnosticCode.TOOL_PLAN, "tool_results")
+    _verify_direct_successes(admission, tool_results)
     expected_inputs = expected_bounded_river_tool_inputs(admission)
     by_name = {result.tool_name: result for result in tool_results}
     for name in ("hand_validator", "hand_pot_ledger", "pot_odds", "raked_call_ev"):
@@ -962,6 +1153,61 @@ def build_bounded_river_call_ev_result(
     return BoundedRiverCallEvResultV1.model_validate(final, strict=True)
 
 
+def bounded_river_call_ev_report_projection(
+    result: BoundedRiverCallEvResultV1,
+) -> tuple[str, Claim, list[str], tuple[str, str]]:
+    action_ja = {"call": "コール", "fold": "フォールド", "tie": "同値"}[result.action_comparison]
+    conclusion = (
+        "明示確認された1つの相手レンジ、レーキ0、将来ベッティングなしの限定モデルでは、"
+        f"{action_ja}がcall/fold比較結果です。"
+    )
+    claim = Claim(
+        claim_id=f"bounded-river-comparison-{result.run_id}",
+        text=(
+            "限定モデルのcall-minus-fold EVは "
+            f"{result.call_minus_fold_ev_units.numerator}/"
+            f"{result.call_minus_fold_ev_units.denominator} chip unitsで、"
+            f"比較結果は{action_ja}です。"
+        ),
+        label=EpistemicLabel.CALCULATED,
+        confidence=ConfidenceGrade.A,
+        limitations=[
+            "明示された単一レンジ、river heads-up、レーキ0、"
+            "将来ベッティングなしのモデル内だけで有効です。",
+            "GTO、均衡、一般戦略、実戦レンジの正確性を示しません。",
+        ],
+    )
+    alternatives = [
+        (
+            "call EV: "
+            f"{result.call_ev_units.numerator}/{result.call_ev_units.denominator} chip units"
+        ),
+        "fold EV: 0/1 chip units (focal decision時点基準)",
+    ]
+    limitations = (
+        "range sourceはUSER_CLAIMまたはASSUMPTIONであり、実戦での正確性はUNKNOWNです。",
+        "戦略的解釈はINFERENCEであり、外部solverやGTO/均衡の主張ではありません。",
+    )
+    return conclusion, claim, alternatives, limitations
+
+
+def apply_bounded_river_call_ev_report(
+    report: FinalReport,
+    result: BoundedRiverCallEvResultV1 | None,
+) -> FinalReport:
+    if result is None or report.run_status != "completed":
+        return report
+    conclusion, claim, alternatives, limitations = bounded_river_call_ev_report_projection(result)
+    report.conclusion = conclusion
+    if all(item.claim_id != claim.claim_id for item in report.claim_assessments):
+        report.claim_assessments.append(claim)
+    report.alternatives = alternatives
+    for limitation in limitations:
+        if limitation not in report.limitations:
+            report.limitations.append(limitation)
+    return FinalReport.model_validate(report.model_dump(mode="python"))
+
+
 def verify_bounded_river_call_ev_tool_chain(
     admission: BoundedRiverCallEvAdmission,
     tool_results: list[ToolResult] | tuple[ToolResult, ...],
@@ -978,33 +1224,7 @@ def verify_bounded_river_call_ev_tool_chain(
     if any(result.status is not ToolStatus.SUCCESS for result in tool_results[:-1]):
         _fail(BoundedRiverCallEvDiagnosticCode.TOOL_PLAN, "tool_results.failed_prefix")
 
-    expected_inputs = expected_bounded_river_tool_inputs(admission)
-    hand = admission.case.hand
-    if hand is None:
-        _fail(BoundedRiverCallEvDiagnosticCode.REPLAY, "case.hand")
-    pot_input = expected_inputs["pot_odds"]
-    call_ev_input = expected_inputs["raked_call_ev"]
-    direct_oracles = {
-        "hand_validator": validate_hand(hand),
-        "hand_pot_ledger": calculate_hand_pot_ledger(expected_inputs["hand_pot_ledger"]),
-        "pot_odds": pot_odds(
-            pot_before_bet=cast(float, pot_input["pot_before_bet"]),
-            opponent_bet=cast(float, pot_input["opponent_bet"]),
-            call_cost=cast(float, pot_input["call_cost"]),
-            expected_rake=cast(float, pot_input["expected_rake"]),
-        ),
-        "raked_call_ev": raked_call_ev(
-            equity=cast(float, call_ev_input["equity"]),
-            pot_after_bet=cast(float, call_ev_input["pot_after_bet"]),
-            call_cost=cast(float, call_ev_input["call_cost"]),
-            rake_percent=cast(float, call_ev_input["rake_percent"]),
-            rake_cap=(
-                None
-                if call_ev_input.get("rake_cap") is None
-                else cast(float, call_ev_input["rake_cap"])
-            ),
-        ),
-    }
+    expected_inputs, direct_oracles = _direct_tool_oracles(admission)
     for result in tool_results:
         if result.tool_name not in direct_oracles:
             continue
@@ -1015,11 +1235,12 @@ def verify_bounded_river_call_ev_tool_chain(
                 f"tool_results.{result.tool_name}.input",
             )
         if result.status is ToolStatus.SUCCESS:
-            if result.output != direct_oracles[result.tool_name]:
-                _fail(
-                    BoundedRiverCallEvDiagnosticCode.REPLAY,
-                    f"tool_results.{result.tool_name}.output",
-                )
+            _verify_successful_direct_tool_result(
+                admission,
+                result,
+                expected_input=expected_input,
+                expected_output=direct_oracles[result.tool_name],
+            )
         elif (
             result is not tool_results[-1]
             or result.status is not ToolStatus.FAILED

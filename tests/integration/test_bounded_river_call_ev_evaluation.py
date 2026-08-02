@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import poker_deliberation.bounded_river_call_ev_evaluation as evaluation_module
 from poker_deliberation.bounded_river_call_ev_evaluation import (
     EVALUATION_FAMILY_ID,
     REQUIRED_CASE_IDS,
@@ -12,6 +13,7 @@ from poker_deliberation.bounded_river_call_ev_evaluation import (
     BoundedRiverCallEvEvaluationResultV1,
     load_bounded_river_call_ev_evaluation_fixture,
     run_bounded_river_call_ev_evaluation,
+    verify_bounded_river_call_ev_evaluation_checkout,
 )
 from poker_deliberation.range_equity_models import canonical_domain_sha256
 
@@ -21,9 +23,30 @@ COMMIT_ID = "1" * 40
 TREE_ID = "2" * 40
 
 
-def test_bounded_river_call_ev_evaluation_scores_all_metrics(tmp_path: Path) -> None:
+def _clean_checkout(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, ...], str]:
+    responses = {
+        ("rev-parse", "HEAD"): COMMIT_ID,
+        ("rev-parse", "HEAD^{tree}"): TREE_ID,
+        ("status", "--porcelain=v1", "--untracked-files=all"): "",
+        ("replace", "-l"): "",
+        ("ls-files", "-v"): "H tracked.py",
+    }
+
+    def git_stdout(_root: Path, *arguments: str) -> str:
+        return responses[arguments]
+
+    monkeypatch.setattr(evaluation_module, "_git_stdout", git_stdout)
+    return responses
+
+
+def test_bounded_river_call_ev_evaluation_scores_all_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_checkout(monkeypatch)
     result = run_bounded_river_call_ev_evaluation(
         load_bounded_river_call_ev_evaluation_fixture(FIXTURE),
+        repository_root=tmp_path,
         work_root=tmp_path / "run",
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
@@ -40,7 +63,11 @@ def test_bounded_river_call_ev_evaluation_scores_all_metrics(tmp_path: Path) -> 
     assert result.source_tree_id == TREE_ID
 
 
-def test_evaluation_fixture_and_result_tamper_fail_closed(tmp_path: Path) -> None:
+def test_evaluation_fixture_and_result_tamper_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_checkout(monkeypatch)
     fixture = load_bounded_river_call_ev_evaluation_fixture(FIXTURE)
     fixture_payload = fixture.model_dump(mode="python")
     fixture_payload["cases"] = fixture_payload["cases"][:-1]
@@ -49,6 +76,7 @@ def test_evaluation_fixture_and_result_tamper_fail_closed(tmp_path: Path) -> Non
 
     result = run_bounded_river_call_ev_evaluation(
         fixture,
+        repository_root=tmp_path,
         work_root=tmp_path / "run",
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
@@ -61,22 +89,30 @@ def test_evaluation_fixture_and_result_tamper_fail_closed(tmp_path: Path) -> Non
         BoundedRiverCallEvEvaluationResultV1.model_validate(payload, strict=True)
 
 
-def test_evaluation_is_deterministic_and_source_bound(tmp_path: Path) -> None:
+def test_evaluation_is_deterministic_and_source_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = _clean_checkout(monkeypatch)
     fixture = load_bounded_river_call_ev_evaluation_fixture(FIXTURE)
     first = run_bounded_river_call_ev_evaluation(
         fixture,
+        repository_root=tmp_path,
         work_root=tmp_path / "first",
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
     second = run_bounded_river_call_ev_evaluation(
         fixture,
+        repository_root=tmp_path,
         work_root=tmp_path / "second",
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
+    responses[("rev-parse", "HEAD")] = "3" * 40
     rebound = run_bounded_river_call_ev_evaluation(
         fixture,
+        repository_root=tmp_path,
         work_root=tmp_path / "rebound",
         source_commit_id="3" * 40,
         source_tree_id=TREE_ID,
@@ -84,3 +120,43 @@ def test_evaluation_is_deterministic_and_source_bound(tmp_path: Path) -> None:
 
     assert first == second
     assert first.result_sha256 != rebound.result_sha256
+
+
+def test_evaluation_cli_checkout_binding_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = {
+        ("rev-parse", "HEAD"): COMMIT_ID,
+        ("rev-parse", "HEAD^{tree}"): TREE_ID,
+        ("status", "--porcelain=v1", "--untracked-files=all"): "",
+        ("replace", "-l"): "",
+        ("ls-files", "-v"): "H tracked.py",
+    }
+
+    def git_stdout(_root: Path, *arguments: str) -> str:
+        return responses[arguments]
+
+    monkeypatch.setattr(evaluation_module, "_git_stdout", git_stdout)
+    verify_bounded_river_call_ev_evaluation_checkout(
+        tmp_path,
+        source_commit_id=COMMIT_ID,
+        source_tree_id=TREE_ID,
+    )
+
+    responses[("rev-parse", "HEAD")] = "3" * 40
+    with pytest.raises(ValueError, match="checkout binding mismatch"):
+        verify_bounded_river_call_ev_evaluation_checkout(
+            tmp_path,
+            source_commit_id=COMMIT_ID,
+            source_tree_id=TREE_ID,
+        )
+
+    responses[("rev-parse", "HEAD")] = COMMIT_ID
+    responses[("status", "--porcelain=v1", "--untracked-files=all")] = " M tracked.py"
+    with pytest.raises(ValueError, match="checkout binding mismatch"):
+        verify_bounded_river_call_ev_evaluation_checkout(
+            tmp_path,
+            source_commit_id=COMMIT_ID,
+            source_tree_id=TREE_ID,
+        )

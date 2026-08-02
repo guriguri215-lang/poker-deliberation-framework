@@ -90,6 +90,11 @@ authorityを再実行する。missing/extra/reordered/tampered artifact、source
 runtime/role/allowlist/expiry/lineage mismatchを拒否する。SHA-256はcorruption/correlation検出用であり、同じ
 OS権限のwriterに対する暗号学的authenticityを提供しない。
 
+成功・失敗terminalの双方で、LocalProviderのrole/task/content projection、context completionとexpiry/report
+時刻の順序、direct toolのtyped input/output、contract/version、exactness、verification、assumption、warning、
+再現commandを検証する。strict budgetで途中停止した場合は、実際にdispatchしたtoolまでのprefixだけを保存し、
+未実行toolの合成failureを追加しない。
+
 ## CLIと評価
 
 CLIは次の3段階だけを提供する。
@@ -103,7 +108,10 @@ review-bounded-river-call-ev-confirmed-intake
 `tests/fixtures/bounded_river_call_ev/v1/scenarios.json`と
 `scripts/run_bounded_river_call_ev_evaluation.py`は、exact decision math、admission/security、runtime/replayの
 3 metricをexact evidence setで採点する。全metric、全case、overallが`1.0`の場合だけ合格し、resultは
-対象commit SHA/tree SHAとcanonical result hashへ拘束する。
+対象commit SHA/tree SHAとcanonical result hashへ拘束する。専用runnerは指定されたcommit/treeを現在の
+`HEAD`/treeと比較し、dirty worktree/index、replace ref、assume-unchanged/skip-worktree flagがある場合は
+評価前に拒否する。また両pre-execution admission recordを実読・binding検証し、record欠落をtool artifact
+生成前に拒否する隔離caseを実行する。
 
 ## 非目標
 

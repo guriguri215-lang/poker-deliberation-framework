@@ -74,6 +74,7 @@ from poker_deliberation.bounded_river_call_ev import (
     BoundedRiverCallEvAdmission,
     BoundedRiverCallEvError,
     admit_bounded_river_call_ev_review,
+    apply_bounded_river_call_ev_report,
     bounded_river_call_ev_binding,
     build_bounded_river_call_ev_result,
     expected_bounded_river_tool_inputs,
@@ -95,6 +96,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
 )
 from poker_deliberation.bounded_river_call_ev_provenance import (
     build_bounded_river_call_ev_provenance,
+    verify_bounded_river_call_ev_structural_provenance,
 )
 from poker_deliberation.budgets import (
     BudgetLimitError,
@@ -235,7 +237,6 @@ from poker_deliberation.schemas import (
     Claim,
     ConfidenceGrade,
     Dispute,
-    EpistemicLabel,
     EvidenceRecord,
     FinalReport,
     NumericalExactness,
@@ -253,6 +254,7 @@ from poker_deliberation.state_machine import RunState, StateEvent, WorkflowState
 from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
     commit_bounded_river_call_ev_admission_record,
     read_bounded_river_call_ev_admission_record,
+    verify_bounded_river_call_ev_admission_record,
 )
 from poker_deliberation.storage.legacy_migration import (
     LegacyRunAdapter,
@@ -265,6 +267,7 @@ from poker_deliberation.storage.lifecycle_hooks import build_terminal_lifecycle_
 from poker_deliberation.storage.range_equity_admission_store import (
     commit_range_equity_admission_record,
     read_range_equity_admission_record,
+    verify_range_equity_admission_record,
 )
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
@@ -1096,6 +1099,42 @@ class Orchestrator:
 
         with self._new_run_authority(run_id):
             self._reserve_new_run_under_authority(case, run_id)
+
+    def _verify_bounded_river_preexecution_records(
+        self,
+        admission: BoundedRiverCallEvAdmission,
+    ) -> None:
+        """Require both durable commitments before the first P3-030C tool dispatch."""
+
+        run_id = admission.confirmation.run_id
+        try:
+            range_record = read_range_equity_admission_record(
+                self.revision_runs_root,
+                run_id,
+                maximum_bytes=self.budget_policy.max_artifact_bytes,
+            )
+            bounded_record = read_bounded_river_call_ev_admission_record(
+                self.revision_runs_root,
+                run_id,
+                maximum_bytes=self.budget_policy.max_artifact_bytes,
+            )
+            if range_record is None or bounded_record is None:
+                raise CanonicalStorageError(
+                    "bounded river call-EV pre-execution admission record is missing"
+                )
+            verify_range_equity_admission_record(
+                range_record,
+                admission.range_equity_admission.binding,
+            )
+            verify_bounded_river_call_ev_admission_record(
+                bounded_record,
+                admission.binding,
+            )
+        except (CanonicalStorageError, OSError) as exc:
+            raise BoundedRiverCallEvError(
+                BoundedRiverCallEvDiagnosticCode.STORAGE,
+                "preexecution_admission",
+            ) from exc
 
     def _reserve_legacy_migration_destination(self, run_id: str) -> None:
         """Atomically reserve an empty product namespace for one legacy migration."""
@@ -2403,6 +2442,7 @@ class Orchestrator:
                     BoundedRiverCallEvDiagnosticCode.CONFIRMATION_BINDING,
                     "confirmation.run_id",
                 )
+            self._verify_bounded_river_preexecution_records(bounded_river_admission)
             self.store.write_text(
                 actual_run_id,
                 BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
@@ -3174,66 +3214,67 @@ class Orchestrator:
                     "runtime.case",
                 )
             expected_bounded_inputs = expected_bounded_river_tool_inputs(bounded_river_admission)
-            bounded_prefix_requests = tuple(
-                ToolRequest(
+            for tool_name in ("hand_pot_ledger", "pot_odds"):
+                if not machine.enforce_runtime():
+                    data_quality.append(f"strict runtime refused before bounded river {tool_name}")
+                    _append_observed_budget_failure(data_quality, machine)
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                bounded_request = ToolRequest(
                     request_id=_new_internal_id("tool-request"),
                     tool_name=tool_name,
                     input=expected_bounded_inputs[tool_name],
                     requested_by="bounded-river-call-ev",
                     contract_version=self.tool_contract_versions.get(tool_name),
                 )
-                for tool_name in ("hand_pot_ledger", "pot_odds")
-            )
-            if not machine.enforce_runtime():
-                data_quality.append("strict runtime refused before bounded river ledger tools")
-                _append_observed_budget_failure(data_quality, machine)
-                return self._synthesize(
-                    actual_run_id,
-                    case,
-                    data_quality,
-                    list(case.claims),
-                    reports,
-                    execution_records,
-                    tool_results,
-                    disputes,
-                    evidence.all(),
-                    approvals,
-                    security_events,
-                    completed=False,
-                    machine=machine,
-                )
-            try:
-                bounded_prefix_output = self._execute_tool_requests(
-                    run_id=actual_run_id,
-                    requests=bounded_prefix_requests,
-                    existing_results=tool_results,
-                    machine=machine,
-                )
-            except BudgetLimitError as exc:
-                data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
-                machine.transition(
-                    RunState.FAILED_WITH_LIMITATIONS,
-                    "bounded river ledger usage settlement failed",
-                )
-                return self._synthesize(
-                    actual_run_id,
-                    case,
-                    data_quality,
-                    list(case.claims),
-                    reports,
-                    execution_records,
-                    tool_results,
-                    disputes,
-                    evidence.all(),
-                    approvals,
-                    security_events,
-                    completed=False,
-                    machine=machine,
-                )
-            data_quality.extend(bounded_prefix_output.data_quality)
-            prefix_results = [binding.result for binding in bounded_prefix_output.bindings]
-            tool_results.extend(prefix_results)
-            for result in prefix_results:
+                try:
+                    bounded_prefix_output = self._execute_tool_requests(
+                        run_id=actual_run_id,
+                        requests=(bounded_request,),
+                        existing_results=tool_results,
+                        machine=machine,
+                    )
+                except BudgetLimitError as exc:
+                    data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        f"bounded river {tool_name} usage settlement failed",
+                    )
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                data_quality.extend(bounded_prefix_output.data_quality)
+                if len(bounded_prefix_output.bindings) != 1:
+                    raise PhaseContractError(
+                        "bounded river prerequisite returned an invalid binding count"
+                    )
+                result = bounded_prefix_output.bindings[0].result
+                tool_results.append(result)
                 self.store.write_json(
                     actual_run_id,
                     f"tool_results/{result.result_id}.json",
@@ -3244,33 +3285,34 @@ class Orchestrator:
                     f"tool_results/{result.result_id}.input.json",
                     result.input,
                 )
-            if bounded_prefix_output.budget_failure is not None or any(
-                result.status is not ToolStatus.SUCCESS for result in prefix_results
-            ):
-                if bounded_prefix_output.budget_failure is not None:
-                    data_quality.append(
-                        f"strict budget failure: {bounded_prefix_output.budget_failure.code}"
+                if (
+                    bounded_prefix_output.budget_failure is not None
+                    or result.status is not ToolStatus.SUCCESS
+                ):
+                    if bounded_prefix_output.budget_failure is not None:
+                        data_quality.append(
+                            f"strict budget failure: {bounded_prefix_output.budget_failure.code}"
+                        )
+                    machine.transition(
+                        RunState.FAILED_WITH_LIMITATIONS,
+                        f"bounded river {tool_name} prerequisite failed",
                     )
-                machine.transition(
-                    RunState.FAILED_WITH_LIMITATIONS,
-                    "bounded river ledger prerequisite failed",
-                )
-                return self._synthesize(
-                    actual_run_id,
-                    case,
-                    data_quality,
-                    list(case.claims),
-                    reports,
-                    execution_records,
-                    tool_results,
-                    disputes,
-                    evidence.all(),
-                    approvals,
-                    security_events,
-                    completed=False,
-                    machine=machine,
-                )
-            already_run.update(result.tool_name for result in prefix_results)
+                    return self._synthesize(
+                        actual_run_id,
+                        case,
+                        data_quality,
+                        list(case.claims),
+                        reports,
+                        execution_records,
+                        tool_results,
+                        disputes,
+                        evidence.all(),
+                        approvals,
+                        security_events,
+                        completed=False,
+                        machine=machine,
+                    )
+                already_run.add(result.tool_name)
         requested_tool_calls: list[ToolRequest] = []
         versioned_ranges = (
             [
@@ -4080,49 +4122,7 @@ class Orchestrator:
         report: FinalReport,
         result: BoundedRiverCallEvResultV1 | None,
     ) -> FinalReport:
-        if result is None or report.run_status != "completed":
-            return report
-        action_ja = {"call": "コール", "fold": "フォールド", "tie": "同値"}[
-            result.action_comparison
-        ]
-        report.conclusion = (
-            "明示確認された1つの相手レンジ、レーキ0、将来ベッティングなしの限定モデルでは、"
-            f"{action_ja}がcall/fold比較結果です。"
-        )
-        claim_id = f"bounded-river-comparison-{result.run_id}"
-        if all(claim.claim_id != claim_id for claim in report.claim_assessments):
-            report.claim_assessments.append(
-                Claim(
-                    claim_id=claim_id,
-                    text=(
-                        "限定モデルのcall-minus-fold EVは "
-                        f"{result.call_minus_fold_ev_units.numerator}/"
-                        f"{result.call_minus_fold_ev_units.denominator} chip unitsで、"
-                        f"比較結果は{action_ja}です。"
-                    ),
-                    label=EpistemicLabel.CALCULATED,
-                    confidence=ConfidenceGrade.A,
-                    limitations=[
-                        "明示された単一レンジ、river heads-up、レーキ0、"
-                        "将来ベッティングなしのモデル内だけで有効です。",
-                        "GTO、均衡、一般戦略、実戦レンジの正確性を示しません。",
-                    ],
-                )
-            )
-        report.alternatives = [
-            (
-                "call EV: "
-                f"{result.call_ev_units.numerator}/{result.call_ev_units.denominator} chip units"
-            ),
-            "fold EV: 0/1 chip units (focal decision時点基準)",
-        ]
-        for limitation in (
-            "range sourceはUSER_CLAIMまたはASSUMPTIONであり、実戦での正確性はUNKNOWNです。",
-            "戦略的解釈はINFERENCEであり、外部solverやGTO/均衡の主張ではありません。",
-        ):
-            if limitation not in report.limitations:
-                report.limitations.append(limitation)
-        return FinalReport.model_validate(report.model_dump(mode="python"))
+        return apply_bounded_river_call_ev_report(report, result)
 
     def _synthesize(
         self,
@@ -4320,9 +4320,9 @@ class Orchestrator:
                 "bounded_nl_provenance.json",
                 bounded_provenance,
             )
-        if bounded_river_admission is not None and report.run_status == "completed":
+        if bounded_river_admission is not None:
             bounded_river_result = self._bounded_river_call_ev_results.get(run_id)
-            if bounded_river_result is None:
+            if report.run_status == "completed" and bounded_river_result is None:
                 raise BoundedRiverCallEvError(
                     BoundedRiverCallEvDiagnosticCode.REPLAY,
                     BOUNDED_RIVER_CALL_EV_RESULT_ARTIFACT,
@@ -4337,21 +4337,37 @@ class Orchestrator:
             assignments = [
                 AgentAssignment.model_validate(assignment) for assignment in raw_assignments
             ]
-            bounded_river_provenance = build_bounded_river_call_ev_provenance(
-                bounded_river_admission,
-                bounded_river_result,
-                report,
+            verify_bounded_river_call_ev_structural_provenance(
+                source_bytes=bounded_river_admission.source_bytes,
+                candidate=bounded_river_admission.candidate,
+                confirmation=bounded_river_admission.confirmation,
+                case=bounded_river_admission.case,
+                result=bounded_river_result,
+                report=report,
+                admitted_at=bounded_river_admission.admitted_at,
                 assignments=assignments,
                 agent_reports=reports,
                 storage_root=self.product_store.revision_root,
                 storage_revision=planned_revision,
                 storage_transaction_id=transaction_id,
             )
-            self.store.write_json(
-                run_id,
-                BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
-                bounded_river_provenance,
-            )
+            if report.run_status == "completed":
+                assert bounded_river_result is not None
+                bounded_river_provenance = build_bounded_river_call_ev_provenance(
+                    bounded_river_admission,
+                    bounded_river_result,
+                    report,
+                    assignments=assignments,
+                    agent_reports=reports,
+                    storage_root=self.product_store.revision_root,
+                    storage_revision=planned_revision,
+                    storage_transaction_id=transaction_id,
+                )
+                self.store.write_json(
+                    run_id,
+                    BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
+                    bounded_river_provenance,
+                )
         self._publication_plans[run_id] = (planned_revision, transaction_id)
         try:
             verified = self._publish_buffer(run_id, report)

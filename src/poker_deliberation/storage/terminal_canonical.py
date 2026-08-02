@@ -889,6 +889,24 @@ def product_payload_commitments(
             )
             if expected_result != bounded_river_result:
                 raise ValueError("bounded river call-EV result differs from replay")
+            from poker_deliberation.bounded_river_call_ev_provenance import (
+                verify_bounded_river_call_ev_structural_provenance,
+            )
+
+            verify_bounded_river_call_ev_structural_provenance(
+                source_bytes=source_bytes,
+                candidate=bounded_river_candidate,
+                confirmation=bounded_river_confirmation,
+                case=input_case,
+                result=bounded_river_result,
+                report=report,
+                admitted_at=admitted_at,
+                assignments=assignments,
+                agent_reports=ordered_agent_reports,
+                storage_root=revision_root,
+                storage_revision=revision,
+                storage_transaction_id=transaction_id,
+            )
             if report.run_status == "completed":
                 if bounded_river_result is None or bounded_river_provenance is None:
                     raise ValueError("completed bounded river call-EV payload is incomplete")

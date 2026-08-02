@@ -26,6 +26,7 @@ def main() -> int:
     fixture = load_bounded_river_call_ev_evaluation_fixture(args.fixture)
     result = run_bounded_river_call_ev_evaluation(
         fixture,
+        repository_root=ROOT,
         work_root=args.work_root.resolve(),
         source_commit_id=args.source_commit,
         source_tree_id=args.source_tree,

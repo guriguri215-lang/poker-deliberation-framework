@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
+import subprocess
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from fractions import Fraction
@@ -32,6 +34,7 @@ from poker_deliberation.bounded_river_call_ev import (
 from poker_deliberation.bounded_river_call_ev_models import (
     BOUNDED_RIVER_CALL_EV_TOOL_ORDER,
     BoundedRiverCallEvCandidateV1,
+    BoundedRiverCallEvDiagnosticCode,
     BoundedRiverCallEvResultV1,
 )
 from poker_deliberation.config import AppConfig
@@ -40,10 +43,19 @@ from poker_deliberation.range_equity_models import canonical_domain_sha256
 from poker_deliberation.range_grammar import action_prefix_sha256
 from poker_deliberation.range_models import VersionedRangeDefinitionV1
 from poker_deliberation.schemas import Exactness, NumericalExactness, ToolStatus
+from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
+    read_bounded_river_call_ev_admission_record,
+    verify_bounded_river_call_ev_admission_record,
+)
+from poker_deliberation.storage.range_equity_admission_store import (
+    read_range_equity_admission_record,
+    verify_range_equity_admission_record,
+)
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_json_bytes,
     parse_canonical_model,
+    run_lock_key_sha256,
 )
 from poker_deliberation.storage.terminal_canonical import product_payload_commitments
 
@@ -112,6 +124,53 @@ REQUIRED_METRICS: tuple[EvaluationMetric, ...] = (
     "admission_security",
     "runtime_replay",
 )
+_SOURCE_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+
+
+def _git_stdout(repository_root: Path, *arguments: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository_root), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError("bounded river call-EV evaluation git inspection failed") from exc
+    return completed.stdout.strip()
+
+
+def verify_bounded_river_call_ev_evaluation_checkout(
+    repository_root: Path,
+    *,
+    source_commit_id: str,
+    source_tree_id: str,
+) -> None:
+    """Bind the CLI evaluation label to one clean, unmodified checkout."""
+
+    if (
+        _SOURCE_ID_RE.fullmatch(source_commit_id) is None
+        or _SOURCE_ID_RE.fullmatch(source_tree_id) is None
+    ):
+        raise ValueError("bounded river call-EV evaluation source identity is invalid")
+    root = repository_root.resolve()
+    actual_commit = _git_stdout(root, "rev-parse", "HEAD")
+    actual_tree = _git_stdout(root, "rev-parse", "HEAD^{tree}")
+    status = _git_stdout(root, "status", "--porcelain=v1", "--untracked-files=all")
+    replace_refs = _git_stdout(root, "replace", "-l")
+    index_flags = _git_stdout(root, "ls-files", "-v")
+    flagged = any(
+        line and (line[0].islower() or line[0] == "S") for line in index_flags.splitlines()
+    )
+    if (
+        actual_commit != source_commit_id
+        or actual_tree != source_tree_id
+        or status
+        or replace_refs
+        or flagged
+    ):
+        raise ValueError("bounded river call-EV evaluation checkout binding mismatch")
 
 
 class _EvaluationModel(BaseModel):
@@ -751,6 +810,41 @@ def _confirmation_and_tool_replay(context: _EvaluationContext) -> tuple[str, ...
     return tuple(evidence)
 
 
+def _preexecution_guard_refuses_before_dispatch(context: _EvaluationContext) -> bool:
+    admitted = _admission("QcJc", "river-eval-preexecution-guard")
+    orchestrator = Orchestrator(_config(context.root, "preexecution-guard"))
+    run_id = admitted.confirmation.run_id
+    orchestrator._initialize_product_storage(run_id)
+    with orchestrator._new_run_authority(run_id):
+        orchestrator._reserve_new_run_under_authority(admitted.case, run_id)
+    bounded_record_path = (
+        orchestrator.product_store.revision_root
+        / ".revision-control"
+        / "bounded-river-call-ev-admissions"
+        / f"{run_lock_key_sha256(run_id)}.json"
+    )
+    bounded_record_path.unlink()
+    orchestrator._bounded_river_call_ev_admissions[run_id] = admitted
+    try:
+        orchestrator._run(
+            admitted.case,
+            run_id,
+            normalization=None,
+            new_run_reserved=True,
+        )
+    except BoundedRiverCallEvError as exc:
+        refused = exc.code is BoundedRiverCallEvDiagnosticCode.STORAGE
+    else:
+        refused = False
+    finally:
+        orchestrator._bounded_river_call_ev_admissions.pop(run_id, None)
+        orchestrator._bounded_river_call_ev_results.pop(run_id, None)
+    artifact_names = {
+        item.inventory.logical_name for item in orchestrator.store.verified_payloads(run_id)
+    }
+    return refused and not any(name.startswith("tool_results/") for name in artifact_names)
+
+
 def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str, ...]:
     evidence: list[str] = []
     admitted, report, orchestrator = context.run("QcJc", "positive")
@@ -782,8 +876,32 @@ def _context_storage_and_compatibility(context: _EvaluationContext) -> tuple[str
     ):
         evidence.append("canonical-context-only-with-lineage-expiry-and-budget")
     artifact_names = {item.inventory.logical_name for item in read.payloads}
+    range_record = read_range_equity_admission_record(
+        orchestrator.product_store.revision_root,
+        report.run_id,
+        maximum_bytes=orchestrator.budget_policy.max_artifact_bytes,
+    )
+    bounded_record = read_bounded_river_call_ev_admission_record(
+        orchestrator.product_store.revision_root,
+        report.run_id,
+        maximum_bytes=orchestrator.budget_policy.max_artifact_bytes,
+    )
+    records_verified = range_record is not None and bounded_record is not None
+    if range_record is not None:
+        verify_range_equity_admission_record(
+            range_record,
+            admitted.range_equity_admission.binding,
+        )
+    if bounded_record is not None:
+        verify_bounded_river_call_ev_admission_record(
+            bounded_record,
+            admitted.binding,
+        )
     if (
-        tuple(item.tool_name for item in report.tool_results) == BOUNDED_RIVER_CALL_EV_TOOL_ORDER
+        records_verified
+        and _preexecution_guard_refuses_before_dispatch(context)
+        and tuple(item.tool_name for item in report.tool_results)
+        == BOUNDED_RIVER_CALL_EV_TOOL_ORDER
         and "bounded_river_call_ev_binding.json" in artifact_names
     ):
         evidence.append("preexecution-record-and-seven-tool-order")
@@ -885,10 +1003,16 @@ def _evaluation_work_root(path: Path) -> Path:
 def run_bounded_river_call_ev_evaluation(
     fixture: BoundedRiverCallEvEvaluationFixtureV1,
     *,
+    repository_root: Path,
     work_root: Path,
     source_commit_id: str,
     source_tree_id: str,
 ) -> BoundedRiverCallEvEvaluationResultV1:
+    verify_bounded_river_call_ev_evaluation_checkout(
+        repository_root,
+        source_commit_id=source_commit_id,
+        source_tree_id=source_tree_id,
+    )
     current = tuple(_HANDLERS.items())
     if (
         tuple(_HANDLERS) != REQUIRED_CASE_IDS
@@ -970,4 +1094,5 @@ __all__ = [
     "BoundedRiverCallEvEvaluationResultV1",
     "load_bounded_river_call_ev_evaluation_fixture",
     "run_bounded_river_call_ev_evaluation",
+    "verify_bounded_river_call_ev_evaluation_checkout",
 ]

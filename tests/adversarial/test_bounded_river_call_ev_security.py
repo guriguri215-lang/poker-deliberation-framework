@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import poker_deliberation.bounded_natural_language as bounded_nl_module
 from poker_deliberation.bounded_river_call_ev import (
     BoundedRiverCallEvError,
     admit_bounded_river_call_ev_review,
@@ -175,3 +176,91 @@ def test_order_numeric_and_partial_prefix_tamper_fail_closed(tmp_path: Path) -> 
             [forged_prefix, failed_ledger],
             run_status="failed_with_limitations",
         )
+
+
+@pytest.mark.parametrize(
+    ("index", "update"),
+    [
+        (0, {"output": {"valid": False}}),
+        (0, {"output": {"valid": True}}),
+        (1, {"output": {}}),
+        (2, {"numeric_exactness": NumericalExactness.APPROXIMATE}),
+        (6, {"verification": None}),
+    ],
+)
+def test_completed_direct_tool_envelope_tamper_fails_closed(
+    tmp_path: Path,
+    index: int,
+    update: dict[str, object],
+) -> None:
+    admitted = admission(run_id=f"run-river-direct-envelope-{index}")
+    report = Orchestrator(app_config(tmp_path)).run_bounded_river_call_ev_review(admitted)
+    results = list(report.tool_results)
+    results[index] = results[index].model_copy(update=update, deep=True)
+
+    with pytest.raises(BoundedRiverCallEvError):
+        build_bounded_river_call_ev_result(admitted, results)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["run_id", "confirmation_id", "idempotency_key"],
+)
+def test_credential_shaped_control_ids_are_refused_without_echo(field: str) -> None:
+    prepared = ready_preparation(intake_id=f"intake-secret-control-{field}")
+    assert prepared.candidate is not None
+    candidate = prepared.candidate
+    secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+    values = {
+        "run_id": "run-safe-control-id",
+        "confirmation_id": "confirmation-safe-control-id",
+        "idempotency_key": "idempotency-safe-control-id",
+    }
+    values[field] = secret
+    authority = create_bounded_river_call_ev_authority(
+        authority_id="local-test-user",
+        authority_kind="local_user",
+        authentication="self_asserted",
+    )
+
+    with pytest.raises(BoundedRiverCallEvError) as caught:
+        create_bounded_river_call_ev_confirmation(
+            candidate,
+            authority=authority,
+            expected_hashes=candidate_hashes(candidate),
+            **values,
+        )
+    assert secret not in str(caught.value)
+
+
+def test_credential_shaped_authority_id_is_refused_without_echo() -> None:
+    secret = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ123456"
+    with pytest.raises(BoundedRiverCallEvError) as caught:
+        create_bounded_river_call_ev_authority(
+            authority_id=secret,
+            authority_kind="local_user",
+            authentication="self_asserted",
+        )
+    assert secret not in str(caught.value)
+
+
+def test_admission_and_terminal_replay_do_not_reenter_bounded_nl_calculators(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admitted = admission(run_id="run-river-calculator-free-replay")
+
+    def forbidden_registry(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("P3-030B calculators must not run during P3-030C replay")
+
+    monkeypatch.setattr(bounded_nl_module, "default_registry", forbidden_registry)
+    replayed = admit_bounded_river_call_ev_review(
+        admitted.source_bytes,
+        admitted.candidate,
+        admitted.confirmation,
+    )
+    orchestrator = Orchestrator(app_config(tmp_path))
+    report = orchestrator.run_bounded_river_call_ev_review(replayed)
+
+    assert report.run_status == "completed"
+    assert orchestrator.run_bounded_river_call_ev_review(replayed) == report

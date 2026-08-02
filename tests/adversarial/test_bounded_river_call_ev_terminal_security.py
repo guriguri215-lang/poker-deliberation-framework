@@ -17,6 +17,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
 from poker_deliberation.bounded_river_call_ev_provenance import (
     build_bounded_river_call_ev_provenance,
 )
+from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.schemas import AgentAssignment, AgentReport
 from poker_deliberation.storage.revision_canonical import (
@@ -117,6 +118,8 @@ def test_terminal_rejects_raw_text_in_agent_case(tmp_path: Path) -> None:
         {"context_policy_sha256": "0" * 64},
         {"context_consumer_runtime": "forged-runtime"},
         {"provider": "external"},
+        {"completed_after_context_expiry": True},
+        {"completed_after_report": True},
     ],
 )
 def test_provenance_rejects_role_context_and_lineage_mismatch(
@@ -166,6 +169,11 @@ def test_provenance_rejects_role_context_and_lineage_mismatch(
     first = report.agent_execution_records[selected_index]
     if "context_expires_at" in update:
         update = {"context_expires_at": first.started_at - timedelta(microseconds=1)}
+    elif "completed_after_context_expiry" in update:
+        assert first.context_expires_at is not None
+        update = {"completed_at": first.context_expires_at + timedelta(microseconds=1)}
+    elif "completed_after_report" in update:
+        update = {"completed_at": report.generated_at + timedelta(microseconds=1)}
     forged = report.model_copy(
         update={
             "agent_execution_records": [
@@ -187,6 +195,98 @@ def test_provenance_rejects_role_context_and_lineage_mismatch(
             storage_root=orchestrator.product_store.revision_root,
             storage_revision=read.revision,
             storage_transaction_id=read.transaction_id,
+        )
+
+
+def test_final_report_and_agent_report_semantic_overreach_is_refused(tmp_path: Path) -> None:
+    orchestrator, report, read, payloads = _completed(tmp_path)
+    candidate = parse_canonical_model(
+        payloads["bounded_river_call_ev_candidate.json"],
+        BoundedRiverCallEvCandidateV1,
+    )
+    confirmation = parse_canonical_model(
+        payloads["bounded_river_call_ev_confirmation.json"],
+        BoundedRiverCallEvConfirmationV1,
+    )
+    provenance = parse_canonical_model(
+        payloads["bounded_river_call_ev_provenance.json"],
+        BoundedRiverCallEvProvenanceV1,
+    )
+    admitted = _admit_at(
+        payloads["bounded_river_call_ev_source.txt"],
+        candidate,
+        confirmation,
+        admitted_at=provenance.admitted_at,
+    )
+    result = parse_canonical_model(
+        payloads["bounded_river_call_ev_result.json"],
+        BoundedRiverCallEvResultV1,
+    )
+    assignments = TypeAdapter(list[AgentAssignment]).validate_json(payloads["assignments.json"])
+    agent_reports = [
+        parse_canonical_model(data, AgentReport)
+        for name, data in payloads.items()
+        if name.startswith("agent_reports/") and name.endswith(".json")
+    ]
+    by_role = {item.agent_role: item for item in agent_reports}
+    ordered = [by_role[item.agent_role] for item in report.agent_execution_records]
+    common = {
+        "assignments": assignments,
+        "storage_root": orchestrator.product_store.revision_root,
+        "storage_revision": read.revision,
+        "storage_transaction_id": read.transaction_id,
+    }
+
+    with pytest.raises(BoundedRiverCallEvError, match="BRC_E_REPLAY"):
+        build_bounded_river_call_ev_provenance(
+            admitted,
+            result,
+            report.model_copy(update={"conclusion": "この結果はGTO戦略です。"}),
+            agent_reports=ordered,
+            **common,
+        )
+
+    forged_agent = ordered[0].model_copy(
+        update={"uncertainties": ["このレンジは正確な実戦レンジです。"]}
+    )
+    forged_sections = [dict(item) for item in report.analysis_sections]
+    forged_sections[0]["uncertainties"] = list(forged_agent.uncertainties)
+    with pytest.raises(BoundedRiverCallEvError, match="BRC_E_CONTEXT"):
+        build_bounded_river_call_ev_provenance(
+            admitted,
+            result,
+            report.model_copy(update={"analysis_sections": forged_sections}, deep=True),
+            agent_reports=[forged_agent, *ordered[1:]],
+            **common,
+        )
+
+
+def test_failed_terminal_rejects_context_semantic_tamper(tmp_path: Path) -> None:
+    admitted = admission(run_id="run-river-failed-terminal-security")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+    assert report.run_status == "failed_with_limitations"
+    read = orchestrator.product_store.read_current(report.run_id)
+    payloads = {
+        item.inventory.logical_name: item.exact_bytes
+        for item in read.payloads
+        if item.inventory.logical_name != "lifecycle_audit.json"
+    }
+    records = json.loads(payloads["agent_execution_records.json"])
+    records[0]["context_consumer_runtime"] = "forged-runtime"
+    payloads["agent_execution_records.json"] = canonical_json_bytes(records)
+
+    with pytest.raises(CanonicalStorageError):
+        product_payload_commitments(
+            payloads,
+            run_id=report.run_id,
+            status="failed",
+            revision=read.revision,
+            revision_root=orchestrator.product_store.revision_root,
+            transaction_id=read.transaction_id,
         )
 
 

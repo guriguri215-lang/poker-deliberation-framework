@@ -1517,6 +1517,41 @@ def verify_bounded_candidate(candidate: BoundedIntakeCandidateV1) -> BoundedInta
     return candidate
 
 
+def verify_bounded_source_candidate(
+    source_bytes: bytes,
+    candidate: BoundedIntakeCandidateV1,
+) -> BoundedIntakeCandidateV1:
+    """Rebind exact source bytes without re-running any calculator-backed parser step."""
+
+    candidate = verify_bounded_candidate(candidate)
+    projection = candidate.projection
+    source, _ = validate_bounded_source(
+        source_bytes,
+        source_id=projection.source.source_id,
+        source_kind=projection.source.source_kind,
+        license_classification=projection.source.license_classification,
+        usage_classification=projection.source.usage_classification,
+        classification=projection.source.classification,
+    )
+    if source != projection.source:
+        _fail(BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING, "source")
+    for binding in projection.source_bindings:
+        if (
+            binding.source_sha256 != source.content_sha256
+            or binding.end_byte > len(source_bytes)
+            or binding.lexeme_sha256
+            != _bytes_domain_sha256(
+                BOUNDED_NL_BINDINGS_CANONICALIZATION_ID + ":lexeme",
+                source_bytes[binding.start_byte : binding.end_byte],
+            )
+        ):
+            _fail(
+                BoundedNaturalLanguageDiagnosticCode.CONFIRMATION_BINDING,
+                "candidate.source_bindings",
+            )
+    return candidate
+
+
 def _strict_bounded_confirmation_authority(
     authority: BoundedConfirmationAuthorityV1,
 ) -> BoundedConfirmationAuthorityV1:

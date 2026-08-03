@@ -2,7 +2,8 @@
 
 このリポジトリをCodexのワークスペースとして開き、以下のプロンプトをそのまま入力します。
 `$review-poker-hand`、`$run-poker-calculation`、`$audit-poker-claim`は、このリポジトリに
-同梱されたSkillを明示的に選ぶ記法です。CLIを直接試す場合は[README](../README.md#cli)を参照してください。
+同梱されたSkillを明示的に選ぶ記法です。CLIを直接試す場合は
+[READMEのMinimal example](../README.md#minimal-example)を参照してください。
 
 ## 1. ハンド履歴を貼り付けて一括レビューする
 

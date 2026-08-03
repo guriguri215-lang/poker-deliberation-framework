@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "poker-deliberation-framework"
 version = "0.1.0"
-description = "Auditable, reproducible multi-agent poker analysis framework"
+description = "Local-first Python research toolkit for auditable poker calculations and bounded NLHE reviews"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"

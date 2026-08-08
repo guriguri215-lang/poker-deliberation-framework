@@ -176,7 +176,11 @@ def _thread_from_prefix(data: bytes) -> tuple[str | None, bool, tuple[str, ...]]
         if not isinstance(value, dict):
             break
         event_type = value.get("type")
-        if event_type == "thread.started" and isinstance(value.get("thread_id"), str):
+        if (
+            event_type == "thread.started"
+            and isinstance(value.get("thread_id"), str)
+            and value["thread_id"]
+        ):
             thread = cast(str, value["thread_id"])
         elif event_type == "turn.started":
             launched = True

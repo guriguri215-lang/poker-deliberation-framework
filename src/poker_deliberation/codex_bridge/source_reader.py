@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from dataclasses import dataclass
 from fractions import Fraction
@@ -21,6 +22,7 @@ from poker_deliberation.bounded_natural_language_models import (
     BOUNDED_NL_SOURCE_CANONICALIZATION_ID,
     BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID,
 )
+from poker_deliberation.bounded_river_call_ev import bounded_river_call_ev_report_projection
 from poker_deliberation.bounded_river_call_ev_models import (
     AUTHORITY_HASH_DOMAIN,
     BOUNDED_CANDIDATE_HASH_DOMAIN,
@@ -76,7 +78,11 @@ from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
     AgentReport,
+    Assumption,
     CaseInput,
+    Claim,
+    ConfidenceGrade,
+    EpistemicLabel,
     FinalReport,
     ToolResult,
 )
@@ -108,6 +114,31 @@ from poker_deliberation.tools.numeric import close_ulps
 
 _MAX_ADMISSION_RECORD_BYTES = 1_000_000
 _TERMINAL_ROOT_HASH_DOMAIN = "poker-bounded-river-call-ev-terminal-revision-root-v1"
+_SOLVER_LIMITATION = "外部ソルバーの実行・収束確認なしにGTOまたは均衡を主張していません。"
+_HAND_VALIDATOR_LIMITATIONS = [
+    "Site-specific rules, rake timing, straddles, returned uncalled bets, "
+    "and side pots need explicit data."
+]
+_TOOL_MAX_DURATION_SECONDS = 30.0
+_TOOL_ASSUMPTIONS = {
+    "hand_validator": [
+        "Action amounts are incremental; unsupported site rules remain limitations."
+    ],
+    "hand_pot_ledger": [
+        "Action amounts use the caller-declared canonical decimal chip unit.",
+        "Only generic_nlhe_cash_no_rake_v1 version 1.0.0 and supported site none apply.",
+        "No winner assignment, payout split, rake, or hand-strength evaluation is made.",
+    ],
+    "pot_odds": ["All amounts use one currency or chip unit."],
+    "range_validate": [
+        "Exactly one versioned range is bound to one non-hero target player.",
+        "Source content is USER_CLAIM or ASSUMPTION, never solver-inferred.",
+        "Only approved local-analysis or repository-owned source rights are accepted.",
+    ],
+    "combos": ["Cards use canonical two-character notation."],
+    "holdem_equity": ["Heads-up only; weighted combo independence before overlap filtering."],
+    "raked_call_ev": ["No future betting; supplied equity; rake is taken from the final pot."],
+}
 _P3_SUCCESS_ARTIFACTS = frozenset(
     {
         BOUNDED_RIVER_CALL_EV_SOURCE_ARTIFACT,
@@ -601,6 +632,7 @@ def _verify_case_and_report_ledger(
     candidate: BoundedRiverCallEvCandidateV1,
     binding: BoundedRiverCallEvBindingV1,
     range_equity_binding: VersionedRangeRiverEquityBindingV1,
+    result: BoundedRiverCallEvResultV1,
     case: CaseInput,
     report: FinalReport,
     assignments: tuple[AgentAssignment, ...],
@@ -628,15 +660,32 @@ def _verify_case_and_report_ledger(
     }
     focal = bounded_projection.focal_decision
     case_focal = case.focal_decision
-    source_status_matches = (
-        len(case.claims) == 1
-        and case.claims[0].claim_id == f"range-source-{projection.intake_id}"
-        and not case.assumptions
-        if projection.range_definition.source.content_status == "USER_CLAIM"
-        else len(case.assumptions) == 1
-        and case.assumptions[0].assumption_id == f"range-source-{projection.intake_id}"
-        and not case.claims
+    expected_claims: list[Claim] = []
+    expected_assumptions: list[Assumption] = []
+    if projection.range_definition.source.content_status == "USER_CLAIM":
+        expected_claims.append(
+            Claim(
+                claim_id=f"range-source-{projection.intake_id}",
+                text="明示された相手レンジはユーザー提供情報です。",
+                label=EpistemicLabel.USER_CLAIM,
+                confidence=ConfidenceGrade.C,
+                limitations=["実戦での正確性は未検証です。"],
+            )
+        )
+    else:
+        expected_assumptions.append(
+            Assumption(
+                assumption_id=f"range-source-{projection.intake_id}",
+                text="明示された相手レンジを計算モデルの仮定として使用します。",
+                reason=("自然言語から推測せず、別入力のVersionedRangeDefinitionV1を使用するため。"),
+                sensitivity="レンジを変更するとequityとcall EVが変化します。",
+            )
+        )
+    conclusion, calculated_claim, alternatives, added_limitations = (
+        bounded_river_call_ev_report_projection(result)
     )
+    expected_report_claims = [*expected_claims, calculated_claim]
+    expected_limitations = list(dict.fromkeys([_SOLVER_LIMITATION, *added_limitations]))
     if (
         case.raw_text is not None
         or case.hand is None
@@ -647,7 +696,8 @@ def _verify_case_and_report_ledger(
         or case.objective != "bounded_river_call_or_fold_exact_ev"
         or case.realized_result is not None
         or case.evidence
-        or not source_status_matches
+        or case.claims != expected_claims
+        or case.assumptions != expected_assumptions
         or case_focal is None
         or case_focal.street.value != "river"
         or case_focal.action_index != focal.hero_action_index
@@ -661,8 +711,18 @@ def _verify_case_and_report_ledger(
         or case.metadata.get("tool_inputs") != expected_tool_inputs
         or report.run_id != binding.run_id
         or report.run_status != "completed"
+        or report.data_quality
+        or report.conclusion != conclusion
+        or report.confidence is not ConfidenceGrade.A
+        or report.claim_assessments != expected_report_claims
+        or report.alternatives != alternatives
+        or report.limitations != expected_limitations
         or report.reconstructed_input != case.model_dump(mode="json")
         or report.agent_execution_records != list(execution_records)
+        or any(
+            record.status.value != "completed" or record.error is not None
+            for record in execution_records
+        )
         or expected_roles != tuple(item.agent_role for item in execution_records)
         or expected_roles != tuple(item.agent_role for item in agent_reports)
         or any(
@@ -687,6 +747,100 @@ def _verify_case_and_report_ledger(
         ]
     ):
         raise P3TerminalSourceReadError("P3-030C CaseInput and FinalReport ledgers differ")
+
+
+def _verify_success_report_remaining_fields(
+    read: VerifiedRunReadV2,
+    *,
+    source_revision_root: Path,
+    confirmation: BoundedRiverCallEvConfirmationV1,
+    provenance: BoundedRiverCallEvProvenanceV1,
+    execution_records: tuple[AgentExecutionRecord, ...],
+    report: FinalReport,
+) -> None:
+    """Fail closed on successful-report fields outside the typed math projection."""
+
+    if (
+        report.data_quality
+        or report.sensitivity
+        or report.disputes
+        or report.evidence
+        or report.approvals
+        or report.security_events
+        or _payload(read, "approvals.json") != b"[]"
+        or _payload(read, "disputes.json") != b"[]"
+        or _payload(read, "security_events.json") != b"[]"
+        or _payload(read, "evidence.jsonl") != b""
+        or read.completion_marker is None
+    ):
+        raise P3TerminalSourceReadError("P3-030C successful report authority fields differ")
+
+    generated_at = report.generated_at
+    lower_bound = max(
+        provenance.admitted_at,
+        *(record.completed_at for record in execution_records),
+        *(result.created_at for result in report.tool_results),
+    )
+    upper_bound = min(
+        confirmation.expires_at,
+        read.manifest.updated_at,
+        read.completion_marker.published_at,
+        read.pointer.published_at,
+    )
+    if (
+        generated_at.tzinfo is None
+        or generated_at.utcoffset() is None
+        or generated_at < lower_bound
+        or generated_at > upper_bound
+        or any(
+            record.started_at.tzinfo is None
+            or record.started_at.utcoffset() is None
+            or record.completed_at.tzinfo is None
+            or record.completed_at.utcoffset() is None
+            or record.started_at < provenance.admitted_at
+            or record.completed_at < record.started_at
+            or record.completed_at > generated_at
+            for record in execution_records
+        )
+        or any(
+            result.created_at.tzinfo is None
+            or result.created_at.utcoffset() is None
+            or result.created_at < provenance.admitted_at
+            or result.created_at > generated_at
+            for result in report.tool_results
+        )
+    ):
+        raise P3TerminalSourceReadError("P3-030C successful report timestamp ledger differs")
+
+    expected_steps = [
+        "argv-json: "
+        + json.dumps(
+            [
+                "poker-deliberate",
+                "calculate",
+                result.tool_name,
+                "--analysis-scope",
+                "retrospective",
+                "--input",
+                str(
+                    source_revision_root
+                    / "runs"
+                    / report.run_id
+                    / ".terminal-store"
+                    / "revisions"
+                    / f"r{read.revision}-{read.transaction_id}"
+                    / "payload"
+                    / "tool_results"
+                    / f"{result.result_id}.input.json"
+                ),
+            ],
+            ensure_ascii=False,
+        )
+        for result in report.tool_results
+        if result.reproduce_command is not None
+    ]
+    if report.reproduction_steps != expected_steps:
+        raise P3TerminalSourceReadError("P3-030C successful report reproduction ledger differs")
 
 
 def _verify_tool_result_ledger(
@@ -773,6 +927,14 @@ def _verify_tool_result_ledger(
 def _verify_tool_contract_metadata(results: dict[str, ToolResult]) -> None:
     for tool_name, result in results.items():
         expected_numeric, expected_qualifier, expected_method = _TOOL_CONTRACT_METADATA[tool_name]
+        expected_warnings = (
+            []
+            if expected_numeric == "exact"
+            else [
+                "legacy exactness='exact' is only a compatibility projection; "
+                f"use numeric_exactness='{expected_numeric}'"
+            ]
+        )
         if (
             result.tool_name != tool_name
             or frozenset(result.output) != _TOOL_OUTPUT_KEYS[tool_name]
@@ -783,13 +945,19 @@ def _verify_tool_contract_metadata(results: dict[str, ToolResult]) -> None:
             or result.version != "1.0.0"
             or result.model_qualifier != expected_qualifier
             or result.method != expected_method
+            or result.assumptions != _TOOL_ASSUMPTIONS[tool_name]
             or result.stochastic is not None
             or result.seed is not None
             or result.samples is not None
             or result.iterations is not None
             or result.confidence_interval is not None
             or result.confidence_level is not None
+            or result.error_metadata is not None
+            or result.stopping_condition is not None
+            or not 0.0 <= result.duration_seconds <= _TOOL_MAX_DURATION_SECONDS
+            or result.warnings != expected_warnings
             or result.error is not None
+            or ((expected_numeric == "floating-verified") != (result.verification is not None))
             or result.reproduce_command
             != (
                 f"poker-deliberate calculate {tool_name} --analysis-scope retrospective "
@@ -928,6 +1096,257 @@ def _valid_hand_validator_nested_shapes(
     return True
 
 
+def _hand_value_units(value: float, chip_unit: Fraction) -> int | None:
+    quotient = Fraction(str(value)) / chip_unit
+    if quotient.denominator != 1 or quotient < 0:
+        return None
+    return quotient.numerator
+
+
+def _hand_validator_tolerance(candidate: BoundedRiverCallEvCandidateV1) -> float:
+    hand = candidate.projection.bounded_candidate.projection.hand
+    magnitudes = [
+        hand.small_blind,
+        hand.big_blind,
+        hand.ante,
+        *(player.starting_stack for player in hand.players),
+    ]
+    for action in hand.actions:
+        magnitudes.extend(
+            value
+            for value in (action.amount, action.to_amount, action.pot_before, action.pot_after)
+            if value is not None
+        )
+    scale = max(1.0, *(abs(value) for value in magnitudes))
+    operation_bound = max(32, 4 * (len(hand.actions) + len(hand.players)))
+    return math.ulp(scale) * operation_bound
+
+
+def _validator_amount_matches(
+    observed: object,
+    expected_units: int,
+    chip_unit: Fraction,
+    tolerance: float,
+) -> bool:
+    return _is_number(observed) and math.isclose(
+        float(observed),
+        float(expected_units * chip_unit),
+        rel_tol=0.0,
+        abs_tol=tolerance,
+    )
+
+
+def _hand_validator_matches_authority(
+    validator: HandValidatorOutput,
+    candidate: BoundedRiverCallEvCandidateV1,
+    ledger: HandPotLedgerOutputV1,
+    chip_unit: Fraction,
+) -> bool:
+    """Bind every persisted validator replay field to hand and integer-ledger authority."""
+
+    hand = candidate.projection.bounded_candidate.projection.hand
+    if (
+        not _valid_hand_validator_nested_shapes(validator, candidate)
+        or len(ledger.ledger_actions) != len(hand.actions)
+        or any(action.action in {"all_in", "post_ante"} for action in hand.actions)
+    ):
+        return False
+    tolerance = _hand_validator_tolerance(candidate)
+    if (
+        validator.verification_tolerance != tolerance
+        or not validator.valid
+        or validator.errors
+        or validator.warnings
+        or validator.limitations != _HAND_VALIDATOR_LIMITATIONS
+    ):
+        return False
+
+    player_ids = {player.player_id for player in hand.players}
+    starting_units = {
+        player.player_id: _hand_value_units(player.starting_stack, chip_unit)
+        for player in hand.players
+    }
+    remaining_units: dict[str, int] = {}
+    for player_id, value in starting_units.items():
+        if value is None:
+            return False
+        remaining_units[player_id] = value
+    total_contribution_units = dict.fromkeys(player_ids, 0)
+    street_contribution_units = dict.fromkeys(player_ids, 0)
+    active_players = set(player_ids)
+    all_in_players: set[str] = set()
+    current_street: str | None = None
+    current_bet_units = 0
+    pot_units = 0
+    history: list[str] = []
+
+    for index, (action, stored_action, snapshot, reconstructed) in enumerate(
+        zip(
+            hand.actions,
+            ledger.ledger_actions,
+            validator.decision_snapshots,
+            validator.reconstructed_actions,
+            strict=True,
+        )
+    ):
+        street = action.street.value
+        if street != current_street:
+            current_street = street
+            street_contribution_units = dict.fromkeys(player_ids, 0)
+            current_bet_units = 0
+        committed_units = _hand_value_units(action.amount, chip_unit)
+        if committed_units is None or action.actor not in remaining_units:
+            return False
+        actor_invested_units = street_contribution_units[action.actor]
+        stack_before_units = remaining_units[action.actor]
+        to_call_units = max(0, current_bet_units - actor_invested_units)
+        actual_call_units = (
+            min(to_call_units, stack_before_units) if action.action == "call" else None
+        )
+        contestable_pot_units = pot_units
+        side_pot_risk = False
+        if actual_call_units is not None and actual_call_units < to_call_units:
+            caller_cap = actor_invested_units + actual_call_units
+            prior_street_and_antes = max(
+                0,
+                pot_units - sum(street_contribution_units.values()),
+            )
+            contestable_pot_units = prior_street_and_antes + sum(
+                min(contribution, caller_cap) for contribution in street_contribution_units.values()
+            )
+            side_pot_risk = len(active_players) > 2
+
+        if (
+            snapshot.get("street") != street
+            or snapshot.get("action_index") != index
+            or snapshot.get("actor") != action.actor
+            or snapshot.get("board") != _visible_board(hand.board, street)
+            or not _validator_amount_matches(
+                snapshot.get("pot_before"), pot_units, chip_unit, tolerance
+            )
+            or not _validator_amount_matches(
+                snapshot.get("to_call"), to_call_units, chip_unit, tolerance
+            )
+            or not _validator_amount_matches(
+                snapshot.get("contestable_pot"),
+                contestable_pot_units,
+                chip_unit,
+                tolerance,
+            )
+            or not _validator_amount_matches(
+                snapshot.get("current_bet"), current_bet_units, chip_unit, tolerance
+            )
+            or not _validator_amount_matches(
+                snapshot.get("actor_invested"),
+                actor_invested_units,
+                chip_unit,
+                tolerance,
+            )
+            or not _validator_amount_matches(
+                snapshot.get("stack_behind"), stack_before_units, chip_unit, tolerance
+            )
+            or (
+                snapshot.get("actual_call") is not None
+                if actual_call_units is None
+                else not _validator_amount_matches(
+                    snapshot.get("actual_call"), actual_call_units, chip_unit, tolerance
+                )
+            )
+            or snapshot.get("history_before") != history
+            or snapshot.get("facing_action")
+            != (
+                f"facing bet/raise, to_call={float(to_call_units * chip_unit):g}"
+                if float(to_call_units * chip_unit) > tolerance
+                else "unopened"
+            )
+            or snapshot.get("side_pot_risk") is not side_pot_risk
+        ):
+            return False
+
+        next_street_contribution = actor_invested_units
+        if action.action in {"post_blind", "call", "bet", "raise"}:
+            next_street_contribution += committed_units
+        next_total_contribution = total_contribution_units[action.actor] + committed_units
+        next_remaining = stack_before_units - committed_units
+        if next_remaining < 0:
+            return False
+        next_pot = pot_units + committed_units
+        street_contribution_units[action.actor] = next_street_contribution
+        next_current_bet = max(street_contribution_units.values(), default=0)
+        if (
+            stored_action.action_index != index
+            or stored_action.street != street
+            or stored_action.actor != action.actor
+            or stored_action.action != action.action
+            or stored_action.committed_units != committed_units
+            or stored_action.street_contribution_units_after != next_street_contribution
+            or stored_action.total_contribution_units_after != next_total_contribution
+            or stored_action.remaining_stack_units_after != next_remaining
+            or stored_action.pot_units_after != next_pot
+            or stored_action.current_bet_units_after != next_current_bet
+            or (
+                action.pot_before is not None
+                and not _validator_amount_matches(
+                    action.pot_before, pot_units, chip_unit, tolerance
+                )
+            )
+            or (
+                action.pot_after is not None
+                and not _validator_amount_matches(action.pot_after, next_pot, chip_unit, tolerance)
+            )
+        ):
+            return False
+
+        total_contribution_units[action.actor] = next_total_contribution
+        remaining_units[action.actor] = next_remaining
+        pot_units = next_pot
+        current_bet_units = next_current_bet
+        if action.action == "fold":
+            active_players.discard(action.actor)
+        if next_remaining == 0:
+            all_in_players.add(action.actor)
+
+        stacks_after = reconstructed.get("stacks_after")
+        if (
+            reconstructed.get("index") != index
+            or not _validator_amount_matches(
+                reconstructed.get("pot_after"), pot_units, chip_unit, tolerance
+            )
+            or not isinstance(stacks_after, dict)
+            or set(stacks_after) != player_ids
+            or any(
+                not _validator_amount_matches(
+                    stacks_after.get(player_id),
+                    remaining_units[player_id],
+                    chip_unit,
+                    tolerance,
+                )
+                for player_id in player_ids
+            )
+            or reconstructed.get("active_players") != sorted(active_players)
+            or reconstructed.get("all_in_players") != sorted(all_in_players)
+        ):
+            return False
+
+        amount = f" amount={action.amount:g}" if action.amount else ""
+        to_amount = f" to={action.to_amount:g}" if action.to_amount is not None else ""
+        history.append(f"{street}: {action.actor} {action.action}{amount}{to_amount}")
+
+    return (
+        _validator_amount_matches(validator.final_pot, pot_units, chip_unit, tolerance)
+        and set(validator.remaining_stacks) == player_ids
+        and all(
+            _validator_amount_matches(
+                validator.remaining_stacks.get(player_id),
+                remaining_units[player_id],
+                chip_unit,
+                tolerance,
+            )
+            for player_id in player_ids
+        )
+    )
+
+
 def _combo_key(first: str, second: str) -> tuple[str, str]:
     return (first, second) if first.encode("ascii") < second.encode("ascii") else (second, first)
 
@@ -957,6 +1376,46 @@ def _normalized_combo_weights(
     return weights
 
 
+def _verification_observation(
+    label: str,
+    actual: float,
+    expected: float,
+    *,
+    ulps: int,
+) -> str:
+    bound = math.ulp(max(abs(actual), abs(expected), 1.0)) * ulps
+    return f"{label}: actual={actual!r}, expected={expected!r}, bound={bound!r}"
+
+
+def _verification_payload(
+    *,
+    checks: list[str],
+    observations: list[str],
+    fields: list[str],
+    ulps: int,
+    rationale: str,
+    formula: str | None = None,
+    absolute: float | None = None,
+    unit: str = "output field unit",
+) -> dict[str, object]:
+    return {
+        "method": "executed tool-specific invariant checks",
+        "checks": checks,
+        "observations": observations,
+        "tolerance": {
+            "fields": fields,
+            "kind": "ulp",
+            "absolute": absolute,
+            "relative": None,
+            "ulps": ulps,
+            "formula": formula,
+            "unit": unit,
+            "rationale": rationale,
+        },
+        "passed": True,
+    }
+
+
 def _verify_tool_result_semantics(
     candidate: BoundedRiverCallEvCandidateV1,
     result: BoundedRiverCallEvResultV1,
@@ -984,6 +1443,10 @@ def _verify_tool_result_semantics(
         canonical_json_bytes(range_results["hand_validator"].output),
         strict=True,
     )
+    ledger = HandPotLedgerOutputV1.model_validate_json(
+        canonical_json_bytes(range_results["hand_pot_ledger"].output),
+        strict=True,
+    )
     focal_snapshot = next(
         (
             item
@@ -995,7 +1458,7 @@ def _verify_tool_result_semantics(
     if (
         not validator.valid
         or validator.errors
-        or not _valid_hand_validator_nested_shapes(validator, candidate)
+        or not _hand_validator_matches_authority(validator, candidate, ledger, chip_unit)
         or not close_ulps(
             validator.final_pot,
             float(call_model.pot_after_bet_units * chip_unit),
@@ -1021,10 +1484,6 @@ def _verify_tool_result_semantics(
     ):
         raise P3TerminalSourceReadError("P3-030C hand validation output differs")
 
-    ledger = HandPotLedgerOutputV1.model_validate_json(
-        canonical_json_bytes(range_results["hand_pot_ledger"].output),
-        strict=True,
-    )
     focal_ledger = ledger.ledger_actions[-1]
     if (
         canonical_domain_sha256(
@@ -1128,11 +1587,13 @@ def _verify_tool_result_semantics(
         strict=True,
     )
     observed_weights = _normalized_combo_weights(combos)
-    expected_weights = {
-        _combo_key(item.cards[0], item.cards[1]): (
-            item.weight_millionths / range_result.total_weight_millionths
-        )
+    expected_weight_millionths = {
+        _combo_key(item.cards[0], item.cards[1]): item.weight_millionths
         for item in validation.combos
+    }
+    expected_weights = {
+        cards: weight_millionths / range_result.total_weight_millionths
+        for cards, weight_millionths in expected_weight_millionths.items()
     }
     if (
         combos.range != validation.canonical_notation
@@ -1151,6 +1612,14 @@ def _verify_tool_result_semantics(
         )
     ):
         raise P3TerminalSourceReadError("P3-030C combo output differs")
+    verification_raw_weights = {
+        cards: expected_weight_millionths[cards] / 1_000_000 for cards in observed_weights
+    }
+    verification_total_weight = sum(verification_raw_weights.values())
+    verification_normalized_weights = {
+        cards: weight / verification_total_weight
+        for cards, weight in verification_raw_weights.items()
+    }
 
     equity_input = range_results["holdem_equity"].input
     expected_equity_input = {
@@ -1193,6 +1662,155 @@ def _verify_tool_result_semantics(
     ):
         raise P3TerminalSourceReadError("P3-030C call-EV output differs")
 
+    operation_bound = max(32, 4 * (len(bounded.hand.actions) + len(bounded.hand.players)))
+    equity_outcome_count = (
+        equity_output.unweighted_wins
+        + equity_output.unweighted_ties
+        + equity_output.unweighted_losses
+    )
+    expected_verification = {
+        "hand_validator": _verification_payload(
+            checks=[
+                "card uniqueness",
+                "stack/pot reconstruction",
+                "action legality",
+                "limitation disclosure",
+            ],
+            observations=[
+                "card/action/pot reconstruction: valid=True, errors=0",
+                (f"applied chip tolerance: {validator.verification_tolerance!r} (ulp)"),
+                "limitation disclosure: present",
+            ],
+            fields=["pot and stack comparisons"],
+            ulps=operation_bound,
+            absolute=validator.verification_tolerance,
+            formula=(
+                "default applied ULP count is max(32, 4*(actions+players)); "
+                "caller override is recorded as an absolute bound"
+            ),
+            unit="caller chip unit",
+            rationale=(
+                "Chip comparison precision must scale with the supplied hand rather than "
+                "a global epsilon."
+            ),
+        ),
+        "pot_odds": _verification_payload(
+            checks=["formula identities", "finite typed output"],
+            observations=[
+                *[
+                    _verification_observation(
+                        field,
+                        float(getattr(pot_odds_output, field)),
+                        expected,
+                        ulps=16,
+                    )
+                    for field, expected in (
+                        ("pot_after_opponent_bet", pot_after_bet),
+                        ("final_pot_before_rake", contestable_pot),
+                        ("expected_rake", 0.0),
+                        ("final_pot_after_rake", contestable_pot),
+                        ("required_equity", float(required_equity)),
+                        ("required_equity_percent", float(required_equity) * 100.0),
+                        ("pot_odds_against", pot_after_bet / call_cost),
+                    )
+                ],
+                "finite typed output: passed",
+            ],
+            fields=[
+                "pot_after_opponent_bet",
+                "final_pot_before_rake",
+                "expected_rake",
+                "required_equity",
+                "required_equity_percent",
+                "final_pot_after_rake",
+                "pot_odds_against",
+            ],
+            ulps=16,
+            rationale=("Bounded O(1) IEEE-754 arithmetic; the bound scales with result magnitude."),
+        ),
+        "combos": _verification_payload(
+            checks=["combo count matches list", "normalized weights sum to one"],
+            observations=[
+                _verification_observation(
+                    "total_combo_weight",
+                    float(combos.total_combo_weight),
+                    verification_total_weight,
+                    ulps=32,
+                ),
+                *[
+                    _verification_observation(
+                        f"normalized_weight[{cards}]",
+                        observed_weights[cards],
+                        verification_normalized_weights[cards],
+                        ulps=32,
+                    )
+                    for cards in observed_weights
+                ],
+                _verification_observation(
+                    "normalized_weight_sum",
+                    sum(observed_weights.values()),
+                    1.0,
+                    ulps=32,
+                ),
+            ],
+            fields=["normalized_weights"],
+            ulps=32,
+            rationale=(
+                "Only weighted-range normalization uses binary64; pure combo expansion is exact."
+            ),
+        ),
+        "holdem_equity": _verification_payload(
+            checks=[
+                "outcome counts equal evaluations/samples",
+                "equity and interval lie in [0,1]",
+                "seeded Monte Carlo metadata",
+            ],
+            observations=[
+                (
+                    "outcome counts: "
+                    f"{equity_outcome_count} "
+                    f"== evaluations {equity_output.evaluations}"
+                ),
+                f"equity domain: hero_equity={float(equity_output.hero_equity)!r}",
+                "seeded Monte Carlo metadata: not applicable to complete enumeration",
+            ],
+            fields=["hero_equity"],
+            ulps=128,
+            formula=(
+                "Enumeration bound scales with weighted accumulation length; "
+                "Monte Carlo uses its interval."
+            ),
+            rationale=(
+                "Weighted binary64 accumulation is verified separately from sampling error."
+            ),
+        ),
+        "raked_call_ev": _verification_payload(
+            checks=["EV/rake identities", "model and formula metadata"],
+            observations=[
+                *[
+                    _verification_observation(field, actual, expected, ulps=32)
+                    for field, actual, expected in (
+                        ("rake_amount", call_ev_output.rake_amount, 0.0),
+                        (
+                            "final_pot_after_rake",
+                            call_ev_output.final_pot_after_rake,
+                            contestable_pot,
+                        ),
+                        ("ev", call_ev_output.ev, float(call_ev_amount)),
+                    )
+                ],
+                "model and formula metadata: passed",
+            ],
+            fields=["ev", "rake_amount", "final_pot_after_rake"],
+            ulps=32,
+            rationale="Bounded straight-line binary64 arithmetic with declared inputs.",
+        ),
+    }
+    for tool_name, expected in expected_verification.items():
+        verification = range_results[tool_name].verification
+        if verification is None or verification.model_dump(mode="json") != expected:
+            raise P3TerminalSourceReadError("P3-030C ToolResult verification metadata differs")
+
 
 def _verify_provenance_ledger(
     read: VerifiedRunReadV2,
@@ -1212,6 +1830,14 @@ def _verify_provenance_ledger(
     agent_reports: tuple[AgentReport, ...],
     report: FinalReport,
 ) -> None:
+    _verify_success_report_remaining_fields(
+        read,
+        source_revision_root=source_revision_root,
+        confirmation=confirmation,
+        provenance=provenance,
+        execution_records=execution_records,
+        report=report,
+    )
     expected = {
         "run_id": read.run_id,
         "intake_id": candidate.projection.intake_id,
@@ -1319,6 +1945,7 @@ def read_verified_p3_terminal_source(
             candidate,
             binding,
             range_equity_binding,
+            result,
             case,
             report,
             assignments,

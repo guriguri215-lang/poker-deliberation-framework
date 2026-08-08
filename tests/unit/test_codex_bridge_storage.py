@@ -5,14 +5,29 @@ from pathlib import Path
 
 import pytest
 
+from poker_deliberation.codex_bridge.canonical import BridgeCanonicalError
 from poker_deliberation.codex_bridge.conformance import build_bridge_role_conformance
 from poker_deliberation.codex_bridge.contracts import build_run_plan, build_runtime_policy
-from poker_deliberation.codex_bridge.models import RuntimeAuthModeV1
+from poker_deliberation.codex_bridge.controller import (
+    BoundedCodexBridgeController,
+    role_artifact_name,
+)
+from poker_deliberation.codex_bridge.models import (
+    BoundedCodexBridgeRequestV1,
+    BridgeConfirmationAuthorityV1,
+    BridgeEffectState,
+    BridgeExecutionAuditV1,
+    BridgeRole,
+    BridgeSourceContextV1,
+    RuntimeAuthModeV1,
+)
+from poker_deliberation.codex_bridge.replay import replay_bridge
 from poker_deliberation.codex_bridge.storage import (
     BoundedCodexBridgeStore,
     BridgeStorageError,
     BridgeStoredArtifact,
 )
+from poker_deliberation.codex_bridge.transport import BridgeTransportFailure, BridgeTransportResult
 from tests.codex_bridge_support import REPOSITORY_ROOT, verified_bridge_source
 
 
@@ -212,3 +227,150 @@ def test_history_reader_rejects_canonical_inventory_rollback(tmp_path: Path) -> 
 
     with pytest.raises(BridgeStorageError, match="rolled back"):
         store.read_current(plan.bridge_run_id)
+
+
+class _StepClock:
+    def __init__(self) -> None:
+        self.current = datetime(2029, 12, 31, 23, 40, tzinfo=UTC)
+
+    def __call__(self) -> datetime:
+        value = self.current
+        self.current += timedelta(seconds=1)
+        return value
+
+
+def _prepare_confirmed_partial_thread_run(
+    store: BoundedCodexBridgeStore,
+    *,
+    clock: _StepClock,
+    source: BridgeSourceContextV1,
+    bridge_run_id: str,
+) -> BoundedCodexBridgeController:
+    controller = BoundedCodexBridgeController(store, clock=clock)
+    controller.prepare_run(
+        bridge_run_id=bridge_run_id,
+        source_context=source,
+        repository_root=REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        repository_tree_id="2" * 40,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+    )
+    role = BridgeRole.STRATEGY_ANALYST
+    request = controller.read_role_request(bridge_run_id, role)
+    controller.confirm_role(
+        bridge_run_id,
+        role,
+        authority=BridgeConfirmationAuthorityV1(
+            authority_id=f"authority-{bridge_run_id}",
+            authority_kind="local_user",
+            authentication="self_asserted",
+        ),
+        confirmation_id=f"confirmation-{bridge_run_id}",
+        idempotency_key=f"idempotency-{bridge_run_id}",
+        expected_request_sha256=request.request_sha256,
+        expected_request_bytes_sha256=request.request_bytes_sha256,
+        expected_envelope_sha256=request.context.envelope_sha256,
+        expected_runtime_policy_sha256=request.context.runtime_policy.policy_sha256,
+        expected_auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+        expected_runtime_identity=request.context.runtime_policy.runtime_identity,
+        expected_model_provider=request.context.runtime_policy.model_provider,
+        expected_model=request.context.runtime_policy.model,
+        expected_credential_reference=request.context.runtime_policy.credential_reference,
+        expected_remote_retention_policy=(request.context.runtime_policy.remote_retention_policy),
+    )
+    return controller
+
+
+class _PartialThreadFailureTransport:
+    auth_mode = RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+    transport_qualification = "deterministic_fixture"
+
+    def __init__(self, *, clock: _StepClock, thread_sha256: str) -> None:
+        self.clock = clock
+        self.thread_sha256 = thread_sha256
+
+    def execute(self, request: BoundedCodexBridgeRequestV1) -> BridgeTransportResult:
+        raise BridgeTransportFailure(
+            "subscription_protocol_or_output_invalid",
+            effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+            launched_at=None,
+            completed_at=self.clock(),
+            duration_ms=1,
+            stream_bytes=64,
+            thread_id_sha256=self.thread_sha256,
+            turn_id_sha256=None,
+        )
+
+
+def test_partial_thread_claim_is_global_replayable_and_corruption_blocks_history(
+    tmp_path: Path,
+) -> None:
+    source = verified_bridge_source(tmp_path / "p3")
+    store = BoundedCodexBridgeStore(tmp_path / "bridge")
+    clock = _StepClock()
+    role = BridgeRole.STRATEGY_ANALYST
+    thread_sha256 = "a" * 64
+    first_run_id = "bridge-run-partial-thread-first"
+    first = _prepare_confirmed_partial_thread_run(
+        store,
+        clock=clock,
+        source=source,
+        bridge_run_id=first_run_id,
+    )
+    first_terminal = first.execute_confirmed_role(
+        first_run_id,
+        role,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        transport=_PartialThreadFailureTransport(
+            clock=clock,
+            thread_sha256=thread_sha256,
+        ),
+    )
+    first_audit = next(
+        item.model
+        for item in first_terminal.decoded_artifacts()
+        if item.logical_name == role_artifact_name(role, "audit")
+    )
+    assert isinstance(first_audit, BridgeExecutionAuditV1)
+    assert first_audit.thread_id_sha256 == thread_sha256
+    assert first_audit.turn_id_sha256 is None
+    assert replay_bridge(first_terminal).reconciliation_required is True
+    claim_path = store.root / ".i" / f"thread-{thread_sha256}.json"
+    assert claim_path.is_file()
+    assert not tuple((store.root / ".i").glob("turn-*.json"))
+
+    second_run_id = "bridge-run-partial-thread-second"
+    second = _prepare_confirmed_partial_thread_run(
+        store,
+        clock=clock,
+        source=source,
+        bridge_run_id=second_run_id,
+    )
+    second_terminal = second.execute_confirmed_role(
+        second_run_id,
+        role,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        transport=_PartialThreadFailureTransport(
+            clock=clock,
+            thread_sha256=thread_sha256,
+        ),
+    )
+    second_audit = next(
+        item.model
+        for item in second_terminal.decoded_artifacts()
+        if item.logical_name == role_artifact_name(role, "audit")
+    )
+    assert isinstance(second_audit, BridgeExecutionAuditV1)
+    assert second_audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+    assert second_audit.failure_reason_code == "execution_identity_registry_rejected"
+    assert second_audit.thread_id_sha256 == thread_sha256
+    assert second_audit.turn_id_sha256 is None
+    assert replay_bridge(second_terminal).reconciliation_required is True
+
+    claim_path.write_bytes(b"{}")
+    with pytest.raises(BridgeCanonicalError, match="strict schema"):
+        store.read_current(first_run_id)
+    with pytest.raises(BridgeStorageError, match="identity registry history"):
+        store.verify_execution_identity_history()

@@ -1476,6 +1476,8 @@ class BridgeExecutionAuditV1(_BridgeModel):
     observed_service_tier: Literal["default"] | None
     observed_identity_sha256: Sha256 | None
     effect_state: BridgeEffectState
+    # A transport can durably observe thread.started before turn.started. In that
+    # narrow effect-unknown state the thread hash is retained without inventing a turn.
     thread_id_sha256: Sha256 | None
     turn_id_sha256: Sha256 | None
     launched_at: datetime | None
@@ -1552,13 +1554,21 @@ class BridgeExecutionAuditV1(_BridgeModel):
         }.get(self.effect_state, "not_requested")
         if self.cancellation_kind != expected_cancellation_kind:
             raise ValueError("execution cancellation kind does not match effect state")
-        identifiers_present = self.thread_id_sha256 is not None and self.turn_id_sha256 is not None
-        if (self.thread_id_sha256 is None) != (self.turn_id_sha256 is None):
-            raise ValueError("execution thread and turn identity must be paired")
+        thread_present = self.thread_id_sha256 is not None
+        turn_present = self.turn_id_sha256 is not None
+        identifiers_present = thread_present and turn_present
+        thread_only = thread_present and not turn_present
+        if turn_present and not thread_present:
+            raise ValueError("execution turn identity requires its thread identity")
+        if thread_only and (
+            self.effect_state is not BridgeEffectState.EFFECT_UNKNOWN
+            or self.launched_at is not None
+        ):
+            raise ValueError("partial thread lifecycle evidence is not effect-unknown")
         if definitely_launched and (self.launched_at is None or not identifiers_present):
             raise ValueError("execution launch state mismatch")
         if self.effect_state is BridgeEffectState.NOT_LAUNCHED and (
-            self.launched_at is not None or identifiers_present
+            self.launched_at is not None or thread_present or turn_present
         ):
             raise ValueError("not-launched audit contains runtime identity")
         if succeeded != (self.result_sha256 is not None):

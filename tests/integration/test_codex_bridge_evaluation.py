@@ -33,8 +33,16 @@ def test_deterministic_bridge_evaluation_passes_without_live_transport(
         source_tree_id="2" * 40,
     )
 
-    assert result.passed is True
+    assert result.passed is True, result.case_results
     assert result.overall_score == "1.0"
     assert all(item.passed for item in result.case_results)
+    assert sum(item.declared_checks for item in result.metrics) == 29
+    durable = next(
+        item for item in result.case_results if item.case_id == "durable-effect-recovery"
+    )
+    assert durable.observed_evidence[-3:-1] == (
+        "partial-thread-terminal-publication-and-replay",
+        "partial-thread-claim-collision-and-corruption-refused",
+    )
     assert result.transport_qualification == "deterministic_fixture_only"
     assert result.live_qualification_sha256 is None

@@ -5,9 +5,18 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from poker_deliberation.codex_bridge.canonical import domain_sha256, sha256_bytes
-from poker_deliberation.codex_bridge.contracts import BridgeContractError, admit_role_request
+from poker_deliberation.codex_bridge.canonical import (
+    canonical_json_bytes,
+    domain_sha256,
+    sha256_bytes,
+)
+from poker_deliberation.codex_bridge.contracts import (
+    BridgeContractError,
+    admit_role_request,
+    build_execution_audit,
+)
 from poker_deliberation.codex_bridge.controller import (
     BoundedCodexBridgeController,
     BridgeControllerError,
@@ -21,6 +30,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeConfirmationAuthorityV1,
     BridgeEffectState,
     BridgeExecutionAuditV1,
+    BridgePreExecutionAdmissionV1,
     BridgeRole,
     BridgeRoleConfirmationV1,
     BridgeRoleResultV1,
@@ -993,6 +1003,125 @@ def test_negative_terminal_audit_keeps_typed_transport_evidence(tmp_path: Path) 
     replayed = replay_bridge(terminal)
     assert replayed.total_input_tokens == 123
     assert replayed.total_output_tokens == 45
+
+
+def test_thread_started_before_turn_failure_is_durably_terminal(
+    tmp_path: Path,
+) -> None:
+    clock = StepClock()
+    source = verified_bridge_source(tmp_path / "p3")
+    store = BoundedCodexBridgeStore(tmp_path / "bridge")
+    controller = BoundedCodexBridgeController(store, clock=clock)
+    controller.prepare_run(
+        bridge_run_id="bridge-run-controller",
+        source_context=source,
+        repository_root=REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        repository_tree_id="2" * 40,
+        auth_mode=_MODE,
+    )
+    _confirm(controller, BridgeRole.STRATEGY_ANALYST)
+    raw_thread_id = "thread-before-turn"
+    thread_hash = sha256_bytes(raw_thread_id.encode("utf-8"))
+
+    class _ThreadOnlyFailureTransport:
+        auth_mode = _MODE
+        transport_qualification = "deterministic_fixture"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def execute(self, request: BoundedCodexBridgeRequestV1) -> BridgeTransportResult:
+            self.calls += 1
+            raise BridgeTransportFailure(
+                "subscription_protocol_or_output_invalid",
+                effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+                launched_at=None,
+                completed_at=clock(),
+                duration_ms=1,
+                stream_bytes=91,
+                thread_id_sha256=thread_hash,
+                turn_id_sha256=None,
+            )
+
+    transport = _ThreadOnlyFailureTransport()
+    terminal = controller.execute_confirmed_role(
+        "bridge-run-controller",
+        BridgeRole.STRATEGY_ANALYST,
+        auth_mode=_MODE,
+        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        transport=transport,
+    )
+    audit = next(
+        item.model
+        for item in terminal.decoded_artifacts()
+        if item.logical_name == role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")
+    )
+    assert isinstance(audit, BridgeExecutionAuditV1)
+    assert terminal.pointer.status == "effect_unknown"
+    assert terminal.completion_marker is not None
+    assert audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+    assert audit.thread_id_sha256 == thread_hash
+    assert audit.turn_id_sha256 is None
+    assert audit.launched_at is None
+    assert audit.failure_reason_code == "subscription_protocol_or_output_invalid"
+    assert raw_thread_id.encode("utf-8") not in canonical_json_bytes(audit)
+    replayed = replay_bridge(terminal)
+    assert replayed.status == "effect_unknown"
+    assert replayed.reconciliation_required is True
+    decoded = {item.logical_name: item.model for item in terminal.decoded_artifacts()}
+    request = decoded[role_artifact_name(BridgeRole.STRATEGY_ANALYST, "request")]
+    confirmation = decoded[role_artifact_name(BridgeRole.STRATEGY_ANALYST, "confirmation")]
+    admission = decoded[role_artifact_name(BridgeRole.STRATEGY_ANALYST, "admission")]
+    assert isinstance(request, BoundedCodexBridgeRequestV1)
+    assert isinstance(confirmation, BridgeRoleConfirmationV1)
+    assert isinstance(admission, BridgePreExecutionAdmissionV1)
+    failure_common = {
+        "request": request,
+        "confirmation": confirmation,
+        "admission": admission,
+        "transport_qualification": "deterministic_fixture",
+        "completed_at": clock(),
+        "duration_ms": 1,
+        "usage": None,
+        "response_bytes": None,
+        "stream_bytes": 91,
+        "unexpected_item_types": (),
+        "cancellation_kind": "not_requested",
+        "result_sha256": None,
+        "failure_reason_code": "subscription_protocol_or_output_invalid",
+        "model_identity_evidence": "unavailable",
+        "observed_model": None,
+        "observed_model_provider": None,
+        "observed_reasoning_effort": None,
+        "observed_service_tier": None,
+        "observed_identity_sha256": None,
+    }
+    with pytest.raises(ValidationError, match="turn identity requires"):
+        build_execution_audit(  # type: ignore[arg-type]
+            **failure_common,
+            effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+            thread_id_sha256=None,
+            turn_id_sha256="b" * 64,
+            launched_at=None,
+        )
+    with pytest.raises(ValidationError, match="partial thread lifecycle"):
+        build_execution_audit(  # type: ignore[arg-type]
+            **failure_common,
+            effect_state=BridgeEffectState.FAILED,
+            thread_id_sha256=thread_hash,
+            turn_id_sha256=None,
+            launched_at=clock(),
+        )
+    with pytest.raises(BridgeControllerError, match="terminal bridge run"):
+        controller.execute_confirmed_role(
+            "bridge-run-controller",
+            BridgeRole.STRATEGY_ANALYST,
+            auth_mode=_MODE,
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            transport=transport,
+        )
+    assert transport.calls == 1
 
 
 @pytest.mark.parametrize(

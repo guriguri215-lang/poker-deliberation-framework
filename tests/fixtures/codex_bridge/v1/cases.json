@@ -64,6 +64,8 @@
         "admission-is-durable-before-transport",
         "failure-states-terminal-without-retry",
         "effect-unknown-requires-reconciliation",
+        "partial-thread-terminal-publication-and-replay",
+        "partial-thread-claim-collision-and-corruption-refused",
         "local-source-solver-unavailable-no-gto"
       ]
     }

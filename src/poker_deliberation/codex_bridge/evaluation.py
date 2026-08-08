@@ -18,6 +18,7 @@ from poker_deliberation.bounded_river_call_ev_evaluation import (
     verify_bounded_river_call_ev_evaluation_module_origins,
 )
 from poker_deliberation.codex_bridge.canonical import (
+    BridgeCanonicalError,
     canonical_json_bytes,
     domain_sha256,
     parse_canonical_model,
@@ -52,6 +53,7 @@ from poker_deliberation.codex_bridge.sdk_transport import OpenAIAPITransport
 from poker_deliberation.codex_bridge.source import project_verified_p3_terminal
 from poker_deliberation.codex_bridge.storage import (
     BoundedCodexBridgeStore,
+    BridgeStorageError,
     VerifiedBridgeRead,
 )
 from poker_deliberation.codex_bridge.transport import (
@@ -134,6 +136,8 @@ REQUIRED_CASE_EVIDENCE: tuple[tuple[str, EvaluationMetric, tuple[str, ...]], ...
             "admission-is-durable-before-transport",
             "failure-states-terminal-without-retry",
             "effect-unknown-requires-reconciliation",
+            "partial-thread-terminal-publication-and-replay",
+            "partial-thread-claim-collision-and-corruption-refused",
             "local-source-solver-unavailable-no-gto",
         ),
     ),
@@ -836,6 +840,28 @@ class _UnknownCrashTransport:
         raise RuntimeError("synthetic transport crash")
 
 
+class _ThreadOnlyFailureTransport:
+    auth_mode = _MODE
+    transport_qualification: Literal["deterministic_fixture"] = "deterministic_fixture"
+
+    def __init__(self, thread_id_sha256: str) -> None:
+        self.thread_id_sha256 = thread_id_sha256
+        self.calls = 0
+
+    def execute(self, request: BoundedCodexBridgeRequestV1) -> NoReturn:
+        self.calls += 1
+        raise BridgeTransportFailure(
+            "fixture-thread-started-before-turn",
+            effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+            launched_at=None,
+            completed_at=datetime(2030, 1, 1, 0, 0, 1, tzinfo=UTC),
+            duration_ms=1,
+            stream_bytes=0,
+            thread_id_sha256=self.thread_id_sha256,
+            turn_id_sha256=None,
+        )
+
+
 def _durable_effect_recovery(context: _Context) -> tuple[str, ...]:
     source = context.source("QcJc", "call")
     controller, clock = context.controller(source, "admission-check")
@@ -892,6 +918,84 @@ def _durable_effect_recovery(context: _Context) -> tuple[str, ...]:
         transport=_UnknownCrashTransport(),
     )
     crash_replay = replay_bridge(crash_read)
+    shared_store = BoundedCodexBridgeStore(context.root / "b-partial-thread-shared")
+    thread_id_sha256 = "c" * 64
+
+    def execute_partial_thread(
+        token: str,
+    ) -> tuple[VerifiedBridgeRead, _ThreadOnlyFailureTransport]:
+        partial_clock = _StepClock()
+        partial_controller = BoundedCodexBridgeController(shared_store, clock=partial_clock)
+        partial_run_id = f"bridge-eval-{token}"
+        partial_controller.prepare_run(
+            bridge_run_id=partial_run_id,
+            source_context=source,
+            repository_root=context.repository_root,
+            repository_commit_id=context.source_commit_id,
+            repository_tree_id=context.source_tree_id,
+            auth_mode=_MODE,
+        )
+        context.confirm(
+            partial_controller,
+            partial_run_id,
+            BridgeRole.STRATEGY_ANALYST,
+            token,
+        )
+        partial_transport = _ThreadOnlyFailureTransport(thread_id_sha256)
+        partial_read = partial_controller.execute_confirmed_role(
+            partial_run_id,
+            BridgeRole.STRATEGY_ANALYST,
+            auth_mode=_MODE,
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            transport=partial_transport,
+        )
+        return partial_read, partial_transport
+
+    first_partial, first_partial_transport = execute_partial_thread("partial-thread-first")
+    first_partial_replay = replay_bridge(first_partial)
+    first_partial_audit = _artifact_models(first_partial)[
+        role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")
+    ]
+    assert isinstance(first_partial_audit, BridgeExecutionAuditV1)
+    claim_path = shared_store.root / ".i" / f"thread-{thread_id_sha256}.json"
+    partial_terminal_replayed = (
+        first_partial.pointer.status == "effect_unknown"
+        and first_partial.completion_marker is not None
+        and first_partial_audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+        and first_partial_audit.thread_id_sha256 == thread_id_sha256
+        and first_partial_audit.turn_id_sha256 is None
+        and first_partial_audit.launched_at is None
+        and first_partial_audit.failure_reason_code == "fixture-thread-started-before-turn"
+        and first_partial_replay.status == "effect_unknown"
+        and first_partial_replay.reconciliation_required
+        and first_partial_transport.calls == 1
+        and claim_path.is_file()
+    )
+    second_partial, second_partial_transport = execute_partial_thread("partial-thread-second")
+    second_partial_replay = replay_bridge(second_partial)
+    second_partial_audit = _artifact_models(second_partial)[
+        role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")
+    ]
+    assert isinstance(second_partial_audit, BridgeExecutionAuditV1)
+    collision_refused = (
+        second_partial.pointer.status == "effect_unknown"
+        and second_partial_audit.thread_id_sha256 == thread_id_sha256
+        and second_partial_audit.turn_id_sha256 is None
+        and second_partial_audit.failure_reason_code == "execution_identity_registry_rejected"
+        and second_partial_replay.reconciliation_required
+        and second_partial_transport.calls == 1
+    )
+    claim_path.write_bytes(b"{}")
+    corruption_refused = False
+    try:
+        shared_store.read_current(first_partial.pointer.bridge_run_id)
+    except BridgeCanonicalError:
+        corruption_refused = True
+    history_corruption_refused = False
+    try:
+        shared_store.verify_execution_identity_history()
+    except BridgeStorageError:
+        history_corruption_refused = True
     evidence: list[str] = []
     if checking.admission_seen:
         evidence.append("admission-is-durable-before-transport")
@@ -903,6 +1007,10 @@ def _durable_effect_recovery(context: _Context) -> tuple[str, ...]:
         evidence.append("failure-states-terminal-without-retry")
     if crash_replay.status == "effect_unknown" and crash_replay.reconciliation_required:
         evidence.append("effect-unknown-requires-reconciliation")
+    if partial_terminal_replayed:
+        evidence.append("partial-thread-terminal-publication-and-replay")
+    if collision_refused and corruption_refused and history_corruption_refused:
+        evidence.append("partial-thread-claim-collision-and-corruption-refused")
     if (
         source.math.solver_status == "unavailable"
         and b"gto" not in canonical_json_bytes(source).lower()

@@ -273,15 +273,22 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
                     estimated_cost_known = False
                 else:
                     estimated_cost += audit.usage.estimated_cost_micro_usd
+        if audit.turn_id_sha256 is not None and audit.thread_id_sha256 is None:
+            raise BridgeReplayError("bridge turn identity lacks its thread identity")
         if audit.thread_id_sha256 is not None:
-            if (
-                audit.thread_id_sha256 in thread_ids
-                or audit.turn_id_sha256 is None
-                or audit.turn_id_sha256 in turn_ids
-            ):
+            if audit.thread_id_sha256 in thread_ids:
                 raise BridgeReplayError("bridge thread or turn identity was reused")
             thread_ids.add(audit.thread_id_sha256)
-            turn_ids.add(audit.turn_id_sha256)
+            if audit.turn_id_sha256 is None:
+                if (
+                    audit.effect_state is not BridgeEffectState.EFFECT_UNKNOWN
+                    or audit.launched_at is not None
+                ):
+                    raise BridgeReplayError("bridge partial thread evidence is not effect-unknown")
+            else:
+                if audit.turn_id_sha256 in turn_ids:
+                    raise BridgeReplayError("bridge thread or turn identity was reused")
+                turn_ids.add(audit.turn_id_sha256)
         if audit.effect_state is BridgeEffectState.SUCCEEDED:
             if tuple(completed) != BRIDGE_ROLE_ORDER[:ordinal]:
                 raise BridgeReplayError("bridge completed roles are not a continuous prefix")

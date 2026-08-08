@@ -611,14 +611,17 @@ class BoundedCodexBridgeStore:
     def claim_execution_identity(self, audit: BridgeExecutionAuditV1) -> None:
         """Exclusively reserve runtime thread/turn hashes across this bridge namespace."""
 
-        if audit.thread_id_sha256 is None or audit.turn_id_sha256 is None:
+        if audit.thread_id_sha256 is None and audit.turn_id_sha256 is None:
             return
+        if audit.thread_id_sha256 is None:
+            raise BridgeStorageError("execution turn identity lacks its thread identity")
         claims: list[tuple[Path, BridgeExecutionIdentityClaimV1]] = []
         identities = self.root / ".i"
-        for kind, identity_sha in (
+        observed_identities: tuple[tuple[Literal["thread", "turn"], str], ...] = (
             ("thread", audit.thread_id_sha256),
-            ("turn", audit.turn_id_sha256),
-        ):
+            *((("turn", audit.turn_id_sha256),) if audit.turn_id_sha256 is not None else ()),
+        )
+        for kind, identity_sha in observed_identities:
             payload: dict[str, object] = {
                 "schema_version": BRIDGE_SCHEMA_VERSION,
                 "identity_kind": kind,
@@ -676,8 +679,10 @@ class BoundedCodexBridgeStore:
                 artifacts[entry.logical_name],
                 BridgeExecutionAuditV1,
             )
-            if audit.thread_id_sha256 is None or audit.turn_id_sha256 is None:
+            if audit.thread_id_sha256 is None and audit.turn_id_sha256 is None:
                 continue
+            if audit.thread_id_sha256 is None:
+                raise BridgeStorageError("execution turn identity lacks its thread identity")
             collision_rejected = (
                 audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
                 and audit.failure_reason_code == "execution_identity_registry_rejected"
@@ -687,10 +692,11 @@ class BoundedCodexBridgeStore:
                 and audit.failure_reason_code == "execution_identity_registry_corrupt"
             )
             collision_proved = False
-            for kind, identity_sha in (
+            observed_identities: tuple[tuple[Literal["thread", "turn"], str], ...] = (
                 ("thread", audit.thread_id_sha256),
-                ("turn", audit.turn_id_sha256),
-            ):
+                *((("turn", audit.turn_id_sha256),) if audit.turn_id_sha256 is not None else ()),
+            )
+            for kind, identity_sha in observed_identities:
                 path = identities / f"{kind}-{identity_sha}.json"
                 if (collision_rejected or registry_corrupt) and not path.exists():
                     continue

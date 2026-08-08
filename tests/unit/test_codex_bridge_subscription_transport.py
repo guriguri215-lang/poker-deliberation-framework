@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import poker_deliberation.codex_bridge.subscription_transport as subscription_module
-from poker_deliberation.codex_bridge.canonical import canonical_json_bytes
+from poker_deliberation.codex_bridge.canonical import canonical_json_bytes, sha256_bytes
 from poker_deliberation.codex_bridge.contracts import role_output_schema_for_request
 from poker_deliberation.codex_bridge.models import (
     BRIDGE_RUNTIME_BINARY_SHA256,
@@ -399,6 +399,48 @@ raise SystemExit(9)
     assert caught.value.evidence.usage.input_tokens == 123
     assert caught.value.evidence.usage.output_tokens == 45
     assert caught.value.evidence.usage.reasoning_output_tokens == 6
+
+
+def test_subscription_thread_started_before_turn_failure_keeps_partial_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = prepared_bridge_request(tmp_path / "p3")
+    script = tmp_path / "thread_only_codex.py"
+    script.write_text(
+        """import json
+import sys
+
+sys.stdin.buffer.read()
+print(json.dumps(
+    {"type": "thread.started", "thread_id": "thread-before-turn"},
+    ensure_ascii=False,
+    separators=(",", ":"),
+), flush=True)
+raise SystemExit(9)
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    transport = _transport(
+        tmp_path,
+        monkeypatch,
+        auth_present=True,
+        command_factory=lambda _attempt, _schema, _output: [
+            sys.executable,
+            str(script),
+        ],
+    )
+
+    with pytest.raises(BridgeTransportFailure) as caught:
+        transport.execute(request)
+
+    assert caught.value.reason_code == "subscription_protocol_or_output_invalid"
+    assert caught.value.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+    assert caught.value.launched_at is None
+    assert caught.value.thread_id_sha256 == sha256_bytes(b"thread-before-turn")
+    assert caught.value.turn_id_sha256 is None
+    assert "thread-before-turn" not in str(caught.value)
 
 
 def test_subscription_context_uses_name_allowlist_and_separate_paths(

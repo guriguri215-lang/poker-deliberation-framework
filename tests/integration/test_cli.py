@@ -25,6 +25,12 @@ def test_doctor_without_api_key(capsys) -> None:  # type: ignore[no-untyped-def]
     assert payload["providers"]["local"]["status"] == "available"
     assert payload["providers"]["openai_agents"]["status"] == "disabled"
     assert payload["providers"]["openai_agents"]["available"] is False
+    assert any(
+        "explicitly selected bounded subscription or API bridge" in note
+        and "user-confirmed canonical projection" in note
+        for note in payload["notes"]
+    )
+    assert all("No user data is sent externally" not in note for note in payload["notes"])
 
 
 def test_doctor_markdown_is_fenced_json(capsys) -> None:  # type: ignore[no-untyped-def]

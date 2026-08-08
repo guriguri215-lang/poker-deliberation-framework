@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import sys
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -57,6 +58,16 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BoundedRiverCallEvPreparationResultV1,
 )
 from poker_deliberation.capabilities import capability_snapshot
+from poker_deliberation.codex_bridge.models import BridgeRole, RuntimeAuthModeV1
+from poker_deliberation.codex_bridge.product import (
+    bridge_read_summary,
+    confirm_product_role,
+    execute_product_role,
+    prepare_product_bridge,
+    read_product_request,
+    replay_product_bridge,
+    role_request_preview,
+)
 from poker_deliberation.config import AppConfig
 from poker_deliberation.confirmed_review import (
     admit_confirmed_review,
@@ -92,6 +103,7 @@ from poker_deliberation.tools import default_registry
 
 _DEFAULT_RESUME_REASON = "human decision recorded by CLI"
 _REPORT_FORMATS = ("json", "markdown", "summary")
+_AUTH_MODES = tuple(item.value for item in RuntimeAuthModeV1)
 
 
 def _configure_output() -> None:
@@ -211,7 +223,9 @@ def doctor() -> dict[str, Any]:
             "LocalProvider does not generate specialist prose.",
             "OpenAIAgentsProvider outbound analyze is not implemented, even when SDK and "
             "key are present.",
-            "No user data is sent externally by the MVP.",
+            "Local-only and legacy OpenAIAgentsProvider paths send no user data; an explicitly "
+            "selected bounded subscription or API bridge sends only the user-confirmed canonical "
+            "projection described by its runtime policy.",
         ],
     }
 
@@ -441,6 +455,66 @@ def build_parser() -> argparse.ArgumentParser:
     review_river_ev.add_argument("--preparation", required=True)
     review_river_ev.add_argument("--confirmation", required=True)
     review_river_ev.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
+
+    prepare_bridge = subparsers.add_parser("prepare-bounded-codex-bridge")
+    prepare_bridge.add_argument("--source-run-id", required=True)
+    prepare_bridge.add_argument("--bridge-run-id", required=True)
+    prepare_bridge.add_argument("--bridge-root", required=True)
+    prepare_bridge.add_argument("--repository-root", default=".")
+    prepare_bridge.add_argument("--repository-commit", required=True)
+    prepare_bridge.add_argument("--repository-tree", required=True)
+    prepare_bridge.add_argument("--auth-mode", choices=_AUTH_MODES, required=True)
+    prepare_bridge.add_argument("--api-max-cost-micro-usd", type=int)
+    prepare_bridge.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    show_bridge = subparsers.add_parser("show-bounded-codex-role-request")
+    show_bridge.add_argument("--bridge-run-id", required=True)
+    show_bridge.add_argument("--bridge-root", required=True)
+    show_bridge.add_argument("--repository-root", default=".")
+    show_bridge.add_argument("--auth-mode", choices=_AUTH_MODES, required=True)
+    show_bridge.add_argument("--role", choices=[item.value for item in BridgeRole], required=True)
+    show_bridge.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    confirm_bridge = subparsers.add_parser("confirm-bounded-codex-role-request")
+    confirm_bridge.add_argument("--bridge-run-id", required=True)
+    confirm_bridge.add_argument("--bridge-root", required=True)
+    confirm_bridge.add_argument("--repository-root", default=".")
+    confirm_bridge.add_argument("--auth-mode", choices=_AUTH_MODES, required=True)
+    confirm_bridge.add_argument(
+        "--role", choices=[item.value for item in BridgeRole], required=True
+    )
+    confirm_bridge.add_argument("--authority-id", required=True)
+    confirm_bridge.add_argument("--confirmation-id", required=True)
+    confirm_bridge.add_argument("--idempotency-key", required=True)
+    confirm_bridge.add_argument("--expected-request-sha256", required=True)
+    confirm_bridge.add_argument("--expected-request-bytes-sha256", required=True)
+    confirm_bridge.add_argument("--expected-envelope-sha256", required=True)
+    confirm_bridge.add_argument("--expected-runtime-policy-sha256", required=True)
+    confirm_bridge.add_argument("--expected-runtime-identity", required=True)
+    confirm_bridge.add_argument("--expected-model-provider", required=True)
+    confirm_bridge.add_argument("--expected-model", required=True)
+    confirm_bridge.add_argument("--expected-credential-reference", required=True)
+    confirm_bridge.add_argument("--expected-remote-retention-policy", required=True)
+    confirm_bridge.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    execute_bridge = subparsers.add_parser("execute-bounded-codex-role")
+    execute_bridge.add_argument("--bridge-run-id", required=True)
+    execute_bridge.add_argument("--bridge-root", required=True)
+    execute_bridge.add_argument("--runtime-root", required=True)
+    execute_bridge.add_argument("--repository-root", default=".")
+    execute_bridge.add_argument("--auth-mode", choices=_AUTH_MODES, required=True)
+    execute_bridge.add_argument(
+        "--role", choices=[item.value for item in BridgeRole], required=True
+    )
+    execute_bridge.add_argument("--codex-binary")
+    execute_bridge.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    replay_codex_bridge = subparsers.add_parser("replay-bounded-codex-bridge")
+    replay_codex_bridge.add_argument("--bridge-run-id", required=True)
+    replay_codex_bridge.add_argument("--bridge-root", required=True)
+    replay_codex_bridge.add_argument("--repository-root", default=".")
+    replay_codex_bridge.add_argument("--auth-mode", choices=_AUTH_MODES, required=True)
+    replay_codex_bridge.add_argument("--format", choices=["json", "markdown"], default="json")
 
     for command in ("review-hand", "review-strategy"):
         subparser = subparsers.add_parser(command)
@@ -802,6 +876,89 @@ def main(argv: list[str] | None = None) -> int:
                 rendered_river_report = render_markdown(report)
             _emit(rendered_river_report, args.format)
             return 2 if report.run_status == "failed_with_limitations" else 0
+        if args.command == "prepare-bounded-codex-bridge":
+            auth_mode = RuntimeAuthModeV1(args.auth_mode)
+            bridge_read = prepare_product_bridge(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                bridge_root=Path(args.bridge_root),
+                source_run_id=args.source_run_id,
+                bridge_run_id=args.bridge_run_id,
+                repository_commit_id=args.repository_commit,
+                repository_tree_id=args.repository_tree,
+                auth_mode=auth_mode,
+                api_max_cost_micro_usd=args.api_max_cost_micro_usd,
+            )
+            _emit(bridge_read_summary(bridge_read), args.format)
+            return 0
+        if args.command == "show-bounded-codex-role-request":
+            auth_mode = RuntimeAuthModeV1(args.auth_mode)
+            bridge_request = read_product_request(
+                repository_root=Path(args.repository_root),
+                bridge_root=Path(args.bridge_root),
+                bridge_run_id=args.bridge_run_id,
+                role=BridgeRole(args.role),
+                auth_mode=auth_mode,
+            )
+            _emit(role_request_preview(bridge_request), args.format)
+            return 0
+        if args.command == "confirm-bounded-codex-role-request":
+            auth_mode = RuntimeAuthModeV1(args.auth_mode)
+            confirmed_read = confirm_product_role(
+                repository_root=Path(args.repository_root),
+                bridge_root=Path(args.bridge_root),
+                bridge_run_id=args.bridge_run_id,
+                role=BridgeRole(args.role),
+                authority_id=args.authority_id,
+                confirmation_id=args.confirmation_id,
+                idempotency_key=args.idempotency_key,
+                expected_request_sha256=args.expected_request_sha256,
+                expected_request_bytes_sha256=args.expected_request_bytes_sha256,
+                expected_envelope_sha256=args.expected_envelope_sha256,
+                expected_runtime_policy_sha256=args.expected_runtime_policy_sha256,
+                expected_auth_mode=auth_mode,
+                expected_runtime_identity=args.expected_runtime_identity,
+                expected_model_provider=args.expected_model_provider,
+                expected_model=(None if args.expected_model == "none" else args.expected_model),
+                expected_credential_reference=args.expected_credential_reference,
+                expected_remote_retention_policy=args.expected_remote_retention_policy,
+            )
+            _emit(bridge_read_summary(confirmed_read), args.format)
+            return 0
+        if args.command == "execute-bounded-codex-role":
+            auth_mode = RuntimeAuthModeV1(args.auth_mode)
+            executed_read = execute_product_role(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                bridge_root=Path(args.bridge_root),
+                runtime_root=Path(args.runtime_root),
+                bridge_run_id=args.bridge_run_id,
+                role=BridgeRole(args.role),
+                auth_mode=auth_mode,
+                codex_binary=(Path(args.codex_binary) if args.codex_binary is not None else None),
+            )
+            _emit(bridge_read_summary(executed_read), args.format)
+            return (
+                2
+                if executed_read.pointer.status
+                in {
+                    "failed",
+                    "timed_out",
+                    "cancelled",
+                    "cancel_unconfirmed",
+                    "effect_unknown",
+                }
+                else 0
+            )
+        if args.command == "replay-bounded-codex-bridge":
+            replayed = replay_product_bridge(
+                repository_root=Path(args.repository_root),
+                bridge_root=Path(args.bridge_root),
+                bridge_run_id=args.bridge_run_id,
+                auth_mode=RuntimeAuthModeV1(args.auth_mode),
+            )
+            _emit(asdict(replayed), args.format)
+            return 0
         if args.command == "calculate":
             if args.analysis_scope != "retrospective":
                 print("error: calculate is retrospective-only", file=sys.stderr)

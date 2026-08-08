@@ -46,12 +46,14 @@ def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:
     assert set(subparsers.choices) == {
         "audit-claim",
         "calculate",
+        "confirm-bounded-codex-role-request",
         "confirm-bounded-river-call-ev-intake",
         "confirm-bounded-review-intake",
         "confirm-review-intake",
         "doctor",
         "list-agents",
         "list-tools",
+        "prepare-bounded-codex-bridge",
         "prepare-review-intake",
         "prepare-bounded-river-call-ev-intake",
         "prepare-bounded-review-intake",
@@ -61,7 +63,10 @@ def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:
         "review-bounded-confirmed-intake",
         "review-hand",
         "review-strategy",
+        "execute-bounded-codex-role",
+        "replay-bounded-codex-bridge",
         "show",
+        "show-bounded-codex-role-request",
     }
     assert "cleanup" not in subparsers.choices
     assert {

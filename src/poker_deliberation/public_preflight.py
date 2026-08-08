@@ -31,11 +31,12 @@ LARGE_FILE_BYTES = 1_000_000
 RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
     "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
 )
-EXPECTED_ROADMAP_SCHEMA_VERSION = "12.0.0"
-ROADMAP_MODULE_SHA256 = "ce77719249a87348444c4b6419e6fa7ff07d78486eeb9c664a73bc5dd533ea0b"
+EXPECTED_ROADMAP_SCHEMA_VERSION = "13.0.0"
+ROADMAP_MODULE_SHA256 = "9c6628eb74b7712106b64fb3356610e21d38a8f95284f967993cf144327de3f4"
 RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
+    "docs/bounded-codex-river-review-bridge.md",
     "docs/bounded-river-call-ev.md",
     "docs/capabilities.md",
     "docs/limitations.md",
@@ -43,9 +44,9 @@ CAPABILITY_DOCUMENT_PATHS = (
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "ea36be0df9908d332b8fd56a00ac0e7c2ddabe72680b71854d6144e895eff4ea"
+CAPABILITY_DOCUMENT_SET_SHA256 = "e1588b46aa3270435ffc10631700b92c10f69f431a72933e50132b73592135b8"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
-    "13600d7ad58b1ef49de02335ff184517cf9165e80fa21d217b87919af9e98854"
+    "caa1202b6f4f0e5dc2b436c45af7c8ba7e35e4855a9839ac8988bacbe835f839"
 )
 
 
@@ -1109,9 +1110,14 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "README.md": [
             "docs/capabilities.md",
             "docs/range-equity-bridge.md",
+            "docs/bounded-codex-river-review-bridge.md",
             "LocalProvider",
             "OpenAIAgentsProvider",
             "P3-016B",
+            "P2-025B",
+            "local_only",
+            "codex_subscription",
+            "openai_api",
         ],
         "docs/capabilities.md": [
             "implemented",
@@ -1160,6 +1166,19 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "実Codex/Python runtime",
         ],
     }
+    required["docs/bounded-codex-river-review-bridge.md"] = [
+        "P2-025B",
+        "local_only",
+        "codex_subscription",
+        "openai_api",
+        "OPENAI_API_KEY",
+        "openai-codex==0.144.4",
+        "gpt-5.6-terra",
+        "strategy-analyst",
+        "effect_unknown",
+        "live-unqualified",
+        "UNKNOWN",
+    ]
     missing: list[str] = []
     for relative, markers in required.items():
         path = repo / relative
@@ -1350,6 +1369,217 @@ def _range_grammar_artifacts_check(repo: Path) -> CheckResult:
         "The bounded range grammar and P3-016B evaluation fixtures, runner, license, and tool "
         "manifest identity were checked offline.",
         {"failures": failures},
+    )
+
+
+def _bridge_manifest_role_conformance_matches_current_tree(
+    repo: Path,
+    manifest: object,
+) -> bool:
+    """Strictly bind each published outbound request to current role authority."""
+
+    from poker_deliberation.codex_bridge.canonical import (
+        canonical_json_bytes,
+        parse_canonical_model,
+    )
+    from poker_deliberation.codex_bridge.conformance import build_bridge_role_conformance
+    from poker_deliberation.codex_bridge.contracts import outbound_request_bytes
+    from poker_deliberation.codex_bridge.models import BoundedCodexBridgeRequestV1
+    from poker_deliberation.codex_bridge.qualification import (
+        SanitizedLiveQualificationManifestV1,
+    )
+    from poker_deliberation.runtime_conformance.canonical import parse_canonical_json
+
+    if not isinstance(manifest, SanitizedLiveQualificationManifestV1):
+        return False
+    try:
+        expected = build_bridge_role_conformance(
+            repo,
+            repository_commit_id=manifest.repository_commit_id,
+        )
+        observed = []
+        for role_evidence in manifest.roles:
+            outbound = role_evidence.outbound_canonical_utf8.encode("utf-8")
+            raw_request = parse_canonical_json(outbound)
+            if not isinstance(raw_request, dict):
+                return False
+            request = parse_canonical_model(
+                canonical_json_bytes(
+                    {
+                        **raw_request,
+                        "request_bytes_sha256": role_evidence.request_bytes_sha256,
+                        "request_sha256": role_evidence.request_sha256,
+                    }
+                ),
+                BoundedCodexBridgeRequestV1,
+            )
+            if outbound_request_bytes(request) != outbound:
+                return False
+            observed.append(request.context.assignment.conformance)
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return tuple(observed) == expected
+
+
+def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
+    """Validate public P2-025B fixtures and, when present, actual-live evidence."""
+
+    from poker_deliberation.codex_bridge.canonical import parse_canonical_model
+    from poker_deliberation.codex_bridge.evaluation import (
+        BoundedCodexBridgeEvaluationResultV1,
+        load_bounded_codex_bridge_evaluation_fixture,
+    )
+    from poker_deliberation.codex_bridge.identity import (
+        BRIDGE_RUNTIME_SOURCE_INVENTORY_HASH_DOMAIN,
+        bridge_runtime_source_inventory,
+        bridge_runtime_source_inventory_sha256,
+    )
+    from poker_deliberation.codex_bridge.qualification import (
+        SanitizedLiveQualificationManifestV1,
+        load_public_synthetic_fixture,
+    )
+
+    fixture_path = repo / "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json"
+    evaluation_fixture_path = repo / "tests/fixtures/codex_bridge/v1/cases.json"
+    evaluation_runner_path = repo / "scripts/run_codex_bridge_evaluation.py"
+    qualification_runner_path = repo / "scripts/run_codex_bridge_live_qualification.py"
+    public_evaluation_path = repo / "qualifications/p2-025b-deterministic-evaluation-v1.json"
+    public_manifest_path = repo / "qualifications/p2-025b-codex-subscription-v1.json"
+    required_tracked = {
+        fixture_path.relative_to(repo).as_posix(),
+        evaluation_fixture_path.relative_to(repo).as_posix(),
+        evaluation_runner_path.relative_to(repo).as_posix(),
+        qualification_runner_path.relative_to(repo).as_posix(),
+    }
+    tracked = set(_tracked_paths(repo))
+    failures: list[str] = []
+    missing_public: list[str] = []
+    if not required_tracked.issubset(tracked):
+        failures.append("bridge_public_contract:required_paths_untracked")
+    try:
+        load_public_synthetic_fixture(fixture_path)
+    except (OSError, ValueError):
+        failures.append("bridge_public_contract:qualification_fixture_invalid")
+    try:
+        load_bounded_codex_bridge_evaluation_fixture(evaluation_fixture_path)
+    except (OSError, ValueError):
+        failures.append("bridge_public_contract:evaluation_fixture_invalid")
+    for label, path in (
+        ("evaluation_runner", evaluation_runner_path),
+        ("qualification_runner", qualification_runner_path),
+    ):
+        if not path.is_file():
+            failures.append(f"bridge_public_contract:{label}_missing")
+    for label, path in (
+        ("deterministic_evaluation", public_evaluation_path),
+        ("subscription_live_manifest", public_manifest_path),
+    ):
+        if not path.is_file():
+            missing_public.append(label)
+
+    manifest: SanitizedLiveQualificationManifestV1 | None = None
+    evaluation: BoundedCodexBridgeEvaluationResultV1 | None = None
+    if not missing_public:
+        try:
+            evaluation = parse_canonical_model(
+                public_evaluation_path.read_bytes(),
+                BoundedCodexBridgeEvaluationResultV1,
+            )
+            manifest = parse_canonical_model(
+                public_manifest_path.read_bytes(),
+                SanitizedLiveQualificationManifestV1,
+            )
+        except (OSError, ValueError):
+            failures.append("bridge_public_evidence:noncanonical_or_invalid")
+        if evaluation is not None and manifest is not None:
+            current_inventory = tuple(
+                {
+                    "path": item.path,
+                    "size": item.size,
+                    "sha256": item.sha256,
+                }
+                for item in bridge_runtime_source_inventory(repo)
+            )
+            published_inventory = tuple(
+                item.model_dump(mode="json") for item in manifest.runtime_source_inventory
+            )
+            if (
+                not evaluation.passed
+                or evaluation.result_sha256 != manifest.deterministic_evaluation_sha256
+                or evaluation.source_commit_id != manifest.repository_commit_id
+                or evaluation.source_tree_id != manifest.repository_tree_id
+            ):
+                failures.append("bridge_public_evidence:evaluation_binding")
+            if (
+                manifest.runtime_source_inventory_hash_domain
+                != BRIDGE_RUNTIME_SOURCE_INVENTORY_HASH_DOMAIN
+                or published_inventory != current_inventory
+                or manifest.runtime_source_inventory_sha256
+                != bridge_runtime_source_inventory_sha256(repo)
+            ):
+                failures.append("bridge_public_evidence:runtime_source_inventory")
+            if not _bridge_manifest_role_conformance_matches_current_tree(repo, manifest):
+                failures.append("bridge_public_evidence:role_conformance")
+            try:
+                source_tree = (
+                    _git(
+                        repo,
+                        "rev-parse",
+                        "--verify",
+                        f"{manifest.repository_commit_id}^{{tree}}",
+                    )
+                    .decode("ascii")
+                    .strip()
+                )
+                merge_base = (
+                    _git(
+                        repo,
+                        "merge-base",
+                        manifest.repository_commit_id,
+                        "HEAD",
+                    )
+                    .decode("ascii")
+                    .strip()
+                )
+            except (GitCommandError, UnicodeDecodeError):
+                failures.append("bridge_public_evidence:git_binding_unverifiable")
+            else:
+                if (
+                    source_tree != manifest.repository_tree_id
+                    or merge_base != manifest.repository_commit_id
+                ):
+                    failures.append("bridge_public_evidence:git_binding")
+            if not {
+                public_evaluation_path.relative_to(repo).as_posix(),
+                public_manifest_path.relative_to(repo).as_posix(),
+            }.issubset(tracked):
+                failures.append("bridge_public_evidence:untracked")
+
+    status: CheckStatus
+    evidence_label: EvidenceLabel
+    if failures:
+        status, evidence_label = "fail", "FACT"
+    elif missing_public:
+        status, evidence_label = "unknown", "UNKNOWN"
+    else:
+        status, evidence_label = "pass", "FACT"
+    return CheckResult(
+        "p2_025b_public_artifacts",
+        status,
+        evidence_label,
+        "P2-025B public fixtures and sanitized qualification evidence were checked offline.",
+        {
+            "failures": failures,
+            "missing_public_evidence": missing_public,
+            "api_live_qualified": False,
+            "subscription_live_qualified": status == "pass",
+            "runtime_source_inventory_sha256": (
+                manifest.runtime_source_inventory_sha256 if manifest is not None else None
+            ),
+            "qualification_manifest_sha256": (
+                manifest.manifest_sha256 if manifest is not None else None
+            ),
+        },
     )
 
 
@@ -1603,6 +1833,7 @@ def run_preflight(repo: Path) -> dict[str, object]:
         ),
         _capability_docs_check(repo),
         _range_grammar_artifacts_check(repo),
+        _codex_bridge_public_artifacts_check(repo),
         CheckResult(
             "tracked_release_candidates",
             "pass" if not tracked_ignored_artifacts and pytest_ignored else "fail",

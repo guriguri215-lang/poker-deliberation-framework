@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
-ROADMAP_SCHEMA_VERSION = "12.0.0"
+ROADMAP_SCHEMA_VERSION = "13.0.0"
 __all__ = [
     "ROADMAP_RESOURCE",
     "ROADMAP_SCHEMA_VERSION",
@@ -74,6 +74,7 @@ EXPECTED_IMPLEMENTATION_MILESTONES = {
     "P2-028A",
     "P2-029A",
     "P2-025A",
+    "P2-025B",
     "P3-014A",
     "P3-015A",
     "P3-016A",
@@ -118,6 +119,16 @@ _RM030_STALE_P2_028A_RELATION = (
 )
 _RM030_HISTORICAL_P2_028A_RELATION = (
     "At P3-030A completion, P2-028A had not started and was not activated by that local-only path."
+)
+_RM029_STALE_ACTUAL_BRIDGE_RELATION = (
+    "Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before "
+    "external effects; P2-025A is now the approved conformance-only milestone while the actual "
+    "bridge remains unavailable and separately decision-gated."
+)
+_RM029_HISTORICAL_ACTUAL_BRIDGE_RELATION = (
+    "At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required "
+    "a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone "
+    "implemented only the separately qualified bounded bridge."
 )
 MILESTONE_FIELDS = {
     "id",
@@ -492,6 +503,17 @@ def validate_roadmap_update(
                     corrected = list(old_item[field])
                     corrected[corrected.index(_RM030_STALE_P2_028A_RELATION)] = (
                         _RM030_HISTORICAL_P2_028A_RELATION
+                    )
+                    if new_item[field] == corrected:
+                        continue
+                if (
+                    item_id == "RM-029"
+                    and field == "relations"
+                    and old_item[field].count(_RM029_STALE_ACTUAL_BRIDGE_RELATION) == 1
+                ):
+                    corrected = list(old_item[field])
+                    corrected[corrected.index(_RM029_STALE_ACTUAL_BRIDGE_RELATION)] = (
+                        _RM029_HISTORICAL_ACTUAL_BRIDGE_RELATION
                     )
                     if new_item[field] == corrected:
                         continue

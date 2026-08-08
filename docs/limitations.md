@@ -262,3 +262,35 @@
   提供するが、OS process hard-stop、undo、process-tree cancellation は提供しない。
 - injected clock/fault/provider callback の後は effect state と controlを再検証するが、
   callback 内の同権限writerを隔離するprocess sandboxやACL境界を提供するものではない。
+
+## P2-025B限定bridgeの制限
+
+- `local_only`はmodel reviewを生成しない。parser、calculator、LocalProvider、storage、replay、evaluationを
+  API key/login/networkなしで使えるという意味である。
+- `codex_subscription`はterminal verification済みP3-030C river call-or-fold run、1 explicit range、固定5
+  role、fresh serial turnだけを扱う。一般Codex/Python bridge、任意prompt/agent、双方向sessionではない。
+- subscription actual-live qualification manifestは公開synthetic fixtureの固定5 roleについて`passed`である。
+  このtransport evidenceを一般bridge、戦略品質、human usefulness、range accuracyへ拡張しない。
+  recorded/deterministic fixtureだけをactual transport evidenceとは扱わない。
+- `openai_api`はdefault-disabled、deterministic-contract-only、live-unqualifiedである。versioned price
+  authorityとprovider hard cost stopがないため、API keyが存在してもprocess/network起動前に
+  `api_live_execution_unqualified_cost_authority` / `not_launched`で拒否し、production-qualifiedまたは
+  fully supportedとは表現しない。
+- raw Japanese source、private hand、FinalReport narrative、credential値は送信しない。public synthetic
+  fixture以外のmodel-processing rights、source/usage rights、privacyは利用者が別途確認する必要がある。
+- subscriptionはChatGPT workspace/account、APIはAPI organization/projectのdata policyに従う。exact
+  training/retention/residencyはrepositoryから判定できず**UNKNOWN**である。ZDRを仮定しない。
+- `codex exec --json` 0.144.4はeffective model/provider/reasoning/service tierを直接公開しない。固定できるのは
+  requested `gpt-5.6-terra`、configured provider `openai`、auth boundary `chatgpt`、no-fallback設定と、
+  reroute/error itemを受理しなかった事実である。actual backend model inputとbackend immutable model
+  snapshot/weightsのattestationは**UNKNOWN**であり、requested値をobserved値として扱わない。
+- built-in subscription providerの内部retry、remote cancellation finality、remote effect exactly-once、
+  local terminate後のremote billing停止、hard process-tree stop、network isolationは**UNKNOWN**または非保証。
+- token/output/wall-clock capはproduct側で検査するがprovider hard stopではない。subscriptionにUSD API
+  costを割り当てず、利用者設定のAPI cost capを観測estimateとして自己代入しない。API cost capは
+  請求書のauthenticityも送信前hard stopも証明しない。
+- model narrativeは`INFERENCE`/`UNKNOWN`へlabel-boundされた2つの固定文だけであり、P3-030C
+  calculator authorityを上書きしない。
+  strategy quality、human usefulness、range accuracy、実戦推奨は**UNKNOWN**である。
+- general natural language/site/OCR parser、複数range、multiway、earlier streets、all-in/side pot/rake/ante/
+  tournament ICM、external solver、GTO/均衡、parallel product runtime、arbitrary toolsは非対応である。

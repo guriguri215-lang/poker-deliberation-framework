@@ -1,5 +1,5 @@
 {
-  "schema_version": "12.0.0",
+  "schema_version": "13.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -225,6 +225,19 @@
         "P2-029A"
       ],
       "scope": "Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge."
+    },
+    {
+      "id": "P2-025B",
+      "rm_id": "RM-025",
+      "status": "completed",
+      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and repository-owned public synthetic five-role codex_subscription actual-live qualification are complete; the optional API route remains default-disabled and live-unqualified.",
+      "dependencies": [
+        "P2-024A",
+        "P2-025A",
+        "P3-017A",
+        "P3-030C"
+      ],
+      "scope": "One terminally verified P3-030C river call-or-fold run projected into five fresh, serial, read-only roles with exact outbound confirmation, mode-bound identity, strict structured results, durable additive replay, no calculator delegation, no provider/model fallback, and no external solver; local_only requires no Codex or API, codex_subscription uses saved ChatGPT/Codex authentication, and the optional openai_api adapter remains default-disabled and live-unqualified."
     },
     {
       "id": "P3-014A",
@@ -1203,7 +1216,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "planned",
-      "status_reason": "The outbound provider remains disabled; implementation is decision-gated.",
+      "status_reason": "P2-025B completed a separately named river-only saved-subscription path and retained an optional API mode, but does not start the broad provider milestone. The bounded subscription path has public actual-live evidence, the API route remains live-unqualified, and RM-019 dependencies and general provider scope remain planned.",
       "dependencies": [
         "RM-010",
         "RM-011",
@@ -1213,7 +1226,9 @@
         "RM-028"
       ],
       "capabilities": [
-        "openai_agents_outbound"
+        "openai_agents_outbound",
+        "codex_subscription_bounded_river_review",
+        "openai_api_bounded_river_review_adapter"
       ],
       "objective": "Connect an external provider only after data, model, trace, cost, timeout, and approval boundaries are authorized.",
       "targets": [
@@ -1488,7 +1503,7 @@
       "phase": "post-phase-2",
       "priority": "P1",
       "status": "in_progress",
-      "status_reason": "P2-025A conformance-only contracts are complete; both runtimes remain separate and the actual bridge remains unavailable and separately decision-gated.",
+      "status_reason": "P2-025A conformance-only contracts and the separately named P2-025B bounded river-review bridge are complete. RM-025 remains in_progress because the general Codex/Python bridge remains unavailable and no broader interoperability is claimed.",
       "dependencies": [
         "RM-012",
         "RM-013",
@@ -1496,40 +1511,60 @@
         "RM-024"
       ],
       "capabilities": [
+        "runtime_conformance_contract",
+        "local_only_runtime_mode",
+        "bounded_codex_river_review_bridge",
+        "codex_subscription_bounded_river_review",
+        "openai_api_bounded_river_review_adapter",
         "codex_python_runtime_bridge"
       ],
-      "objective": "Define versioned conformance fixtures for assignment, context, tool allowlist, approval, result, and execution-record semantics across separate runtimes.",
+      "objective": "Define versioned conformance semantics and qualify one tightly bounded, mode-separated Codex/Python river-review bridge without implying general interoperability.",
       "targets": [
         ".codex/agents",
         "src/poker_deliberation/agents/roles.py",
         "src/poker_deliberation/runtime_conformance",
+        "src/poker_deliberation/codex_bridge",
+        "tests/fixtures/codex_bridge/v1/cases.json",
+        "docs/bounded-codex-river-review-bridge.md",
         "docs/runtime-conformance-contract.md"
       ],
       "acceptance_criteria": [
         "A strict versioned contract and minimal tracked fixtures cover runtime-specific roles, assignment and parent lineage, context provenance/classification/expiry/budget references, exact tool/capability allowlists, approval binding and expiry, epistemic result references, structured error/timeout/cancellation, and execution audit semantics.",
         "Unknown versions, roles, capabilities, allowlist expansion, approval weakening, missing execution evidence, context mismatch, secret-bearing public values, and unsupported solver/provider claims fail closed.",
         "Offline Python product runs project into the contract without launching Codex, external providers, external solvers, or representing Python execution as Codex execution.",
-        "The actual Codex/Python bridge remains unavailable and existing final-report, reader, resume, migration, storage, and canonical artifact meanings remain compatible."
+        "The P2-025B slice accepts only one terminal P3-030C river run, projects only its minimal canonical/calculator evidence, and uses five fresh serial role assignments without rerunning calculators or changing the existing report.",
+        "local_only never launches Codex, an API client, or network; codex_subscription and openai_api require distinct explicit mode-bound confirmation and never fall back to each other or another model.",
+        "The saved-subscription route uses the pinned official Codex CLI without reading credential values, while the optional API route remains disabled by default and publicly live-unqualified.",
+        "Strict schema, canonical bytes and hash domains, mode/thread/assignment/attempt lineage, expiry, idempotency, effect state, terminal publication, reconciliation, and replay fail closed under mutation or cross-mode reuse.",
+        "Existing final-report, P2-025A, P2-024A, P3-030A/B/C, reader, resume, migration, storage, and canonical artifact meanings remain compatible; the general bridge remains unavailable."
       ],
       "tests": [
         "tests/unit/test_runtime_conformance_contracts.py",
         "tests/property/test_runtime_conformance_properties.py",
         "tests/characterization/test_runtime_conformance_compatibility.py",
         "tests/adversarial/test_runtime_conformance_security.py",
-        "tests/integration/test_runtime_conformance.py"
+        "tests/integration/test_runtime_conformance.py",
+        "tests/unit/test_codex_bridge_contracts.py",
+        "tests/unit/test_codex_bridge_runtime_modes.py",
+        "tests/unit/test_codex_bridge_subscription_transport.py",
+        "tests/integration/test_codex_bridge_controller.py",
+        "tests/integration/test_codex_bridge_evaluation.py",
+        "tests/adversarial/test_codex_bridge_security.py"
       ],
       "milestones": {
         "entry": "P2-025A",
-        "completion": "P2-025A"
+        "completion": null
       },
       "relations": [
         "Extends the execution-surface boundary recorded by RM-001 without claiming current interoperability.",
-        "A future actual bridge would require a separately approved P2-025B candidate; P2-025B is not registered or implemented by P2-025A."
+        "P2-025B is additive to P2-025A and P3-030C, is limited to one verified river-review artifact, and does not implement a general Codex/Python bridge.",
+        "The optional API adapter is a separately explicit mode and remains live-unqualified; subscription or API failure never selects the other route."
       ],
       "decision_gate": {
         "required": true,
         "rationale": [
-          "whether a future actual bridge candidate should be registered after the conformance-only contract"
+          "any expansion beyond the approved P2-025B river-only roles, canonical fields, runtime/auth modes, model, tool disablement, or serial no-retry execution",
+          "any API live qualification, broad provider integration, external solver, model parser, arbitrary tool, parallel product execution, or automatic retry"
         ]
       }
     },
@@ -1697,7 +1732,7 @@
       "phase": "phase-2",
       "priority": "P1",
       "status": "completed",
-      "status_reason": "Retrospective input safety, lossless redaction, derived ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood are implemented and verified; external providers and solvers remain disabled or unavailable.",
+      "status_reason": "Retrospective input safety, lossless redaction, derived ICM tolerance, concise adjudicated reporting, and ordinary offline product-path dogfood are implemented and verified without enabling an external provider or solver on that path.",
       "dependencies": [
         "RM-012",
         "RM-013",
@@ -1733,7 +1768,7 @@
       },
       "relations": [
         "Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.",
-        "Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before external effects; P2-025A is now the approved conformance-only milestone while the actual bridge remains unavailable and separately decision-gated."
+        "At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone implemented only the separately qualified bounded bridge."
       ],
       "decision_gate": {
         "required": false,
@@ -1746,7 +1781,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice; RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing and actual runtime or solver integrations remain unimplemented. The milestone table remains authoritative for current status.",
+      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice. P2-025B adds only a downstream bounded qualified review bridge and does not widen intake; RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.",
       "dependencies": [
         "RM-014"
       ],
@@ -1827,7 +1862,7 @@
       "relations": [
         "P3-030A depends explicitly on completed P3-014A, P3-016A, and P3-017A milestones without implying that the broader RM-016 or RM-017 scopes are complete, and consumes their artifacts without weakening strict grammars, evidence rules, or the prohibition on inventing missing poker facts.",
         "The approved P3-030B grammar remains finite, and P3-030C consumes it only for one confirmed river range/equity/no-rake call-EV slice; any general natural-language, model-assisted, site-specific, or OCR parser remains a separate future Decision gate.",
-        "P2-025B remains a separate Decision gate for an actual Codex or cross-runtime execution bridge.",
+        "P2-025B is a separately gated, downstream river-review-only Codex bridge and does not widen P3-030C intake, parsing, range, calculator, or report authority.",
         "At P3-030A completion, P2-028A had not started and was not activated by that local-only path.",
         "P3-030C reuses P3-015A and P3-016B without widening them; multiple ranges, multiway or earlier-street equity, external solver, GTO, and equilibrium remain outside this milestone."
       ],
@@ -1835,7 +1870,7 @@
         "required": true,
         "rationale": [
           "Any expansion beyond the P3-030B bounded Japanese grammar into general natural-language, model-assisted, site-specific, or OCR parsing requires a new Decision gate covering ambiguity, source rights, privacy, and parser-quality evaluation",
-          "P2-025B actual Codex or cross-runtime execution bridge, outbound effects, authentication, budgets, and reconciliation",
+          "Any P2-025B expansion beyond the separately approved river-only Codex bridge, outbound fields, authentication modes, budgets, tool disablement, and reconciliation contract",
           "Any wider range/equity/call-EV scope beyond P3-030C, including multiple ranges, multiway or earlier streets, nonzero rake, all-in or side pots, external solver, GTO, or equilibrium semantics"
         ]
       }

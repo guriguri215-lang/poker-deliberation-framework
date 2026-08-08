@@ -10,6 +10,7 @@ import pytest
 from poker_deliberation import public_preflight
 from poker_deliberation.public_preflight import (
     GitCommandError,
+    _bridge_manifest_role_conformance_matches_current_tree,
     _capability_docs_check,
     _decode_scannable,
     _identity_findings,
@@ -139,7 +140,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 12.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 13.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -168,17 +169,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 12.0.0", "schema 10.0.0\n<!-- schema 12.0.0 -->"),
+        "README.md": ("schema 13.0.0", "schema 10.0.0\n<!-- schema 13.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `12.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `12.0.0` -->",
+            "schema version: `13.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `13.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "12.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "12.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "13.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "13.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "12.0.0"',
+            '"schema_version": "13.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }
@@ -599,3 +600,85 @@ def test_nested_tag_objects_are_visited_once_without_looping(
     assert skipped == []
     assert sorted(reads) == sorted([outer_oid, inner_oid])
     assert sum(item.rule_id == "git_tagger_email" for item in findings) == 2
+
+
+def _published_bridge_manifest() -> object:
+    from poker_deliberation.codex_bridge.canonical import parse_canonical_model
+    from poker_deliberation.codex_bridge.qualification import (
+        SanitizedLiveQualificationManifestV1,
+    )
+
+    path = ROOT / "qualifications" / "p2-025b-codex-subscription-v1.json"
+    return parse_canonical_model(path.read_bytes(), SanitizedLiveQualificationManifestV1)
+
+
+def test_public_bridge_role_conformance_is_rebuilt_from_current_role_tree(
+    tmp_path: Path,
+) -> None:
+    manifest = _published_bridge_manifest()
+    assert _bridge_manifest_role_conformance_matches_current_tree(ROOT, manifest)
+
+    repo = tmp_path / "repo"
+    shutil.copytree(ROOT / ".codex" / "agents", repo / ".codex" / "agents")
+    role_path = repo / ".codex" / "agents" / "strategy-analyst.toml"
+    original = role_path.read_text(encoding="utf-8")
+    mutated = original.replace('description = "', 'description = "mutated ', 1)
+    assert mutated != original
+    role_path.write_text(mutated, encoding="utf-8", newline="\n")
+
+    assert not _bridge_manifest_role_conformance_matches_current_tree(repo, manifest)
+
+
+def test_public_bridge_role_conformance_rejects_noncanonical_outbound() -> None:
+    manifest = _published_bridge_manifest()
+    first = manifest.roles[0].model_copy(
+        update={
+            "outbound_canonical_utf8": manifest.roles[0].outbound_canonical_utf8 + "\n",
+        }
+    )
+    mutated = manifest.model_copy(update={"roles": (first, *manifest.roles[1:])})
+
+    assert not _bridge_manifest_role_conformance_matches_current_tree(ROOT, mutated)
+
+
+def test_public_preflight_reports_current_role_conformance_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        public_preflight,
+        "_bridge_manifest_role_conformance_matches_current_tree",
+        lambda _repo, _manifest: False,
+    )
+
+    result = public_preflight._codex_bridge_public_artifacts_check(ROOT)
+
+    assert result.status == "fail"
+    assert isinstance(result.details, dict)
+    assert "bridge_public_evidence:role_conformance" in result.details["failures"]
+
+
+def test_bridge_documentation_uses_manifest_api_qualification_field_names() -> None:
+    text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
+
+    assert "`api_live_executed=false`" in text
+    assert "`api_production_qualified=false`" in text
+    assert "`live_api_executed=false`" not in text
+    assert "`production_qualified=false`" not in text
+
+
+def test_bridge_documentation_matches_subscription_auth_probe_stream_contract() -> None:
+    text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
+
+    assert "stdout\nまたはstderrの正確に一方だけ" in text
+    assert "もう一方が空" in text
+    assert "両streamへの重複出力" in text
+
+
+def test_readme_distinguishes_local_build_evidence_from_release_unknowns() -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "ローカルwheel/sdist build" in text
+    assert "`--no-index --no-deps` default" in text
+    assert "API keyなしの`local_only` smokeが成功" in text
+    assert "remote CI、未実行のOS/Python matrix、GitHub上の公開release artifact" in text
+    assert "wheel/sdist、clean-install matrix" not in text

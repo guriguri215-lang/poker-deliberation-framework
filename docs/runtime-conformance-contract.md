@@ -81,5 +81,24 @@ unit/property/adversarial/integration testはcanonical round-trip、version/dupl
 context/approval expiry、structured timeout/cancel、実行時secret canary、unsupported solver limitation、
 既存offline productのprojectionを検証する。
 
-非目標は、Codex/Python bridge、Codex role起動、外部provider/solver、GTO/均衡/range生成、
-既存artifact migration、P2-025B以降の双方向transport、RM-028実行である。
+P2-025A自身の非目標は、Codex/Python bridge、Codex role起動、外部provider/solver、
+GTO/均衡/range生成、既存artifact migration、双方向transport、RM-028実行である。
+
+## P2-025Bとの関係
+
+P2-025Bはこのcontractを置き換えず、別schema familyとして加算する。P2-025Aから再利用するのは
+固定role semantics、assignment/parent lineage、read-only empty tool binding、epistemic/evidence意味、
+failure/audit境界である。P2-025B controllerはcandidate commitに含まれるP2-025A projectionをroleごとに
+再検証し、次を追加で束縛する。
+
+- explicit `local_only` / `codex_subscription` / `openai_api` mode
+- runtime/provider/model/credential reference/retention/budget
+- exact outbound canonical bytes/hashと最大15分のconfirmation
+- pre-execution `not_launched` admission、fresh attempt/thread、cross-mode/cross-run replay拒否
+- observed transport identity/usage/effect stateとmarker-last terminal replay
+
+この限定bridgeはterminal verification済みP3-030C river call-or-fold runだけを受理し、raw Japanese
+source、calculator再実行、range推定、solver/GTO、arbitrary tools、parallel execution、automatic retryを
+受理しない。開発用Codex sub-agentはproduct runtime evidenceではない。広い
+`codex_python_runtime_bridge`は引き続きunavailableである。詳細は
+[P2-025B限定bridge](bounded-codex-river-review-bridge.md)を参照する。

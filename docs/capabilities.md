@@ -39,7 +39,11 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `runtime_conformance_contract` | **implemented** | P2-025Aの役割inventory、assignment/context/resultのversioned contract、pure比較、verified Python product projectionを提供する。実行bridgeではない。 |
-| `codex_python_runtime_bridge` | **unavailable** | Codexネイティブ層とPythonオーケストレーター層は別実行面であり、Codex実行をPython runへ記録するbridgeはない。 |
+| `local_only_runtime_mode` | **implemented** | API key、ChatGPT/Codex login、外部model、networkなしでdeterministic parser/calculator、LocalProvider、storage、replay、evaluationを利用する。 |
+| `bounded_codex_river_review_bridge` | **implemented** | P2-025Bはterminal verification済みP3-030C river run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定してactual-live qualifiedである。 |
+| `codex_subscription_bounded_river_review` | **implemented** | 保存済みChatGPT loginを使う明示経路はrepository-owned public synthetic fixtureの5-role actual-live qualification済みで、configured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。effective backend identity/inputはUNKNOWNである。 |
+| `openai_api_bounded_river_review_adapter` | **disabled** | optional `openai_api` adapterはno-network contract test済みだが、price authority/hard cost stopがなく、process/network前にfail closedするlive-unqualified経路である。 |
+| `codex_python_runtime_bridge` | **unavailable** | 一般Codex/Python bridgeはない。P2-025Bの別名bounded river-only bridgeを広いinteroperabilityへ拡張しない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
 | `local_data_cleanup_executor` | **implemented** | P2-027BのPython APIは、承認済み1 runに対するbounded quarantine、遅延staged delete、immutable receipt/tombstone、revision CAS、idempotency、read-only reconciliationを実装する。cleanup CLI、automatic retry、secure eraseは実装しない。 |
 | `immutable_revision_storage_foundation` | **implemented** | P2-012Aのimmutable revision、manifest、transaction、lock、recovery claim、revision CAS基盤と、P2-010Bの内部revision-only phase transition authorization seamを実装済み。通常のproduct runには未接続。 |
@@ -57,11 +61,15 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
   9定義と同じ一覧ではない。
 - **FACT**: `LocalProvider`はこれら7役へ文章的な専門分析を供給せず、空の結論と制限を返す。
   明示的に注入する`DeterministicMockProvider`はテスト用であり、外部モデル能力ではない。
-- **FACT**: 名前の対応表はありますが、Pythonは`.codex/agents/*.toml`を起動しません。Codex側の
+- **FACT**: 通常のPython orchestratorは`.codex/agents/*.toml`を起動しません。開発用Codex
   sub-agent実行も`AgentExecutionRecord`やPython run artifactsへ自動的には取り込まれません。
 - **FACT**: P2-025Aは両実行面の意味を別schemaで比較できるが、片方を起動したり、他方の監査記録を
   捏造したりしない。Codex側のtool catalogが宣言されていない場合は、空の権限を含め
   `undeclared`として保持する。
+- **FACT**: P2-025B限定bridgeだけは、terminal verification済みP3-030C river run、固定5 role、
+  empty tool allowlist、fresh serial thread、mode-bound confirmation/resultへ限定した別artifact familyを
+  提供する。公開synthetic fixtureでactual-live qualification済みだが、通常経路は別実行面のままであり、
+  一般bridgeではない。
 
 この数は品質指標ではありません。contract testは実装から件数を再計算し、文書との差を検出します。
 

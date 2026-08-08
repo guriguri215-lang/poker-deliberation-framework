@@ -129,10 +129,34 @@ CAPABILITIES: tuple[Capability, ...] = (
         "contracts, pure cross-runtime checks, and verified Python product projection.",
     ),
     Capability(
+        "local_only_runtime_mode",
+        "implemented",
+        "The explicit local_only mode runs deterministic parsing, calculators, LocalProvider, "
+        "storage, replay, and evaluation without Codex, an API key, or network access.",
+    ),
+    Capability(
+        "bounded_codex_river_review_bridge",
+        "implemented",
+        "The P2-025B bounded bridge is qualified only for one verified P3-030C river review "
+        "through five fresh, serial, read-only saved-subscription turns with durable replay.",
+    ),
+    Capability(
+        "codex_subscription_bounded_river_review",
+        "implemented",
+        "The explicit saved-ChatGPT-login route passed the repository-owned public synthetic "
+        "five-role actual-live qualification without an API key or provider fallback.",
+    ),
+    Capability(
+        "openai_api_bounded_river_review_adapter",
+        "disabled",
+        "The optional explicit openai_api adapter has deterministic no-network contract tests; "
+        "it is disabled by default and live-unqualified in this milestone.",
+    ),
+    Capability(
         "codex_python_runtime_bridge",
         "unavailable",
-        "Codex-native agents and the Python orchestrator are separate execution surfaces; "
-        "no runtime bridge records Codex executions in Python run artifacts.",
+        "No general Codex/Python bridge exists; the separately named P2-025B bounded river-only "
+        "bridge does not provide broad interoperability.",
     ),
     Capability(
         "local_data_lifecycle_policy",

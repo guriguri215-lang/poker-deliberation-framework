@@ -35,9 +35,13 @@
   bounded, approval-bound API; it does not imply a general-purpose or secure-erasure facility.
 - `OpenAIAgentsProvider` outbound analyze is not implemented. It reports `disabled` and `available=false`
   whether the optional SDK/API key is absent or present; the probes never imply outbound capability.
-- Codex-native agents/Skills and the Python role/provider catalog are separate execution surfaces.
-  Python does not launch Codex agents, and Codex execution is not automatically captured in Python
-  state, approvals, `AgentExecutionRecord`, or run artifacts.
+- Codex-native agents/Skills and the ordinary Python role/provider catalog are separate execution
+  surfaces. Ordinary Python runs do not launch `.codex/agents/*.toml`, and development Codex
+  sub-agent execution is not automatically captured in Python state, approvals,
+  `AgentExecutionRecord`, or run artifacts. P2-025B is a separately named exception: its bounded
+  Python controller launches only the fixed five Codex turns and publishes them to a dedicated
+  additive bridge artifact family. It does not change ordinary `AgentExecutionRecord` semantics or
+  provide a general bridge.
 - The workspace is an initialized Git repository. Local history can be audited offline, but remote
   repository visibility, branch protection, and Actions logs remain UNKNOWN without an approved
   external check.

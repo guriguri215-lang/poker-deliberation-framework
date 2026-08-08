@@ -674,6 +674,28 @@ def test_bridge_documentation_matches_subscription_auth_probe_stream_contract() 
     assert "両streamへの重複出力" in text
 
 
+def test_bridge_documentation_uses_manifest_as_exact_live_evidence_authority() -> None:
+    text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
+
+    assert "qualifications/p2-025b-codex-subscription-v1.json" in text
+    assert "唯一の正" in text
+    assert "p25-live-" not in text
+    assert "subscription利用量は合計input" not in text
+    assert "manifest hashは" not in text
+
+
+def test_public_docs_limit_no_bridge_claim_to_ordinary_surfaces() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    limitations = (ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
+
+    assert "ordinary manual surface; no general runtime bridge" in readme
+    assert "manual use; no runtime bridge" not in readme
+    assert "Ordinary Python runs do not launch `.codex/agents/*.toml`" in limitations
+    assert "P2-025B is a separately named exception" in limitations
+    assert "dedicated\n  additive bridge artifact family" in limitations
+    assert "Python does not launch Codex agents" not in limitations
+
+
 def test_readme_distinguishes_local_build_evidence_from_release_unknowns() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
 

@@ -198,7 +198,7 @@ class CodexSubscriptionCliTransport:
     """No-fallback saved-login transport for one fresh ephemeral Codex exec turn."""
 
     auth_mode = RuntimeAuthModeV1.CODEX_SUBSCRIPTION
-    transport_qualification: Literal["actual_live"] = "actual_live"
+    transport_qualification: Literal["deterministic_fixture", "actual_live"]
 
     def __init__(
         self,
@@ -216,6 +216,14 @@ class CodexSubscriptionCliTransport:
             raise ValueError("bundled Codex binary hash mismatch")
         self.auth_status_probe = auth_status_probe
         self.command_factory = command_factory
+        # Injected auth or process seams are deterministic test fixtures.  Only the
+        # sealed product path that runs the pinned CLI and its real status probe may
+        # claim actual-live transport evidence.
+        self.transport_qualification = (
+            "actual_live"
+            if auth_status_probe is None and command_factory is None
+            else "deterministic_fixture"
+        )
 
         configured_codex_home = credential_codex_home
         if configured_codex_home is None:

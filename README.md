@@ -88,7 +88,7 @@ flowchart LR
     A --> S["Verified revisioned run artifacts"]
   end
 
-  C -. "manual use; no runtime bridge" .-> I
+  C -. "ordinary manual surface; no general runtime bridge" .-> I
 ```
 
 Python applicationがstate transition、budget、tool execution、artifact publicationを所有します。

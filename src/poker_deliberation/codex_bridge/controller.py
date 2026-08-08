@@ -41,6 +41,7 @@ from poker_deliberation.codex_bridge.models import (
 )
 from poker_deliberation.codex_bridge.storage import (
     BoundedCodexBridgeStore,
+    BridgeExecutionIdentityCollisionError,
     BridgeStorageError,
     BridgeStoredArtifact,
     VerifiedBridgeRead,
@@ -619,32 +620,42 @@ class BoundedCodexBridgeController:
         try:
             self.store.claim_execution_identity(audit)
             return audit
+        except BridgeExecutionIdentityCollisionError:
+            failure_reason_code = "execution_identity_registry_rejected"
+            thread_id_sha256 = audit.thread_id_sha256
+            turn_id_sha256 = audit.turn_id_sha256
         except BridgeStorageError:
-            return build_execution_audit(
-                request,
-                confirmation,
-                admission,
-                transport_qualification=audit.transport_qualification,
-                effect_state=BridgeEffectState.EFFECT_UNKNOWN,
-                thread_id_sha256=audit.thread_id_sha256,
-                turn_id_sha256=audit.turn_id_sha256,
-                launched_at=audit.launched_at,
-                completed_at=audit.completed_at,
-                duration_ms=audit.duration_ms,
-                usage=audit.usage,
-                response_bytes=audit.response_bytes,
-                stream_bytes=audit.stream_bytes,
-                unexpected_item_types=audit.unexpected_item_types,
-                cancellation_kind=_cancellation_kind(BridgeEffectState.EFFECT_UNKNOWN),
-                result_sha256=None,
-                failure_reason_code="execution_identity_registry_rejected",
-                model_identity_evidence=audit.model_identity_evidence,
-                observed_model=audit.observed_model,
-                observed_model_provider=audit.observed_model_provider,
-                observed_reasoning_effort=audit.observed_reasoning_effort,
-                observed_service_tier=audit.observed_service_tier,
-                observed_identity_sha256=audit.observed_identity_sha256,
-            )
+            failure_reason_code = "execution_identity_registry_corrupt"
+            # Preserve observed hashes and all other trusted transport evidence. The
+            # store records that they were not proven globally reserved and blocks
+            # subsequent execution until reconciliation.
+            thread_id_sha256 = audit.thread_id_sha256
+            turn_id_sha256 = audit.turn_id_sha256
+        return build_execution_audit(
+            request,
+            confirmation,
+            admission,
+            transport_qualification=audit.transport_qualification,
+            effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+            thread_id_sha256=thread_id_sha256,
+            turn_id_sha256=turn_id_sha256,
+            launched_at=audit.launched_at,
+            completed_at=audit.completed_at,
+            duration_ms=audit.duration_ms,
+            usage=audit.usage,
+            response_bytes=audit.response_bytes,
+            stream_bytes=audit.stream_bytes,
+            unexpected_item_types=audit.unexpected_item_types,
+            cancellation_kind=_cancellation_kind(BridgeEffectState.EFFECT_UNKNOWN),
+            result_sha256=None,
+            failure_reason_code=failure_reason_code,
+            model_identity_evidence=audit.model_identity_evidence,
+            observed_model=audit.observed_model,
+            observed_model_provider=audit.observed_model_provider,
+            observed_reasoning_effort=audit.observed_reasoning_effort,
+            observed_service_tier=audit.observed_service_tier,
+            observed_identity_sha256=audit.observed_identity_sha256,
+        )
 
     def execute_confirmed_role(
         self,
@@ -678,6 +689,12 @@ class BoundedCodexBridgeController:
             request=request,
             existing_attempts=self._existing_attempts(current),
         )
+        try:
+            self.store.verify_execution_identity_history()
+        except BridgeStorageError as exc:
+            raise BridgeControllerError(
+                "execution identity registry failed pre-launch validation"
+            ) from exc
         admitted_at = self.clock()
         admission = admit_role_request(
             request,

@@ -30,6 +30,7 @@ from poker_deliberation.codex_bridge.models import (
 from poker_deliberation.codex_bridge.replay import replay_bridge
 from poker_deliberation.codex_bridge.storage import (
     BoundedCodexBridgeStore,
+    BridgeExecutionIdentityCollisionError,
     BridgeStorageError,
 )
 from poker_deliberation.codex_bridge.transport import (
@@ -300,6 +301,8 @@ def test_bridge_namespace_rejects_cross_run_thread_and_turn_replay(tmp_path: Pat
     assert isinstance(first_audit, BridgeExecutionAuditV1)
     assert first_audit.thread_id_sha256 is not None
     assert first_audit.turn_id_sha256 is not None
+    with pytest.raises(BridgeExecutionIdentityCollisionError, match="identity was reused"):
+        store.claim_execution_identity(first_audit)
 
     second_run_id = "bridge-run-controller-second"
     second = BoundedCodexBridgeController(store, clock=clock)
@@ -354,10 +357,165 @@ def test_bridge_namespace_rejects_cross_run_thread_and_turn_replay(tmp_path: Pat
     assert rejected.pointer.status == "effect_unknown"
     assert replayed.reconciliation_required is True
     assert replayed.completed_roles == ()
+    rejected_audit = next(
+        item.model
+        for item in rejected.decoded_artifacts()
+        if item.logical_name == role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")
+    )
+    assert isinstance(rejected_audit, BridgeExecutionAuditV1)
+    assert rejected_audit.failure_reason_code == "execution_identity_registry_rejected"
     assert transport.calls == [
         canonical_assignment_id("bridge-run-controller", _MODE, BridgeRole.STRATEGY_ANALYST),
         canonical_assignment_id(second_run_id, _MODE, BridgeRole.STRATEGY_ANALYST),
     ]
+
+
+def _confirmed_second_run_after_first_identity(
+    tmp_path: Path,
+):  # type: ignore[no-untyped-def]
+    clock = StepClock()
+    source = verified_bridge_source(tmp_path / "p3")
+    store = BoundedCodexBridgeStore(tmp_path / "bridge")
+    first_transport = DeterministicReadOnlyTransport(auth_mode=_MODE, clock=clock)
+    first = BoundedCodexBridgeController(store, clock=clock)
+    first.prepare_run(
+        bridge_run_id="bridge-run-controller",
+        source_context=source,
+        repository_root=REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        repository_tree_id="2" * 40,
+        auth_mode=_MODE,
+    )
+    _confirm(first, BridgeRole.STRATEGY_ANALYST)
+    accepted = first.execute_confirmed_role(
+        "bridge-run-controller",
+        BridgeRole.STRATEGY_ANALYST,
+        auth_mode=_MODE,
+        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        transport=first_transport,
+    )
+    first_audit = next(
+        item.model
+        for item in accepted.decoded_artifacts()
+        if item.logical_name == role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")
+    )
+    assert isinstance(first_audit, BridgeExecutionAuditV1)
+    assert first_audit.thread_id_sha256 is not None
+    assert first_audit.turn_id_sha256 is not None
+
+    second_run_id = "bridge-run-controller-second"
+    second = BoundedCodexBridgeController(store, clock=clock)
+    second.prepare_run(
+        bridge_run_id=second_run_id,
+        source_context=source,
+        repository_root=REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        repository_tree_id="2" * 40,
+        auth_mode=_MODE,
+    )
+    _confirm_run(second, second_run_id, BridgeRole.STRATEGY_ANALYST)
+    return clock, source, store, first_audit, second_run_id, second
+
+
+def _delete_identity_claims(
+    store: BoundedCodexBridgeStore,
+    audit: BridgeExecutionAuditV1,
+) -> None:
+    assert audit.thread_id_sha256 is not None
+    assert audit.turn_id_sha256 is not None
+    for kind, identity_sha256 in (
+        ("thread", audit.thread_id_sha256),
+        ("turn", audit.turn_id_sha256),
+    ):
+        (store.root / ".i" / f"{kind}-{identity_sha256}.json").unlink()
+
+
+def test_deleted_identity_claims_fail_before_transport_and_cannot_be_reassigned(
+    tmp_path: Path,
+) -> None:
+    _clock, source, store, first_audit, second_run_id, second = (
+        _confirmed_second_run_after_first_identity(tmp_path)
+    )
+    _delete_identity_claims(store, first_audit)
+
+    class _ForbiddenTransport:
+        auth_mode = _MODE
+        transport_qualification = "deterministic_fixture"
+        calls = 0
+
+        def execute(self, request: BoundedCodexBridgeRequestV1) -> BridgeTransportResult:
+            self.calls += 1
+            raise AssertionError(f"transport must not execute: {request.request_sha256}")
+
+    transport = _ForbiddenTransport()
+    with pytest.raises(BridgeControllerError, match="failed pre-launch validation"):
+        second.execute_confirmed_role(
+            second_run_id,
+            BridgeRole.STRATEGY_ANALYST,
+            auth_mode=_MODE,
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            transport=transport,
+        )
+
+    assert transport.calls == 0
+    assert not tuple((store.root / ".i").glob("thread-*.json"))
+    assert not tuple((store.root / ".i").glob("turn-*.json"))
+    second_current = store.read_current(second_run_id)
+    assert role_artifact_name(BridgeRole.STRATEGY_ANALYST, "admission") not in {
+        item.logical_name for item in second_current.decoded_artifacts()
+    }
+    with pytest.raises(BridgeStorageError, match="identity claim"):
+        store.read_current("bridge-run-controller")
+
+
+def test_identity_claim_deletion_race_is_post_launch_effect_unknown(
+    tmp_path: Path,
+) -> None:
+    clock, source, store, first_audit, second_run_id, second = (
+        _confirmed_second_run_after_first_identity(tmp_path)
+    )
+    delegate = DeterministicReadOnlyTransport(auth_mode=_MODE, clock=clock)
+
+    class _DeleteDuringTransport:
+        auth_mode = _MODE
+        transport_qualification = "deterministic_fixture"
+        calls = 0
+
+        def execute(self, request: BoundedCodexBridgeRequestV1) -> BridgeTransportResult:
+            self.calls += 1
+            _delete_identity_claims(store, first_audit)
+            return delegate.execute(request)
+
+    transport = _DeleteDuringTransport()
+    terminal = second.execute_confirmed_role(
+        second_run_id,
+        BridgeRole.STRATEGY_ANALYST,
+        auth_mode=_MODE,
+        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        transport=transport,
+    )
+
+    audit = next(
+        item.model
+        for item in terminal.decoded_artifacts()
+        if item.logical_name == role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")
+    )
+    assert isinstance(audit, BridgeExecutionAuditV1)
+    assert transport.calls == 1
+    assert terminal.pointer.status == "effect_unknown"
+    assert audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+    assert audit.failure_reason_code == "execution_identity_registry_corrupt"
+    assert audit.thread_id_sha256 is not None
+    assert audit.turn_id_sha256 is not None
+    assert audit.usage is not None
+    assert audit.response_bytes is not None
+    assert not tuple((store.root / ".i").glob("thread-*.json"))
+    assert not tuple((store.root / ".i").glob("turn-*.json"))
+    assert replay_bridge(terminal).reconciliation_required is True
+    with pytest.raises(BridgeStorageError, match=r"identity claim|requires reconciliation"):
+        store.verify_execution_identity_history()
+    with pytest.raises(BridgeStorageError, match="identity claim"):
+        store.read_current("bridge-run-controller")
 
 
 def test_run_scoped_ids_and_store_wide_confirmation_ids_cannot_cross_runs(

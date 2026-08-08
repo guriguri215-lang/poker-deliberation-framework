@@ -362,15 +362,12 @@ manifest内の全runtime source fileのpath/size/SHA-256と
 最終commitのancestorであることもpublic preflightで検証します。capability/roadmap/public-preflightという
 状態projectionだけはruntime execution inventoryから明示的に除外します。
 
-公開manifestはrun `p25-live-88ab2d6-r2`、qualification commit
-`88ab2d69c024aec7eb222f1381d5cf5403717cad`、tree
-`a71930d027c8c78c847d2debe952bffe454289f3`、`openai-codex==0.144.4`（Apache-2.0）、
-`openai-codex-cli/0.144.4`、`gpt-5.6-terra`、reasoning `medium`、service tier `default`へ束縛します。
-5 roleはproduct retryなしでterminal revision 16へ到達し、subscription利用量は合計input 77,855 token、
-output 6,638 tokenです。manifest hashは
-`2316dd11ca573056ab6b0092d9da71e862f0b950f61a05208835f2fc6c207235`、runtime source inventoryは
-`707eb3d9f0c87fe45867b37aee5456a37d8bc2a3ae7a35f0ff4ddb30d107aeb9`です。subscription経路にUSD API
-costは記録しません。
+公開qualificationのexact run ID、qualification commit/tree、role別usage、manifest hash、runtime source
+inventoryは[`qualifications/p2-025b-codex-subscription-v1.json`](../qualifications/p2-025b-codex-subscription-v1.json)
+を唯一の正とします。文書へ特定runの値を複製せず、public preflightがmanifestをstrict canonical loadし、
+現在treeとのancestor/runtime inventory/role conformance/evaluation bindingを検証します。runtime/package/model、
+reasoning、service tier、budget、UNKNOWN、API live-unqualified状態も同manifestへ束縛します。subscription経路に
+USD API costは記録しません。
 
 ## Data handlingとretention
 

@@ -101,6 +101,41 @@ def test_subscription_command_is_ephemeral_read_only_and_tools_off(
     assert "OPENAI_API_KEY" not in joined
 
 
+def test_subscription_only_default_product_process_can_claim_actual_live(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subscription_module,
+        "_file_sha256",
+        lambda _path: BRIDGE_RUNTIME_BINARY_SHA256,
+    )
+    product = CodexSubscriptionCliTransport(
+        tmp_path / "product-runtime",
+        codex_binary=Path(sys.executable),
+        isolation_root=tmp_path / "product-isolation",
+        credential_codex_home=tmp_path / "credential-codex-home",
+    )
+    injected_auth = CodexSubscriptionCliTransport(
+        tmp_path / "auth-fixture-runtime",
+        codex_binary=Path(sys.executable),
+        auth_status_probe=lambda _cwd, _env: True,
+        isolation_root=tmp_path / "auth-fixture-isolation",
+        credential_codex_home=tmp_path / "credential-codex-home",
+    )
+    injected_process = CodexSubscriptionCliTransport(
+        tmp_path / "process-fixture-runtime",
+        codex_binary=Path(sys.executable),
+        command_factory=lambda _cwd, _schema, _output: [sys.executable],
+        isolation_root=tmp_path / "process-fixture-isolation",
+        credential_codex_home=tmp_path / "credential-codex-home",
+    )
+
+    assert product.transport_qualification == "actual_live"
+    assert injected_auth.transport_qualification == "deterministic_fixture"
+    assert injected_process.transport_qualification == "deterministic_fixture"
+
+
 def test_subscription_missing_login_fails_before_process_launch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -280,6 +315,7 @@ for event in events:
         result = transport.execute(request)
         assert result.response_bytes == response
         assert result.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+        assert result.transport_qualification == "deterministic_fixture"
         assert result.item_types == ("agent_message",)
         assert result.usage.estimated_cost_micro_usd is None
         assert result.model_identity_evidence == "requested_pinned_no_fallback_no_reroute"

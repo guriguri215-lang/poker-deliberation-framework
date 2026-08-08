@@ -95,6 +95,10 @@ class BridgeStorageError(CanonicalStorageError):
     """Raised when bridge publication or replay cannot be proven exact."""
 
 
+class BridgeExecutionIdentityCollisionError(BridgeStorageError):
+    """Raised only when a thread or turn identity already has a durable claim."""
+
+
 @dataclass(frozen=True, slots=True)
 class BridgeStoredArtifact:
     logical_name: str
@@ -451,17 +455,7 @@ class BoundedCodexBridgeStore:
             self._verify_confirmation_identifier_namespace()
             # A deleted historical claim must not become available for a different
             # run. Verify every published current revision before reserving any key.
-            for sibling in self.root.iterdir():
-                if _RUN_DIRECTORY.fullmatch(sibling.name) is None:
-                    continue
-                current = sibling / ".b" / "c.json"
-                if not current.exists():
-                    continue
-                pointer = parse_canonical_model(
-                    _read_bounded(current),
-                    BridgeCurrentPointerV1,
-                )
-                self.read_current(pointer.bridge_run_id)
+            self._verify_published_current_runs()
             for path, claim in claims:
                 if not path.exists():
                     continue
@@ -477,6 +471,42 @@ class BoundedCodexBridgeStore:
                 _write_exclusive(path, canonical_json_bytes(claim))
                 sync_directory(confirmations, hook="codex_bridge.confirmations.claim")
             self._verify_confirmation_identifier_namespace()
+
+    def _verify_published_current_runs(self) -> None:
+        for sibling in sorted(self.root.iterdir(), key=lambda item: item.name.encode("utf-8")):
+            if _RUN_DIRECTORY.fullmatch(sibling.name) is None:
+                continue
+            current = sibling / ".b" / "c.json"
+            if not current.exists():
+                continue
+            pointer = parse_canonical_model(
+                _read_bounded(current),
+                BridgeCurrentPointerV1,
+            )
+            if self._run_key(pointer.bridge_run_id) != sibling.name:
+                raise BridgeStorageError("bridge current pointer is cross-run")
+            verified = self.read_current(pointer.bridge_run_id)
+            if any(
+                isinstance(item.model, BridgeExecutionAuditV1)
+                and item.model.failure_reason_code == "execution_identity_registry_corrupt"
+                for item in verified.decoded_artifacts()
+            ):
+                raise BridgeStorageError("execution identity registry requires reconciliation")
+
+    def verify_execution_identity_history(self) -> None:
+        """Fail closed if any published execution has lost its identity claims."""
+
+        try:
+            with self._identity_authority():
+                self._verify_identity_namespace()
+                self._verify_published_current_runs()
+                self._verify_identity_namespace()
+        except BridgeStorageError:
+            raise
+        except Exception as exc:
+            raise BridgeStorageError(
+                "execution identity registry history verification failed"
+            ) from exc
 
     def claim_execution_identity(self, audit: BridgeExecutionAuditV1) -> None:
         """Exclusively reserve runtime thread/turn hashes across this bridge namespace."""
@@ -512,14 +542,26 @@ class BoundedCodexBridgeStore:
                 strict=True,
             )
             claims.append((identities / f"{kind}-{identity_sha}.json", claim))
-        with self._identity_authority():
-            self._verify_identity_namespace()
-            if any(path.exists() for path, _claim in claims):
-                raise BridgeStorageError("execution thread or turn identity was reused")
-            for path, claim in claims:
-                _write_exclusive(path, canonical_json_bytes(claim))
-                sync_directory(identities, hook="codex_bridge.identities.claim")
-            self._verify_identity_namespace()
+        try:
+            with self._identity_authority():
+                self._verify_identity_namespace()
+                # Repeat the store-wide check under the same authority as reservation.
+                # This closes the gap after the controller's pre-launch check.
+                self._verify_published_current_runs()
+                if any(path.exists() for path, _claim in claims):
+                    raise BridgeExecutionIdentityCollisionError(
+                        "execution thread or turn identity was reused"
+                    )
+                for path, claim in claims:
+                    _write_exclusive(path, canonical_json_bytes(claim))
+                    sync_directory(identities, hook="codex_bridge.identities.claim")
+                self._verify_identity_namespace()
+        except BridgeExecutionIdentityCollisionError:
+            raise
+        except BridgeStorageError:
+            raise
+        except Exception as exc:
+            raise BridgeStorageError("execution identity registry reservation failed") from exc
 
     def _verify_current_identity_claims(
         self,
@@ -540,13 +582,17 @@ class BoundedCodexBridgeStore:
                 audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
                 and audit.failure_reason_code == "execution_identity_registry_rejected"
             )
+            registry_corrupt = (
+                audit.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+                and audit.failure_reason_code == "execution_identity_registry_corrupt"
+            )
             collision_proved = False
             for kind, identity_sha in (
                 ("thread", audit.thread_id_sha256),
                 ("turn", audit.turn_id_sha256),
             ):
                 path = identities / f"{kind}-{identity_sha}.json"
-                if collision_rejected and not path.exists():
+                if (collision_rejected or registry_corrupt) and not path.exists():
                     continue
                 try:
                     claim = parse_canonical_model(
@@ -559,6 +605,12 @@ class BoundedCodexBridgeStore:
                     ) from exc
                 if claim.identity_kind != kind or claim.identity_sha256 != identity_sha:
                     raise BridgeStorageError("execution audit identity claim mismatch")
+                if registry_corrupt:
+                    # A post-launch registry fault can leave either no reservation or
+                    # a partially written reservation. The terminal audit preserves
+                    # the observed hashes, while store-wide admission remains blocked
+                    # by _verify_published_current_runs until reconciliation.
+                    continue
                 bound_to_audit = (
                     claim.bridge_run_id == audit.bridge_run_id
                     and claim.auth_mode is audit.auth_mode
@@ -1112,6 +1164,7 @@ class BoundedCodexBridgeStore:
 
 __all__ = [
     "BoundedCodexBridgeStore",
+    "BridgeExecutionIdentityCollisionError",
     "BridgePublishOutcome",
     "BridgePublishRequest",
     "BridgeStorageError",

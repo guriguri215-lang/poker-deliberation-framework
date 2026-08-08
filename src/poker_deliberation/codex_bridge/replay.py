@@ -94,7 +94,7 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
     accepted_input_tokens = 0
     accepted_output_tokens = 0
     accepted_estimated_cost = 0
-    open_admission = False
+    open_admissions = 0
     assignments: set[str] = set()
     attempts: set[str] = set()
     thread_ids: set[str] = set()
@@ -146,12 +146,15 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
             runtime_policy = request.context.runtime_policy
         elif runtime_policy != request.context.runtime_policy:
             raise BridgeReplayError("bridge runtime policy mutated across roles")
-        if role in BRIDGE_ROLE_ORDER[:3]:
-            expected_parents: tuple[BridgeRoleResultV1, ...] = ()
-        elif role is BridgeRole.ADJUDICATOR:
-            expected_parents = tuple(results[item] for item in BRIDGE_ROLE_ORDER[:3])
-        else:
-            expected_parents = (results[BridgeRole.ADJUDICATOR],)
+        try:
+            if role in BRIDGE_ROLE_ORDER[:3]:
+                expected_parents: tuple[BridgeRoleResultV1, ...] = ()
+            elif role is BridgeRole.ADJUDICATOR:
+                expected_parents = tuple(results[item] for item in BRIDGE_ROLE_ORDER[:3])
+            else:
+                expected_parents = (results[BridgeRole.ADJUDICATOR],)
+        except KeyError as exc:
+            raise BridgeReplayError("bridge dependent request lacks successful parents") from exc
         if tuple(item.result_sha256 for item in expected_parents) != (
             assignment.parent_result_sha256s
         ):
@@ -215,6 +218,12 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
             continue
         if not isinstance(admission, BridgePreExecutionAdmissionV1):
             raise BridgeReplayError("bridge admission schema mismatch")
+        if audit is None:
+            open_admissions += 1
+            if open_admissions > 1:
+                raise BridgeReplayError("bridge has more than one open execution admission")
+        if tuple(completed) != BRIDGE_ROLE_ORDER[:ordinal]:
+            raise BridgeReplayError("bridge execution admission is out of serial order")
         rebuilt_admission = admit_role_request(
             request,
             confirmation,
@@ -226,7 +235,6 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
         if audit is None:
             if result is not None:
                 raise BridgeReplayError("bridge result exists without execution audit")
-            open_admission = True
             continue
         if not isinstance(audit, BridgeExecutionAuditV1):
             raise BridgeReplayError("bridge execution audit schema mismatch")
@@ -275,6 +283,8 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
             thread_ids.add(audit.thread_id_sha256)
             turn_ids.add(audit.turn_id_sha256)
         if audit.effect_state is BridgeEffectState.SUCCEEDED:
+            if tuple(completed) != BRIDGE_ROLE_ORDER[:ordinal]:
+                raise BridgeReplayError("bridge completed roles are not a continuous prefix")
             if not isinstance(result, BridgeRoleResultV1):
                 raise BridgeReplayError("successful bridge audit lacks a role result")
             rebuilt_result = validate_role_response(
@@ -367,6 +377,14 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
     unknown = set(artifacts) - known_names
     if unknown:
         raise BridgeReplayError("unknown bridge artifact logical name")
+    first_three_complete = tuple(completed[:3]) == BRIDGE_ROLE_ORDER[:3]
+    adjudicator_request = role_artifact_name(BridgeRole.ADJUDICATOR, "request") in artifacts
+    if adjudicator_request != first_three_complete:
+        raise BridgeReplayError("bridge adjudicator request dependency failed replay")
+    adjudicator_complete = BridgeRole.ADJUDICATOR in completed
+    report_request = role_artifact_name(BridgeRole.REPORT_WRITER, "request") in artifacts
+    if report_request != adjudicator_complete:
+        raise BridgeReplayError("bridge report-writer request dependency failed replay")
     if runtime_policy is not None and (
         accepted_input_tokens > plan.total_max_input_tokens
         or accepted_output_tokens > plan.total_max_output_tokens
@@ -379,6 +397,9 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
         )
     ):
         raise BridgeReplayError("bridge aggregate budget failed replay")
+    all_roles_complete = tuple(completed) == BRIDGE_ROLE_ORDER
+    if (read.pointer.status == "succeeded") != all_roles_complete:
+        raise BridgeReplayError("bridge succeeded status and completed roles disagree")
     if terminal_failure is not None:
         expected_status = {
             BridgeEffectState.NOT_LAUNCHED: "failed",
@@ -392,7 +413,7 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
         if read.pointer.status != expected_status:
             raise BridgeReplayError("bridge failure status does not match its execution audit")
     elif read.pointer.status == "succeeded":
-        if tuple(completed) != BRIDGE_ROLE_ORDER or read.completion_marker is None:
+        if read.completion_marker is None:
             raise BridgeReplayError("successful bridge run is incomplete")
     elif read.pointer.status not in {"approval_required", "in_progress"}:
         raise BridgeReplayError("terminal bridge status lacks failure evidence")
@@ -405,7 +426,7 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
         completed_roles=tuple(completed),
         pending_roles=pending,
         reconciliation_required=(
-            open_admission
+            open_admissions == 1
             or (
                 terminal_failure is not None
                 and terminal_failure.effect_state

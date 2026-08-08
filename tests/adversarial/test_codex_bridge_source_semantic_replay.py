@@ -11,12 +11,26 @@ import poker_deliberation.bounded_river_call_ev as bounded_river_call_ev
 import poker_deliberation.bounded_river_call_ev_provenance as bounded_river_provenance
 import poker_deliberation.range_equity as range_equity
 import poker_deliberation.range_grammar as range_grammar
+from poker_deliberation.bounded_river_call_ev_models import (
+    PROVENANCE_HASH_DOMAIN,
+    TOOL_RESULT_HASH_DOMAIN,
+)
+from poker_deliberation.bounded_river_call_ev_models import (
+    RESULT_HASH_DOMAIN as BOUNDED_RESULT_HASH_DOMAIN,
+)
 from poker_deliberation.codex_bridge.source import (
     BridgeSourceError,
     project_verified_p3_terminal,
 )
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider
+from poker_deliberation.range_equity_models import (
+    EQUITY_OUTPUT_HASH_DOMAIN,
+    canonical_domain_sha256,
+)
+from poker_deliberation.range_equity_models import (
+    RESULT_HASH_DOMAIN as RANGE_RESULT_HASH_DOMAIN,
+)
 from poker_deliberation.storage.revision_canonical import canonical_json_bytes, sha256_bytes
 from poker_deliberation.storage.terminal_canonical import (
     completion_marker_sha256,
@@ -126,6 +140,57 @@ def _tool_result_mutation(read: VerifiedRunReadV2) -> dict[str, bytes]:
     }
 
 
+def _without_hash(value: dict[str, object], field: str) -> dict[str, object]:
+    payload = dict(value)
+    payload.pop(field)
+    return payload
+
+
+def _coherently_rehashed_equity_contradiction(
+    read: VerifiedRunReadV2,
+) -> dict[str, bytes]:
+    report = json.loads(read.payload_bytes("final_report.json"))
+    result = json.loads(read.payload_bytes("bounded_river_call_ev_result.json"))
+    provenance = json.loads(read.payload_bytes("bounded_river_call_ev_provenance.json"))
+    tool = next(item for item in report["tool_results"] if item["tool_name"] == "holdem_equity")
+    tool["output"]["hero_equity"] = 0.0
+    tool["output"]["unweighted_wins"] = 0
+    tool["output"]["unweighted_losses"] = 1
+    tool_sha256 = canonical_domain_sha256(TOOL_RESULT_HASH_DOMAIN, tool)
+
+    support = next(item for item in result["tool_support"] if item["tool_name"] == "holdem_equity")
+    support["result_sha256"] = tool_sha256
+    range_result = result["range_equity_result"]
+    range_result["equity_output_sha256"] = canonical_domain_sha256(
+        EQUITY_OUTPUT_HASH_DOMAIN,
+        tool["output"],
+    )
+    range_result["result_sha256"] = canonical_domain_sha256(
+        RANGE_RESULT_HASH_DOMAIN,
+        _without_hash(range_result, "result_sha256"),
+    )
+    result["result_sha256"] = canonical_domain_sha256(
+        BOUNDED_RESULT_HASH_DOMAIN,
+        _without_hash(result, "result_sha256"),
+    )
+
+    provenance["result_sha256"] = result["result_sha256"]
+    provenance["final_report_sha256"] = canonical_domain_sha256(
+        "poker-bounded-river-call-ev-final-report-json-v1",
+        report,
+    )
+    provenance["provenance_sha256"] = canonical_domain_sha256(
+        PROVENANCE_HASH_DOMAIN,
+        _without_hash(provenance, "provenance_sha256"),
+    )
+    return {
+        "final_report.json": canonical_json_bytes(report),
+        f"tool_results/{tool['result_id']}.json": canonical_json_bytes(tool),
+        "bounded_river_call_ev_result.json": canonical_json_bytes(result),
+        "bounded_river_call_ev_provenance.json": canonical_json_bytes(provenance),
+    }
+
+
 @pytest.mark.parametrize(
     "mutate",
     (_source_mutation, _range_mutation, _confirmation_mutation, _tool_result_mutation),
@@ -215,3 +280,16 @@ def test_bridge_semantic_replay_does_not_execute_calculators(
     )
 
     assert source.source.source_terminal_run_id == read.run_id
+
+
+def test_bridge_rejects_coherently_rehashed_equity_output_contradiction(
+    tmp_path: Path,
+) -> None:
+    orchestrator, read = _completed_read(tmp_path)
+    forged = _rehash_generic_terminal(read, _coherently_rehashed_equity_contradiction(read))
+
+    with pytest.raises(BridgeSourceError, match="semantic replay"):
+        project_verified_p3_terminal(
+            forged,
+            source_revision_root=orchestrator.product_store.revision_root,
+        )

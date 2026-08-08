@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+from typing import TypeGuard
 
 from pydantic import BaseModel
 
@@ -66,7 +68,10 @@ from poker_deliberation.range_equity_models import (
     VersionedRangeRiverEquityBindingV1,
     canonical_domain_sha256,
 )
-from poker_deliberation.range_models import VersionedRangeDefinitionV1
+from poker_deliberation.range_models import (
+    RangeValidationResultV1,
+    VersionedRangeDefinitionV1,
+)
 from poker_deliberation.schemas import (
     AgentAssignment,
     AgentExecutionRecord,
@@ -85,11 +90,21 @@ from poker_deliberation.storage.range_equity_admission_store import (
 )
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
+    canonical_json_bytes,
     parse_canonical_json,
     parse_canonical_model,
     parse_canonical_model_list,
 )
 from poker_deliberation.storage.terminal_models import RunReadStatus, VerifiedRunReadV2
+from poker_deliberation.tools.contracts import (
+    CombosOutput,
+    HandValidatorOutput,
+    HoldemEquityOutput,
+    PotOddsOutput,
+    RakedCallEVOutput,
+)
+from poker_deliberation.tools.hand_pot_ledger import HandPotLedgerOutputV1
+from poker_deliberation.tools.numeric import close_ulps
 
 _MAX_ADMISSION_RECORD_BYTES = 1_000_000
 _TERMINAL_ROOT_HASH_DOMAIN = "poker-bounded-river-call-ev-terminal-revision-root-v1"
@@ -105,6 +120,118 @@ _P3_SUCCESS_ARTIFACTS = frozenset(
     }
 )
 _P3_ARTIFACT_FAMILY = _P3_SUCCESS_ARTIFACTS | {BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT}
+_TOOL_CONTRACT_METADATA = {
+    "hand_validator": (
+        "floating-verified",
+        "declared canonical hand rules profile",
+        None,
+    ),
+    "hand_pot_ledger": (
+        "exact-under-model",
+        "generic_nlhe_cash_no_rake_v1 version 1.0.0",
+        None,
+    ),
+    "pot_odds": ("floating-verified", None, None),
+    "range_validate": (
+        "exact",
+        "poker-deliberation.nlhe-range version 1.0.0",
+        None,
+    ),
+    "combos": ("floating-verified", None, None),
+    "holdem_equity": ("floating-verified", None, "exact_enumeration"),
+    "raked_call_ev": (
+        "floating-verified",
+        "single decision, no future betting, declared final-pot rake",
+        None,
+    ),
+}
+_TOOL_OUTPUT_KEYS = {
+    "hand_validator": frozenset(
+        {
+            "valid",
+            "verification_tolerance",
+            "errors",
+            "warnings",
+            "final_pot",
+            "remaining_stacks",
+            "reconstructed_actions",
+            "decision_snapshots",
+            "limitations",
+        }
+    ),
+    "hand_pot_ledger": frozenset(
+        {
+            "schema_version",
+            "profile_id",
+            "profile_version",
+            "supported_site",
+            "chip_unit",
+            "ledger_actions",
+            "uncalled_returns",
+            "pot_layers",
+            "player_eligibility",
+            "gross_contributions_units",
+            "net_contributions_units",
+            "remaining_stacks_units",
+            "gross_committed_units",
+            "total_returned_units",
+            "final_pot_units",
+            "starting_chips_units",
+            "conservation_verified",
+            "oracle_verified",
+            "limitations",
+        }
+    ),
+    "pot_odds": frozenset(
+        {
+            "pot_after_opponent_bet",
+            "final_pot_before_rake",
+            "expected_rake",
+            "final_pot_after_rake",
+            "required_equity",
+            "required_equity_percent",
+            "pot_odds_against",
+        }
+    ),
+    "range_validate": frozenset(
+        {
+            "schema_version",
+            "result_version",
+            "grammar_id",
+            "grammar_version",
+            "hash_algorithm",
+            "status",
+            "range_id",
+            "target_player_id",
+            "source",
+            "game_conditions",
+            "source_notation_sha256",
+            "condition_binding_sha256",
+            "blockers",
+            "diagnostics",
+            "canonical_notation",
+            "canonical_combo_sha256",
+            "combos",
+            "combo_count",
+            "total_weight_millionths",
+        }
+    ),
+    "combos": frozenset({"range", "combo_count", "total_combo_weight", "normalized_weights"}),
+    "holdem_equity": frozenset(
+        {
+            "method",
+            "exact",
+            "hero_equity",
+            "evaluations",
+            "unweighted_wins",
+            "unweighted_ties",
+            "unweighted_losses",
+            "range_pair_count",
+            "cards_to_come",
+        }
+    ),
+    "raked_call_ev": frozenset({"ev", "rake_amount", "final_pot_after_rake", "formula", "model"}),
+}
 
 
 class P3TerminalSourceReadError(ValueError):
@@ -639,6 +766,432 @@ def _verify_tool_result_ledger(
     }
     if any(getattr(range_result, field) != value for field, value in expected_hashes.items()):
         raise P3TerminalSourceReadError("P3-030C range result and ToolResult hashes differ")
+
+    _verify_tool_result_semantics(candidate, result, range_results)
+
+
+def _verify_tool_contract_metadata(results: dict[str, ToolResult]) -> None:
+    for tool_name, result in results.items():
+        expected_numeric, expected_qualifier, expected_method = _TOOL_CONTRACT_METADATA[tool_name]
+        if (
+            result.tool_name != tool_name
+            or frozenset(result.output) != _TOOL_OUTPUT_KEYS[tool_name]
+            or result.status.value != "success"
+            or result.exactness.value != "exact"
+            or result.numeric_exactness.value != expected_numeric
+            or result.contract_version != "2.0.0"
+            or result.version != "1.0.0"
+            or result.model_qualifier != expected_qualifier
+            or result.method != expected_method
+            or result.stochastic is not None
+            or result.seed is not None
+            or result.samples is not None
+            or result.iterations is not None
+            or result.confidence_interval is not None
+            or result.confidence_level is not None
+            or result.error is not None
+            or result.reproduce_command
+            != (
+                f"poker-deliberate calculate {tool_name} --analysis-scope retrospective "
+                "--input <input.json>"
+            )
+        ):
+            raise P3TerminalSourceReadError("P3-030C ToolResult contract metadata differs")
+
+
+def _is_number(value: object) -> TypeGuard[int | float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _snapshot_number(snapshot: dict[str, object], field: str) -> float | None:
+    value = snapshot.get(field)
+    return float(value) if _is_number(value) else None
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_string_list(value: object) -> TypeGuard[list[str]]:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _visible_board(board: list[str], street: str) -> list[str]:
+    visible_cards = {"preflop": 0, "flop": 3, "turn": 4, "river": 5, "showdown": 5}
+    return board[: visible_cards[street]]
+
+
+def _valid_hand_validator_nested_shapes(
+    validator: HandValidatorOutput,
+    candidate: BoundedRiverCallEvCandidateV1,
+) -> bool:
+    """Validate the untyped nested portions of the persisted validator contract."""
+
+    hand = candidate.projection.bounded_candidate.projection.hand
+    player_ids = {player.player_id for player in hand.players}
+    reconstructed_keys = {
+        "index",
+        "pot_after",
+        "stacks_after",
+        "active_players",
+        "all_in_players",
+    }
+    snapshot_keys = {
+        "street",
+        "action_index",
+        "actor",
+        "board",
+        "pot_before",
+        "to_call",
+        "actual_call",
+        "contestable_pot",
+        "current_bet",
+        "actor_invested",
+        "stack_behind",
+        "history_before",
+        "facing_action",
+        "side_pot_risk",
+    }
+    if (
+        set(validator.remaining_stacks) != player_ids
+        or len(validator.reconstructed_actions) != len(hand.actions)
+        or len(validator.decision_snapshots) != len(hand.actions)
+    ):
+        return False
+    for index, reconstructed in enumerate(validator.reconstructed_actions):
+        if set(reconstructed) != reconstructed_keys:
+            return False
+        stacks_after = reconstructed.get("stacks_after")
+        active_players = reconstructed.get("active_players")
+        all_in_players = reconstructed.get("all_in_players")
+        if (
+            not _is_int(reconstructed.get("index"))
+            or reconstructed.get("index") != index
+            or not _is_number(reconstructed.get("pot_after"))
+            or float(reconstructed["pot_after"]) < 0
+            or not isinstance(stacks_after, dict)
+            or set(stacks_after) != player_ids
+            or any(not _is_number(value) or float(value) < 0 for value in stacks_after.values())
+            or not _is_string_list(active_players)
+            or not _is_string_list(all_in_players)
+            or active_players != sorted(set(active_players))
+            or all_in_players != sorted(set(all_in_players))
+            or not set(active_players).issubset(player_ids)
+            or not set(all_in_players).issubset(player_ids)
+        ):
+            return False
+    for index, (snapshot, action) in enumerate(
+        zip(validator.decision_snapshots, hand.actions, strict=True)
+    ):
+        actual_call = snapshot.get("actual_call")
+        if (
+            set(snapshot) != snapshot_keys
+            or not _is_int(snapshot.get("action_index"))
+            or snapshot.get("action_index") != index
+            or snapshot.get("actor") != action.actor
+            or snapshot.get("street") != action.street.value
+            or snapshot.get("board") != _visible_board(hand.board, action.street.value)
+            or any(
+                not _is_number(snapshot.get(field))
+                for field in (
+                    "pot_before",
+                    "to_call",
+                    "contestable_pot",
+                    "current_bet",
+                    "actor_invested",
+                    "stack_behind",
+                )
+            )
+            or any(
+                float(snapshot[field]) < 0
+                for field in (
+                    "pot_before",
+                    "to_call",
+                    "contestable_pot",
+                    "current_bet",
+                    "actor_invested",
+                    "stack_behind",
+                )
+            )
+            or (actual_call is not None and not _is_number(actual_call))
+            or (actual_call is not None and float(actual_call) < 0)
+            or not _is_string_list(snapshot.get("history_before"))
+            or not isinstance(snapshot.get("facing_action"), str)
+            or not isinstance(snapshot.get("side_pot_risk"), bool)
+        ):
+            return False
+    return True
+
+
+def _combo_key(first: str, second: str) -> tuple[str, str]:
+    return (first, second) if first.encode("ascii") < second.encode("ascii") else (second, first)
+
+
+def _normalized_combo_weights(
+    output: CombosOutput,
+) -> dict[tuple[str, str], float] | None:
+    if output.normalized_weights is None:
+        return None
+    weights: dict[tuple[str, str], float] = {}
+    for item in output.normalized_weights:
+        if set(item) != {"cards", "weight"}:
+            return None
+        cards = item.get("cards")
+        weight = item.get("weight")
+        if (
+            not isinstance(cards, list)
+            or len(cards) != 2
+            or any(not isinstance(card, str) for card in cards)
+            or not _is_number(weight)
+        ):
+            return None
+        key = _combo_key(cards[0], cards[1])
+        if key in weights:
+            return None
+        weights[key] = float(weight)
+    return weights
+
+
+def _verify_tool_result_semantics(
+    candidate: BoundedRiverCallEvCandidateV1,
+    result: BoundedRiverCallEvResultV1,
+    range_results: dict[str, ToolResult],
+) -> None:
+    """Cross-bind stored typed outputs without executing any calculator."""
+
+    _verify_tool_contract_metadata(range_results)
+    projection = candidate.projection
+    bounded = projection.bounded_candidate.projection
+    call_model = projection.call_ev_model
+    range_result = result.range_equity_result
+    chip_unit = Fraction(call_model.chip_unit.numerator, call_model.chip_unit.denominator)
+    equity = Fraction(result.equity.numerator, result.equity.denominator)
+    required_equity = Fraction(
+        result.required_equity.numerator,
+        result.required_equity.denominator,
+    )
+    call_ev_amount = Fraction(
+        result.call_ev_amount.numerator,
+        result.call_ev_amount.denominator,
+    )
+
+    validator = HandValidatorOutput.model_validate_json(
+        canonical_json_bytes(range_results["hand_validator"].output),
+        strict=True,
+    )
+    focal_snapshot = next(
+        (
+            item
+            for item in validator.decision_snapshots
+            if item.get("action_index") == bounded.focal_decision.hero_action_index
+        ),
+        None,
+    )
+    if (
+        not validator.valid
+        or validator.errors
+        or not _valid_hand_validator_nested_shapes(validator, candidate)
+        or not close_ulps(
+            validator.final_pot,
+            float(call_model.pot_after_bet_units * chip_unit),
+            ulps=32,
+        )
+        or focal_snapshot is None
+        or focal_snapshot.get("actor") != bounded.hand.hero_player_id
+        or focal_snapshot.get("street") != "river"
+        or focal_snapshot.get("side_pot_risk") is not False
+        or focal_snapshot.get("actual_call") is not None
+        or _snapshot_number(focal_snapshot, "contestable_pot") is None
+        or not close_ulps(
+            _snapshot_number(focal_snapshot, "contestable_pot") or 0.0,
+            float(call_model.pot_after_bet_units * chip_unit),
+            ulps=32,
+        )
+        or _snapshot_number(focal_snapshot, "to_call") is None
+        or not close_ulps(
+            _snapshot_number(focal_snapshot, "to_call") or 0.0,
+            float(call_model.call_cost_units * chip_unit),
+            ulps=32,
+        )
+    ):
+        raise P3TerminalSourceReadError("P3-030C hand validation output differs")
+
+    ledger = HandPotLedgerOutputV1.model_validate_json(
+        canonical_json_bytes(range_results["hand_pot_ledger"].output),
+        strict=True,
+    )
+    focal_ledger = ledger.ledger_actions[-1]
+    if (
+        canonical_domain_sha256(
+            f"{BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID}:ledger-input",
+            {
+                "schema_version": "1.0.0",
+                "rule_profile": bounded.tool_plan.ledger_profile.model_dump(mode="json"),
+                "hand": bounded.hand.model_dump(mode="json"),
+            },
+        )
+        != bounded.tool_plan.ledger_input_sha256
+    ):
+        raise P3TerminalSourceReadError("P3-030C integer pot ledger input hash differs")
+    if (
+        canonical_domain_sha256(
+            f"{BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID}:ledger-output",
+            range_results["hand_pot_ledger"].output,
+        )
+        != bounded.tool_plan.ledger_output_sha256
+    ):
+        raise P3TerminalSourceReadError("P3-030C integer pot ledger output hash differs")
+    if (
+        Fraction(ledger.chip_unit) != chip_unit
+        or ledger.final_pot_units != call_model.pot_before_bet_units
+        or ledger.total_returned_units != call_model.opponent_bet_units
+        or ledger.gross_committed_units != call_model.pot_after_bet_units
+        or len(ledger.uncalled_returns) != 1
+        or ledger.uncalled_returns[0].player_id != bounded.focal_decision.selector_actor
+        or ledger.uncalled_returns[0].amount_units != call_model.opponent_bet_units
+        or focal_ledger.action_index != bounded.focal_decision.hero_action_index
+        or focal_ledger.actor != bounded.hand.hero_player_id
+        or focal_ledger.action != "fold"
+        or focal_ledger.committed_units != 0
+        or focal_ledger.pot_units_after != call_model.pot_after_bet_units
+    ):
+        raise P3TerminalSourceReadError("P3-030C integer pot ledger output differs")
+
+    pot_odds_output = PotOddsOutput.model_validate_json(
+        canonical_json_bytes(range_results["pot_odds"].output),
+        strict=True,
+    )
+    pot_after_bet = float(call_model.pot_after_bet_units * chip_unit)
+    contestable_pot = float(call_model.contestable_pot_units * chip_unit)
+    call_cost = float(call_model.call_cost_units * chip_unit)
+    if (
+        canonical_domain_sha256(
+            f"{BOUNDED_NL_TOOL_PLAN_CANONICALIZATION_ID}:pot-odds-input",
+            range_results["pot_odds"].input,
+        )
+        != bounded.tool_plan.pot_odds_input_sha256
+        or range_results["pot_odds"].input
+        != bounded.tool_plan.pot_odds_input.model_dump(mode="json")
+        or not close_ulps(pot_odds_output.pot_after_opponent_bet, pot_after_bet, ulps=16)
+        or not close_ulps(pot_odds_output.final_pot_before_rake, contestable_pot, ulps=16)
+        or not close_ulps(pot_odds_output.expected_rake, 0.0, ulps=16)
+        or not close_ulps(pot_odds_output.final_pot_after_rake, contestable_pot, ulps=16)
+        or not close_ulps(
+            pot_odds_output.required_equity,
+            float(required_equity),
+            ulps=16,
+        )
+        or not close_ulps(
+            pot_odds_output.required_equity_percent,
+            float(required_equity) * 100.0,
+            ulps=16,
+        )
+        or not close_ulps(
+            pot_odds_output.pot_odds_against,
+            pot_after_bet / call_cost,
+            ulps=16,
+        )
+    ):
+        raise P3TerminalSourceReadError("P3-030C pot-odds output differs")
+
+    validation = RangeValidationResultV1.model_validate_json(
+        canonical_json_bytes(range_results["range_validate"].output),
+        strict=True,
+    )
+    definition = projection.range_definition
+    if (
+        validation.status != "success"
+        or validation.diagnostics
+        or validation.range_id != definition.range_id
+        or validation.target_player_id != definition.target_player_id
+        or validation.source != definition.source
+        or validation.game_conditions != definition.game_conditions
+        or validation.source_notation_sha256 != definition.source.content_sha256
+        or validation.condition_binding_sha256 != range_result.condition_binding_sha256
+        or validation.canonical_combo_sha256 != range_result.canonical_combo_sha256
+        or validation.combo_count != range_result.combo_count
+        or validation.total_weight_millionths != range_result.total_weight_millionths
+        or validation.canonical_notation is None
+        or len(validation.combos) != range_result.combo_count
+        or sum(item.weight_millionths for item in validation.combos)
+        != range_result.total_weight_millionths
+    ):
+        raise P3TerminalSourceReadError("P3-030C range validation output differs")
+
+    combos = CombosOutput.model_validate_json(
+        canonical_json_bytes(range_results["combos"].output),
+        strict=True,
+    )
+    observed_weights = _normalized_combo_weights(combos)
+    expected_weights = {
+        _combo_key(item.cards[0], item.cards[1]): (
+            item.weight_millionths / range_result.total_weight_millionths
+        )
+        for item in validation.combos
+    }
+    if (
+        combos.range != validation.canonical_notation
+        or combos.combo_count != range_result.combo_count
+        or combos.total_combo_weight is None
+        or not close_ulps(
+            combos.total_combo_weight,
+            range_result.total_weight_millionths / 1_000_000,
+            ulps=32,
+        )
+        or observed_weights is None
+        or set(observed_weights) != set(expected_weights)
+        or any(
+            not close_ulps(observed_weights[cards], weight, ulps=32)
+            for cards, weight in expected_weights.items()
+        )
+    ):
+        raise P3TerminalSourceReadError("P3-030C combo output differs")
+
+    equity_input = range_results["holdem_equity"].input
+    expected_equity_input = {
+        "hero_range": "".join(bounded.hand.hero_cards),
+        "villain_range": validation.canonical_notation,
+        "board": list(bounded.hand.board),
+        "dead_cards": [],
+        "game_type": "NLHE",
+        "mode": "exact",
+        "max_exact_evaluations": 990,
+    }
+    equity_output = HoldemEquityOutput.model_validate_json(
+        canonical_json_bytes(range_results["holdem_equity"].output),
+        strict=True,
+    )
+    if (
+        equity_input != expected_equity_input
+        or not equity_output.exact
+        or equity_output.method != "exact_enumeration"
+        or equity_output.cards_to_come != 0
+        or equity_output.range_pair_count != range_result.combo_count
+        or equity_output.evaluations != range_result.combo_count
+        or equity_output.unweighted_wins != range_result.win_combo_count
+        or equity_output.unweighted_ties != range_result.tie_combo_count
+        or equity_output.unweighted_losses != range_result.loss_combo_count
+        or not close_ulps(equity_output.hero_equity, float(equity), ulps=128)
+    ):
+        raise P3TerminalSourceReadError("P3-030C exact Hold'em equity output differs")
+
+    call_ev_output = RakedCallEVOutput.model_validate_json(
+        canonical_json_bytes(range_results["raked_call_ev"].output),
+        strict=True,
+    )
+    if (
+        not close_ulps(call_ev_output.ev, float(call_ev_amount), ulps=32)
+        or not close_ulps(call_ev_output.rake_amount, 0.0, ulps=32)
+        or not close_ulps(call_ev_output.final_pot_after_rake, contestable_pot, ulps=32)
+        or call_ev_output.formula != "equity * (pot_after_bet + call_cost - rake) - call_cost"
+        or call_ev_output.model != "single decision, no future betting, declared final-pot rake"
+    ):
+        raise P3TerminalSourceReadError("P3-030C call-EV output differs")
 
 
 def _verify_provenance_ledger(

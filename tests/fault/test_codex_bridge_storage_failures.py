@@ -273,6 +273,61 @@ def test_corrupt_orphan_blocks_new_ordinal_but_current_remains_replayable(
     assert not (revisions / ("r2-txn-" + "c" * 32)).exists()
 
 
+def test_canonical_rollback_orphan_is_not_adopted_or_replaced(tmp_path: Path) -> None:
+    plan, created, artifacts = _anchors(tmp_path)
+    store = BoundedCodexBridgeStore(
+        tmp_path / "bridge",
+        transaction_id_factory=lambda: "txn-" + "a" * 32,
+    )
+    retained = BridgeStoredArtifact("retained_plan.json", "run_plan", plan)
+    store.publish(
+        store.prepare_request(
+            run_plan=plan,
+            status="approval_required",
+            expected=None,
+            published_at=created,
+            artifacts=(*artifacts, retained),
+        )
+    )
+    first = store.read_current(plan.bridge_run_id)
+    rollback = store._prepare(
+        store.prepare_request(
+            run_plan=plan,
+            status="approval_required",
+            expected=first,
+            published_at=created + timedelta(seconds=1),
+            artifacts=artifacts,
+        )
+    )
+    _run, _control, _transactions, revisions, _current = store._paths(plan.bridge_run_id)
+    orphan = revisions / f"r{rollback.pointer.revision}-{rollback.pointer.transaction_id}"
+    payload = orphan / "payload"
+    payload.mkdir(parents=True)
+    for entry in rollback.manifest.inventory:
+        destination = payload / entry.logical_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(rollback.artifact_bytes[entry.logical_name])
+    (orphan / "manifest.json").write_bytes(rollback.manifest_bytes)
+
+    recovery = BoundedCodexBridgeStore(
+        tmp_path / "bridge",
+        transaction_id_factory=lambda: "txn-" + "b" * 32,
+    )
+    retry = recovery.prepare_request(
+        run_plan=plan,
+        status="approval_required",
+        expected=recovery.read_current(plan.bridge_run_id),
+        published_at=created + timedelta(seconds=2),
+        artifacts=(*artifacts, retained),
+    )
+    with pytest.raises(BridgeStorageError, match="rolled back"):
+        recovery.publish(retry)
+
+    assert recovery.read_current(plan.bridge_run_id).pointer == first.pointer
+    assert len(recovery._revision_candidates(revisions, 2)) == 1
+    assert not (revisions / ("r2-txn-" + "b" * 32)).exists()
+
+
 def test_valid_shaped_orphan_with_wrong_parent_lineage_is_not_adopted(tmp_path: Path) -> None:
     plan, created, artifacts = _anchors(tmp_path)
     transaction_ids = iter(("txn-" + "a" * 32, "txn-" + "b" * 32))

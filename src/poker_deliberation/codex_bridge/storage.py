@@ -20,6 +20,7 @@ from poker_deliberation.codex_bridge.canonical import (
     sha256_bytes,
 )
 from poker_deliberation.codex_bridge.models import (
+    BRIDGE_ROLE_ORDER,
     BRIDGE_SCHEMA_VERSION,
     CONFIRMATION_IDENTIFIER_CLAIM_HASH_DOMAIN,
     EXECUTION_IDENTITY_CLAIM_HASH_DOMAIN,
@@ -236,6 +237,105 @@ def _artifact_inventory(
     if sum(item.size_bytes for item in inventory) > MAX_BRIDGE_REVISION_BYTES:
         raise BridgeStorageError("bridge revision exceeds the byte bound")
     return inventory, encoded
+
+
+def _role_artifact_name(role: BridgeRole, artifact: str) -> str:
+    return f"roles/{BRIDGE_ROLE_ORDER.index(role)}/{artifact}.json"
+
+
+def _verify_execution_progression(
+    artifacts: Mapping[str, bytes],
+    *,
+    status: BridgeTerminalStatus,
+    completion_marker_present: bool,
+) -> None:
+    """Reject non-serial or internally incomplete execution artifact states."""
+
+    completed: list[BridgeRole] = []
+    open_admissions = 0
+    admitted_roles: list[BridgeRole] = []
+    request_present: dict[BridgeRole, bool] = {}
+    for ordinal, role in enumerate(BRIDGE_ROLE_ORDER):
+        names = {
+            artifact: _role_artifact_name(role, artifact)
+            for artifact in ("request", "confirmation", "admission", "result", "audit")
+        }
+        present = {artifact for artifact, name in names.items() if name in artifacts}
+        request_present[role] = "request" in present
+        if present - {"request"} and "request" not in present:
+            raise BridgeStorageError("bridge execution artifact lacks its role request")
+        if "admission" in present and "confirmation" not in present:
+            raise BridgeStorageError("bridge admission lacks its confirmation")
+        if "result" in present and not {"admission", "audit"}.issubset(present):
+            raise BridgeStorageError("bridge role result lacks admission or audit")
+        if "audit" in present and "admission" not in present:
+            raise BridgeStorageError("bridge execution audit lacks its admission")
+        if "admission" in present:
+            admitted_roles.append(role)
+
+        for artifact in present:
+            model = parse_canonical_model(
+                artifacts[names[artifact]],
+                _ARTIFACT_MODELS[
+                    cast(
+                        BridgeArtifactKind,
+                        {
+                            "request": "request",
+                            "confirmation": "confirmation",
+                            "admission": "admission",
+                            "result": "role_result",
+                            "audit": "execution_audit",
+                        }[artifact],
+                    )
+                ],
+            )
+            model_role = (
+                model.context.assignment.role
+                if isinstance(model, BoundedCodexBridgeRequestV1)
+                else (
+                    model.output.role
+                    if isinstance(model, BridgeRoleResultV1)
+                    else getattr(model, "role", None)
+                )
+            )
+            if model_role is not role:
+                raise BridgeStorageError("bridge execution artifact role binding mismatch")
+
+        if "admission" in present and "audit" not in present:
+            open_admissions += 1
+        if "audit" not in present:
+            continue
+        audit = parse_canonical_model(
+            artifacts[names["audit"]],
+            BridgeExecutionAuditV1,
+        )
+        succeeded = audit.effect_state is BridgeEffectState.SUCCEEDED
+        if succeeded != ("result" in present):
+            raise BridgeStorageError("bridge execution success/result matrix is invalid")
+        if succeeded:
+            if tuple(completed) != BRIDGE_ROLE_ORDER[:ordinal]:
+                raise BridgeStorageError("bridge completed roles are not a continuous prefix")
+            completed.append(role)
+
+    if open_admissions > 1:
+        raise BridgeStorageError("bridge has more than one open execution admission")
+    for role in admitted_roles:
+        ordinal = BRIDGE_ROLE_ORDER.index(role)
+        if tuple(completed[:ordinal]) != BRIDGE_ROLE_ORDER[:ordinal]:
+            raise BridgeStorageError("bridge execution admission is out of serial order")
+    if open_admissions and status not in {"approval_required", "in_progress"}:
+        raise BridgeStorageError("terminal bridge revision has an open execution admission")
+    first_three_complete = tuple(completed[:3]) == BRIDGE_ROLE_ORDER[:3]
+    if request_present[BridgeRole.ADJUDICATOR] != first_three_complete:
+        raise BridgeStorageError("bridge adjudicator request dependency is invalid")
+    adjudicator_complete = BridgeRole.ADJUDICATOR in completed
+    if request_present[BridgeRole.REPORT_WRITER] != adjudicator_complete:
+        raise BridgeStorageError("bridge report-writer request dependency is invalid")
+    all_roles_complete = tuple(completed) == BRIDGE_ROLE_ORDER
+    if (status == "succeeded") != all_roles_complete:
+        raise BridgeStorageError("bridge succeeded status and completed roles disagree")
+    if status == "succeeded" and not completion_marker_present:
+        raise BridgeStorageError("successful bridge revision lacks its completion marker")
 
 
 class BoundedCodexBridgeStore:
@@ -834,7 +934,12 @@ class BoundedCodexBridgeStore:
         self,
         bridge_run_id: str,
         revision: Path,
-    ) -> tuple[BridgeCurrentPointerV1, BridgeTerminalManifestV1]:
+    ) -> tuple[
+        BridgeCurrentPointerV1,
+        BridgeTerminalManifestV1,
+        BridgeCompletionMarkerV1 | None,
+        dict[str, bytes],
+    ]:
         match = _REVISION_DIRECTORY.fullmatch(revision.name)
         if match is None:
             raise BridgeStorageError("invalid bridge orphan revision path")
@@ -862,10 +967,10 @@ class BoundedCodexBridgeStore:
             ),
             published_at=manifest.published_at,
         )
-        verified_manifest, _manifest_bytes, _marker, _marker_bytes, _artifacts = (
-            self._read_revision(bridge_run_id, pointer)
+        verified_manifest, _manifest_bytes, marker, _marker_bytes, artifacts = self._read_revision(
+            bridge_run_id, pointer
         )
-        return pointer, verified_manifest
+        return pointer, verified_manifest, marker, artifacts
 
     @staticmethod
     def _verify_direct_child(
@@ -888,6 +993,36 @@ class BoundedCodexBridgeStore:
             or manifest.expected_pointer_sha256 != expected.pointer_sha256
         ):
             raise BridgeStorageError("bridge orphan parent lineage mismatch")
+
+    @staticmethod
+    def _verify_successor_semantics(
+        *,
+        parent_pointer: BridgeCurrentPointerV1,
+        parent_manifest: BridgeTerminalManifestV1,
+        parent_artifacts: Mapping[str, bytes],
+        child_pointer: BridgeCurrentPointerV1,
+        child_manifest: BridgeTerminalManifestV1,
+        child_artifacts: Mapping[str, bytes],
+    ) -> None:
+        if parent_pointer.status not in {"approval_required", "in_progress"}:
+            raise BridgeStorageError("terminal bridge revision cannot have a successor")
+        if (
+            child_pointer.revision != parent_pointer.revision + 1
+            or child_manifest.previous_manifest_sha256 != parent_manifest.manifest_sha256
+            or child_manifest.expected_pointer_sha256
+            != sha256_bytes(canonical_json_bytes(parent_pointer))
+        ):
+            raise BridgeStorageError("bridge successor parent lineage mismatch")
+        parent_inventory = {item.logical_name: item for item in parent_manifest.inventory}
+        child_inventory = {item.logical_name: item for item in child_manifest.inventory}
+        if not parent_inventory.keys() <= child_inventory.keys():
+            raise BridgeStorageError("bridge successor inventory rolled back an artifact")
+        for logical_name, parent_entry in parent_inventory.items():
+            if (
+                child_inventory[logical_name] != parent_entry
+                or child_artifacts[logical_name] != parent_artifacts[logical_name]
+            ):
+                raise BridgeStorageError("bridge successor mutated an immutable artifact")
 
     def _publish_pointer(
         self,
@@ -923,8 +1058,19 @@ class BoundedCodexBridgeStore:
             return None
         if len(candidates) != 1:
             raise BridgeStorageError("bridge orphan revision is ambiguous")
-        pointer, manifest = self._pointer_for_revision(bridge_run_id, candidates[0])
+        pointer, manifest, _marker, artifacts = self._pointer_for_revision(
+            bridge_run_id, candidates[0]
+        )
         self._verify_direct_child(pointer, manifest, expected)
+        if expected is not None:
+            self._verify_successor_semantics(
+                parent_pointer=expected.pointer,
+                parent_manifest=expected.manifest,
+                parent_artifacts=expected.artifacts,
+                child_pointer=pointer,
+                child_manifest=manifest,
+                child_artifacts=artifacts,
+            )
         self._publish_pointer(control=control, current=current, pointer=pointer)
         verified = self.read_current(bridge_run_id)
         if verified.pointer != pointer:
@@ -972,6 +1118,20 @@ class BoundedCodexBridgeStore:
                     or expected.pointer_sha256 != request.expected_pointer_sha256
                 ):
                     raise BridgeStorageError("bridge successor publication lost CAS")
+            if expected is not None:
+                self._verify_successor_semantics(
+                    parent_pointer=expected.pointer,
+                    parent_manifest=expected.manifest,
+                    parent_artifacts=expected.artifacts,
+                    child_pointer=prepared.pointer,
+                    child_manifest=prepared.manifest,
+                    child_artifacts=prepared.artifact_bytes,
+                )
+            _verify_execution_progression(
+                prepared.artifact_bytes,
+                status=prepared.pointer.status,
+                completion_marker_present=prepared.completion_marker is not None,
+            )
             adopted = self._adopt_orphan(
                 bridge_run_id=run_id,
                 control=control,
@@ -1097,6 +1257,11 @@ class BoundedCodexBridgeStore:
                 raise BridgeStorageError("bridge completion marker correlation mismatch")
         elif pointer.status not in {"approval_required", "in_progress"}:
             raise BridgeStorageError("terminal bridge pointer lacks a completion marker")
+        _verify_execution_progression(
+            artifacts,
+            status=pointer.status,
+            completion_marker_present=marker is not None,
+        )
         return manifest, manifest_bytes, marker, marker_bytes, artifacts
 
     def read_current(self, bridge_run_id: str) -> VerifiedBridgeRead:
@@ -1109,7 +1274,9 @@ class BoundedCodexBridgeStore:
         manifest, manifest_bytes, marker, marker_bytes, artifacts = self._read_revision(
             bridge_run_id, pointer
         )
-        child = manifest
+        child_pointer = pointer
+        child_manifest = manifest
+        child_artifacts = artifacts
         seen_revisions: set[int] = {pointer.revision}
         for ordinal in range(pointer.revision - 1, 0, -1):
             candidates = [
@@ -1141,14 +1308,30 @@ class BoundedCodexBridgeStore:
                 prior.bridge_run_id != bridge_run_id
                 or prior.auth_mode is not pointer.auth_mode
                 or prior.revision in seen_revisions
-                or child.previous_manifest_sha256 != prior.manifest_sha256
-                or child.expected_pointer_sha256
+                or child_manifest.previous_manifest_sha256 != prior.manifest_sha256
+                or child_manifest.expected_pointer_sha256
                 != sha256_bytes(canonical_json_bytes(prior_pointer))
             ):
                 raise BridgeStorageError("bridge revision lineage hash mismatch")
-            self._read_revision(bridge_run_id, prior_pointer)
+            (
+                _prior_manifest,
+                _prior_manifest_bytes,
+                _prior_marker,
+                _prior_marker_bytes,
+                prior_artifacts,
+            ) = self._read_revision(bridge_run_id, prior_pointer)
+            self._verify_successor_semantics(
+                parent_pointer=prior_pointer,
+                parent_manifest=prior,
+                parent_artifacts=prior_artifacts,
+                child_pointer=child_pointer,
+                child_manifest=child_manifest,
+                child_artifacts=child_artifacts,
+            )
             seen_revisions.add(prior.revision)
-            child = prior
+            child_pointer = prior_pointer
+            child_manifest = prior
+            child_artifacts = prior_artifacts
         self._verify_current_identity_claims(manifest, artifacts)
         self._verify_current_confirmation_identifier_claims(manifest, artifacts)
         return VerifiedBridgeRead(

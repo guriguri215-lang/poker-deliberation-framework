@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from poker_deliberation.codex_bridge.canonical import domain_sha256
-from poker_deliberation.codex_bridge.contracts import BridgeContractError
+from poker_deliberation.codex_bridge.canonical import domain_sha256, sha256_bytes
+from poker_deliberation.codex_bridge.contracts import BridgeContractError, admit_role_request
 from poker_deliberation.codex_bridge.controller import (
     BoundedCodexBridgeController,
     BridgeControllerError,
@@ -24,14 +24,17 @@ from poker_deliberation.codex_bridge.models import (
     BridgeRole,
     BridgeRoleConfirmationV1,
     BridgeRoleResultV1,
+    BridgeRunPlanV1,
     BridgeTransportUsageV1,
     RuntimeAuthModeV1,
 )
-from poker_deliberation.codex_bridge.replay import replay_bridge
+from poker_deliberation.codex_bridge.replay import BridgeReplayError, replay_bridge
 from poker_deliberation.codex_bridge.storage import (
     BoundedCodexBridgeStore,
     BridgeExecutionIdentityCollisionError,
     BridgeStorageError,
+    BridgeStoredArtifact,
+    VerifiedBridgeRead,
 )
 from poker_deliberation.codex_bridge.transport import (
     BridgeTransportFailure,
@@ -171,6 +174,41 @@ def test_five_role_fixture_path_is_serial_independent_and_replayable(tmp_path: P
     assert replay.total_input_tokens == 0
     assert replay.total_output_tokens == 0
 
+    plan = next(item.model for item in artifacts if item.logical_name == "run_plan.json")
+    incomplete_terminal = store.prepare_request(
+        run_plan=plan,
+        status="in_progress",
+        expected=terminal,
+        published_at=clock(),
+        artifacts=artifacts,
+    )
+    with pytest.raises(BridgeStorageError, match="terminal bridge revision"):
+        store.publish(incomplete_terminal)
+
+    forged_store = BoundedCodexBridgeStore(tmp_path / "forged-bridge")
+    forged = forged_store._prepare(
+        forged_store.prepare_request(
+            run_plan=plan,
+            status="in_progress",
+            expected=None,
+            published_at=clock(),
+            artifacts=artifacts,
+        )
+    )
+    with pytest.raises(BridgeStorageError, match="succeeded status"):
+        forged_store.publish(forged.request)
+    forged_read = VerifiedBridgeRead(
+        pointer=forged.pointer,
+        pointer_sha256=sha256_bytes(forged.pointer_bytes),
+        manifest=forged.manifest,
+        manifest_bytes=forged.manifest_bytes,
+        completion_marker=forged.completion_marker,
+        completion_marker_bytes=forged.completion_marker_bytes,
+        artifacts=forged.artifact_bytes,
+    )
+    with pytest.raises(BridgeReplayError, match="succeeded status"):
+        replay_bridge(forged_read)
+
 
 def test_controller_rejects_out_of_order_and_cross_source_execution(tmp_path: Path) -> None:
     clock = StepClock()
@@ -207,6 +245,180 @@ def test_controller_rejects_out_of_order_and_cross_source_execution(tmp_path: Pa
             transport=transport,
         )
     assert transport.calls == []
+
+
+def test_storage_and_replay_reject_execution_rollback_and_skeptic_only_revision(
+    tmp_path: Path,
+) -> None:
+    clock = StepClock()
+    source = verified_bridge_source(tmp_path / "p3")
+    store = BoundedCodexBridgeStore(tmp_path / "bridge")
+    controller = BoundedCodexBridgeController(store, clock=clock)
+    transport = DeterministicReadOnlyTransport(auth_mode=_MODE, clock=clock)
+    controller.prepare_run(
+        bridge_run_id="bridge-run-controller",
+        source_context=source,
+        repository_root=REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        repository_tree_id="2" * 40,
+        auth_mode=_MODE,
+    )
+    for role in BRIDGE_ROLE_ORDER[:3]:
+        _confirm(controller, role)
+    confirmed = store.read_current("bridge-run-controller")
+    confirmed_models = {item.logical_name: item.model for item in confirmed.decoded_artifacts()}
+    two_open_admissions = []
+    for role in BRIDGE_ROLE_ORDER[:2]:
+        request = confirmed_models[role_artifact_name(role, "request")]
+        confirmation = confirmed_models[role_artifact_name(role, "confirmation")]
+        assert isinstance(request, BoundedCodexBridgeRequestV1)
+        assert isinstance(confirmation, BridgeRoleConfirmationV1)
+        two_open_admissions.append(
+            BridgeStoredArtifact(
+                role_artifact_name(role, "admission"),
+                "admission",
+                admit_role_request(
+                    request,
+                    confirmation,
+                    admitted_at=clock(),
+                    current_source_terminal_manifest_sha256=(
+                        source.source.source_terminal_manifest_sha256
+                    ),
+                ),
+            )
+        )
+    plan = confirmed_models["run_plan.json"]
+    assert isinstance(plan, BridgeRunPlanV1)
+    concurrent_admissions = store.prepare_request(
+        run_plan=plan,
+        status="in_progress",
+        expected=confirmed,
+        published_at=clock(),
+        artifacts=(*confirmed.decoded_artifacts(), *two_open_admissions),
+    )
+    concurrent_prepared = store._prepare(concurrent_admissions)
+    with pytest.raises(BridgeStorageError, match="more than one open"):
+        store.publish(concurrent_admissions)
+    concurrent_read = VerifiedBridgeRead(
+        pointer=concurrent_prepared.pointer,
+        pointer_sha256=sha256_bytes(concurrent_prepared.pointer_bytes),
+        manifest=concurrent_prepared.manifest,
+        manifest_bytes=concurrent_prepared.manifest_bytes,
+        completion_marker=concurrent_prepared.completion_marker,
+        completion_marker_bytes=concurrent_prepared.completion_marker_bytes,
+        artifacts=concurrent_prepared.artifact_bytes,
+    )
+    with pytest.raises(BridgeReplayError, match="more than one open"):
+        replay_bridge(concurrent_read)
+    controller.execute_confirmed_role(
+        "bridge-run-controller",
+        BridgeRole.STRATEGY_ANALYST,
+        auth_mode=_MODE,
+        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        transport=transport,
+    )
+    strategy_complete = store.read_current("bridge-run-controller")
+    strategy_execution_names = {
+        role_artifact_name(BridgeRole.STRATEGY_ANALYST, artifact)
+        for artifact in ("admission", "result", "audit")
+    }
+    rolled_back = tuple(
+        item
+        for item in strategy_complete.decoded_artifacts()
+        if item.logical_name not in strategy_execution_names
+    )
+    rollback = store.prepare_request(
+        run_plan=plan,
+        status="approval_required",
+        expected=strategy_complete,
+        published_at=clock(),
+        artifacts=rolled_back,
+    )
+    with pytest.raises(BridgeStorageError, match="rolled back"):
+        store.publish(rollback)
+    with pytest.raises(BridgeControllerError, match="already terminal"):
+        controller.execute_confirmed_role(
+            "bridge-run-controller",
+            BridgeRole.STRATEGY_ANALYST,
+            auth_mode=_MODE,
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            transport=transport,
+        )
+    assert len(transport.calls) == 1
+
+    for role in BRIDGE_ROLE_ORDER[1:3]:
+        controller.execute_confirmed_role(
+            "bridge-run-controller",
+            role,
+            auth_mode=_MODE,
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            transport=transport,
+        )
+    after_skeptic = store.read_current("bridge-run-controller")
+    adjudicator_request_name = role_artifact_name(BridgeRole.ADJUDICATOR, "request")
+    missing_dependent = tuple(
+        item
+        for item in after_skeptic.decoded_artifacts()
+        if item.logical_name != adjudicator_request_name
+    )
+    missing_store = BoundedCodexBridgeStore(tmp_path / "missing-dependent-bridge")
+    missing = missing_store._prepare(
+        missing_store.prepare_request(
+            run_plan=plan,
+            status="in_progress",
+            expected=None,
+            published_at=clock(),
+            artifacts=missing_dependent,
+        )
+    )
+    with pytest.raises(BridgeStorageError, match="adjudicator request dependency"):
+        missing_store.publish(missing.request)
+    missing_read = VerifiedBridgeRead(
+        pointer=missing.pointer,
+        pointer_sha256=sha256_bytes(missing.pointer_bytes),
+        manifest=missing.manifest,
+        manifest_bytes=missing.manifest_bytes,
+        completion_marker=missing.completion_marker,
+        completion_marker_bytes=missing.completion_marker_bytes,
+        artifacts=missing.artifact_bytes,
+    )
+    with pytest.raises(BridgeReplayError, match="adjudicator request dependency"):
+        replay_bridge(missing_read)
+    allowed = {
+        "run_plan.json",
+        "source_context.json",
+        *(role_artifact_name(role, "request") for role in BRIDGE_ROLE_ORDER[:3]),
+        *(
+            role_artifact_name(BridgeRole.SKEPTIC_FALSIFIER, artifact)
+            for artifact in ("confirmation", "admission", "result", "audit")
+        ),
+    }
+    skeptic_only = tuple(
+        item for item in after_skeptic.decoded_artifacts() if item.logical_name in allowed
+    )
+    forged_store = BoundedCodexBridgeStore(tmp_path / "forged-bridge")
+    forged = forged_store._prepare(
+        forged_store.prepare_request(
+            run_plan=plan,
+            status="in_progress",
+            expected=None,
+            published_at=clock(),
+            artifacts=skeptic_only,
+        )
+    )
+    with pytest.raises(BridgeStorageError, match=r"serial order|continuous prefix"):
+        forged_store.publish(forged.request)
+    forged_read = VerifiedBridgeRead(
+        pointer=forged.pointer,
+        pointer_sha256=sha256_bytes(forged.pointer_bytes),
+        manifest=forged.manifest,
+        manifest_bytes=forged.manifest_bytes,
+        completion_marker=forged.completion_marker,
+        completion_marker_bytes=forged.completion_marker_bytes,
+        artifacts=forged.artifact_bytes,
+    )
+    with pytest.raises(BridgeReplayError, match=r"serial order|continuous prefix"):
+        replay_bridge(forged_read)
 
 
 def test_durable_open_admission_forbids_blind_retry_after_publication_crash(

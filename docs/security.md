@@ -366,7 +366,9 @@ reconciliationを要求する。local terminate/killはremote cancellation、bil
 stopの証拠ではない。built-in subscription provider retry、backend immutable model snapshot、workspace/API
 retention、same-privilege writer authenticityは**UNKNOWN**または非保証である。raw JSONL/stderr/auth cache/
 model traceのruntime rootは、tracked repository `.gitignore`でdirectoryとして除外されたuntracked
-scratch namespaceにlaunch前限定し、public/tracked path、untrusted ignore source、link/reparse、escapeを
-拒否する。sanitized typed qualification manifestだけを公開する。
+scratch namespaceにlaunch前限定する。候補までの全`.gitignore`は固定candidate tree、index、working-tree
+bytesが一致するplain regular fileで、unsafe index flagがない場合だけauthorityとして扱う。public/tracked
+path、ambient/untrusted ignore source、link/reparse、escapeを拒否する。sanitized typed qualification
+manifestだけを公開する。
 
 詳細は[`bounded-codex-river-review-bridge.md`](bounded-codex-river-review-bridge.md)を参照する。

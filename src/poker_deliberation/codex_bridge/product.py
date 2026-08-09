@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -130,6 +131,133 @@ def _tracked_runtime_paths(repository: Path) -> frozenset[str]:
     return frozenset(path.replace("\\", "/") for path in _nul_paths(completed.stdout))
 
 
+def _git_object_id(data: bytes, label: str) -> str:
+    try:
+        value = data.decode("ascii", errors="strict").removesuffix("\n").removesuffix("\r")
+    except UnicodeDecodeError as exc:
+        raise BridgeProductError(f"runtime scratch {label} output is malformed") from exc
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None:
+        raise BridgeProductError(f"runtime scratch {label} output is malformed")
+    return value
+
+
+def _fixed_candidate_tree(repository: Path) -> str:
+    completed = _runtime_git(repository, ("rev-parse", "--verify", "HEAD^{tree}"))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch candidate tree probe failed")
+    return _git_object_id(completed.stdout, "candidate tree")
+
+
+def _literal_pathspec(relative: str) -> str:
+    return f":(literal){relative}"
+
+
+def _tree_entry(
+    repository: Path,
+    candidate_tree: str,
+    relative: str,
+) -> tuple[str, str] | None:
+    completed = _runtime_git(
+        repository,
+        ("ls-tree", "-z", candidate_tree, "--", _literal_pathspec(relative)),
+    )
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch candidate tree entry probe failed")
+    entries = _nul_paths(completed.stdout)
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise BridgeProductError("runtime scratch candidate tree entry is malformed")
+    metadata, separator, reported_path = entries[0].partition("\t")
+    fields = metadata.split(" ")
+    if (
+        separator != "\t"
+        or reported_path != relative
+        or len(fields) != 3
+        or fields[1] != "blob"
+        or fields[0] not in {"100644", "100755"}
+        or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", fields[2]) is None
+    ):
+        raise BridgeProductError("runtime scratch candidate tree entry is malformed")
+    return fields[0], fields[2]
+
+
+def _index_entry(repository: Path, relative: str) -> tuple[str, str] | None:
+    pathspec = _literal_pathspec(relative)
+    completed = _runtime_git(repository, ("ls-files", "--stage", "-z", "--", pathspec))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch Git index entry probe failed")
+    entries = _nul_paths(completed.stdout)
+    if not entries:
+        return None
+    if len(entries) != 1:
+        raise BridgeProductError("runtime scratch Git index entry is malformed")
+    metadata, separator, reported_path = entries[0].partition("\t")
+    fields = metadata.split(" ")
+    if (
+        separator != "\t"
+        or reported_path != relative
+        or len(fields) != 3
+        or fields[2] != "0"
+        or fields[0] not in {"100644", "100755"}
+        or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", fields[1]) is None
+    ):
+        raise BridgeProductError("runtime scratch Git index entry is malformed")
+    flags = _runtime_git(repository, ("ls-files", "-v", "-z", "--", pathspec))
+    if flags.returncode != 0 or _nul_paths(flags.stdout) != (f"H {relative}",):
+        raise BridgeProductError("runtime scratch .gitignore has unsafe index flags")
+    return fields[0], fields[1]
+
+
+def _relevant_gitignore_paths(relative: str) -> tuple[str, ...]:
+    parts = Path(relative).parts
+    return tuple(
+        "/".join((*parts[:depth], ".gitignore")) if depth else ".gitignore"
+        for depth in range(len(parts) + 1)
+    )
+
+
+def _authorized_runtime_gitignores(
+    repository: Path,
+    relative: str,
+    candidate_tree: str,
+) -> frozenset[str]:
+    authorized: set[str] = set()
+    for source_relative in _relevant_gitignore_paths(relative):
+        source = repository / source_relative
+        tree_entry = _tree_entry(repository, candidate_tree, source_relative)
+        index_entry = _index_entry(repository, source_relative)
+        try:
+            source_status = source.lstat()
+        except FileNotFoundError:
+            source_status = None
+        except OSError as exc:
+            raise BridgeProductError("runtime scratch .gitignore inspection failed") from exc
+        if tree_entry is None and index_entry is None and source_status is None:
+            continue
+        if (
+            tree_entry is None
+            or index_entry is None
+            or source_status is None
+            or tree_entry != index_entry
+            or not stat.S_ISREG(source_status.st_mode)
+            or _is_link_or_reparse(source_status)
+        ):
+            raise BridgeProductError("runtime scratch .gitignore authority is not clean")
+        try:
+            _require_plain_path(source.parent, repository)
+        except BridgeProductError as exc:
+            raise BridgeProductError("runtime scratch .gitignore authority is not plain") from exc
+        hashed = _runtime_git(repository, ("hash-object", "--no-filters", "--", source_relative))
+        if (
+            hashed.returncode != 0
+            or _git_object_id(hashed.stdout, ".gitignore hash") != tree_entry[1]
+        ):
+            raise BridgeProductError("runtime scratch .gitignore bytes are not clean")
+        authorized.add(source_relative)
+    return frozenset(authorized)
+
+
 def _path_overlaps_tracked(relative: str, tracked_paths: frozenset[str]) -> bool:
     folded = relative.casefold()
     prefix = f"{folded}/"
@@ -147,7 +275,7 @@ def _path_overlaps_tracked(relative: str, tracked_paths: frozenset[str]) -> bool
 def _ignored_by_tracked_gitignore(
     repository: Path,
     relative: str,
-    tracked_paths: frozenset[str],
+    authorized_gitignores: frozenset[str],
 ) -> bool:
     directory_probe = f"{relative.rstrip('/')}/".encode() + b"\0"
     completed = _runtime_git(
@@ -169,23 +297,7 @@ def _ignored_by_tracked_gitignore(
     if source_path.is_absolute():
         return False
     source_relative = source_path.as_posix()
-    if source_relative not in tracked_paths or source_path.name != ".gitignore":
-        return False
-    try:
-        resolved_source = (repository / source_path).resolve(strict=True)
-    except OSError:
-        return False
-    if not resolved_source.is_relative_to(repository):
-        return False
-    try:
-        _require_plain_path((repository / source_path).parent, repository)
-    except BridgeProductError:
-        return False
-    try:
-        source_status = (repository / source_path).lstat()
-    except OSError:
-        return False
-    return stat.S_ISREG(source_status.st_mode) and not _is_link_or_reparse(source_status)
+    return source_relative in authorized_gitignores and source_path.name == ".gitignore"
 
 
 def confined_runtime_scratch_path(path: Path, repository_root: Path) -> Path:
@@ -216,13 +328,25 @@ def confined_runtime_scratch_path(path: Path, repository_root: Path) -> Path:
     if reported_root != repository:
         raise BridgeProductError("runtime scratch repository identity mismatch")
     relative = resolved.relative_to(repository).as_posix()
+    candidate_tree = _fixed_candidate_tree(repository)
+    authorized_gitignores = _authorized_runtime_gitignores(
+        repository,
+        relative,
+        candidate_tree,
+    )
     tracked_paths = _tracked_runtime_paths(repository)
     if _path_overlaps_tracked(relative, tracked_paths):
         raise BridgeProductError("runtime scratch root overlaps a tracked path")
-    if not _ignored_by_tracked_gitignore(repository, relative, tracked_paths):
+    if not _ignored_by_tracked_gitignore(repository, relative, authorized_gitignores):
         raise BridgeProductError(
             "runtime scratch root is not ignored by a tracked repository .gitignore"
         )
+    if (
+        _fixed_candidate_tree(repository) != candidate_tree
+        or _authorized_runtime_gitignores(repository, relative, candidate_tree)
+        != authorized_gitignores
+    ):
+        raise BridgeProductError("runtime scratch .gitignore authority changed during validation")
     return resolved
 
 

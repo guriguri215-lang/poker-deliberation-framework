@@ -14,8 +14,9 @@ deterministic evidenceを変更せずに5つの限定review roleへ渡すP2-025B
   管理する。subscription/API/model間fallbackはない。現在はversioned price authorityとprovider hard
   cost stopがないため、明示選択してもprocess/network起動前に`not_launched`で拒否する。
 - **FACT**: deterministic contract evaluationはactual model executionの証拠ではない。
-- **FACT**: 旧公開subscription manifestはsealed execution attestation導入前のlegacy recordであり、
-  現行schemaではactual-live evidenceとして拒否する。fresh live qualificationは未実行である。
+- **FACT**: `codex_subscription`は固定synthetic P3-030C・5 role経路についてsealed actual-live qualifiedである。
+  exact evidenceの唯一の正はtracked strict canonical V2 manifestであり、public preflightがcanonical schema、
+  execution attestation、current runtime inventory、role conformance、evaluation、Git bindingを再検証する。
 - **UNKNOWN**: strategy quality、human usefulness、正確な実戦range、backend immutable model snapshotは
   transport qualificationからは確定しない。
 - **FACT**: このmilestoneではAPI live qualificationを行わない。API adapterはlive-unqualifiedである。
@@ -62,7 +63,7 @@ terminal manifest、pointer、replayへ束縛されます。unknown modeはschem
 | mode | interface / provider | credential reference | model / network | 状態 |
 |---|---|---|---|---|
 | `local_only` | `local_provider` / `local_provider` | `none` | modelなし / networkなし | implemented |
-| `codex_subscription` | `codex_exec_json` / configured model provider `openai` / auth boundary `chatgpt` | `codex_home:saved_chatgpt_login` | requested `gpt-5.6-terra`, `medium`, `default`; effective identityは`UNKNOWN` / networkあり | implemented, live-unqualified |
+| `codex_subscription` | `codex_exec_json` / configured model provider `openai` / auth boundary `chatgpt` | `codex_home:saved_chatgpt_login` | requested `gpt-5.6-terra`, `medium`, `default`; effective identityは`UNKNOWN` / networkあり | implemented, sealed actual-live qualified for the bounded fixture |
 | `openai_api` | `codex_sdk_responses` / `openai_responses_api_no_retry` | `env:OPENAI_API_KEY` | `gpt-5.6-terra`, `medium`, `default` / qualified network executionなし | deterministic contract only, live-unqualified |
 
 `.env.example`は値を空にします。
@@ -349,7 +350,7 @@ bindingが欠ける場合はsource terminalの再検証が`run_not_found`でmode
 結果の`transport_qualification=deterministic_fixture_only`と
 `live_qualification_sha256=null`は、model未実行を明示します。
 
-future actual qualificationは`codex_subscription`だけで、repository-owned public synthetic P3-030C fixture、固定
+actual qualificationは`codex_subscription`だけで、repository-owned public synthetic P3-030C fixture、固定
 candidate commit/tree、固定5 role、各role直前のexact outbound bytes/hash承認を使います。各turnはexact concrete
 `CodexSubscriptionCliTransport`、default auth probe/command/isolation/credential-home解決、hookなし、subclass/
 wrapperなしの経路だけを受理します。transportがinterface、runtime binary/source inventory/config、auth boundary、
@@ -362,16 +363,17 @@ API pathには同じno-network contract evaluationを適用しますが、この
 `api_live_executed=false`かつ`api_production_qualified=false`を維持します。
 
 公開済みの`qualifications/p2-025b-deterministic-evaluation-v1.json`はno-network評価、
-`qualifications/p2-025b-codex-subscription-v1.json`はlegacy unsealed recordです。後者へfieldを後付けしたり
-再hashしてliveへ昇格せず、新schemaの公開manifestはfresh live実行だけから生成します。live実行はcleanなqualification commit/treeへ
+`qualifications/p2-025b-codex-subscription-v1.json`はstrict canonical V2 sealed live manifestです。legacy
+recordへfieldを後付けしたり再hashしてliveへ昇格せず、このV2 manifestはfresh live実行だけから生成します。
+live実行はcleanなqualification commit/treeへ
 束縛し、その後の最終commitはsanitized evidenceと状態文書を追加します。自己参照commitを捏造せず、
 manifest内の全runtime source fileのpath/size/SHA-256と
 `poker-bounded-codex-runtime-source-inventory-v1` hashを最終treeで再計算し、qualification commitが
 最終commitのancestorであることもpublic preflightで検証します。roadmap状態projectionだけはruntime execution
 inventoryから明示的に除外し、public preflight自体はevidence validation pathとしてinventoryへ含めます。
 
-fresh公開qualificationのexact run ID、qualification commit/tree、role別usage、manifest hash、runtime source
-inventoryは将来生成されるschema `2.0.0` manifestだけを正とします。文書へ特定runの値を複製せず、public preflightがmanifestをstrict canonical loadし、
+公開qualificationのexact run ID、qualification commit/tree、role別usage、manifest hash、runtime source
+inventoryはschema `2.0.0` manifestだけを正とします。文書へ特定runの値を複製せず、public preflightがmanifestをstrict canonical loadし、
 現在treeとのancestor/runtime inventory/role conformance/evaluation bindingを検証します。runtime/package/model、
 reasoning、service tier、budget、UNKNOWN、API live-unqualified状態も同manifestへ束縛します。subscription経路に
 USD API costは記録しません。
@@ -379,6 +381,11 @@ USD API costは記録しません。
 attestation hashはunkeyed integrity bindingであり、同一Python process内でrepository code、class、private capability、
 subprocess primitivesまで悪意をもってmonkeypatchできるsame-privilege callerに対するauthenticity anchorではありません。
 公開claimはclean repository-controlled processとsealed execution evidenceのtrust boundary内に限定します。
+
+この状態文書を先行準備した時点でtracked pathにlegacy V1 manifestしかない場合、public preflightの
+`p2_025b_public_artifacts`が`bridge_public_evidence:noncanonical_or_invalid`で失敗するのは正常です。
+その失敗を文書や手動re-hashで回避せず、fresh liveが生成したstrict V2 manifestを同じtracked pathへ公開し、
+preflight合格後にだけ上記qualified claimを成立させます。
 
 ## Data handlingとretention
 

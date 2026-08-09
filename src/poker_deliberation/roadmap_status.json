@@ -230,7 +230,7 @@
       "id": "P2-025B",
       "rm_id": "RM-025",
       "status": "completed",
-      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete; the prior public subscription record is legacy-unsealed, and both subscription and optional API routes remain live-unqualified pending fresh qualification.",
+      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete; the bounded saved-subscription route is sealed actual-live qualified by the tracked strict canonical V2 manifest and public preflight, while the optional API route remains disabled and live-unqualified.",
       "dependencies": [
         "P2-024A",
         "P2-025A",
@@ -1216,7 +1216,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "planned",
-      "status_reason": "P2-025B completed a separately named river-only saved-subscription path and retained an optional API mode, but does not start the broad provider milestone. The legacy public subscription record lacks sealed execution attestations, both remote routes remain live-unqualified pending fresh evidence, and RM-019 dependencies and general provider scope remain planned.",
+      "status_reason": "P2-025B completed and sealed-actual-live-qualified a separately named river-only saved-subscription path, but does not start the broad provider milestone. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.",
       "dependencies": [
         "RM-010",
         "RM-011",

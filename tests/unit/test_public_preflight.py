@@ -620,6 +620,10 @@ def test_public_preflight_rejects_legacy_unsealed_live_manifest() -> None:
     assert isinstance(result.details, dict)
     assert "bridge_public_evidence:noncanonical_or_invalid" in result.details["failures"]
     assert result.details["subscription_live_qualified"] is False
+    assert result.details["api_live_qualified"] is False
+    assert result.details["subscription_live_evidence_authority"] == (
+        "qualifications/p2-025b-codex-subscription-v1.json"
+    )
 
 
 def test_bridge_documentation_uses_manifest_api_qualification_field_names() -> None:
@@ -643,12 +647,27 @@ def test_bridge_documentation_requires_fresh_sealed_live_evidence() -> None:
     text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
 
     assert "qualifications/p2-025b-codex-subscription-v1.json" in text
-    assert "legacy unsealed record" in text
+    assert "strict canonical V2 sealed live manifest" in text
+    assert "legacy V1 manifestしかない場合" in text
     assert "fresh live" in text
     assert "same-privilege caller" in text
     assert "p25-live-" not in text
     assert "subscription利用量は合計input" not in text
     assert "manifest hashは" not in text
+
+
+def test_public_docs_separate_runtime_qualification_states() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    capabilities = (ROOT / "docs" / "capabilities.md").read_text(encoding="utf-8")
+    limitations = (ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
+
+    for text in (readme, capabilities):
+        assert "sealed actual-live qualified" in text
+        assert "local_only" in text
+        assert "networkなし" in text
+        assert "live-unqualified" in text
+    assert "strict canonical V2 manifest" in limitations
+    assert "caller-controlled label" in limitations
 
 
 def test_public_docs_limit_no_bridge_claim_to_ordinary_surfaces() -> None:

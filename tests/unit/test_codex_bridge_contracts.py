@@ -78,6 +78,14 @@ def test_role_output_schema_binds_exact_identity_and_evidence(tmp_path: Path) ->
         "poker-bounded-codex-bridge-output-schema-v1",
         schema,
     )
+    claim_schema = schema["$defs"]["BridgeClaimV1"]
+    assert claim_schema["properties"]["evidence_ids"] == {
+        "items": {
+            "enum": [item.evidence_id for item in request.required_evidence_references],
+            "type": "string",
+        },
+        "type": "array",
+    }
     properties = schema["properties"]
     assert isinstance(properties, dict)
     assignment = request.context.assignment

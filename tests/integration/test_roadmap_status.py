@@ -400,8 +400,12 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     assert "five fresh, serial, read-only roles" in milestones["P2-025B"]["scope"]
     assert "live-unqualified" in milestones["P2-025B"]["scope"]
     assert (
-        "prior public subscription record is legacy-unsealed"
+        "bounded saved-subscription route is sealed actual-live qualified"
         in milestones["P2-025B"]["status_reason"]
+    )
+    assert (
+        "optional API route remains disabled and live-unqualified"
+        in (milestones["P2-025B"]["status_reason"])
     )
     assert items["RM-025"]["milestones"] == {"entry": "P2-025A", "completion": None}
     assert "codex_python_runtime_bridge" in items["RM-025"]["capabilities"]
@@ -424,6 +428,8 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
         "RM-028",
     ]
     assert items["RM-019"]["status"] == "planned"
+    assert "river-only saved-subscription path" in items["RM-019"]["status_reason"]
+    assert "optional API route remains disabled" in items["RM-019"]["status_reason"]
     assert items["RM-020"]["status"] == "planned"
 
 

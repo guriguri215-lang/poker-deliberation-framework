@@ -10,9 +10,9 @@ Codex向けの専門Skillとエージェント定義に加え、P2-025BではP3-
 Python orchestratorは引き続き別実行面です。
 
 > **Status: Experimental functional prototype (0.1.0).** ローカル計算と限定されたoffline
-> review workflowに加え、P2-025Bのriver-only `codex_subscription`経路を実装しています。旧公開
-> 5-role manifestはsealed execution attestationを持たないため現在はlive-unqualifiedであり、freshなlive
-> qualificationが必要です。外部solver、full-game GTO、一般自然言語解析、CI matrix、配布artifactの
+> review workflowに加え、P2-025Bのriver-only `codex_subscription`経路を実装し、sealed actual-live
+> qualificationを限定取得しています。exact live evidenceの正は、tracked strict canonical V2 manifestと
+> それを検証するpublic preflightだけです。外部solver、full-game GTO、一般自然言語解析、CI matrix、配布artifactの
 > release検証、独立した戦略品質検証は未完了です。
 
 ## 解決したい問題
@@ -54,7 +54,7 @@ GTO表現、計算過程を再現できない数値が結論へ混ざりやす�
 | River range-equity bridge | **Implemented** | `P3-016B`は専用admissionで検証済みの単一rangeを、最大990 comboのexact-only heads-up river equityへ限定接続する。 |
 | Codex workflow | **Implemented** | `AGENTS.md`、3 Skill、9 specialist定義をCodex上で利用できる。 |
 | `local_only` runtime | **Implemented** | API key、ChatGPT/Codex login、外部model、networkなしでparser、calculator、LocalProvider、storage、replay、evaluationを利用する。 |
-| `codex_subscription` bounded bridge | **Implemented / live-unqualified** | 保存済みChatGPT/Codex loginを使う明示経路。configured provider `openai`とauth boundary `chatgpt`を分離し、API keyへfallbackしない。actual-live claimにはsealed default transportが各turnで生成するversioned attestationとfreshな固定5 role qualificationを要求する。 |
+| `codex_subscription` bounded bridge | **Implemented / sealed actual-live qualified** | 保存済みChatGPT/Codex loginを使う明示経路。configured provider `openai`とauth boundary `chatgpt`を分離し、API keyへfallbackしない。qualificationはterminal verification済みP3-030C synthetic run、固定5 role、exact sealed default transportに限定し、tracked strict canonical V2 manifestがpublic preflightに合格する場合だけ有効である。 |
 | `openai_api` bounded adapter | **Disabled / deterministic contract only / live-unqualified** | API key、provider/model、送信bytes、費用上限、retentionの契約を公開する任意経路。versioned price authorityとprovider hard cost stopがない現在は、明示選択してもprocess/network起動前に`not_launched`で拒否する。 |
 | Python上のrole routing | **Partially implemented** | 7 roleのcatalogからcase種別に応じて2〜5役を決定的に割り当てる。非calculation caseでは選択provider役を直列実行するが、calculationの2役は割当のみである。既定providerは非生成で、独立した専門分析本文を生成しない。 |
 | Multi-agent integration | **Experimental** | 一般bridgeはない。P2-025Bはterminal検証済みP3-030C river runと固定5 roleだけに限定した、直列・read-only bridgeである。 |
@@ -247,7 +247,8 @@ wheel install、CLI help、doctor、API keyなしの`local_only` smokeが成功�
   at-rest encryptionはない。
 - redactionは一般的なsecret形状を対象とし、任意の個人情報や全encodingを検出する保証はない。
 - 一般Python/Codex bridge、外部solver、automatic product retry、通常経路のparallel executionはない。
-  P2-025Bはriver-only subscription経路に限定され、subscription/APIとも現在はlive-unqualifiedである。
+  P2-025Bでsealed actual-live qualifiedなのはriver-onlyの`codex_subscription`経路だけであり、
+  `openai_api`はdefault-disabled、deterministic-only、live-unqualifiedのままである。
 - Python APIの利用者は任意`AgentProvider`を注入できる。custom providerの外部送信をrepository側が
   一律に禁止・承認拘束するわけではないため、callerが別途監査する必要がある。
 - pre-1.0のためCLI、schema、artifact contractには破壊的変更の可能性がある。

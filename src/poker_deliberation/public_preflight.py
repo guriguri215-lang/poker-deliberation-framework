@@ -44,7 +44,7 @@ CAPABILITY_DOCUMENT_PATHS = (
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "ecc180a3bb2c76bea60df17d30432b3aaf7d74d6710beb0f18776ec32b52f32e"
+CAPABILITY_DOCUMENT_SET_SHA256 = "341662d43f66edff82dcb2230ab278f104f66c9c66bd36ae8723c01907852bbe"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
     "caa1202b6f4f0e5dc2b436c45af7c8ba7e35e4855a9839ac8988bacbe835f839"
 )
@@ -1118,6 +1118,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "local_only",
             "codex_subscription",
             "openai_api",
+            "sealed actual-live qualified",
         ],
         "docs/capabilities.md": [
             "implemented",
@@ -1128,6 +1129,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "versioned_nlhe_river_equity_bridge",
             "P3-016B",
             "990",
+            "sealed actual-live qualified",
         ],
         "docs/limitations.md": [
             "outbound analyze",
@@ -1138,6 +1140,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P3-016B",
             "all-in",
             "990",
+            "strict canonical V2 manifest",
         ],
         "docs/range-grammar.md": [
             "poker-deliberation.nlhe-range",
@@ -1177,6 +1180,8 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "strategy-analyst",
         "effect_unknown",
         "live-unqualified",
+        "sealed actual-live qualified",
+        "strict canonical V2",
         "UNKNOWN",
     ]
     missing: list[str] = []
@@ -1573,6 +1578,9 @@ def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
             "missing_public_evidence": missing_public,
             "api_live_qualified": False,
             "subscription_live_qualified": status == "pass",
+            "subscription_live_evidence_authority": (
+                public_manifest_path.relative_to(repo).as_posix()
+            ),
             "runtime_source_inventory_sha256": (
                 manifest.runtime_source_inventory_sha256 if manifest is not None else None
             ),

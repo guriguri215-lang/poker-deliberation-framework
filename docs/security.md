@@ -345,6 +345,12 @@ request/schema/response/usage/thread/turn/source inventory bindingを検証す�
 5 roleを完走してもlive manifestへ昇格しない。unkeyed hashとPython private objectは、same-processでrepository codeや
 subprocessを悪意をもってmonkeypatchできるsame-privilege callerに対するkeyed authenticity anchorではない。
 
+公開可能なsubscription actual-live claimは、tracked strict canonical V2 manifestを唯一のexact evidence
+sourceとし、public preflightが全role attestation、current runtime source inventory、role conformance、
+deterministic evaluation、qualification commit/tree ancestryを再検証できる範囲に限定する。run ID、role別usage、
+attestation/manifest/runtime hashを文書へ複製しない。legacy V1しかない移行中checkoutではpreflightが
+noncanonical evidenceとして失敗し、fresh live由来V2 manifestなしにqualificationへ昇格しない。
+
 raw Japanese source、FinalReport narrative、private/user material、credentialをoutbound contextへ含めない。
 確認対象のexact bytes/hashはapplication-owned canonical stdin payloadである。Codexが追加するplatform/system
 contextを含むactual backend model input、effective model/provider/reasoning/service tier、backend immutable model

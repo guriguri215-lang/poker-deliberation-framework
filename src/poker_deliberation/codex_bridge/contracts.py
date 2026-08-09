@@ -111,9 +111,10 @@ _DEVELOPER_INSTRUCTIONS: Final[dict[BridgeRole, str]] = {
         "Adjudicate the three independently validated parent results against the immutable source "
         "evidence. Do not decide by vote, calculate, add evidence, infer a range, use tools, cite "
         "sources, assert named strategy systems or optimality, or issue a recommendation. Every "
-        "claim must reference all three supplied parent evidence IDs. Return only canonical "
-        "minified JSON with recursively lexicographically sorted object keys; no Markdown or "
-        "trailing newline."
+        "claim must reference all three supplied parent evidence IDs. Copy those exact IDs from "
+        "required_evidence_references without altering, shortening, or extending them. Return only "
+        "canonical minified JSON with recursively lexicographically sorted object keys; no "
+        "Markdown or trailing newline."
     )
     + _NEUTRAL_NARRATIVE_INSTRUCTIONS,
     BridgeRole.REPORT_WRITER: (
@@ -335,6 +336,22 @@ def _bound_role_output_schema(
         "items": {"anyOf": exact_reference_schemas},
         "maxItems": len(evidence_references),
         "minItems": len(evidence_references),
+        "type": "array",
+    }
+    definitions = schema.get("$defs")
+    if not isinstance(definitions, dict):  # pragma: no cover - Pydantic invariant
+        raise BridgeContractError("bound role output schema definitions are missing")
+    claim_schema = definitions.get("BridgeClaimV1")
+    if not isinstance(claim_schema, dict):  # pragma: no cover - Pydantic invariant
+        raise BridgeContractError("bound role output claim schema is missing")
+    claim_properties = claim_schema.get("properties")
+    if not isinstance(claim_properties, dict):  # pragma: no cover - Pydantic invariant
+        raise BridgeContractError("bound role output claim properties are missing")
+    claim_properties["evidence_ids"] = {
+        "items": {
+            "enum": [reference.evidence_id for reference in evidence_references],
+            "type": "string",
+        },
         "type": "array",
     }
     value = json.loads(canonical_json_bytes(schema))

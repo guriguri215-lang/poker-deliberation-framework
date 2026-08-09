@@ -56,6 +56,10 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert {item["contract_version"] for item in descriptions} == {"2.0.0"}
     assert all(item["input_schema"] and item["output_schema"] for item in descriptions)
     assert states["runtime_conformance_contract"] == "implemented"
+    assert states["local_only_runtime_mode"] == "implemented"
+    assert states["bounded_codex_river_review_bridge"] == "implemented"
+    assert states["codex_subscription_bounded_river_review"] == "implemented"
+    assert states["openai_api_bounded_river_review_adapter"] == "disabled"
     assert states["codex_python_runtime_bridge"] == "unavailable"
     assert states["immutable_revision_storage_foundation"] == "implemented"
     assert states["product_integrated_durable_run"] == "implemented"
@@ -71,7 +75,7 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["process_sandbox"] == "unavailable"
 
 
-def test_codex_and_python_are_documented_as_separate_execution_surfaces() -> None:
+def test_codex_and_python_are_separate_except_for_the_named_bounded_bridge() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     capabilities = (ROOT / "docs" / "capabilities.md").read_text(encoding="utf-8")
     architecture = (ROOT / "docs" / "architecture.md").read_text(encoding="utf-8")
@@ -79,6 +83,8 @@ def test_codex_and_python_are_documented_as_separate_execution_surfaces() -> Non
     assert "別実行面" in readme
     assert "別実行面" in capabilities
     assert "separate execution surfaces" in architecture
+    assert "bounded_codex_river_review_bridge" in capabilities
+    assert "codex_bridge/" in architecture
 
 
 def test_documented_tool_and_role_counts_are_computed_contracts() -> None:

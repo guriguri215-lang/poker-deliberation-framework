@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "12.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "13.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -186,6 +186,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P2-027B",
         "P2-029A",
         "P2-025A",
+        "P2-025B",
         "P3-014A",
         "P3-015A",
         "P3-016A",
@@ -362,18 +363,13 @@ def test_p3_016a_registration_is_versioned_provenance_bound_and_additive() -> No
     assert "natural-language" in str(items["RM-030"]["objective"])
 
 
-def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
+def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     items = _by_id()
     milestones = _milestones(load_roadmap())
 
     assert items["RM-025"]["status"] == "in_progress"
-    assert items["RM-025"]["decision_gate"] == {
-        "required": True,
-        "rationale": [
-            "whether a future actual bridge candidate should be registered after the "
-            "conformance-only contract",
-        ],
-    }
+    assert items["RM-025"]["decision_gate"]["required"] is True  # type: ignore[index]
+    assert "P2-025B river-only" in str(items["RM-025"]["decision_gate"])
     assert milestones["P2-025A"] == {
         "id": "P2-025A",
         "rm_id": "RM-025",
@@ -394,6 +390,26 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
             "conformance without an execution bridge."
         ),
     }
+    assert milestones["P2-025B"]["status"] == "completed"
+    assert milestones["P2-025B"]["dependencies"] == [
+        "P2-024A",
+        "P2-025A",
+        "P3-017A",
+        "P3-030C",
+    ]
+    assert "five fresh, serial, read-only roles" in milestones["P2-025B"]["scope"]
+    assert "live-unqualified" in milestones["P2-025B"]["scope"]
+    assert (
+        "bounded saved-subscription route is sealed actual-live qualified"
+        in milestones["P2-025B"]["status_reason"]
+    )
+    assert (
+        "optional API route remains disabled and live-unqualified"
+        in (milestones["P2-025B"]["status_reason"])
+    )
+    assert items["RM-025"]["milestones"] == {"entry": "P2-025A", "completion": None}
+    assert "codex_python_runtime_bridge" in items["RM-025"]["capabilities"]
+    assert "bounded_codex_river_review_bridge" in items["RM-025"]["capabilities"]
     assert items["RM-028"]["status"] == "in_progress"
     assert milestones["P2-028A"]["status"] == "in_progress"
     assert items["RM-019"]["dependencies"] == [
@@ -412,6 +428,8 @@ def test_p2_025a_registration_preserves_external_execution_boundaries() -> None:
         "RM-028",
     ]
     assert items["RM-019"]["status"] == "planned"
+    assert "river-only saved-subscription path" in items["RM-019"]["status_reason"]
+    assert "optional API route remains disabled" in items["RM-019"]["status_reason"]
     assert items["RM-020"]["status"] == "planned"
 
 
@@ -427,6 +445,8 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
     assert "P3-030C completes the bounded" in str(items["RM-030"]["status_reason"])
     assert "P3-030C is an implementation candidate" not in str(items["RM-030"]["status_reason"])
     assert "At P3-030A completion, P2-028A had not started" in str(items["RM-030"]["relations"])
+    assert "At P2-029A completion, RM-025 was raised to P1" in str(items["RM-029"]["relations"])
+    assert "actual bridge remains unavailable" not in str(items["RM-029"]["relations"])
     assert "Completion-time relations (historical; not current status assertions)" in rendered
     assert "- Relations:" in rendered
 
@@ -565,6 +585,22 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
     with pytest.raises(ValueError, match="public item contract changed"):
         validate_roadmap_update(previous, legacy_relation)
 
+    legacy_rm029_relation = deepcopy(previous)
+    legacy_rm029 = _by_id(legacy_rm029_relation)["RM-029"]["relations"]
+    historical_rm029 = next(
+        relation
+        for relation in legacy_rm029  # type: ignore[union-attr]
+        if str(relation).startswith("At P2-029A completion, RM-025")
+    )
+    legacy_rm029[legacy_rm029.index(historical_rm029)] = (  # type: ignore[union-attr]
+        "Raises RM-025 priority to P1 because cross-runtime semantic drift must be decided before "
+        "external effects; P2-025A is now the approved conformance-only milestone while the "
+        "actual bridge remains unavailable and separately decision-gated."
+    )
+    validate_roadmap_update(legacy_rm029_relation, previous)
+    with pytest.raises(ValueError, match="public item contract changed"):
+        validate_roadmap_update(previous, legacy_rm029_relation)
+
     arbitrary_relation = deepcopy(previous)
     _by_id(arbitrary_relation)["RM-030"]["relations"].append(  # type: ignore[union-attr]
         "Arbitrary relation mutation."
@@ -628,8 +664,8 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "12.0.0"
-    assert "schema 12.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert summary["schema_version"] == "13.0.0"
+    assert "schema 13.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
@@ -638,7 +674,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 21,
+        "completed": 22,
         "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []

@@ -16,6 +16,8 @@ dependencies = [
 
 [project.optional-dependencies]
 agents = ["openai-agents>=0.7"]
+codex-subscription = ["openai-codex==0.144.4"]
+openai-api = ["openai-codex==0.144.4"]
 dev = [
   "hypothesis>=6.140",
   "mypy>=1.18",

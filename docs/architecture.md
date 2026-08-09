@@ -50,11 +50,18 @@ provider、approval ledger、CLI へ接続しない。後続 P2-027B はこの p
 
 ## Components
 
-The Codex-native layer and the Python orchestrator are separate execution surfaces. The Codex-native
-surface provides durable repository instructions, project configuration, specialist definitions,
-and reusable skills. The Python surface owns its deterministic state and audit records. Python does
-not launch `.codex/agents/*.toml`, and Codex sub-agent executions are not automatically converted into
-Python `AgentExecutionRecord` entries or run artifacts.
+The Codex-native layer and the ordinary Python orchestrator remain separate execution surfaces. The
+Codex-native surface provides durable repository instructions, project configuration, specialist
+definitions, and reusable skills. The Python surface owns its deterministic state and audit records.
+Ordinary Python runs do not launch `.codex/agents/*.toml`, and development Codex sub-agent executions
+are not automatically converted into Python `AgentExecutionRecord` entries or run artifacts.
+
+P2-025B adds one separately named exception: `codex_bridge/` projects a terminally verified P3-030C
+river call-or-fold artifact into five fixed, fresh, serial, read-only product turns. It has its own
+versioned request, runtime/auth policy, confirmation, pre-execution admission, result, execution
+audit, immutable revision, terminal marker, and replay contracts. It neither launches tracked agent
+TOML definitions nor turns development sub-agent activity into product evidence, and it does not
+make the broad `codex_python_runtime_bridge` capability available.
 
 - `schemas.py`: strict Pydantic contracts.
 - `state_machine.py`: legal bounded transitions and budget counters.
@@ -95,6 +102,12 @@ remain classification-only. See `docs/budget-execution-contract.md`.
 `disabled` and `available=false` for every SDK/API-key combination because outbound `analyze` is not
 implemented. Package and key probes are diagnostics, not proof of execution capability. No external
 data is sent.
+
+P2-025B does not alter that provider. Its separate explicit runtime/auth enum has `local_only`,
+`codex_subscription`, and `openai_api`. The first never creates a transport. The subscription route
+uses the pinned official Codex CLI with saved ChatGPT authentication and strips API-key variables
+from its child environment. The optional API adapter is default-disabled and live-unqualified.
+Environment credential presence never selects a mode, and no provider/model fallback exists.
 
 Every provider receives a role-specific `AgentContext`, not the complete `CaseInput`. Before a call,
 the orchestrator builds and validates a strict versioned immutable attempt envelope covering exact
@@ -163,6 +176,32 @@ allowlistを維持し、7個のP3-030C artifactと既存P3-016B bindingをtermin
 `.revision-control/bounded-river-call-ev-budget-failures/`の先行exclusive recordを加算し、
 terminal payload内部の自己整合だけでは失敗原因を変更できないようにする。
 普通のP2-012A structural revision経路はこのterminal専用artifact familyを受理しない。
+
+## P2-025B bounded river-review data flow
+
+`codex_bridge/source.py`はverified P3-030C terminal readerから、canonical hand、focal decision、明示rangeの
+限定provenance、exact equity/required-equity/call-EV/call-fold comparison、artifact/evidence hashだけを
+projectする。raw Japanese source、source span text、FinalReport narrative、credential、private materialは
+contextに含めない。
+
+`codex_bridge/controller.py`は固定role orderを所有する。最初の3 roleは独立、adjudicatorは3 parent、
+report-writerはadjudicatorだけを参照する。各roleのconfirmationと`not_launched` admissionをdurableに
+publishしてからtransportを1回だけ呼ぶ。resultは既存P3 artifactを上書きせず、専用
+`codex_bridge/storage.py`がmarker-last revisionとして加算保存する。
+
+`codex_bridge/subscription_transport.py`は`codex exec --ephemeral --json --output-schema`を、approval
+`never`、read-only sandbox、history off、empty MCP、repository外single-use CWD/HOME、全discovered
+`SKILL.md`の明示disable、shell/web/apps/nested-agent等のfeature offで起動する。configured model provider
+`openai`とauth boundary `chatgpt`を分離し、同じexec processでforced authを検査する。JSONL lifecycleで
+`reasoning`と`agent_message`以外のitemを観測した場合はfail closedにする。effective backend identityと
+actual backend model inputは直接観測できないため`UNKNOWN`とし、requested値をobserved値へコピーしない。
+raw JSONL/stderr/last messageはignored runtime scratchだけに置き、typed result/auditだけをpublicly
+replayableなbridge revisionへ昇格する。
+
+`codex_bridge/sdk_transport.py`は任意API adapterで、modeと明示cost capが一致する場合だけofficial
+runtime workerを起動する。API live qualificationはP2-025Bの範囲外であり、deterministic transport
+fixturesをactual live evidenceと見なさない。完全仕様は
+[P2-025B bridge contract](bounded-codex-river-review-bridge.md)を参照する。
 
 High-level `implemented / disabled / unavailable / planned` states are centralized in
 `capabilities.py`, exposed by `doctor`, documented in `docs/capabilities.md`, and checked by contract

@@ -595,6 +595,15 @@ def _admission(notation: str, run_id: str) -> BoundedRiverCallEvAdmission:
     return admit_bounded_river_call_ev_review(source, candidate, confirmation)
 
 
+def build_repository_owned_bounded_river_evaluation_admission(
+    notation: str,
+    run_id: str,
+) -> BoundedRiverCallEvAdmission:
+    """Build the fixed public MIT P3-030C evaluation admission for additive evaluations."""
+
+    return _admission(notation, run_id)
+
+
 def _config(root: Path, token: str) -> AppConfig:
     return AppConfig(
         runs_dir=root / token / "l",
@@ -1299,6 +1308,7 @@ __all__ = [
     "REQUIRED_METRICS",
     "BoundedRiverCallEvEvaluationFixtureV1",
     "BoundedRiverCallEvEvaluationResultV1",
+    "build_repository_owned_bounded_river_evaluation_admission",
     "load_bounded_river_call_ev_evaluation_fixture",
     "run_bounded_river_call_ev_evaluation",
     "verify_bounded_river_call_ev_evaluation_checkout",

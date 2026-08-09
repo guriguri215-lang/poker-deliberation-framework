@@ -878,7 +878,10 @@ def test_prepare_rejects_non_synthesis_machine_without_mutation(
     short_tmp: Path,
 ) -> None:
     orchestrator, _machine, _coordinator, bundle = build_valid_scenario(short_tmp)
-    machine = WorkflowStateMachine(orchestrator.budget_policy)
+    machine = WorkflowStateMachine(
+        orchestrator.budget_policy,
+        clock=FakeMonotonicClock(0),
+    )
     before = machine.snapshot()
 
     result = orchestrator._prepare_revision_bundle(

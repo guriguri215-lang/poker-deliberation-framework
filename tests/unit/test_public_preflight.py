@@ -139,7 +139,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 12.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 13.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -168,17 +168,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 12.0.0", "schema 10.0.0\n<!-- schema 12.0.0 -->"),
+        "README.md": ("schema 13.0.0", "schema 10.0.0\n<!-- schema 13.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `12.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `12.0.0` -->",
+            "schema version: `13.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `13.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "12.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "12.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "13.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "13.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "12.0.0"',
+            '"schema_version": "13.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }
@@ -599,3 +599,96 @@ def test_nested_tag_objects_are_visited_once_without_looping(
     assert skipped == []
     assert sorted(reads) == sorted([outer_oid, inner_oid])
     assert sum(item.rule_id == "git_tagger_email" for item in findings) == 2
+
+
+def test_legacy_bridge_manifest_is_not_sealed_live_evidence() -> None:
+    from poker_deliberation.codex_bridge.canonical import parse_canonical_model
+    from poker_deliberation.codex_bridge.qualification import (
+        SanitizedLiveQualificationManifestV2,
+    )
+
+    with pytest.raises(ValueError):
+        parse_canonical_model(
+            b'{"schema_version":"1.0.0"}',
+            SanitizedLiveQualificationManifestV2,
+        )
+
+
+def test_public_preflight_accepts_sealed_live_manifest() -> None:
+    result = public_preflight._codex_bridge_public_artifacts_check(ROOT)
+
+    assert result.status == "pass"
+    assert isinstance(result.details, dict)
+    assert result.details["failures"] == []
+    assert result.details["missing_public_evidence"] == []
+    assert result.details["subscription_live_qualified"] is True
+    assert result.details["api_live_qualified"] is False
+    assert result.details["subscription_live_evidence_authority"] == (
+        "qualifications/p2-025b-codex-subscription-v1.json"
+    )
+
+
+def test_bridge_documentation_uses_manifest_api_qualification_field_names() -> None:
+    text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
+
+    assert "`api_live_executed=false`" in text
+    assert "`api_production_qualified=false`" in text
+    assert "`live_api_executed=false`" not in text
+    assert "`production_qualified=false`" not in text
+
+
+def test_bridge_documentation_matches_subscription_auth_probe_stream_contract() -> None:
+    text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
+
+    assert "stdout\nまたはstderrの正確に一方だけ" in text
+    assert "もう一方が空" in text
+    assert "両streamへの重複出力" in text
+
+
+def test_bridge_documentation_requires_fresh_sealed_live_evidence() -> None:
+    text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
+
+    assert "qualifications/p2-025b-codex-subscription-v1.json" in text
+    assert "strict canonical V2 sealed live manifest" in text
+    assert "legacy V1 manifestしかない場合" in text
+    assert "fresh live" in text
+    assert "same-privilege caller" in text
+    assert "p25-live-" not in text
+    assert "subscription利用量は合計input" not in text
+    assert "manifest hashは" not in text
+
+
+def test_public_docs_separate_runtime_qualification_states() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    capabilities = (ROOT / "docs" / "capabilities.md").read_text(encoding="utf-8")
+    limitations = (ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
+
+    for text in (readme, capabilities):
+        assert "sealed actual-live qualified" in text
+        assert "local_only" in text
+        assert "networkなし" in text
+        assert "live-unqualified" in text
+    assert "strict canonical V2 manifest" in limitations
+    assert "caller-controlled label" in limitations
+
+
+def test_public_docs_limit_no_bridge_claim_to_ordinary_surfaces() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    limitations = (ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
+
+    assert "ordinary manual surface; no general runtime bridge" in readme
+    assert "manual use; no runtime bridge" not in readme
+    assert "Ordinary Python runs do not launch `.codex/agents/*.toml`" in limitations
+    assert "P2-025B is a separately named exception" in limitations
+    assert "dedicated\n  additive bridge artifact family" in limitations
+    assert "Python does not launch Codex agents" not in limitations
+
+
+def test_readme_distinguishes_local_build_evidence_from_release_unknowns() -> None:
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "ローカルwheel/sdist build" in text
+    assert "`--no-index --no-deps` default" in text
+    assert "API keyなしの`local_only` smokeが成功" in text
+    assert "remote CI、未実行のOS/Python matrix、GitHub上の公開release artifact" in text
+    assert "wheel/sdist、clean-install matrix" not in text

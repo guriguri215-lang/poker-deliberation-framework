@@ -1,0 +1,73 @@
+{
+  "schema_version": "1.0.0",
+  "family_id": "poker-bounded-codex-bridge-evaluation-json-v1",
+  "fixture_id": "bounded-codex-bridge-cases-v1",
+  "source_kind": "repository_fixture",
+  "license_classification": "repository_owned_mit",
+  "usage_classification": "redistribution_allowed",
+  "content_classification": "public",
+  "model_processing_authorized": true,
+  "scoring": "exact-evidence-set-v1",
+  "threshold": "1.0",
+  "cases": [
+    {
+      "case_id": "exact-source-authority",
+      "metric": "exact-authority",
+      "expected_evidence": [
+        "call-fold-tie-fractions-preserved",
+        "raw-source-and-report-excluded",
+        "seven-tool-results-reference-only"
+      ]
+    },
+    {
+      "case_id": "runtime-auth-mode-separation",
+      "metric": "runtime-auth-modes",
+      "expected_evidence": [
+        "local-mode-has-no-model-credential-or-network",
+        "subscription-mode-uses-saved-chatgpt-reference-without-api-cost",
+        "api-mode-is-explicit-cost-capped-and-distinct",
+        "api-live-unqualified-cost-authority-fails-closed",
+        "unknown-mode-and-cross-mode-confirmation-refused",
+        "cross-mode-transport-and-fallback-refused",
+        "credential-values-absent-from-canonical-contracts",
+        "all-tools-disabled-and-product-retry-zero",
+        "retention-and-provider-retry-unknowns-are-mode-specific"
+      ]
+    },
+    {
+      "case_id": "serial-role-control",
+      "metric": "control-and-replay",
+      "expected_evidence": [
+        "five-fresh-serial-attempts",
+        "independent-and-dependent-parent-lineage",
+        "p2-025a-read-only-empty-tool-bindings",
+        "terminal-adjudication-report-replay",
+        "deterministic-fixture-cannot-be-live-qualification"
+      ]
+    },
+    {
+      "case_id": "strict-schema-policy",
+      "metric": "security-and-effects",
+      "expected_evidence": [
+        "extra-missing-unknown-output-refused",
+        "numeric-range-solver-gto-calculated-refused",
+        "content-free-sequential-claim-ids-enforced",
+        "adjudicator-each-claim-binds-all-parents",
+        "hash-model-role-allowlist-mutation-refused",
+        "exact-confirmation-and-replay-refused"
+      ]
+    },
+    {
+      "case_id": "durable-effect-recovery",
+      "metric": "security-and-effects",
+      "expected_evidence": [
+        "admission-is-durable-before-transport",
+        "failure-states-terminal-without-retry",
+        "effect-unknown-requires-reconciliation",
+        "partial-thread-terminal-publication-and-replay",
+        "partial-thread-claim-collision-and-corruption-refused",
+        "local-source-solver-unavailable-no-gto"
+      ]
+    }
+  ]
+}

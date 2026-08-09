@@ -313,3 +313,62 @@ distributed/power-loss durability、writer authenticity、秘密性は非保証�
 [`isolated-job-control.md`](isolated-job-control.md)を参照する。
 repository-owned backend同士のprocess creationはinheritable handle存続中に直列化するが、
 backend外の未調整process spawnerまで同期するOS全体の保証ではない。
+
+## P2-025B runtime/auth threat boundary
+
+P2-025Bはmodeをenvironmentやcredential presenceから推定せず、`local_only`、
+`codex_subscription`、`openai_api`をrequestからterminal replayまで同じenum/valueへ拘束する。
+mode、provider、model、runtime、credential reference、retention、budget、exact outbound bytes/hashの
+いずれかがconfirmationと異なればtransport前に拒否する。subscription/API/modelのsilent fallback、
+mode変更後のconfirmation/thread/assignment/attempt再利用、automatic product retryはない。
+
+`local_only`はmodel/network transportを生成しない。subscription childはrepository外のsingle-use
+CWD/HOME/AppData/TEMPを使い、environment-name allowlistと保存済み認証の`CODEX_HOME` referenceだけを
+継承する。`OPENAI_API_KEY`/`CODEX_API_KEY`その他のambient valueは渡さない。auth probeは
+`Logged in using ChatGPT`だけを受理するinformational checkであり、実turnのauth境界は同じ`codex exec`
+processへ固定した`forced_login_method="chatgpt"`である。productはauth file/token/keyring/cookieを読まない。API adapter
+ではkey値をschema/log/artifactへ入れない。現在はversioned price authorityとprovider hard cost stopが
+ないため、明示`openai_api`でもofficial runtime/process/network起動前に`not_launched`で拒否する。
+
+CLI起動はpinned binary hash、configured model provider `openai`、approval `never`、read-only sandbox、
+history off、empty MCP、shell/web/file-write/apps/browser/computer/plugins/nested-agent feature offを固定する。
+`CODEX_HOME/skills`と`CODEX_HOME/plugins`だけをboundedに走査し、見つかった全`SKILL.md`をexact file pathで
+無効化する。content hashをlaunch直前に再検査し、driftやlink escapeをmodel起動前に拒否する。credential
+subtreeは走査しない。JSONLで
+`reasoning`/`agent_message`以外のitem、unexpected lifecycle、multiple/missing final message、model/runtime
+mismatchを観測するとfail closedにする。OS-level network isolationやremote sandbox attestationではない。
+
+`actual_live`はcallerが設定する`transport_qualification`文字列から導出しない。exact concrete default
+`CodexSubscriptionCliTransport`がhook/subclass/wrapperなしで完了したturnにだけmodule-private capabilityと
+versioned secret-free attestationを発行し、controllerがexact type、instance method shadow、captured implementation、
+request/schema/response/usage/thread/turn/source inventory bindingを検証する。deterministic/injected/wrapped transportは
+5 roleを完走してもlive manifestへ昇格しない。unkeyed hashとPython private objectは、same-processでrepository codeや
+subprocessを悪意をもってmonkeypatchできるsame-privilege callerに対するkeyed authenticity anchorではない。
+
+公開可能なsubscription actual-live claimは、tracked strict canonical V2 manifestを唯一のexact evidence
+sourceとし、public preflightが全role attestation、current runtime source inventory、role conformance、
+deterministic evaluation、qualification commit/tree ancestryを再検証できる範囲に限定する。run ID、role別usage、
+attestation/manifest/runtime hashを文書へ複製しない。legacy V1しかない移行中checkoutではpreflightが
+noncanonical evidenceとして失敗し、fresh live由来V2 manifestなしにqualificationへ昇格しない。
+
+raw Japanese source、FinalReport narrative、private/user material、credentialをoutbound contextへ含めない。
+確認対象のexact bytes/hashはapplication-owned canonical stdin payloadである。Codexが追加するplatform/system
+contextを含むactual backend model input、effective model/provider/reasoning/service tier、backend immutable model
+versionは`codex exec --json` 0.144.4では直接観測できず、**UNKNOWN**を維持する。requested値をobserved値として
+保存しない。
+public/redistribution/model-processing authorityが欠けるsourceはredactionして送信せず拒否する。secret
+canary、prompt-injection-shaped identifier、numeric/range/citation/solver/GTO/CALCULATED model narrative、
+unknown/extra/missing field、noncanonical bytes、unbound evidenceをschemaとadversarial testで拒否する。
+
+admissionはexternal effectより先にimmutable revisionへpublishする。crash/timeout/cancel/output cap後に
+remote effectが確定できない場合は`cancel_unconfirmed`/`effect_unknown`でterminal化し、自動retryせず
+reconciliationを要求する。local terminate/killはremote cancellation、billing停止、process-tree hard
+stopの証拠ではない。built-in subscription provider retry、backend immutable model snapshot、workspace/API
+retention、same-privilege writer authenticityは**UNKNOWN**または非保証である。raw JSONL/stderr/auth cache/
+model traceのruntime rootは、tracked repository `.gitignore`でdirectoryとして除外されたuntracked
+scratch namespaceにlaunch前限定する。候補までの全`.gitignore`は固定candidate tree、index、working-tree
+bytesが一致するplain regular fileで、unsafe index flagがない場合だけauthorityとして扱う。public/tracked
+path、ambient/untrusted ignore source、link/reparse、escapeを拒否する。sanitized typed qualification
+manifestだけを公開する。
+
+詳細は[`bounded-codex-river-review-bridge.md`](bounded-codex-river-review-bridge.md)を参照する。

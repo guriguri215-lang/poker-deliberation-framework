@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from poker_deliberation.codex_bridge.canonical import canonical_json_bytes, domain_sha256
+from poker_deliberation.codex_bridge.canonical import (
+    canonical_json_bytes,
+    domain_sha256,
+    sha256_bytes,
+)
 from poker_deliberation.codex_bridge.contracts import (
     admit_role_request,
     build_role_request,
     build_run_plan,
+    role_output_schema_for_request,
     validate_role_response,
 )
 from poker_deliberation.codex_bridge.controller import (
@@ -19,6 +24,7 @@ from poker_deliberation.codex_bridge.controller import (
 from poker_deliberation.codex_bridge.models import (
     BRIDGE_ROLE_ORDER,
     OBSERVED_TRANSPORT_IDENTITY_HASH_DOMAIN,
+    SUBSCRIPTION_USAGE_HASH_DOMAIN,
     BoundedCodexBridgeRequestV1,
     BridgeEffectState,
     BridgeExecutionAuditV1,
@@ -301,6 +307,7 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
             if rebuilt_result != result or audit.result_sha256 != result.result_sha256:
                 raise BridgeReplayError("bridge role result failed replay")
             if plan.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION:
+                live_evidence = audit.live_execution_evidence
                 identity_failed = (
                     audit.model_identity_evidence != "requested_pinned_no_fallback_no_reroute"
                     or audit.observed_model is not None
@@ -308,6 +315,22 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
                     or audit.observed_reasoning_effort is not None
                     or audit.observed_service_tier is not None
                     or audit.observed_identity_sha256 is not None
+                    or (
+                        audit.transport_qualification == "actual_live"
+                        and (
+                            live_evidence is None
+                            or live_evidence.request_bytes_sha256 != request.request_bytes_sha256
+                            or live_evidence.output_schema_sha256
+                            != sha256_bytes(
+                                canonical_json_bytes(role_output_schema_for_request(request))
+                            )
+                            or live_evidence.response_bytes_sha256 != result.response_bytes_sha256
+                            or live_evidence.usage_sha256
+                            != domain_sha256(SUBSCRIPTION_USAGE_HASH_DOMAIN, audit.usage)
+                            or live_evidence.thread_id_sha256 != audit.thread_id_sha256
+                            or live_evidence.turn_id_sha256 != audit.turn_id_sha256
+                        )
+                    )
                 )
             else:
                 identity_failed = (

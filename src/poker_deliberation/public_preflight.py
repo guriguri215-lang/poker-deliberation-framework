@@ -1386,11 +1386,11 @@ def _bridge_manifest_role_conformance_matches_current_tree(
     from poker_deliberation.codex_bridge.contracts import outbound_request_bytes
     from poker_deliberation.codex_bridge.models import BoundedCodexBridgeRequestV1
     from poker_deliberation.codex_bridge.qualification import (
-        SanitizedLiveQualificationManifestV1,
+        SanitizedLiveQualificationManifestV2,
     )
     from poker_deliberation.runtime_conformance.canonical import parse_canonical_json
 
-    if not isinstance(manifest, SanitizedLiveQualificationManifestV1):
+    if not isinstance(manifest, SanitizedLiveQualificationManifestV2):
         return False
     try:
         expected = build_bridge_role_conformance(
@@ -1435,7 +1435,7 @@ def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
         bridge_runtime_source_inventory_sha256,
     )
     from poker_deliberation.codex_bridge.qualification import (
-        SanitizedLiveQualificationManifestV1,
+        SanitizedLiveQualificationManifestV2,
         load_public_synthetic_fixture,
     )
 
@@ -1477,7 +1477,7 @@ def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
         if not path.is_file():
             missing_public.append(label)
 
-    manifest: SanitizedLiveQualificationManifestV1 | None = None
+    manifest: SanitizedLiveQualificationManifestV2 | None = None
     evaluation: BoundedCodexBridgeEvaluationResultV1 | None = None
     if not missing_public:
         try:
@@ -1487,7 +1487,7 @@ def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
             )
             manifest = parse_canonical_model(
                 public_manifest_path.read_bytes(),
-                SanitizedLiveQualificationManifestV1,
+                SanitizedLiveQualificationManifestV2,
             )
         except (OSError, ValueError):
             failures.append("bridge_public_evidence:noncanonical_or_invalid")

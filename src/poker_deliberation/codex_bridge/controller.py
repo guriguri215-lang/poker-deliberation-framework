@@ -37,6 +37,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeRunPlanV1,
     BridgeSourceContextV1,
     BridgeTerminalStatus,
+    CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
 )
 from poker_deliberation.codex_bridge.storage import (
@@ -186,6 +187,34 @@ def _cancellation_kind(
     if effect_state is BridgeEffectState.CANCEL_UNCONFIRMED:
         return "unconfirmed"
     return "not_requested"
+
+
+def _validated_live_execution_evidence(
+    transport: BridgeTransport,
+    request: BoundedCodexBridgeRequestV1,
+    result: BridgeTransportResult,
+) -> CodexSubscriptionLiveExecutionEvidenceV1 | None:
+    """Derive live status from the exact sealed implementation, never a caller label."""
+
+    try:
+        from poker_deliberation.codex_bridge.subscription_transport import (
+            validated_sealed_live_execution,
+        )
+
+        return validated_sealed_live_execution(transport, request, result)
+    except Exception as exc:
+        raise BridgeTransportFailure(
+            "transport_live_attestation_invalid",
+            effect_state=BridgeEffectState.FAILED,
+            launched_at=result.launched_at,
+            completed_at=result.completed_at,
+            duration_ms=result.duration_ms,
+            stream_bytes=result.stream_bytes,
+            item_types=result.item_types,
+            thread_id_sha256=result.thread_id_sha256,
+            turn_id_sha256=result.turn_id_sha256,
+            transport_result=result,
+        ) from exc
 
 
 def _append_artifacts(
@@ -465,8 +494,6 @@ class BoundedCodexBridgeController:
     def _validate_transport(
         request: BoundedCodexBridgeRequestV1,
         result: BridgeTransportResult,
-        *,
-        expected_transport_qualification: Literal["deterministic_fixture", "actual_live"],
     ) -> BridgeRoleResultV1:
         policy = request.context.runtime_policy
         unexpected = tuple(
@@ -478,7 +505,6 @@ class BoundedCodexBridgeController:
         usage = result.usage
         if (
             result.auth_mode is not request.auth_mode
-            or result.transport_qualification != expected_transport_qualification
             or result.runtime_identity != policy.runtime_identity
             or not _transport_identity_matches_policy(request, result)
             or unexpected
@@ -655,6 +681,7 @@ class BoundedCodexBridgeController:
             observed_reasoning_effort=audit.observed_reasoning_effort,
             observed_service_tier=audit.observed_service_tier,
             observed_identity_sha256=audit.observed_identity_sha256,
+            live_execution_evidence=audit.live_execution_evidence,
         )
 
     def execute_confirmed_role(
@@ -728,13 +755,20 @@ class BoundedCodexBridgeController:
         )
         if persisted_admission != admission:
             raise BridgeStorageError("durable pre-execution admission did not replay")
+        derived_transport_qualification: Literal["deterministic_fixture", "actual_live"] = (
+            "deterministic_fixture"
+        )
+        live_execution_evidence: CodexSubscriptionLiveExecutionEvidenceV1 | None = None
         try:
             transport_result = transport.execute(request)
-            role_result = self._validate_transport(
+            live_execution_evidence = _validated_live_execution_evidence(
+                transport,
                 request,
                 transport_result,
-                expected_transport_qualification=transport.transport_qualification,
             )
+            if live_execution_evidence is not None:
+                derived_transport_qualification = "actual_live"
+            role_result = self._validate_transport(request, transport_result)
         except BridgeTransportFailure as exc:
             trusted_result = exc.transport_result
             evidence = exc.evidence
@@ -779,7 +813,7 @@ class BoundedCodexBridgeController:
                 request,
                 confirmation,
                 admission,
-                transport_qualification=transport.transport_qualification,
+                transport_qualification=derived_transport_qualification,
                 effect_state=exc.effect_state,
                 thread_id_sha256=exc.thread_id_sha256,
                 turn_id_sha256=exc.turn_id_sha256,
@@ -814,6 +848,7 @@ class BoundedCodexBridgeController:
                     and _transport_identity_matches_policy(request, trusted_result)
                     else (None if evidence is None else _observed_failure_identity_sha256(evidence))
                 ),
+                live_execution_evidence=live_execution_evidence,
             )
             audit = self._claim_execution_identity(
                 request=request,
@@ -832,7 +867,7 @@ class BoundedCodexBridgeController:
                 request,
                 confirmation,
                 admission,
-                transport_qualification=transport.transport_qualification,
+                transport_qualification="deterministic_fixture",
                 effect_state=BridgeEffectState.EFFECT_UNKNOWN,
                 thread_id_sha256=None,
                 turn_id_sha256=None,
@@ -852,6 +887,7 @@ class BoundedCodexBridgeController:
                 observed_reasoning_effort=None,
                 observed_service_tier=None,
                 observed_identity_sha256=None,
+                live_execution_evidence=None,
             )
             audit = self._claim_execution_identity(
                 request=request,
@@ -874,7 +910,7 @@ class BoundedCodexBridgeController:
             request,
             confirmation,
             admission,
-            transport_qualification=transport_result.transport_qualification,
+            transport_qualification=derived_transport_qualification,
             effect_state=BridgeEffectState.SUCCEEDED,
             thread_id_sha256=transport_result.thread_id_sha256,
             turn_id_sha256=transport_result.turn_id_sha256,
@@ -894,6 +930,7 @@ class BoundedCodexBridgeController:
             observed_reasoning_effort=transport_result.observed_reasoning_effort,
             observed_service_tier=transport_result.observed_service_tier,
             observed_identity_sha256=_observed_transport_identity_sha256(transport_result),
+            live_execution_evidence=live_execution_evidence,
         )
         audit = self._claim_execution_identity(
             request=request,

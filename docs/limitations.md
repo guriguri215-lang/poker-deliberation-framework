@@ -273,9 +273,9 @@
   API key/login/networkなしで使えるという意味である。
 - `codex_subscription`はterminal verification済みP3-030C river call-or-fold run、1 explicit range、固定5
   role、fresh serial turnだけを扱う。一般Codex/Python bridge、任意prompt/agent、双方向sessionではない。
-- subscription actual-live qualification manifestは公開synthetic fixtureの固定5 roleについて`passed`である。
-  このtransport evidenceを一般bridge、戦略品質、human usefulness、range accuracyへ拡張しない。
-  recorded/deterministic fixtureだけをactual transport evidenceとは扱わない。
+- 旧subscription qualification manifestはsealed execution attestationを持たないlegacy artifactであり、
+  現在のactual-live根拠としては無効である。新schemaでfreshな固定5 role live qualificationが必要になる。
+  recorded/deterministic fixture、caller-controlled label、wrapped/injected transportをactual transport evidenceとは扱わない。
 - `openai_api`はdefault-disabled、deterministic-contract-only、live-unqualifiedである。versioned price
   authorityとprovider hard cost stopがないため、API keyが存在してもprocess/network起動前に
   `api_live_execution_unqualified_cost_authority` / `not_launched`で拒否し、production-qualifiedまたは

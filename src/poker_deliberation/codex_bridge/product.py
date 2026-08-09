@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import base64
+import os
+import stat
+import subprocess
 from pathlib import Path
 
 from poker_deliberation.codex_bridge.canonical import sha256_bytes
@@ -29,9 +32,198 @@ from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider
 
+_GIT_ENVIRONMENT_NAMES = (
+    "COMSPEC",
+    "PATH",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "WINDIR",
+)
+
 
 class BridgeProductError(ValueError):
     """Raised when a product operation would escape the bounded bridge contract."""
+
+
+def _is_link_or_reparse(status: os.stat_result) -> bool:
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    file_attributes = getattr(status, "st_file_attributes", 0)
+    return stat.S_ISLNK(status.st_mode) or bool(file_attributes & reparse_flag)
+
+
+def _require_plain_path(path: Path, repository: Path) -> None:
+    """Reject existing link/reparse components without traversing their targets."""
+
+    relative = path.relative_to(repository)
+    current = repository
+    for part in relative.parts:
+        current /= part
+        try:
+            status = current.lstat()
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            raise BridgeProductError("runtime scratch path inspection failed") from exc
+        if _is_link_or_reparse(status):
+            raise BridgeProductError("runtime scratch path contains a link or reparse point")
+        if current != path and not stat.S_ISDIR(status.st_mode):
+            raise BridgeProductError("runtime scratch path traverses a non-directory")
+        if current == path and not stat.S_ISDIR(status.st_mode):
+            raise BridgeProductError("runtime scratch root is not a directory")
+
+
+def _runtime_git(
+    repository: Path,
+    arguments: tuple[str, ...],
+    *,
+    input_bytes: bytes | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run a bounded Git metadata probe without ambient Git configuration."""
+
+    environment = {name: os.environ[name] for name in _GIT_ENVIRONMENT_NAMES if name in os.environ}
+    environment.update(
+        {
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+        }
+    )
+    try:
+        return subprocess.run(
+            (
+                "git",
+                "-c",
+                f"core.excludesFile={os.devnull}",
+                "-c",
+                f"safe.directory={repository}",
+                "-C",
+                str(repository),
+                *arguments,
+            ),
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=15,
+            env=environment,
+        )
+    except Exception as exc:
+        raise BridgeProductError("runtime scratch Git policy probe failed") from exc
+
+
+def _nul_paths(data: bytes) -> tuple[str, ...]:
+    if data and not data.endswith(b"\0"):
+        raise BridgeProductError("runtime scratch Git policy output is malformed")
+    try:
+        return tuple(item.decode("utf-8", errors="strict") for item in data.split(b"\0") if item)
+    except UnicodeDecodeError as exc:
+        raise BridgeProductError("runtime scratch Git policy output is malformed") from exc
+
+
+def _tracked_runtime_paths(repository: Path) -> frozenset[str]:
+    completed = _runtime_git(repository, ("ls-files", "-z"))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch Git index probe failed")
+    return frozenset(path.replace("\\", "/") for path in _nul_paths(completed.stdout))
+
+
+def _path_overlaps_tracked(relative: str, tracked_paths: frozenset[str]) -> bool:
+    folded = relative.casefold()
+    prefix = f"{folded}/"
+    for tracked in tracked_paths:
+        tracked_folded = tracked.casefold()
+        if (
+            tracked_folded == folded
+            or tracked_folded.startswith(prefix)
+            or folded.startswith(f"{tracked_folded}/")
+        ):
+            return True
+    return False
+
+
+def _ignored_by_tracked_gitignore(
+    repository: Path,
+    relative: str,
+    tracked_paths: frozenset[str],
+) -> bool:
+    directory_probe = f"{relative.rstrip('/')}/".encode() + b"\0"
+    completed = _runtime_git(
+        repository,
+        ("check-ignore", "--no-index", "-v", "-z", "--stdin"),
+        input_bytes=directory_probe,
+    )
+    if completed.returncode == 1:
+        return False
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch Git ignore probe failed")
+    fields = _nul_paths(completed.stdout)
+    if len(fields) != 4:
+        raise BridgeProductError("runtime scratch Git ignore output is malformed")
+    source, _line_number, _pattern, matched_path = fields
+    if matched_path.rstrip("/") != relative.rstrip("/"):
+        raise BridgeProductError("runtime scratch Git ignore output is malformed")
+    source_path = Path(source)
+    if source_path.is_absolute():
+        return False
+    source_relative = source_path.as_posix()
+    if source_relative not in tracked_paths or source_path.name != ".gitignore":
+        return False
+    try:
+        resolved_source = (repository / source_path).resolve(strict=True)
+    except OSError:
+        return False
+    if not resolved_source.is_relative_to(repository):
+        return False
+    try:
+        _require_plain_path((repository / source_path).parent, repository)
+    except BridgeProductError:
+        return False
+    try:
+        source_status = (repository / source_path).lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(source_status.st_mode) and not _is_link_or_reparse(source_status)
+
+
+def confined_runtime_scratch_path(path: Path, repository_root: Path) -> Path:
+    """Require an untracked repository path ignored by a tracked ``.gitignore``."""
+
+    repository = repository_root.resolve(strict=True)
+    if not repository.is_dir():
+        raise BridgeProductError("bridge repository root is not a directory")
+    raw_parts = tuple(part.casefold() for part in path.parts)
+    if ".." in raw_parts or any(part in {".git", "user_materials"} for part in raw_parts):
+        raise BridgeProductError("runtime scratch path uses a protected component")
+    lexical = Path(os.path.abspath(path))
+    try:
+        lexical.relative_to(repository)
+    except ValueError as exc:
+        raise BridgeProductError("bridge path is outside its repository-owned namespace") from exc
+    _require_plain_path(lexical, repository)
+    resolved = confined_product_path(path, repository)
+    top_level = _runtime_git(repository, ("rev-parse", "--show-toplevel"))
+    if top_level.returncode != 0:
+        raise BridgeProductError("runtime scratch repository probe failed")
+    try:
+        reported_root = Path(top_level.stdout.decode("utf-8", errors="strict").strip()).resolve(
+            strict=True
+        )
+    except (OSError, UnicodeDecodeError) as exc:
+        raise BridgeProductError("runtime scratch repository probe failed") from exc
+    if reported_root != repository:
+        raise BridgeProductError("runtime scratch repository identity mismatch")
+    relative = resolved.relative_to(repository).as_posix()
+    tracked_paths = _tracked_runtime_paths(repository)
+    if _path_overlaps_tracked(relative, tracked_paths):
+        raise BridgeProductError("runtime scratch root overlaps a tracked path")
+    if not _ignored_by_tracked_gitignore(repository, relative, tracked_paths):
+        raise BridgeProductError(
+            "runtime scratch root is not ignored by a tracked repository .gitignore"
+        )
+    return resolved
 
 
 def confined_product_path(path: Path, repository_root: Path) -> Path:
@@ -235,7 +427,7 @@ def execute_product_role(
     codex_binary: Path | None = None,
 ) -> VerifiedBridgeRead:
     bridge = confined_product_path(bridge_root, repository_root)
-    runtime = confined_product_path(runtime_root, repository_root)
+    runtime = confined_runtime_scratch_path(runtime_root, repository_root)
     if bridge == runtime or bridge in runtime.parents or runtime in bridge.parents:
         raise BridgeProductError("bridge storage and runtime scratch roots must not overlap")
     protected = config.resolved_storage_roots()
@@ -324,6 +516,7 @@ __all__ = [
     "BridgeProductError",
     "bridge_read_summary",
     "confined_product_path",
+    "confined_runtime_scratch_path",
     "confirm_product_role",
     "execute_product_role",
     "prepare_product_bridge",

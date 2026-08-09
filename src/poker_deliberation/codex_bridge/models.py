@@ -45,7 +45,8 @@ BRIDGE_CREDENTIAL_REFERENCE: Final = BRIDGE_SUBSCRIPTION_CREDENTIAL_REFERENCE
 REQUEST_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-request-v1"
 CONTEXT_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-context-v1"
 RESULT_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-role-result-v1"
-EXECUTION_AUDIT_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-execution-audit-v1"
+EXECUTION_AUDIT_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-execution-audit-v2"
+EXECUTION_AUDIT_SCHEMA_VERSION: Final[Literal["2.0.0"]] = "2.0.0"
 CONFIRMATION_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-confirmation-v1"
 ADMISSION_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-admission-v1"
 RUN_PLAN_HASH_DOMAIN: Final = "poker-bounded-codex-bridge-run-plan-v1"
@@ -59,6 +60,13 @@ CONFIRMATION_IDENTIFIER_CLAIM_HASH_DOMAIN: Final = (
 OBSERVED_TRANSPORT_IDENTITY_HASH_DOMAIN: Final = (
     "poker-bounded-codex-bridge-observed-transport-identity-v1"
 )
+SUBSCRIPTION_EXECUTION_RUNTIME_HASH_DOMAIN: Final = (
+    "poker-bounded-codex-subscription-execution-runtime-v1"
+)
+SUBSCRIPTION_SEALED_LIVE_ATTESTATION_HASH_DOMAIN: Final = (
+    "poker-bounded-codex-subscription-sealed-live-execution-attestation-v1"
+)
+SUBSCRIPTION_USAGE_HASH_DOMAIN: Final = "poker-bounded-codex-subscription-usage-v1"
 
 MAX_CONTEXT_BYTES: Final = 65_536
 MAX_RESPONSE_BYTES: Final = 32_768
@@ -1422,8 +1430,81 @@ class BridgeTransportUsageV1(_BridgeModel):
     invoice_authority: Literal[False] = False
 
 
+class CodexSubscriptionLiveExecutionEvidenceV1(_BridgeModel):
+    """Secret-free evidence minted by one sealed default subscription execution."""
+
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    evidence_kind: Literal["codex_subscription_sealed_default_execution"]
+    transport_type: Literal[
+        "poker_deliberation.codex_bridge.subscription_transport.CodexSubscriptionCliTransport"
+    ]
+    sealed_default_process: Literal[True]
+    default_auth_status_probe: Literal[True]
+    default_command_factory: Literal[True]
+    default_isolation_root: Literal[True]
+    default_credential_codex_home: Literal[True]
+    interface: Literal["codex_exec_json"]
+    auth_mode: Literal[RuntimeAuthModeV1.CODEX_SUBSCRIPTION]
+    auth_boundary: Literal["codex_home_saved_chatgpt_login"]
+    auth_enforcement: Literal["codex_cli_login_status_exact_chatgpt"]
+    credential_values_included: Literal[False]
+    provider_model_fallback_allowed: Literal[False]
+    model_fallback_allowed: Literal[False]
+    process_fallback_allowed: Literal[False]
+    runtime_identity: Literal["openai-codex-cli/0.144.4"]
+    runtime_binary_sha256: Sha256
+    runtime_source_inventory_sha256: Sha256
+    runtime_configuration_sha256: Sha256
+    request_sha256: Sha256
+    request_bytes_sha256: Sha256
+    output_schema_sha256: Sha256
+    command_contract_sha256: Sha256
+    launch_intent_sha256: Sha256
+    response_bytes_sha256: Sha256
+    event_stream_sha256: Sha256
+    usage_sha256: Sha256
+    process_returncode: Literal[0]
+    thread_id_sha256: Sha256
+    turn_id_sha256: Sha256
+    execution_runtime_sha256: Sha256
+    attestation_sha256: Sha256
+
+    @model_validator(mode="after")
+    def exact_sealed_execution(self) -> CodexSubscriptionLiveExecutionEvidenceV1:
+        if self.runtime_binary_sha256 != BRIDGE_RUNTIME_BINARY_SHA256:
+            raise ValueError("subscription attestation runtime binary mismatch")
+        runtime_payload = {
+            "runtime_identity": self.runtime_identity,
+            "runtime_binary_sha256": self.runtime_binary_sha256,
+            "runtime_source_inventory_sha256": self.runtime_source_inventory_sha256,
+            "runtime_configuration_sha256": self.runtime_configuration_sha256,
+            "request_sha256": self.request_sha256,
+            "request_bytes_sha256": self.request_bytes_sha256,
+            "output_schema_sha256": self.output_schema_sha256,
+            "command_contract_sha256": self.command_contract_sha256,
+            "launch_intent_sha256": self.launch_intent_sha256,
+            "response_bytes_sha256": self.response_bytes_sha256,
+            "event_stream_sha256": self.event_stream_sha256,
+            "usage_sha256": self.usage_sha256,
+            "process_returncode": self.process_returncode,
+            "thread_id_sha256": self.thread_id_sha256,
+            "turn_id_sha256": self.turn_id_sha256,
+        }
+        if self.execution_runtime_sha256 != domain_sha256(
+            SUBSCRIPTION_EXECUTION_RUNTIME_HASH_DOMAIN,
+            runtime_payload,
+        ):
+            raise ValueError("subscription execution runtime hash mismatch")
+        if self.attestation_sha256 != domain_sha256(
+            SUBSCRIPTION_SEALED_LIVE_ATTESTATION_HASH_DOMAIN,
+            without_field(self, "attestation_sha256"),
+        ):
+            raise ValueError("subscription execution attestation hash mismatch")
+        return self
+
+
 class BridgeExecutionAuditV1(_BridgeModel):
-    schema_version: Literal["1.0.0"] = BRIDGE_SCHEMA_VERSION
+    schema_version: Literal["2.0.0"] = EXECUTION_AUDIT_SCHEMA_VERSION
     bridge_run_id: PortableId
     auth_mode: RuntimeAuthModeV1
     role: BridgeRole
@@ -1434,6 +1515,7 @@ class BridgeExecutionAuditV1(_BridgeModel):
     admission_sha256: Sha256
     runtime_policy_sha256: Sha256
     transport_qualification: Literal["deterministic_fixture", "actual_live"]
+    live_execution_evidence: CodexSubscriptionLiveExecutionEvidenceV1 | None
     interface: Literal["local_provider", "codex_exec_json", "codex_sdk_responses"]
     credential_reference: Literal[
         "none",
@@ -1517,6 +1599,20 @@ class BridgeExecutionAuditV1(_BridgeModel):
             self.credential_reference,
         ) != (runtime, model, provider, credential):
             raise ValueError("execution audit runtime/auth mode mismatch")
+        evidence = self.live_execution_evidence
+        if self.transport_qualification == "actual_live":
+            if (
+                evidence is None
+                or self.auth_mode is not RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+                or evidence.request_sha256 != self.request_sha256
+                or evidence.runtime_identity != self.runtime_identity
+                or evidence.interface != self.interface
+                or evidence.thread_id_sha256 != self.thread_id_sha256
+                or evidence.turn_id_sha256 != self.turn_id_sha256
+            ):
+                raise ValueError("actual-live audit lacks sealed execution evidence")
+        elif evidence is not None:
+            raise ValueError("deterministic audit cannot contain live execution evidence")
         if self.effect_state is BridgeEffectState.SUCCEEDED:
             if self.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION:
                 if (
@@ -1750,10 +1846,14 @@ __all__ += [
     "CONFIRMATION_IDENTIFIER_CLAIM_HASH_DOMAIN",
     "CONTEXT_HASH_DOMAIN",
     "EXECUTION_AUDIT_HASH_DOMAIN",
+    "EXECUTION_AUDIT_SCHEMA_VERSION",
     "OBSERVED_TRANSPORT_IDENTITY_HASH_DOMAIN",
     "REQUEST_HASH_DOMAIN",
     "RESULT_HASH_DOMAIN",
     "RUN_PLAN_HASH_DOMAIN",
+    "SUBSCRIPTION_EXECUTION_RUNTIME_HASH_DOMAIN",
+    "SUBSCRIPTION_SEALED_LIVE_ATTESTATION_HASH_DOMAIN",
+    "SUBSCRIPTION_USAGE_HASH_DOMAIN",
     "TERMINAL_MANIFEST_HASH_DOMAIN",
     "BoundedCodexBridgeRequestV1",
     "BridgeActionV1",
@@ -1791,6 +1891,7 @@ __all__ += [
     "BridgeTerminalManifestV1",
     "BridgeToolEvidenceV1",
     "BridgeTransportUsageV1",
+    "CodexSubscriptionLiveExecutionEvidenceV1",
     "ExactRationalV1",
     "RuntimeAuthModeV1",
 ]

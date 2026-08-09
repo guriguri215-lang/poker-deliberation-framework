@@ -4,6 +4,7 @@ import base64
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from poker_deliberation.codex_bridge.contracts import role_output_schema_for_req
 from poker_deliberation.codex_bridge.models import (
     BRIDGE_RUNTIME_BINARY_SHA256,
     BridgeEffectState,
+    CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
 )
 from poker_deliberation.codex_bridge.subscription_transport import (
@@ -101,7 +103,7 @@ def test_subscription_command_is_ephemeral_read_only_and_tools_off(
     assert "OPENAI_API_KEY" not in joined
 
 
-def test_subscription_only_default_product_process_can_claim_actual_live(
+def test_subscription_constructor_labels_never_claim_actual_live(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -131,9 +133,50 @@ def test_subscription_only_default_product_process_can_claim_actual_live(
         credential_codex_home=tmp_path / "credential-codex-home",
     )
 
-    assert product.transport_qualification == "actual_live"
+    # A constructor/mutable attribute is not execution evidence. Even an otherwise
+    # default-looking object remains deterministic until a sealed process completes.
+    assert product.transport_qualification == "deterministic_fixture"
     assert injected_auth.transport_qualification == "deterministic_fixture"
     assert injected_process.transport_qualification == "deterministic_fixture"
+
+
+def test_wrapped_transport_cannot_relay_typed_live_attestation(
+    tmp_path: Path,
+) -> None:
+    request = prepared_bridge_request(tmp_path / "p3")
+    result = DeterministicReadOnlyTransport(
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+        clock=lambda: datetime(2030, 1, 1, tzinfo=UTC),
+    ).execute(request)
+    evidence = CodexSubscriptionCliTransport._live_execution_evidence(
+        request,
+        runtime_source_inventory_sha256="a" * 64,
+        runtime_configuration_sha256="b" * 64,
+        output_schema_sha256=sha256_bytes(
+            canonical_json_bytes(role_output_schema_for_request(request))
+        ),
+        command_contract_sha256="c" * 64,
+        launch_intent_sha256="d" * 64,
+        response=result.response_bytes,
+        raw_events=b"{}\n",
+        usage=result.usage,
+        thread_id_sha256=result.thread_id_sha256,
+        turn_id_sha256=result.turn_id_sha256,
+    )
+    relayed = replace(
+        result,
+        transport_qualification="actual_live",
+        live_execution_evidence=evidence,
+        _live_execution_capability=subscription_module._SEALED_LIVE_EXECUTION_CAPABILITY,
+    )
+
+    with pytest.raises(ValueError, match="unsealed subscription"):
+        subscription_module.validated_sealed_live_execution(object(), request, relayed)
+
+    mutated = evidence.model_dump(mode="python")
+    mutated["response_bytes_sha256"] = "e" * 64
+    with pytest.raises(ValueError, match="runtime hash mismatch"):
+        CodexSubscriptionLiveExecutionEvidenceV1.model_validate(mutated, strict=True)
 
 
 def test_subscription_missing_login_fails_before_process_launch(

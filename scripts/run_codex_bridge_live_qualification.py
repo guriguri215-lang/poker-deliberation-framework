@@ -22,7 +22,10 @@ from poker_deliberation.codex_bridge.canonical import (  # noqa: E402
 from poker_deliberation.codex_bridge.evaluation import (  # noqa: E402
     BoundedCodexBridgeEvaluationResultV1,
 )
-from poker_deliberation.codex_bridge.identity import verify_bridge_checkout  # noqa: E402
+from poker_deliberation.codex_bridge.identity import (  # noqa: E402
+    verify_bridge_checkout,
+    verify_bridge_module_origins,
+)
 from poker_deliberation.codex_bridge.models import (  # noqa: E402
     BridgeRole,
     RuntimeAuthModeV1,
@@ -99,6 +102,7 @@ def _prepare(args: argparse.Namespace) -> int:
         repository_commit_id=args.source_commit,
         repository_tree_id=args.source_tree,
     )
+    verify_bridge_module_origins(ROOT)
     work_root.mkdir(parents=True)
     config = _config(work_root)
     admission = build_repository_owned_bounded_river_evaluation_admission(
@@ -164,6 +168,7 @@ def _manifest(args: argparse.Namespace) -> int:
         repository_commit_id=plan.repository_commit_id,
         repository_tree_id=plan.repository_tree_id,
     )
+    verify_bridge_module_origins(ROOT)
     evaluation_bytes = args.deterministic_evaluation.read_bytes()
     evaluation = parse_canonical_model(
         evaluation_bytes,

@@ -338,6 +338,13 @@ subtreeは走査しない。JSONLで
 `reasoning`/`agent_message`以外のitem、unexpected lifecycle、multiple/missing final message、model/runtime
 mismatchを観測するとfail closedにする。OS-level network isolationやremote sandbox attestationではない。
 
+`actual_live`はcallerが設定する`transport_qualification`文字列から導出しない。exact concrete default
+`CodexSubscriptionCliTransport`がhook/subclass/wrapperなしで完了したturnにだけmodule-private capabilityと
+versioned secret-free attestationを発行し、controllerがexact type、instance method shadow、captured implementation、
+request/schema/response/usage/thread/turn/source inventory bindingを検証する。deterministic/injected/wrapped transportは
+5 roleを完走してもlive manifestへ昇格しない。unkeyed hashとPython private objectは、same-processでrepository codeや
+subprocessを悪意をもってmonkeypatchできるsame-privilege callerに対するkeyed authenticity anchorではない。
+
 raw Japanese source、FinalReport narrative、private/user material、credentialをoutbound contextへ含めない。
 確認対象のexact bytes/hashはapplication-owned canonical stdin payloadである。Codexが追加するplatform/system
 contextを含むactual backend model input、effective model/provider/reasoning/service tier、backend immutable model
@@ -352,6 +359,8 @@ remote effectが確定できない場合は`cancel_unconfirmed`/`effect_unknown`
 reconciliationを要求する。local terminate/killはremote cancellation、billing停止、process-tree hard
 stopの証拠ではない。built-in subscription provider retry、backend immutable model snapshot、workspace/API
 retention、same-privilege writer authenticityは**UNKNOWN**または非保証である。raw JSONL/stderr/auth cache/
-model traceはignored runtime scratchだけに保存し、sanitized typed qualification manifestだけを公開する。
+model traceのruntime rootは、tracked repository `.gitignore`でdirectoryとして除外されたuntracked
+scratch namespaceにlaunch前限定し、public/tracked path、untrusted ignore source、link/reparse、escapeを
+拒否する。sanitized typed qualification manifestだけを公開する。
 
 詳細は[`bounded-codex-river-review-bridge.md`](bounded-codex-river-review-bridge.md)を参照する。

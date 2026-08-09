@@ -32,8 +32,7 @@ _BRIDGE_MODULES = (
 BRIDGE_RUNTIME_SOURCE_INVENTORY_HASH_DOMAIN = "poker-bounded-codex-runtime-source-inventory-v1"
 _RUNTIME_SOURCE_EXCLUSIONS = frozenset(
     {
-        # Public status/projection code may change only after actual-live evidence exists.
-        "src/poker_deliberation/public_preflight.py",
+        # Roadmap prose/status projection is not part of execution or evidence validation.
         "src/poker_deliberation/roadmap.py",
     }
 )

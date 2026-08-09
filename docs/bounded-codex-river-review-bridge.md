@@ -6,7 +6,7 @@ deterministic evidenceを変更せずに5つの限定review roleへ渡すP2-025B
 
 ## 公開状態
 
-- **FACT**: bridge/auth/canonical/storage schemaは`1.0.0`である。
+- **FACT**: bridge/auth/canonical/storage core schemaは`1.0.0`、execution auditとsealed live qualification schemaは`2.0.0`である。
 - **FACT**: `local_only`はAPI key、ChatGPT/Codex login、外部model、networkを必要としない。
 - **FACT**: `codex_subscription`は保存済みChatGPT/Codex loginを使う標準AI経路であり、API keyを
   子processへ渡さない。
@@ -14,8 +14,8 @@ deterministic evidenceを変更せずに5つの限定review roleへ渡すP2-025B
   管理する。subscription/API/model間fallbackはない。現在はversioned price authorityとprovider hard
   cost stopがないため、明示選択してもprocess/network起動前に`not_launched`で拒否する。
 - **FACT**: deterministic contract evaluationはactual model executionの証拠ではない。
-- **FACT**: repository-owned public synthetic fixtureの固定5 roleを使った`codex_subscription` actual
-  live transport qualificationは`passed`であり、sanitized manifestを公開する。
+- **FACT**: 旧公開subscription manifestはsealed execution attestation導入前のlegacy recordであり、
+  現行schemaではactual-live evidenceとして拒否する。fresh live qualificationは未実行である。
 - **UNKNOWN**: strategy quality、human usefulness、正確な実戦range、backend immutable model snapshotは
   transport qualificationからは確定しない。
 - **FACT**: このmilestoneではAPI live qualificationを行わない。API adapterはlive-unqualifiedである。
@@ -62,7 +62,7 @@ terminal manifest、pointer、replayへ束縛されます。unknown modeはschem
 | mode | interface / provider | credential reference | model / network | 状態 |
 |---|---|---|---|---|
 | `local_only` | `local_provider` / `local_provider` | `none` | modelなし / networkなし | implemented |
-| `codex_subscription` | `codex_exec_json` / configured model provider `openai` / auth boundary `chatgpt` | `codex_home:saved_chatgpt_login` | requested `gpt-5.6-terra`, `medium`, `default`; effective identityは`UNKNOWN` / networkあり | bounded actual-live qualified |
+| `codex_subscription` | `codex_exec_json` / configured model provider `openai` / auth boundary `chatgpt` | `codex_home:saved_chatgpt_login` | requested `gpt-5.6-terra`, `medium`, `default`; effective identityは`UNKNOWN` / networkあり | implemented, live-unqualified |
 | `openai_api` | `codex_sdk_responses` / `openai_responses_api_no_retry` | `env:OPENAI_API_KEY` | `gpt-5.6-terra`, `medium`, `default` / qualified network executionなし | deterministic contract only, live-unqualified |
 
 `.env.example`は値を空にします。
@@ -280,9 +280,12 @@ before publicationを区別し、admissionはtransportより先にdurable public
 
 ## CLI lifecycle
 
-すべてのpathはrepository内のignored `tmp/`または`runs/`配下を推奨します。`.git`、
-`user_materials/`、既存product storageとの重複を拒否します。prepareはclean checkoutの指定commit/treeと
-module originを検証します。
+bridge pathはrepository内のignored `tmp/`または`runs/`配下を推奨します。`--runtime-root`は
+tracked repository `.gitignore`がdirectoryとして除外するuntracked scratch namespace（例:
+`tmp/bridge-runtime`、`runs/bridge-runtime`）だけを受理します。公開候補、tracked path、ambient/global/
+`.git/info`由来だけのignore、link/reparse、`.git`、`user_materials/`、repository escape、既存product
+storageとの重複はlaunch前に拒否します。prepareはclean checkoutの指定commit/treeとmodule originを
+検証します。
 
 ```powershell
 # 1. verified P3-030C sourceからrunをprepare
@@ -346,28 +349,36 @@ bindingが欠ける場合はsource terminalの再検証が`run_not_found`でmode
 結果の`transport_qualification=deterministic_fixture_only`と
 `live_qualification_sha256=null`は、model未実行を明示します。
 
-actual qualificationは`codex_subscription`だけで、repository-owned public synthetic P3-030C fixture、固定
-candidate commit/tree、固定5 role、各role直前のexact outbound bytes/hash承認を使います。raw CLI JSONL、
+future actual qualificationは`codex_subscription`だけで、repository-owned public synthetic P3-030C fixture、固定
+candidate commit/tree、固定5 role、各role直前のexact outbound bytes/hash承認を使います。各turnはexact concrete
+`CodexSubscriptionCliTransport`、default auth probe/command/isolation/credential-home解決、hookなし、subclass/
+wrapperなしの経路だけを受理します。transportがinterface、runtime binary/source inventory/config、auth boundary、
+no fallback、launch intent、request/schema/command、response/event/usage、thread/turnを束縛したversioned attestationを
+生成し、controller/audit/replay/qualificationが同じhashを再検証します。raw CLI JSONL、
 stderr、auth cache、raw traceはignored local dataにだけ保存し、公開するのはsanitized manifest、input/result
 hash、runtime/model/usage/effect/terminal evidenceです。model文章のexact一致は品質metricにしません。
 
 API pathには同じno-network contract evaluationを適用しますが、このmilestoneのqualification manifestは
 `api_live_executed=false`かつ`api_production_qualified=false`を維持します。
 
-公開結果は`qualifications/p2-025b-deterministic-evaluation-v1.json`と
-`qualifications/p2-025b-codex-subscription-v1.json`です。live実行はcleanなqualification commit/treeへ
+公開済みの`qualifications/p2-025b-deterministic-evaluation-v1.json`はno-network評価、
+`qualifications/p2-025b-codex-subscription-v1.json`はlegacy unsealed recordです。後者へfieldを後付けしたり
+再hashしてliveへ昇格せず、新schemaの公開manifestはfresh live実行だけから生成します。live実行はcleanなqualification commit/treeへ
 束縛し、その後の最終commitはsanitized evidenceと状態文書を追加します。自己参照commitを捏造せず、
 manifest内の全runtime source fileのpath/size/SHA-256と
 `poker-bounded-codex-runtime-source-inventory-v1` hashを最終treeで再計算し、qualification commitが
-最終commitのancestorであることもpublic preflightで検証します。capability/roadmap/public-preflightという
-状態projectionだけはruntime execution inventoryから明示的に除外します。
+最終commitのancestorであることもpublic preflightで検証します。roadmap状態projectionだけはruntime execution
+inventoryから明示的に除外し、public preflight自体はevidence validation pathとしてinventoryへ含めます。
 
-公開qualificationのexact run ID、qualification commit/tree、role別usage、manifest hash、runtime source
-inventoryは[`qualifications/p2-025b-codex-subscription-v1.json`](../qualifications/p2-025b-codex-subscription-v1.json)
-を唯一の正とします。文書へ特定runの値を複製せず、public preflightがmanifestをstrict canonical loadし、
+fresh公開qualificationのexact run ID、qualification commit/tree、role別usage、manifest hash、runtime source
+inventoryは将来生成されるschema `2.0.0` manifestだけを正とします。文書へ特定runの値を複製せず、public preflightがmanifestをstrict canonical loadし、
 現在treeとのancestor/runtime inventory/role conformance/evaluation bindingを検証します。runtime/package/model、
 reasoning、service tier、budget、UNKNOWN、API live-unqualified状態も同manifestへ束縛します。subscription経路に
 USD API costは記録しません。
+
+attestation hashはunkeyed integrity bindingであり、同一Python process内でrepository code、class、private capability、
+subprocess primitivesまで悪意をもってmonkeypatchできるsame-privilege callerに対するauthenticity anchorではありません。
+公開claimはclean repository-controlled processとsealed execution evidenceのtrust boundary内に限定します。
 
 ## Data handlingとretention
 

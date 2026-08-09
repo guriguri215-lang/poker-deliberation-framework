@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final, Literal, Protocol
 
@@ -19,6 +19,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeRole,
     BridgeRoleOutputV1,
     BridgeTransportUsageV1,
+    CodexSubscriptionLiveExecutionEvidenceV1,
     Narrative,
     RuntimeAuthModeV1,
 )
@@ -46,6 +47,12 @@ class BridgeTransportResult:
     duration_ms: int
     stream_bytes: int
     item_types: tuple[str, ...]
+    live_execution_evidence: CodexSubscriptionLiveExecutionEvidenceV1 | None = None
+    _live_execution_capability: object | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,9 +107,6 @@ class BridgeTransportFailure(RuntimeError):
 
 class BridgeTransport(Protocol):
     auth_mode: RuntimeAuthModeV1
-
-    @property
-    def transport_qualification(self) -> Literal["deterministic_fixture", "actual_live"]: ...
 
     def execute(self, request: BoundedCodexBridgeRequestV1) -> BridgeTransportResult: ...
 

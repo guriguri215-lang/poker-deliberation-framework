@@ -113,7 +113,7 @@ def test_runtime_source_inventory_is_sorted_and_covers_role_and_request_authorit
     assert tuple(item.path for item in inventory) == tuple(sorted(item.path for item in inventory))
     assert agent_paths | request_authority_paths <= by_path.keys()
     assert "src/poker_deliberation/codex_bridge/qualification.py" in by_path
-    assert "src/poker_deliberation/public_preflight.py" not in by_path
+    assert "src/poker_deliberation/public_preflight.py" in by_path
     for relative in agent_paths | request_authority_paths:
         raw = REPOSITORY_ROOT.joinpath(*relative.split("/")).read_bytes()
         assert by_path[relative].size == len(raw)

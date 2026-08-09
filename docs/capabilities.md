@@ -40,8 +40,8 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `runtime_conformance_contract` | **implemented** | P2-025Aの役割inventory、assignment/context/resultのversioned contract、pure比較、verified Python product projectionを提供する。実行bridgeではない。 |
 | `local_only_runtime_mode` | **implemented** | API key、ChatGPT/Codex login、外部model、networkなしでdeterministic parser/calculator、LocalProvider、storage、replay、evaluationを利用する。 |
-| `bounded_codex_river_review_bridge` | **implemented** | P2-025Bはterminal verification済みP3-030C river run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定してactual-live qualifiedである。 |
-| `codex_subscription_bounded_river_review` | **implemented** | 保存済みChatGPT loginを使う明示経路はrepository-owned public synthetic fixtureの5-role actual-live qualification済みで、configured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。effective backend identity/inputはUNKNOWNである。 |
+| `bounded_codex_river_review_bridge` | **implemented / live-unqualified** | P2-025Bはterminal verification済みP3-030C river run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定して実装済みだが、sealed attestation schemaでのfresh live qualificationは未実行である。 |
+| `codex_subscription_bounded_river_review` | **implemented / live-unqualified** | 保存済みChatGPT loginを使う明示経路はconfigured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。旧公開manifestはsealed execution attestationを欠くためactual-live根拠にしない。 |
 | `openai_api_bounded_river_review_adapter` | **disabled** | optional `openai_api` adapterはno-network contract test済みだが、price authority/hard cost stopがなく、process/network前にfail closedするlive-unqualified経路である。 |
 | `codex_python_runtime_bridge` | **unavailable** | 一般Codex/Python bridgeはない。P2-025Bの別名bounded river-only bridgeを広いinteroperabilityへ拡張しない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
@@ -68,7 +68,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
   `undeclared`として保持する。
 - **FACT**: P2-025B限定bridgeだけは、terminal verification済みP3-030C river run、固定5 role、
   empty tool allowlist、fresh serial thread、mode-bound confirmation/resultへ限定した別artifact familyを
-  提供する。公開synthetic fixtureでactual-live qualification済みだが、通常経路は別実行面のままであり、
+  提供する。actual-live claimには新schemaのsealed evidenceを持つfresh qualificationが必要で、通常経路は別実行面のままであり、
   一般bridgeではない。
 
 この数は品質指標ではありません。contract testは実装から件数を再計算し、文書との差を検出します。

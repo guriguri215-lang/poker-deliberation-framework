@@ -37,6 +37,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeRunPlanV1,
     BridgeSourceContextV1,
     BridgeTransportUsageV1,
+    CodexSubscriptionLiveExecutionEvidenceV1,
     GitObjectId,
     PortableId,
     RuntimeAuthModeV1,
@@ -45,8 +46,8 @@ from poker_deliberation.codex_bridge.models import (
 from poker_deliberation.codex_bridge.replay import replay_bridge
 from poker_deliberation.codex_bridge.storage import VerifiedBridgeRead
 
-QUALIFICATION_SCHEMA_VERSION: Final[Literal["1.0.0"]] = "1.0.0"
-QUALIFICATION_MANIFEST_HASH_DOMAIN: Final = "poker-bounded-codex-subscription-live-qualification-v1"
+QUALIFICATION_SCHEMA_VERSION: Final[Literal["2.0.0"]] = "2.0.0"
+QUALIFICATION_MANIFEST_HASH_DOMAIN: Final = "poker-bounded-codex-subscription-live-qualification-v2"
 PUBLIC_SYNTHETIC_FIXTURE_ID: Final = "p2-025b-public-river-call-positive-v1"
 QUALIFICATION_LIMITATIONS: Final = (
     "actual_backend_model_input_UNKNOWN",
@@ -65,7 +66,7 @@ class _QualificationModel(BaseModel):
 
 
 class PublicSyntheticQualificationFixtureV1(_QualificationModel):
-    schema_version: Literal["1.0.0"] = QUALIFICATION_SCHEMA_VERSION
+    schema_version: Literal["1.0.0"] = "1.0.0"
     fixture_id: Literal["p2-025b-public-river-call-positive-v1"]
     source_builder: Literal["build_repository_owned_bounded_river_evaluation_admission"]
     source_terminal_run_id: PortableId
@@ -112,7 +113,7 @@ def load_public_synthetic_fixture(path: Path) -> PublicSyntheticQualificationFix
         raise ValueError("public qualification fixture failed strict schema validation") from exc
 
 
-class SanitizedQualificationRoleV1(_QualificationModel):
+class SanitizedQualificationRoleV2(_QualificationModel):
     role: BridgeRole
     assignment_id: PortableId
     attempt_id: PortableId
@@ -126,6 +127,7 @@ class SanitizedQualificationRoleV1(_QualificationModel):
     admission_sha256: Sha256
     result_sha256: Sha256
     execution_audit_sha256: Sha256
+    live_execution_evidence: CodexSubscriptionLiveExecutionEvidenceV1
     effect_state: Literal[BridgeEffectState.SUCCEEDED]
     transport_qualification: Literal["actual_live"]
     model_identity_evidence: Literal["requested_pinned_no_fallback_no_reroute"]
@@ -138,7 +140,7 @@ class SanitizedQualificationRoleV1(_QualificationModel):
     unexpected_item_types: tuple[()] = ()
 
     @model_validator(mode="after")
-    def exact_outbound_bytes(self) -> SanitizedQualificationRoleV1:
+    def exact_outbound_bytes(self) -> SanitizedQualificationRoleV2:
         try:
             outbound = self.outbound_canonical_utf8.encode("utf-8")
         except UnicodeEncodeError as exc:  # pragma: no cover - Python str invariant
@@ -146,6 +148,10 @@ class SanitizedQualificationRoleV1(_QualificationModel):
         if (
             len(outbound) != self.outbound_bytes
             or sha256_bytes(outbound) != self.request_bytes_sha256
+            or self.live_execution_evidence.request_sha256 != self.request_sha256
+            or self.live_execution_evidence.request_bytes_sha256 != self.request_bytes_sha256
+            or self.live_execution_evidence.thread_id_sha256 != self.thread_id_sha256
+            or self.live_execution_evidence.turn_id_sha256 != self.turn_id_sha256
         ):
             raise ValueError("qualification outbound byte binding mismatch")
         return self
@@ -157,8 +163,8 @@ class SanitizedRuntimeSourceFileV1(_QualificationModel):
     sha256: Sha256
 
 
-class SanitizedLiveQualificationManifestV1(_QualificationModel):
-    schema_version: Literal["1.0.0"] = QUALIFICATION_SCHEMA_VERSION
+class SanitizedLiveQualificationManifestV2(_QualificationModel):
+    schema_version: Literal["2.0.0"] = QUALIFICATION_SCHEMA_VERSION
     qualification_id: PortableId
     qualification_status: Literal["passed"]
     qualified_scope: Literal["codex_subscription_bounded_river_review_only"]
@@ -205,7 +211,7 @@ class SanitizedLiveQualificationManifestV1(_QualificationModel):
     remote_retention_policy: Literal["chatgpt_workspace_policy_unknown"]
     provider_internal_retry_status: Literal["UNKNOWN"]
     product_retry_count: Literal[0]
-    roles: tuple[SanitizedQualificationRoleV1, ...] = Field(min_length=5, max_length=5)
+    roles: tuple[SanitizedQualificationRoleV2, ...] = Field(min_length=5, max_length=5)
     total_input_tokens: int = Field(ge=0, le=120_000)
     total_output_tokens: int = Field(ge=0, le=30_000)
     terminal_revision: int = Field(ge=1)
@@ -224,7 +230,7 @@ class SanitizedLiveQualificationManifestV1(_QualificationModel):
         return value
 
     @model_validator(mode="after")
-    def exact_live_qualification(self) -> SanitizedLiveQualificationManifestV1:
+    def exact_live_qualification(self) -> SanitizedLiveQualificationManifestV2:
         source_inventory_payload = [
             item.model_dump(mode="json") for item in self.runtime_source_inventory
         ]
@@ -234,6 +240,7 @@ class SanitizedLiveQualificationManifestV1(_QualificationModel):
             or len({item.attempt_id for item in self.roles}) != 5
             or len({item.thread_id_sha256 for item in self.roles}) != 5
             or len({item.turn_id_sha256 for item in self.roles}) != 5
+            or len({item.live_execution_evidence.attestation_sha256 for item in self.roles}) != 5
             or self.runtime_identity != BRIDGE_SUBSCRIPTION_RUNTIME_ID
             or self.runtime_binary_sha256 != BRIDGE_RUNTIME_BINARY_SHA256
             or self.model != BRIDGE_MODEL_ID
@@ -246,6 +253,11 @@ class SanitizedLiveQualificationManifestV1(_QualificationModel):
             or sum(item.usage.input_tokens for item in self.roles) != self.total_input_tokens
             or sum(item.usage.output_tokens for item in self.roles) != self.total_output_tokens
             or any(item.usage.estimated_cost_micro_usd is not None for item in self.roles)
+            or any(
+                item.live_execution_evidence.runtime_source_inventory_sha256
+                != self.runtime_source_inventory_sha256
+                for item in self.roles
+            )
             or tuple(item.path for item in self.runtime_source_inventory)
             != tuple(sorted(item.path for item in self.runtime_source_inventory))
             or len({item.path for item in self.runtime_source_inventory})
@@ -280,7 +292,7 @@ def build_sanitized_live_qualification_manifest(
     repository_root: Path,
     qualification_id: str,
     deterministic_evaluation_sha256: str,
-) -> SanitizedLiveQualificationManifestV1:
+) -> SanitizedLiveQualificationManifestV2:
     """Build a public manifest only from a complete verified subscription terminal replay."""
 
     replayed = replay_bridge(read)
@@ -304,7 +316,7 @@ def build_sanitized_live_qualification_manifest(
     if not isinstance(plan, BridgeRunPlanV1) or not isinstance(source, BridgeSourceContextV1):
         raise ValueError("qualification run anchors are missing")
     policy = None
-    roles: list[SanitizedQualificationRoleV1] = []
+    roles: list[SanitizedQualificationRoleV2] = []
     for role in BRIDGE_ROLE_ORDER:
         request = artifacts.get(role_artifact_name(role, "request"))
         confirmation = artifacts.get(role_artifact_name(role, "confirmation"))
@@ -319,6 +331,7 @@ def build_sanitized_live_qualification_manifest(
             or not isinstance(audit, BridgeExecutionAuditV1)
             or audit.effect_state is not BridgeEffectState.SUCCEEDED
             or audit.transport_qualification != "actual_live"
+            or audit.live_execution_evidence is None
             or audit.model_identity_evidence != "requested_pinned_no_fallback_no_reroute"
             or audit.observed_model is not None
             or audit.observed_model_provider is not None
@@ -339,7 +352,7 @@ def build_sanitized_live_qualification_manifest(
             raise ValueError("qualification runtime policy changed across roles")
         outbound = outbound_request_bytes(request)
         roles.append(
-            SanitizedQualificationRoleV1(
+            SanitizedQualificationRoleV2(
                 role=role,
                 assignment_id=request.context.assignment.assignment_id,
                 attempt_id=request.context.assignment.attempt_id,
@@ -353,6 +366,7 @@ def build_sanitized_live_qualification_manifest(
                 admission_sha256=admission.admission_sha256,
                 result_sha256=result.result_sha256,
                 execution_audit_sha256=audit.audit_sha256,
+                live_execution_evidence=audit.live_execution_evidence,
                 effect_state=BridgeEffectState.SUCCEEDED,
                 transport_qualification="actual_live",
                 model_identity_evidence="requested_pinned_no_fallback_no_reroute",
@@ -431,7 +445,7 @@ def build_sanitized_live_qualification_manifest(
         "deterministic_evaluation_sha256": deterministic_evaluation_sha256,
         "limitations": QUALIFICATION_LIMITATIONS,
     }
-    return SanitizedLiveQualificationManifestV1.model_validate(
+    return SanitizedLiveQualificationManifestV2.model_validate(
         {
             **payload,
             "manifest_sha256": domain_sha256(QUALIFICATION_MANIFEST_HASH_DOMAIN, payload),
@@ -442,7 +456,7 @@ def build_sanitized_live_qualification_manifest(
 
 def write_sanitized_live_qualification_manifest(
     path: Path,
-    manifest: SanitizedLiveQualificationManifestV1,
+    manifest: SanitizedLiveQualificationManifestV2,
 ) -> None:
     """Exclusively publish one already-validated public canonical manifest."""
 
@@ -457,8 +471,8 @@ __all__ = [
     "QUALIFICATION_MANIFEST_HASH_DOMAIN",
     "QUALIFICATION_SCHEMA_VERSION",
     "PublicSyntheticQualificationFixtureV1",
-    "SanitizedLiveQualificationManifestV1",
-    "SanitizedQualificationRoleV1",
+    "SanitizedLiveQualificationManifestV2",
+    "SanitizedQualificationRoleV2",
     "SanitizedRuntimeSourceFileV1",
     "build_sanitized_live_qualification_manifest",
     "load_public_synthetic_fixture",

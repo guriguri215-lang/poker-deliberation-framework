@@ -10,7 +10,6 @@ import pytest
 from poker_deliberation import public_preflight
 from poker_deliberation.public_preflight import (
     GitCommandError,
-    _bridge_manifest_role_conformance_matches_current_tree,
     _capability_docs_check,
     _decode_scannable,
     _identity_findings,
@@ -602,59 +601,25 @@ def test_nested_tag_objects_are_visited_once_without_looping(
     assert sum(item.rule_id == "git_tagger_email" for item in findings) == 2
 
 
-def _published_bridge_manifest() -> object:
+def test_legacy_bridge_manifest_is_not_sealed_live_evidence() -> None:
     from poker_deliberation.codex_bridge.canonical import parse_canonical_model
     from poker_deliberation.codex_bridge.qualification import (
-        SanitizedLiveQualificationManifestV1,
+        SanitizedLiveQualificationManifestV2,
     )
 
     path = ROOT / "qualifications" / "p2-025b-codex-subscription-v1.json"
-    return parse_canonical_model(path.read_bytes(), SanitizedLiveQualificationManifestV1)
+    with pytest.raises(ValueError):
+        parse_canonical_model(path.read_bytes(), SanitizedLiveQualificationManifestV2)
 
 
-def test_public_bridge_role_conformance_is_rebuilt_from_current_role_tree(
-    tmp_path: Path,
-) -> None:
-    manifest = _published_bridge_manifest()
-    assert _bridge_manifest_role_conformance_matches_current_tree(ROOT, manifest)
-
-    repo = tmp_path / "repo"
-    shutil.copytree(ROOT / ".codex" / "agents", repo / ".codex" / "agents")
-    role_path = repo / ".codex" / "agents" / "strategy-analyst.toml"
-    original = role_path.read_text(encoding="utf-8")
-    mutated = original.replace('description = "', 'description = "mutated ', 1)
-    assert mutated != original
-    role_path.write_text(mutated, encoding="utf-8", newline="\n")
-
-    assert not _bridge_manifest_role_conformance_matches_current_tree(repo, manifest)
-
-
-def test_public_bridge_role_conformance_rejects_noncanonical_outbound() -> None:
-    manifest = _published_bridge_manifest()
-    first = manifest.roles[0].model_copy(
-        update={
-            "outbound_canonical_utf8": manifest.roles[0].outbound_canonical_utf8 + "\n",
-        }
-    )
-    mutated = manifest.model_copy(update={"roles": (first, *manifest.roles[1:])})
-
-    assert not _bridge_manifest_role_conformance_matches_current_tree(ROOT, mutated)
-
-
-def test_public_preflight_reports_current_role_conformance_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        public_preflight,
-        "_bridge_manifest_role_conformance_matches_current_tree",
-        lambda _repo, _manifest: False,
-    )
+def test_public_preflight_rejects_legacy_unsealed_live_manifest() -> None:
 
     result = public_preflight._codex_bridge_public_artifacts_check(ROOT)
 
     assert result.status == "fail"
     assert isinstance(result.details, dict)
-    assert "bridge_public_evidence:role_conformance" in result.details["failures"]
+    assert "bridge_public_evidence:noncanonical_or_invalid" in result.details["failures"]
+    assert result.details["subscription_live_qualified"] is False
 
 
 def test_bridge_documentation_uses_manifest_api_qualification_field_names() -> None:
@@ -674,11 +639,13 @@ def test_bridge_documentation_matches_subscription_auth_probe_stream_contract() 
     assert "両streamへの重複出力" in text
 
 
-def test_bridge_documentation_uses_manifest_as_exact_live_evidence_authority() -> None:
+def test_bridge_documentation_requires_fresh_sealed_live_evidence() -> None:
     text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
 
     assert "qualifications/p2-025b-codex-subscription-v1.json" in text
-    assert "唯一の正" in text
+    assert "legacy unsealed record" in text
+    assert "fresh live" in text
+    assert "same-privilege caller" in text
     assert "p25-live-" not in text
     assert "subscription利用量は合計input" not in text
     assert "manifest hashは" not in text

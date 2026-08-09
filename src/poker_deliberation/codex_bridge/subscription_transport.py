@@ -24,6 +24,9 @@ from poker_deliberation.codex_bridge.contracts import (
     outbound_request_bytes,
     role_output_schema_for_request,
 )
+from poker_deliberation.codex_bridge.identity import (
+    bridge_runtime_source_inventory_sha256,
+)
 from poker_deliberation.codex_bridge.models import (
     BRIDGE_MODEL_ID,
     BRIDGE_REASONING_EFFORT,
@@ -34,9 +37,13 @@ from poker_deliberation.codex_bridge.models import (
     MAX_CONTEXT_BYTES,
     MAX_ROLE_RUNTIME_MS,
     MAX_STREAM_BYTES,
+    SUBSCRIPTION_EXECUTION_RUNTIME_HASH_DOMAIN,
+    SUBSCRIPTION_SEALED_LIVE_ATTESTATION_HASH_DOMAIN,
+    SUBSCRIPTION_USAGE_HASH_DOMAIN,
     BoundedCodexBridgeRequestV1,
     BridgeEffectState,
     BridgeTransportUsageV1,
+    CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
 )
 from poker_deliberation.codex_bridge.transport import (
@@ -95,6 +102,14 @@ _ALLOWED_EVENT_TYPES = {
     "turn.completed",
 }
 _ALLOWED_ITEM_TYPES = {"agent_message", "reasoning"}
+_PINNED_SUBPROCESS_RUN = subprocess.run
+_PINNED_SUBPROCESS_POPEN = subprocess.Popen
+_SUBSCRIPTION_RUNTIME_CONFIGURATION_HASH_DOMAIN = (
+    "poker-bounded-codex-subscription-runtime-configuration-v1"
+)
+_SUBSCRIPTION_COMMAND_CONTRACT_HASH_DOMAIN = "poker-bounded-codex-subscription-command-contract-v1"
+_SUBSCRIPTION_LAUNCH_INTENT_HASH_DOMAIN = "poker-bounded-codex-subscription-launch-intent-v1"
+_SEALED_LIVE_EXECUTION_CAPABILITY = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,7 +217,9 @@ class CodexSubscriptionCliTransport:
     """No-fallback saved-login transport for one fresh ephemeral Codex exec turn."""
 
     auth_mode = RuntimeAuthModeV1.CODEX_SUBSCRIPTION
-    transport_qualification: Literal["deterministic_fixture", "actual_live"]
+    # Diagnostic compatibility only. The controller never trusts this mutable label;
+    # actual-live is derived from the sealed per-execution evidence below.
+    transport_qualification: Literal["deterministic_fixture"] = "deterministic_fixture"
 
     def __init__(
         self,
@@ -214,19 +231,25 @@ class CodexSubscriptionCliTransport:
         isolation_root: Path | None = None,
         credential_codex_home: Path | None = None,
     ) -> None:
+        default_isolation_root = isolation_root is None
+        default_credential_codex_home = credential_codex_home is None
         self.runtime_root = runtime_root.resolve(strict=False)
         self.codex_binary = codex_binary.resolve(strict=True)
         if _file_sha256(self.codex_binary) != BRIDGE_RUNTIME_BINARY_SHA256:
             raise ValueError("bundled Codex binary hash mismatch")
         self.auth_status_probe = auth_status_probe
         self.command_factory = command_factory
-        # Injected auth or process seams are deterministic test fixtures.  Only the
-        # sealed product path that runs the pinned CLI and its real status probe may
-        # claim actual-live transport evidence.
-        self.transport_qualification = (
-            "actual_live"
-            if auth_status_probe is None and command_factory is None
-            else "deterministic_fixture"
+        # This private bit is only one input to the controller-side exact-type and
+        # implementation-identity gate. It is deliberately never a qualification label.
+        self._sealed_default_process = (
+            type(self) is CodexSubscriptionCliTransport
+            and auth_status_probe is None
+            and command_factory is None
+            and default_isolation_root
+            and default_credential_codex_home
+        )
+        self._sealed_constructor_capability = (
+            _SEALED_LIVE_EXECUTION_CAPABILITY if self._sealed_default_process else None
         )
 
         configured_codex_home = credential_codex_home
@@ -468,7 +491,10 @@ class CodexSubscriptionCliTransport:
                 stream_bytes=0,
             )
         try:
-            completed = subprocess.run(
+            process_runner = (
+                _PINNED_SUBPROCESS_RUN if self._sealed_default_process else subprocess.run
+            )
+            completed = process_runner(
                 (str(self.codex_binary), "login", "status"),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -590,6 +616,168 @@ class CodexSubscriptionCliTransport:
         )
         return command
 
+    def _command_contract_sha256(
+        self,
+        command: list[str],
+        *,
+        cwd: Path,
+        schema: Path,
+        output: Path,
+        skill_snapshot: tuple[_SkillState, ...],
+    ) -> str:
+        """Hash the executed command without publishing host-specific paths."""
+
+        skill_binding = domain_sha256(
+            "poker-bounded-codex-subscription-disabled-skill-snapshot-v1",
+            [
+                {
+                    "content_sha256": item.content_sha256,
+                    "size": item.size,
+                }
+                for item in skill_snapshot
+            ],
+        )
+        replacements = {
+            str(self.codex_binary): "$CODEX_BINARY",
+            str(cwd): "$EXECUTION_CWD",
+            str(schema): "$OUTPUT_SCHEMA",
+            str(output): "$OUTPUT_MESSAGE",
+        }
+        normalized: list[str] = []
+        for item in command:
+            if item.startswith("skills.config="):
+                normalized.append(f"skills.config_sha256={skill_binding}")
+            else:
+                normalized.append(replacements.get(item, item))
+        return domain_sha256(
+            _SUBSCRIPTION_COMMAND_CONTRACT_HASH_DOMAIN,
+            normalized,
+        )
+
+    @staticmethod
+    def _runtime_configuration_sha256(
+        *,
+        environment: dict[str, str],
+        command_contract_sha256: str,
+    ) -> str:
+        # The environment is an explicit allowlist and contains no credential values.
+        # Only its digest is retained in the public evidence.
+        environment_sha256 = domain_sha256(
+            "poker-bounded-codex-subscription-environment-v1",
+            environment,
+        )
+        return domain_sha256(
+            _SUBSCRIPTION_RUNTIME_CONFIGURATION_HASH_DOMAIN,
+            {
+                "allowed_event_types": sorted(_ALLOWED_EVENT_TYPES),
+                "allowed_item_types": sorted(_ALLOWED_ITEM_TYPES),
+                "command_contract_sha256": command_contract_sha256,
+                "disabled_features": _DISABLED_FEATURES,
+                "environment_sha256": environment_sha256,
+                "stderr_cap": _STDERR_CAP,
+                "stream_cap": MAX_STREAM_BYTES,
+            },
+        )
+
+    @staticmethod
+    def _launch_intent_sha256(
+        request: BoundedCodexBridgeRequestV1,
+        *,
+        output_schema_sha256: str,
+        command_contract_sha256: str,
+        runtime_configuration_sha256: str,
+    ) -> str:
+        assignment = request.context.assignment
+        return domain_sha256(
+            _SUBSCRIPTION_LAUNCH_INTENT_HASH_DOMAIN,
+            {
+                "auth_mode": request.auth_mode,
+                "bridge_run_id": assignment.bridge_run_id,
+                "role": assignment.role,
+                "assignment_id": assignment.assignment_id,
+                "attempt_id": assignment.attempt_id,
+                "request_sha256": request.request_sha256,
+                "request_bytes_sha256": request.request_bytes_sha256,
+                "runtime_policy_sha256": request.context.runtime_policy.policy_sha256,
+                "output_schema_sha256": output_schema_sha256,
+                "command_contract_sha256": command_contract_sha256,
+                "runtime_configuration_sha256": runtime_configuration_sha256,
+            },
+        )
+
+    @staticmethod
+    def _live_execution_evidence(
+        request: BoundedCodexBridgeRequestV1,
+        *,
+        runtime_source_inventory_sha256: str,
+        runtime_configuration_sha256: str,
+        output_schema_sha256: str,
+        command_contract_sha256: str,
+        launch_intent_sha256: str,
+        response: bytes,
+        raw_events: bytes,
+        usage: BridgeTransportUsageV1,
+        thread_id_sha256: str,
+        turn_id_sha256: str,
+    ) -> CodexSubscriptionLiveExecutionEvidenceV1:
+        usage_sha256 = domain_sha256(
+            SUBSCRIPTION_USAGE_HASH_DOMAIN,
+            usage,
+        )
+        runtime_payload = {
+            "runtime_identity": BRIDGE_SUBSCRIPTION_RUNTIME_ID,
+            "runtime_binary_sha256": BRIDGE_RUNTIME_BINARY_SHA256,
+            "runtime_source_inventory_sha256": runtime_source_inventory_sha256,
+            "runtime_configuration_sha256": runtime_configuration_sha256,
+            "request_sha256": request.request_sha256,
+            "request_bytes_sha256": request.request_bytes_sha256,
+            "output_schema_sha256": output_schema_sha256,
+            "command_contract_sha256": command_contract_sha256,
+            "launch_intent_sha256": launch_intent_sha256,
+            "response_bytes_sha256": sha256_bytes(response),
+            "event_stream_sha256": sha256_bytes(raw_events),
+            "usage_sha256": usage_sha256,
+            "process_returncode": 0,
+            "thread_id_sha256": thread_id_sha256,
+            "turn_id_sha256": turn_id_sha256,
+        }
+        payload: dict[str, object] = {
+            "schema_version": "1.0.0",
+            "evidence_kind": "codex_subscription_sealed_default_execution",
+            "transport_type": (
+                "poker_deliberation.codex_bridge.subscription_transport."
+                "CodexSubscriptionCliTransport"
+            ),
+            "sealed_default_process": True,
+            "default_auth_status_probe": True,
+            "default_command_factory": True,
+            "default_isolation_root": True,
+            "default_credential_codex_home": True,
+            "interface": "codex_exec_json",
+            "auth_mode": RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+            "auth_boundary": "codex_home_saved_chatgpt_login",
+            "auth_enforcement": "codex_cli_login_status_exact_chatgpt",
+            "credential_values_included": False,
+            "provider_model_fallback_allowed": False,
+            "model_fallback_allowed": False,
+            "process_fallback_allowed": False,
+            **runtime_payload,
+            "execution_runtime_sha256": domain_sha256(
+                SUBSCRIPTION_EXECUTION_RUNTIME_HASH_DOMAIN,
+                runtime_payload,
+            ),
+        }
+        return CodexSubscriptionLiveExecutionEvidenceV1.model_validate(
+            {
+                **payload,
+                "attestation_sha256": domain_sha256(
+                    SUBSCRIPTION_SEALED_LIVE_ATTESTATION_HASH_DOMAIN,
+                    payload,
+                ),
+            },
+            strict=True,
+        )
+
     def execute(self, request: BoundedCodexBridgeRequestV1) -> BridgeTransportResult:
         now = datetime.now(UTC)
         if request.auth_mode is not self.auth_mode:
@@ -617,6 +805,35 @@ class CodexSubscriptionCliTransport:
                 duration_ms=0,
                 stream_bytes=0,
             )
+        sealed_default = _is_exact_sealed_default_transport(self)
+        repository_root: Path | None = None
+        runtime_source_inventory_before: str | None = None
+        if sealed_default:
+            repository_root = self._repository_root(self.runtime_root)
+            if repository_root is None:
+                raise BridgeTransportFailure(
+                    "subscription_source_inventory_unavailable",
+                    effect_state=BridgeEffectState.NOT_LAUNCHED,
+                    launched_at=None,
+                    completed_at=now,
+                    duration_ms=0,
+                    stream_bytes=0,
+                )
+            try:
+                if _file_sha256(self.codex_binary) != BRIDGE_RUNTIME_BINARY_SHA256:
+                    raise ValueError("bundled Codex binary hash mismatch")
+                runtime_source_inventory_before = bridge_runtime_source_inventory_sha256(
+                    repository_root
+                )
+            except Exception as exc:
+                raise BridgeTransportFailure(
+                    "subscription_source_inventory_unavailable",
+                    effect_state=BridgeEffectState.NOT_LAUNCHED,
+                    launched_at=None,
+                    completed_at=now,
+                    duration_ms=0,
+                    stream_bytes=0,
+                ) from exc
         prompt = outbound_request_bytes(request)
         if len(prompt) > MAX_CONTEXT_BYTES:
             raise BridgeTransportFailure(
@@ -634,10 +851,9 @@ class CodexSubscriptionCliTransport:
         output_path = attempt / "last-message.json"
         events_path = attempt / "raw-events.jsonl"
         stderr_path = attempt / "stderr.bin"
-        _write_exclusive(
-            schema_path,
-            canonical_json_bytes(role_output_schema_for_request(request)),
-        )
+        output_schema = canonical_json_bytes(role_output_schema_for_request(request))
+        output_schema_sha256 = sha256_bytes(output_schema)
+        _write_exclusive(schema_path, output_schema)
         environment = self._environment(process_context)
         self._probe_auth(cwd=process_context.cwd, environment=environment)
         skill_snapshot = self._skill_snapshot()
@@ -653,6 +869,23 @@ class CodexSubscriptionCliTransport:
                     skill_snapshot=skill_snapshot,
                 )
             )
+            command_contract_sha256 = self._command_contract_sha256(
+                command,
+                cwd=process_context.cwd,
+                schema=schema_path,
+                output=output_path,
+                skill_snapshot=skill_snapshot,
+            )
+            runtime_configuration_sha256 = self._runtime_configuration_sha256(
+                environment=environment,
+                command_contract_sha256=command_contract_sha256,
+            )
+            launch_intent_sha256 = self._launch_intent_sha256(
+                request,
+                output_schema_sha256=output_schema_sha256,
+                command_contract_sha256=command_contract_sha256,
+                runtime_configuration_sha256=runtime_configuration_sha256,
+            )
             if self._skill_snapshot() != skill_snapshot:
                 raise BridgeTransportFailure(
                     "subscription_context_drift",
@@ -662,7 +895,8 @@ class CodexSubscriptionCliTransport:
                     duration_ms=max(0, int((time.monotonic() - started) * 1000)),
                     stream_bytes=0,
                 )
-            process = subprocess.Popen(
+            process_factory = _PINNED_SUBPROCESS_POPEN if sealed_default else subprocess.Popen
+            process = process_factory(
                 command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
@@ -715,8 +949,9 @@ class CodexSubscriptionCliTransport:
         stdout.join(timeout=2)
         stderr.join(timeout=2)
         raw_events = bytes(stdout.data)
+        raw_stderr = bytes(stderr.data)
         _write_exclusive(events_path, raw_events)
-        _write_exclusive(stderr_path, bytes(stderr.data))
+        _write_exclusive(stderr_path, raw_stderr)
         thread_id, launched, prefix_items = _thread_from_prefix(raw_events)
         thread_hash = sha256_bytes(thread_id.encode("utf-8")) if thread_id is not None else None
         turn_hash = (
@@ -841,9 +1076,62 @@ class CodexSubscriptionCliTransport:
                 evidence=failure_evidence,
             )
         assert response is not None
+        live_execution_evidence: CodexSubscriptionLiveExecutionEvidenceV1 | None = None
+        live_execution_capability: object | None = None
+        if sealed_default:
+            assert repository_root is not None
+            assert runtime_source_inventory_before is not None
+            try:
+                if _file_sha256(self.codex_binary) != BRIDGE_RUNTIME_BINARY_SHA256:
+                    raise ValueError("bundled Codex binary hash mismatch")
+                runtime_source_inventory_after = bridge_runtime_source_inventory_sha256(
+                    repository_root
+                )
+            except Exception as exc:
+                raise BridgeTransportFailure(
+                    "subscription_context_drift",
+                    effect_state=BridgeEffectState.FAILED,
+                    launched_at=launched_at,
+                    completed_at=datetime.now(UTC),
+                    duration_ms=duration_ms,
+                    stream_bytes=stdout.total,
+                    item_types=prefix_items,
+                    thread_id_sha256=thread_hash,
+                    turn_id_sha256=turn_hash,
+                    evidence=failure_evidence,
+                ) from exc
+            if runtime_source_inventory_after != runtime_source_inventory_before:
+                raise BridgeTransportFailure(
+                    "subscription_context_drift",
+                    effect_state=BridgeEffectState.FAILED,
+                    launched_at=launched_at,
+                    completed_at=datetime.now(UTC),
+                    duration_ms=duration_ms,
+                    stream_bytes=stdout.total,
+                    item_types=prefix_items,
+                    thread_id_sha256=thread_hash,
+                    turn_id_sha256=turn_hash,
+                    evidence=failure_evidence,
+                )
+            live_execution_evidence = self._live_execution_evidence(
+                request,
+                runtime_source_inventory_sha256=runtime_source_inventory_before,
+                runtime_configuration_sha256=runtime_configuration_sha256,
+                output_schema_sha256=output_schema_sha256,
+                command_contract_sha256=command_contract_sha256,
+                launch_intent_sha256=launch_intent_sha256,
+                response=response,
+                raw_events=raw_events,
+                usage=usage,
+                thread_id_sha256=thread_hash,
+                turn_id_sha256=turn_hash,
+            )
+            live_execution_capability = _SEALED_LIVE_EXECUTION_CAPABILITY
         return BridgeTransportResult(
             auth_mode=self.auth_mode,
-            transport_qualification=self.transport_qualification,
+            transport_qualification=(
+                "actual_live" if live_execution_evidence is not None else "deterministic_fixture"
+            ),
             response_bytes=response,
             usage=usage,
             model_identity_evidence="requested_pinned_no_fallback_no_reroute",
@@ -859,7 +1147,108 @@ class CodexSubscriptionCliTransport:
             duration_ms=duration_ms,
             stream_bytes=stdout.total,
             item_types=tuple(sorted(item_types, key=lambda item: item.encode("utf-8"))),
+            live_execution_evidence=live_execution_evidence,
+            _live_execution_capability=live_execution_capability,
         )
 
 
-__all__ = ["CodexSubscriptionCliTransport"]
+_SEALED_IMPLEMENTATION = {
+    "__init__": CodexSubscriptionCliTransport.__init__,
+    "_paths_overlap": CodexSubscriptionCliTransport._paths_overlap,
+    "_repository_root": CodexSubscriptionCliTransport._repository_root,
+    "_environment": CodexSubscriptionCliTransport._environment,
+    "_process_context": CodexSubscriptionCliTransport._process_context,
+    "_probe_auth": CodexSubscriptionCliTransport._probe_auth,
+    "_skill_snapshot": CodexSubscriptionCliTransport._skill_snapshot,
+    "_skills_config": CodexSubscriptionCliTransport._skills_config,
+    "_attempt_key": CodexSubscriptionCliTransport._attempt_key,
+    "_attempt": CodexSubscriptionCliTransport._attempt,
+    "_terminate": CodexSubscriptionCliTransport._terminate,
+    "_command": CodexSubscriptionCliTransport._command,
+    "_command_contract_sha256": CodexSubscriptionCliTransport._command_contract_sha256,
+    "_runtime_configuration_sha256": (CodexSubscriptionCliTransport._runtime_configuration_sha256),
+    "_launch_intent_sha256": CodexSubscriptionCliTransport._launch_intent_sha256,
+    "_live_execution_evidence": CodexSubscriptionCliTransport._live_execution_evidence,
+    "execute": CodexSubscriptionCliTransport.execute,
+}
+_SEALED_MODULE_IMPLEMENTATION = {
+    "_file_sha256": _file_sha256,
+    "_write_exclusive": _write_exclusive,
+    "_parse_events": _parse_events,
+    "_thread_from_prefix": _thread_from_prefix,
+    "_required_usage_int": _required_usage_int,
+    "_CappedReader": _CappedReader,
+}
+_SEALED_CAPPED_READER_RUN = _CappedReader.run
+
+
+def _is_exact_sealed_default_transport(value: object) -> bool:
+    if type(value) is not CodexSubscriptionCliTransport:
+        return False
+    transport = value
+    if (
+        transport.auth_status_probe is not None
+        or transport.command_factory is not None
+        or transport._sealed_default_process is not True
+        or transport._sealed_constructor_capability is not _SEALED_LIVE_EXECUTION_CAPABILITY
+    ):
+        return False
+    instance_state = vars(transport)
+    if any(name in instance_state for name in _SEALED_IMPLEMENTATION):
+        return False
+    return (
+        CodexSubscriptionCliTransport.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+        and subprocess.run is _PINNED_SUBPROCESS_RUN
+        and subprocess.Popen is _PINNED_SUBPROCESS_POPEN
+        and _CappedReader.run is _SEALED_CAPPED_READER_RUN
+        and all(
+            getattr(CodexSubscriptionCliTransport, name) is implementation
+            for name, implementation in _SEALED_IMPLEMENTATION.items()
+        )
+        and all(
+            globals()[name] is implementation
+            for name, implementation in _SEALED_MODULE_IMPLEMENTATION.items()
+        )
+    )
+
+
+def validated_sealed_live_execution(
+    transport: object,
+    request: BoundedCodexBridgeRequestV1,
+    result: BridgeTransportResult,
+) -> CodexSubscriptionLiveExecutionEvidenceV1 | None:
+    """Return actual-live evidence only for the exact repository-controlled transport."""
+
+    evidence = result.live_execution_evidence
+    capability = result._live_execution_capability
+    if evidence is None and capability is None:
+        return None
+    if (
+        evidence is None
+        or capability is not _SEALED_LIVE_EXECUTION_CAPABILITY
+        or not _is_exact_sealed_default_transport(transport)
+    ):
+        raise ValueError("unsealed subscription live execution evidence")
+    exact_transport = cast(CodexSubscriptionCliTransport, transport)
+    repository_root = exact_transport._repository_root(exact_transport.runtime_root)
+    if repository_root is None:
+        raise ValueError("subscription source inventory is unavailable")
+    if (
+        evidence.runtime_source_inventory_sha256
+        != bridge_runtime_source_inventory_sha256(repository_root)
+        or evidence.request_sha256 != request.request_sha256
+        or evidence.request_bytes_sha256 != request.request_bytes_sha256
+        or evidence.response_bytes_sha256 != sha256_bytes(result.response_bytes)
+        or evidence.usage_sha256 != domain_sha256(SUBSCRIPTION_USAGE_HASH_DOMAIN, result.usage)
+        or evidence.thread_id_sha256 != result.thread_id_sha256
+        or evidence.turn_id_sha256 != result.turn_id_sha256
+        or evidence.runtime_identity != result.runtime_identity
+    ):
+        raise ValueError("subscription live execution evidence binding mismatch")
+    return evidence
+
+
+__all__ = [
+    "CodexSubscriptionCliTransport",
+    "validated_sealed_live_execution",
+]

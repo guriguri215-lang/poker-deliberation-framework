@@ -702,6 +702,14 @@ def test_execution_audit_binds_cancellation_kind_to_effect_state(
             **common,
             cancellation_kind=wrong_kind,
         )
+    with pytest.raises(ValidationError, match="lacks sealed execution evidence"):
+        build_execution_audit(  # type: ignore[arg-type]
+            **{
+                **common,
+                "transport_qualification": "actual_live",
+            },
+            cancellation_kind=cancellation_kind,
+        )
 
 
 def test_runtime_output_schema_uses_recursive_canonical_key_order() -> None:

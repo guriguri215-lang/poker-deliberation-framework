@@ -400,7 +400,7 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     assert "five fresh, serial, read-only roles" in milestones["P2-025B"]["scope"]
     assert "live-unqualified" in milestones["P2-025B"]["scope"]
     assert (
-        "five-role codex_subscription actual-live qualification"
+        "prior public subscription record is legacy-unsealed"
         in milestones["P2-025B"]["status_reason"]
     )
     assert items["RM-025"]["milestones"] == {"entry": "P2-025A", "completion": None}

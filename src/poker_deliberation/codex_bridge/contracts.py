@@ -33,6 +33,7 @@ from poker_deliberation.codex_bridge.models import (
     CONFIRMATION_HASH_DOMAIN,
     CONTEXT_HASH_DOMAIN,
     EXECUTION_AUDIT_HASH_DOMAIN,
+    EXECUTION_AUDIT_SCHEMA_VERSION,
     MAX_CONFIRMATION_LIFETIME_SECONDS,
     MAX_CONTEXT_BYTES,
     MAX_RESERVED_COST_MICRO_USD,
@@ -63,6 +64,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeRuntimePolicyV1,
     BridgeSourceContextV1,
     BridgeTransportUsageV1,
+    CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
     allowed_conclusion_codes,
     claim_evidence_rule,
@@ -825,10 +827,11 @@ def build_execution_audit(
     observed_reasoning_effort: str | None,
     observed_service_tier: str | None,
     observed_identity_sha256: str | None,
+    live_execution_evidence: CodexSubscriptionLiveExecutionEvidenceV1 | None = None,
 ) -> BridgeExecutionAuditV1:
     assignment = request.context.assignment
     payload: dict[str, object] = {
-        "schema_version": "1.0.0",
+        "schema_version": EXECUTION_AUDIT_SCHEMA_VERSION,
         "bridge_run_id": assignment.bridge_run_id,
         "auth_mode": request.auth_mode,
         "role": assignment.role,
@@ -839,6 +842,7 @@ def build_execution_audit(
         "admission_sha256": admission.admission_sha256,
         "runtime_policy_sha256": request.context.runtime_policy.policy_sha256,
         "transport_qualification": transport_qualification,
+        "live_execution_evidence": live_execution_evidence,
         "interface": request.context.runtime_policy.interface,
         "credential_reference": request.context.runtime_policy.credential_reference,
         "remote_retention_policy": request.context.runtime_policy.remote_retention_policy,

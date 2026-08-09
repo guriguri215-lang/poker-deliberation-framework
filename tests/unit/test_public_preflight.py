@@ -139,7 +139,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 13.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 14.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -168,17 +168,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 13.0.0", "schema 10.0.0\n<!-- schema 13.0.0 -->"),
+        "README.md": ("schema 14.0.0", "schema 10.0.0\n<!-- schema 14.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `13.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `13.0.0` -->",
+            "schema version: `14.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `14.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "13.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "13.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "14.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "14.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "13.0.0"',
+            '"schema_version": "14.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }

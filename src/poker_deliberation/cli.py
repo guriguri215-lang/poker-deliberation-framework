@@ -57,6 +57,15 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BoundedRiverCallEvConfirmationV1,
     BoundedRiverCallEvPreparationResultV1,
 )
+from poker_deliberation.bounded_river_review_workflow import (
+    bounded_river_review_confirmation_preview,
+    bounded_river_review_workflow_status,
+    confirm_bounded_river_review_workflow,
+    prepare_bounded_river_review_workflow,
+    replay_bounded_river_review_workflow,
+    resume_bounded_river_review_workflow,
+    run_bounded_river_review_workflow,
+)
 from poker_deliberation.capabilities import capability_snapshot
 from poker_deliberation.codex_bridge.models import BridgeRole, RuntimeAuthModeV1
 from poker_deliberation.codex_bridge.product import (
@@ -104,6 +113,16 @@ from poker_deliberation.tools import default_registry
 _DEFAULT_RESUME_REASON = "human decision recorded by CLI"
 _REPORT_FORMATS = ("json", "markdown", "summary")
 _AUTH_MODES = tuple(item.value for item in RuntimeAuthModeV1)
+_BOUNDED_RIVER_REVIEW_COMMANDS = frozenset(
+    {
+        "prepare-bounded-river-review",
+        "confirm-bounded-river-review",
+        "run-bounded-river-review",
+        "status-bounded-river-review",
+        "resume-bounded-river-review",
+        "replay-bounded-river-review",
+    }
+)
 
 
 def _configure_output() -> None:
@@ -455,6 +474,88 @@ def build_parser() -> argparse.ArgumentParser:
     review_river_ev.add_argument("--preparation", required=True)
     review_river_ev.add_argument("--confirmation", required=True)
     review_river_ev.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
+
+    prepare_river_workflow = subparsers.add_parser("prepare-bounded-river-review")
+    prepare_river_workflow.add_argument("--source", required=True)
+    prepare_river_workflow.add_argument("--range", required=True)
+    prepare_river_workflow.add_argument("--workflow-root", required=True)
+    prepare_river_workflow.add_argument("--workflow-id", required=True)
+    prepare_river_workflow.add_argument("--intake-id", required=True)
+    prepare_river_workflow.add_argument("--source-run-id", required=True)
+    prepare_river_workflow.add_argument("--bridge-run-id", required=True)
+    prepare_river_workflow.add_argument("--source-id", required=True)
+    prepare_river_workflow.add_argument("--repository-root", default=".")
+    prepare_river_workflow.add_argument("--repository-commit", required=True)
+    prepare_river_workflow.add_argument("--repository-tree", required=True)
+    prepare_river_workflow.add_argument(
+        "--auth-mode",
+        choices=_AUTH_MODES,
+        default=RuntimeAuthModeV1.LOCAL_ONLY.value,
+    )
+    prepare_river_workflow.add_argument("--api-max-cost-micro-usd", type=int)
+    prepare_river_workflow.add_argument(
+        "--source-kind",
+        choices=["user_supplied", "repository_fixture"],
+        default="user_supplied",
+    )
+    prepare_river_workflow.add_argument(
+        "--license-classification",
+        choices=["user_supplied_private_analysis", "repository_owned_mit"],
+        default="user_supplied_private_analysis",
+    )
+    prepare_river_workflow.add_argument(
+        "--usage-classification",
+        choices=["local_analysis_only", "redistribution_allowed"],
+        default="local_analysis_only",
+    )
+    prepare_river_workflow.add_argument(
+        "--classification",
+        choices=["internal", "public"],
+        default="internal",
+    )
+    prepare_river_workflow.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    confirm_river_workflow = subparsers.add_parser("confirm-bounded-river-review")
+    confirm_river_workflow.add_argument("--workflow-root", required=True)
+    confirm_river_workflow.add_argument("--workflow-id", required=True)
+    confirm_river_workflow.add_argument("--repository-root", default=".")
+    confirm_river_workflow.add_argument("--authority-id", required=True)
+    confirm_river_workflow.add_argument("--confirmation-id", required=True)
+    confirm_river_workflow.add_argument("--idempotency-key", required=True)
+    confirm_river_workflow.add_argument("--expected-plan-sha256", required=True)
+    for hash_name in (
+        "source",
+        "bounded-candidate",
+        "source-bindings",
+        "focal",
+        "extractor",
+        "tool-plan",
+        "range-definition",
+        "range-target",
+        "range-binding",
+        "equity-model",
+        "call-ev-model",
+        "candidate",
+    ):
+        confirm_river_workflow.add_argument(f"--expected-{hash_name}-sha256", required=True)
+    confirm_river_workflow.add_argument("--confirmed-at")
+    confirm_river_workflow.add_argument("--expires-at")
+    confirm_river_workflow.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    for command in ("run-bounded-river-review", "resume-bounded-river-review"):
+        river_workflow = subparsers.add_parser(command)
+        river_workflow.add_argument("--source", required=command.startswith("run-"))
+        river_workflow.add_argument("--workflow-root", required=True)
+        river_workflow.add_argument("--workflow-id", required=True)
+        river_workflow.add_argument("--repository-root", default=".")
+        river_workflow.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    for command in ("status-bounded-river-review", "replay-bounded-river-review"):
+        river_workflow = subparsers.add_parser(command)
+        river_workflow.add_argument("--workflow-root", required=True)
+        river_workflow.add_argument("--workflow-id", required=True)
+        river_workflow.add_argument("--repository-root", default=".")
+        river_workflow.add_argument("--format", choices=["json", "markdown"], default="json")
 
     prepare_bridge = subparsers.add_parser("prepare-bounded-codex-bridge")
     prepare_bridge.add_argument("--source-run-id", required=True)
@@ -876,6 +977,132 @@ def main(argv: list[str] | None = None) -> int:
                 rendered_river_report = render_markdown(report)
             _emit(rendered_river_report, args.format)
             return 2 if report.run_status == "failed_with_limitations" else 0
+        if args.command == "prepare-bounded-river-review":
+            source_bytes = _read_limited_bytes(
+                args.source,
+                MAX_BOUNDED_NL_SOURCE_BYTES,
+                size_error="BRW_E_SOURCE",
+            )
+            range_definition = parse_canonical_model(
+                _read_limited_bytes(
+                    args.range,
+                    MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
+                    size_error="BRW_E_STORAGE",
+                ),
+                VersionedRangeDefinitionV1,
+            )
+            workflow_plan, workflow_preparation = prepare_bounded_river_review_workflow(
+                source_bytes,
+                range_definition,
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+                intake_id=args.intake_id,
+                source_run_id=args.source_run_id,
+                bridge_run_id=args.bridge_run_id,
+                source_id=args.source_id,
+                source_kind=args.source_kind,
+                license_classification=args.license_classification,
+                usage_classification=args.usage_classification,
+                classification=args.classification,
+                repository_commit_id=args.repository_commit,
+                repository_tree_id=args.repository_tree,
+                auth_mode=RuntimeAuthModeV1(args.auth_mode),
+                api_max_cost_micro_usd=args.api_max_cost_micro_usd,
+            )
+            _emit(
+                bounded_river_review_confirmation_preview(
+                    workflow_plan,
+                    workflow_preparation,
+                ),
+                args.format,
+            )
+            return 0
+        if args.command == "confirm-bounded-river-review":
+            expected_hashes = (
+                args.expected_source_sha256,
+                args.expected_bounded_candidate_sha256,
+                args.expected_source_bindings_sha256,
+                args.expected_focal_sha256,
+                args.expected_extractor_sha256,
+                args.expected_tool_plan_sha256,
+                args.expected_range_definition_sha256,
+                args.expected_range_target_sha256,
+                args.expected_range_binding_sha256,
+                args.expected_equity_model_sha256,
+                args.expected_call_ev_model_sha256,
+                args.expected_candidate_sha256,
+            )
+            workflow_confirmation = confirm_bounded_river_review_workflow(
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+                authority_id=args.authority_id,
+                confirmation_id=args.confirmation_id,
+                idempotency_key=args.idempotency_key,
+                expected_plan_sha256=args.expected_plan_sha256,
+                expected_hashes=expected_hashes,
+                confirmed_at=_parse_cli_datetime(
+                    args.confirmed_at,
+                    binding_error="BRW_E_CONFIRMATION_BINDING",
+                ),
+                expires_at=_parse_cli_datetime(
+                    args.expires_at,
+                    binding_error="BRW_E_CONFIRMATION_BINDING",
+                ),
+            )
+            _emit(workflow_confirmation, args.format)
+            return 0
+        if args.command == "run-bounded-river-review":
+            workflow_status = run_bounded_river_review_workflow(
+                _read_limited_bytes(
+                    args.source,
+                    MAX_BOUNDED_NL_SOURCE_BYTES,
+                    size_error="BRW_E_SOURCE",
+                ),
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+            )
+            _emit(workflow_status, args.format)
+            return 0
+        if args.command == "resume-bounded-river-review":
+            workflow_status = resume_bounded_river_review_workflow(
+                (
+                    None
+                    if args.source is None
+                    else _read_limited_bytes(
+                        args.source,
+                        MAX_BOUNDED_NL_SOURCE_BYTES,
+                        size_error="BRW_E_SOURCE",
+                    )
+                ),
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+            )
+            _emit(workflow_status, args.format)
+            return 0
+        if args.command == "status-bounded-river-review":
+            workflow_status = bounded_river_review_workflow_status(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+            )
+            _emit(workflow_status, args.format)
+            return 0
+        if args.command == "replay-bounded-river-review":
+            workflow_status = replay_bounded_river_review_workflow(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+            )
+            _emit(workflow_status, args.format)
+            return 0
         if args.command == "prepare-bounded-codex-bridge":
             auth_mode = RuntimeAuthModeV1(args.auth_mode)
             bridge_read = prepare_product_bridge(
@@ -1158,7 +1385,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"error: approval decision failed: {exc.failure.code.value}", file=sys.stderr)
         return 2
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except OSError as exc:
+        if getattr(args, "command", None) in _BOUNDED_RIVER_REVIEW_COMMANDS:
+            print("error: BRW_E_STORAGE", file=sys.stderr)
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except (ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 

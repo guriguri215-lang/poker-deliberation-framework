@@ -98,6 +98,13 @@ CAPABILITIES: tuple[Capability, ...] = (
         "LocalProvider context controls, and durable semantic replay.",
     ),
     Capability(
+        "bounded_river_review_workflow",
+        "implemented",
+        "P3-030D composes one confirmed P3-030C review with one mode-bound P2-025B "
+        "five-role bridge plan through canonical status, resume, linkage, and replay; it "
+        "does not execute nonlocal role transport.",
+    ),
+    Capability(
         "confirmed_natural_language_review_intake",
         "implemented",
         "A caller-supplied complete projection can be explicitly hash-confirmed, admitted to "

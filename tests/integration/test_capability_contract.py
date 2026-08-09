@@ -70,6 +70,7 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["confirmed_natural_language_review_intake"] == "implemented"
     assert states["bounded_japanese_nlhe_cash_parser"] == "implemented"
     assert states["bounded_japanese_river_call_ev_review"] == "implemented"
+    assert states["bounded_river_review_workflow"] == "implemented"
     assert states["natural_language_or_site_parser"] == "unavailable"
     assert states["repository_synthetic_isolated_job_control"] == "implemented"
     assert states["process_sandbox"] == "unavailable"

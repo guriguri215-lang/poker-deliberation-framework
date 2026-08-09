@@ -35,6 +35,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `natural_language_or_site_parser` | **unavailable** | 一般自然言語およびsite-specific hand history parserはない。独立したbounded Japanese grammarをこの能力へ拡張しない。 |
 | `bounded_japanese_nlhe_cash_parser` | **implemented** | version 1の文書化済み日本語retrospective NLHE cash grammarを、exact UTF-8 span、6 hash確認、固定LocalProvider、限定tool、durable replayに接続する。一般自然言語・site parserではない。 |
 | `bounded_japanese_river_call_ev_review` | **implemented** | P3-030C専用admissionで、P3-030Bのriver fold完了履歴と明示確認済み単一rangeを、calculator-free source semantic replay、P3-015A ledger、P3-016B exact equity、既存`pot_odds`/`raked_call_ev`へ一度ずつ固定順で接続し、exact Fraction oracle、ULP検証、model限定call/fold比較、typed terminal replay、checkout/module/callable-origin拘束済み3 metric評価へ拘束する。tool budget拒否は独立external recordへ先行拘束する。一般戦略やGTOではない。 |
+| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。既定は`local_only`であり、このworkflow自体は非local role transportを実行しない。 |
 | `confirmed_natural_language_review_intake` | **implemented** | 呼出側が作成した完全な候補を利用者がsource/candidate hashで明示確認した場合に限り、固定LocalProvider・限定tool・検証済みterminal reportへ接続する。自然言語の意味抽出やsite parserを実装したという意味ではない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
@@ -83,6 +84,8 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 - P3-030Cはそのgrammarをriverのterminal fold履歴だけに絞り、別入力の単一rangeに対する
   heads-up exact equityとzero-rake single-decision call EVだけを比較する。複数range、multiway、
   earlier street、all-in、side pot、rake、ante、将来actionは拒否する。
+- P3-030DはP3-030CとP2-025Bを再実装せず、明示確認、状態保存、部分完了からのresume、read-only
+  replayだけを追加する。`codex_subscription`または`openai_api`を選んでもrole実行は既存の明示CLIへ残す。
 - toolはpayload/work/output capを持つが、in-process実行を強制停止するOS sandboxではない。
 - solver実行、収束、対象game/rake/stackの一致がない結果をGTO・均衡・正確なrangeと表示しない。
 

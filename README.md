@@ -7,7 +7,8 @@ No-Limit Texas Hold'em（NLHE）の事後検討を対象に、型付き入力、
 検証記録、承認境界を1つのCLIへまとめた研究プロトタイプです。通常はローカルだけで動作します。
 Codex向けの専門Skillとエージェント定義に加え、P2-025BではP3-030Cの1つのterminal river run
 だけを対象にした限定Codex/Python review bridgeを別経路として提供します。通常のCodex利用と
-Python orchestratorは引き続き別実行面です。
+Python orchestratorは引き続き別実行面です。P3-030Dは、この限定されたP3-030C入力と
+P2-025B bridge planを、明示確認・status・resume・replay付きのlocal-first workflowとして接続します。
 
 > **Status: Experimental functional prototype (0.1.0).** ローカル計算と限定されたoffline
 > review workflowに加え、P2-025Bのriver-only `codex_subscription`経路を実装し、sealed actual-live
@@ -31,6 +32,7 @@ GTO表現、計算過程を再現できない数値が結論へ混ざりやす�
   fail-closedで検証する。
 - 確認済みP3-030B river terminal-fold履歴と明示確認済みの単一opponent rangeを、限定された
   counterfactual exact equity / zero-rake call EV workflowへ接続する。
+- その限定reviewをcanonical planとlinkageへ保存し、中断後にstatus確認・resume・read-only replayを行う。
 - review runをimmutable revision、manifest、hash、approval record、再現コマンド付きで保存する。
 - Codex上では、同梱Skillと9つの専門エージェント定義を使って、必要な役割だけを選ぶレビューを行う。
 
@@ -51,6 +53,7 @@ GTO表現、計算過程を再現できない数値が結論へ混ざりやす�
 |---|---|---|
 | ローカルcalculator / validator | **Implemented** | 22 toolをstrict inputとtyped resultで実行する。toolごとに`exact` / `exact-under-model` / `floating-verified` / `approximate` / `unavailable`を区別する。 |
 | Offline review CLI | **Implemented** | 構造化入力と限定grammarから、LocalProvider、許可済みtool、terminal artifactへ接続する。 |
+| Bounded river review workflow | **Implemented** | `P3-030D`は1つのP3-030C reviewと1つのP2-025B bridge planを明示確認、status、resume、replayで接続する。既定は`local_only`で、非local role transportは実行しない。 |
 | River range-equity bridge | **Implemented** | `P3-016B`は専用admissionで検証済みの単一rangeを、最大990 comboのexact-only heads-up river equityへ限定接続する。 |
 | Codex workflow | **Implemented** | `AGENTS.md`、3 Skill、9 specialist定義をCodex上で利用できる。 |
 | `local_only` runtime | **Implemented** | API key、ChatGPT/Codex login、外部model、networkなしでparser、calculator、LocalProvider、storage、replay、evaluationを利用する。 |
@@ -64,7 +67,7 @@ GTO表現、計算過程を再現できない数値が結論へ混ざりやす�
 | External solver | **Unavailable** | 正直なUnavailable adapterだけがあり、外部solverを実行しない。 |
 | Full NLHE equilibrium | **Unavailable** | GTO、node locking、full-game equilibrium、正確な実戦rangeは出力しない。 |
 
-**FACT**: milestone/RMの公開状態と技術契約の正は、schema 13.0.0のpublic projectionである
+**FACT**: milestone/RMの公開状態と技術契約の正は、schema 14.0.0のpublic projectionである
 
 このprojection単体は、特定candidateのtest、build、release readinessを証明しません。機械可読な正本は
 [`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)、
@@ -99,6 +102,9 @@ Codexは別途、repository instructionsとSkillを読んで専門役を起動�
 P2-025Bの限定経路だけはPython controllerが、検証済みP3-030C evidenceを5つのfresh Codex turnへ
 直列に渡し、結果を既存reportへ上書きせず加算的artifactとして保存します。詳細は
 [Bounded Codex river review bridge](docs/bounded-codex-river-review-bridge.md)を参照してください。
+P3-030Dはその前段を1つの再開可能なproduct workflowとして構成しますが、roleの確認・実行権限は
+P2-025Bの既存コマンドへ残します。詳細は
+[Bounded river review workflow](docs/bounded-river-review-workflow.md)を参照してください。
 
 ## Requirements
 
@@ -283,6 +289,7 @@ tools/manifest.yaml         生成・検証対象のtool manifest
 - [Range-equity bridge](docs/range-equity-bridge.md)
 - [Bounded natural-language intake](docs/bounded-natural-language-intake.md)
 - [Bounded river call EV](docs/bounded-river-call-ev.md)
+- [Bounded river review workflow](docs/bounded-river-review-workflow.md)
 - [Bounded Codex river review bridge](docs/bounded-codex-river-review-bridge.md)
 - [Security](docs/security.md)
 - [Limitations](docs/limitations.md)

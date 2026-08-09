@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "13.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "14.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -195,6 +195,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P3-030A",
         "P3-030B",
         "P3-030C",
+        "P3-030D",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -257,6 +258,7 @@ def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
         "confirmed_natural_language_review_intake",
         "bounded_japanese_nlhe_cash_parser",
         "bounded_japanese_river_call_ev_review",
+        "bounded_river_review_workflow",
         "natural_language_or_site_parser",
         "versioned_nlhe_range_grammar",
     ]
@@ -291,6 +293,11 @@ def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
     river_scope = milestones["P3-030C"]["scope"]
     assert "Fraction required-equity and call-EV oracles" in river_scope
     assert "no general natural language" in river_scope
+    assert milestones["P3-030D"]["status"] == "completed"
+    assert milestones["P3-030D"]["dependencies"] == ["P2-025B", "P3-030C"]
+    workflow_scope = milestones["P3-030D"]["scope"]
+    assert "resumable workflow" in workflow_scope
+    assert "never executes nonlocal role transport" in workflow_scope
     assert items["RM-030"]["decision_gate"]["required"] is True  # type: ignore[index]
     rationale = items["RM-030"]["decision_gate"]["rationale"]  # type: ignore[index]
     assert any("P3-030B" in item for item in rationale)
@@ -443,6 +450,7 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
         items["RM-030"]["status_reason"]
     )
     assert "P3-030C completes the bounded" in str(items["RM-030"]["status_reason"])
+    assert "P3-030D composes that slice" in str(items["RM-030"]["status_reason"])
     assert "P3-030C is an implementation candidate" not in str(items["RM-030"]["status_reason"])
     assert "At P3-030A completion, P2-028A had not started" in str(items["RM-030"]["relations"])
     assert "At P2-029A completion, RM-025 was raised to P1" in str(items["RM-029"]["relations"])
@@ -664,8 +672,8 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "13.0.0"
-    assert "schema 13.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert summary["schema_version"] == "14.0.0"
+    assert "schema 14.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 18,
@@ -674,7 +682,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 22,
+        "completed": 23,
         "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []

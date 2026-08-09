@@ -19,6 +19,7 @@ from poker_deliberation.codex_bridge.models import (
     CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
 )
+from poker_deliberation.codex_bridge.runtime_scratch import PreparedRuntimeRoot
 from poker_deliberation.codex_bridge.subscription_transport import (
     CodexSubscriptionCliTransport,
 )
@@ -535,6 +536,41 @@ def test_subscription_context_attempt_is_single_use(
 
     assert caught.value.reason_code == "subscription_context_attempt_reuse"
     assert caught.value.effect_state is BridgeEffectState.NOT_LAUNCHED
+
+
+def test_subscription_runtime_capability_rejects_path_change_before_use(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    runtime_root = repository / "tmp" / "runs" / "runtime-synthetic-private-canary"
+    capability = PreparedRuntimeRoot.create(runtime_root, repository)
+    monkeypatch.setattr(
+        subscription_module,
+        "_file_sha256",
+        lambda _path: BRIDGE_RUNTIME_BINARY_SHA256,
+    )
+    transport = CodexSubscriptionCliTransport(
+        runtime_root,
+        codex_binary=Path(sys.executable),
+        auth_status_probe=lambda _cwd, _env: True,
+        command_factory=lambda *_args: pytest.fail("model process must not launch"),
+        isolation_root=tmp_path / "isolated-execution",
+        credential_codex_home=tmp_path / "credential-codex-home",
+        runtime_capability=capability,
+    )
+    changed_root = repository / "tmp" / "runs" / "changed-synthetic-secret-canary"
+    transport.runtime_root = changed_root
+
+    with pytest.raises(BridgeTransportFailure) as caught:
+        transport._attempt("a" * 32)
+
+    assert caught.value.reason_code == "runtime_scratch_identity_changed"
+    assert caught.value.effect_state is BridgeEffectState.NOT_LAUNCHED
+    assert "synthetic-private-canary" not in str(caught.value)
+    assert "synthetic-secret-canary" not in str(caught.value)
+    assert not changed_root.exists()
 
 
 def test_subscription_context_rejects_empty_skill_inventory_before_launch(

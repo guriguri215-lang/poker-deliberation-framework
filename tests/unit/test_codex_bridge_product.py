@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -49,7 +50,10 @@ def _repository(tmp_path: Path) -> Path:
     return repository
 
 
-@pytest.mark.parametrize("relative", ("tmp/bridge-runtime", "runs/bridge-runtime"))
+@pytest.mark.parametrize(
+    "relative",
+    ("tmp/bridge-runtime", "tmp/runs/bridge-runtime", "runs/bridge-runtime"),
+)
 def test_runtime_scratch_accepts_only_repository_ignored_namespaces(
     tmp_path: Path,
     relative: str,
@@ -103,6 +107,65 @@ def test_runtime_scratch_rejects_dirty_tracked_gitignore_authority(
         confined_runtime_scratch_path(candidate, repository)
 
     assert not candidate.exists()
+
+
+@pytest.mark.parametrize("stage_change", (False, True), ids=("working-tree", "index"))
+def test_runtime_scratch_rejects_gitignore_change_during_fixed_candidate_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage_change: bool,
+) -> None:
+    repository = _repository(tmp_path)
+    candidate = repository / "tmp" / "runs" / "runtime"
+    original_probe = product._ignored_by_fixed_gitignore
+
+    def mutate_after_fixed_probe(
+        probe_repository: Path,
+        relative: str,
+        authorities: tuple[product._AuthorizedGitignore, ...],
+    ) -> bool:
+        ignored = original_probe(probe_repository, relative, authorities)
+        gitignore = repository / ".gitignore"
+        gitignore.write_bytes(gitignore.read_bytes() + b"docs/runtime/\n")
+        if stage_change:
+            _git(repository, "add", ".gitignore")
+        return ignored
+
+    monkeypatch.setattr(product, "_ignored_by_fixed_gitignore", mutate_after_fixed_probe)
+
+    with pytest.raises(
+        BridgeProductError,
+        match=r"\.gitignore (?:authority changed|bytes)",
+    ):
+        confined_runtime_scratch_path(candidate, repository)
+
+    assert not candidate.exists()
+
+
+def test_runtime_scratch_uses_candidate_tree_for_tracked_path_ownership(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    candidate = repository / "tmp" / "runs" / "tracked-runtime"
+    candidate.mkdir(parents=True)
+    marker = candidate / "marker.txt"
+    marker.write_text("candidate-owned", encoding="utf-8")
+    _git(repository, "add", "-f", "tmp/runs/tracked-runtime/marker.txt")
+    _git(
+        repository,
+        "-c",
+        "user.name=Runtime Scratch Test",
+        "-c",
+        "user.email=runtime-scratch@example.invalid",
+        "commit",
+        "-q",
+        "-m",
+        "track candidate runtime marker",
+    )
+    _git(repository, "rm", "--cached", "-q", "tmp/runs/tracked-runtime/marker.txt")
+
+    with pytest.raises(BridgeProductError, match="tracked path"):
+        confined_runtime_scratch_path(candidate, repository)
 
 
 @pytest.mark.parametrize(
@@ -250,3 +313,34 @@ def test_every_product_auth_mode_rejects_public_runtime_root_before_storage_or_l
 
     assert canary not in str(error.value)
     assert not candidate.exists()
+
+
+def test_local_only_rejection_does_not_prepare_runtime_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = _repository(tmp_path)
+    runtime_root = repository / "tmp" / "runs" / "local-only-runtime"
+
+    class LocalOnlyController:
+        def __init__(self, _store: object) -> None:
+            pass
+
+        def read_run_plan(self, _bridge_run_id: str) -> SimpleNamespace:
+            return SimpleNamespace(auth_mode=RuntimeAuthModeV1.LOCAL_ONLY)
+
+    monkeypatch.setattr(product, "BoundedCodexBridgeStore", lambda _root: object())
+    monkeypatch.setattr(product, "BoundedCodexBridgeController", LocalOnlyController)
+
+    with pytest.raises(BridgeProductError, match="local_only never launches"):
+        product.execute_product_role(
+            config=app_config(repository / "config"),
+            repository_root=repository,
+            bridge_root=repository / "tmp" / "bridge",
+            runtime_root=runtime_root,
+            bridge_run_id="local-only-runtime-boundary",
+            role=BridgeRole.STRATEGY_ANALYST,
+            auth_mode=RuntimeAuthModeV1.LOCAL_ONLY,
+        )
+
+    assert not runtime_root.exists()

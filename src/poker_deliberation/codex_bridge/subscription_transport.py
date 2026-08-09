@@ -46,6 +46,10 @@ from poker_deliberation.codex_bridge.models import (
     CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
 )
+from poker_deliberation.codex_bridge.runtime_scratch import (
+    PreparedRuntimeRoot,
+    RuntimeScratchIdentityError,
+)
 from poker_deliberation.codex_bridge.transport import (
     BridgeTransportFailure,
     BridgeTransportFailureEvidence,
@@ -230,10 +234,14 @@ class CodexSubscriptionCliTransport:
         command_factory: Callable[[Path, Path, Path], list[str]] | None = None,
         isolation_root: Path | None = None,
         credential_codex_home: Path | None = None,
+        runtime_capability: PreparedRuntimeRoot | None = None,
     ) -> None:
         default_isolation_root = isolation_root is None
         default_credential_codex_home = credential_codex_home is None
         self.runtime_root = runtime_root.resolve(strict=False)
+        self.runtime_capability = runtime_capability
+        if runtime_capability is not None and runtime_capability.path != self.runtime_root:
+            raise ValueError("runtime capability path mismatch")
         self.codex_binary = codex_binary.resolve(strict=True)
         if _file_sha256(self.codex_binary) != BRIDGE_RUNTIME_BINARY_SHA256:
             raise ValueError("bundled Codex binary hash mismatch")
@@ -247,6 +255,7 @@ class CodexSubscriptionCliTransport:
             and command_factory is None
             and default_isolation_root
             and default_credential_codex_home
+            and runtime_capability is not None
         )
         self._sealed_constructor_capability = (
             _SEALED_LIVE_EXECUTION_CAPABILITY if self._sealed_default_process else None
@@ -461,9 +470,67 @@ class CodexSubscriptionCliTransport:
             },
         )[:32]
 
+    def _begin_runtime_capability(self) -> None:
+        if self.runtime_capability is None:
+            return
+        try:
+            if self.runtime_capability.path != self.runtime_root:
+                raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            self.runtime_capability.begin()
+        except RuntimeScratchIdentityError as exc:
+            raise BridgeTransportFailure(
+                "runtime_scratch_identity_changed",
+                effect_state=BridgeEffectState.NOT_LAUNCHED,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
+    def _verify_runtime_capability(self, *, process_started: bool = False) -> None:
+        if self.runtime_capability is None:
+            return
+        try:
+            if self.runtime_capability.path != self.runtime_root:
+                raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            self.runtime_capability.verify_active()
+        except RuntimeScratchIdentityError as exc:
+            raise BridgeTransportFailure(
+                "runtime_scratch_identity_changed",
+                effect_state=(
+                    BridgeEffectState.EFFECT_UNKNOWN
+                    if process_started
+                    else BridgeEffectState.NOT_LAUNCHED
+                ),
+                launched_at=datetime.now(UTC) if process_started else None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
+    def _finish_runtime_capability(self) -> None:
+        if self.runtime_capability is None:
+            return
+        try:
+            if self.runtime_capability.path != self.runtime_root:
+                raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            self.runtime_capability.finish()
+        except RuntimeScratchIdentityError as exc:
+            raise BridgeTransportFailure(
+                "runtime_scratch_identity_changed",
+                effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
     def _attempt(self, key: str) -> Path:
-        self.runtime_root.mkdir(parents=True, exist_ok=True)
+        self._begin_runtime_capability()
+        if self.runtime_capability is None:
+            self.runtime_root.mkdir(parents=True, exist_ok=True)
         verify_directory(self.runtime_root)
+        self._verify_runtime_capability()
         attempt = self.runtime_root / key
         if attempt.exists():
             raise BridgeTransportFailure(
@@ -476,6 +543,7 @@ class CodexSubscriptionCliTransport:
             )
         attempt.mkdir()
         verify_directory(attempt)
+        self._verify_runtime_capability()
         return attempt
 
     def _probe_auth(self, *, cwd: Path, environment: dict[str, str]) -> None:
@@ -853,6 +921,7 @@ class CodexSubscriptionCliTransport:
         stderr_path = attempt / "stderr.bin"
         output_schema = canonical_json_bytes(role_output_schema_for_request(request))
         output_schema_sha256 = sha256_bytes(output_schema)
+        self._verify_runtime_capability()
         _write_exclusive(schema_path, output_schema)
         environment = self._environment(process_context)
         self._probe_auth(cwd=process_context.cwd, environment=environment)
@@ -895,6 +964,7 @@ class CodexSubscriptionCliTransport:
                     duration_ms=max(0, int((time.monotonic() - started) * 1000)),
                     stream_bytes=0,
                 )
+            self._verify_runtime_capability()
             process_factory = _PINNED_SUBPROCESS_POPEN if sealed_default else subprocess.Popen
             process = process_factory(
                 command,
@@ -950,8 +1020,11 @@ class CodexSubscriptionCliTransport:
         stderr.join(timeout=2)
         raw_events = bytes(stdout.data)
         raw_stderr = bytes(stderr.data)
+        self._verify_runtime_capability(process_started=True)
         _write_exclusive(events_path, raw_events)
+        self._verify_runtime_capability(process_started=True)
         _write_exclusive(stderr_path, raw_stderr)
+        self._verify_runtime_capability(process_started=True)
         thread_id, launched, prefix_items = _thread_from_prefix(raw_events)
         thread_hash = sha256_bytes(thread_id.encode("utf-8")) if thread_id is not None else None
         turn_hash = (
@@ -1024,6 +1097,7 @@ class CodexSubscriptionCliTransport:
                 estimated_cost_micro_usd=None,
                 cost_authority="not_applicable",
             )
+            self._verify_runtime_capability(process_started=True)
             response = output_path.read_bytes() if output_path.exists() else None
             failure_evidence = BridgeTransportFailureEvidence(
                 usage=usage,
@@ -1127,7 +1201,7 @@ class CodexSubscriptionCliTransport:
                 turn_id_sha256=turn_hash,
             )
             live_execution_capability = _SEALED_LIVE_EXECUTION_CAPABILITY
-        return BridgeTransportResult(
+        result = BridgeTransportResult(
             auth_mode=self.auth_mode,
             transport_qualification=(
                 "actual_live" if live_execution_evidence is not None else "deterministic_fixture"
@@ -1150,6 +1224,8 @@ class CodexSubscriptionCliTransport:
             live_execution_evidence=live_execution_evidence,
             _live_execution_capability=live_execution_capability,
         )
+        self._finish_runtime_capability()
+        return result
 
 
 _SEALED_IMPLEMENTATION = {
@@ -1162,6 +1238,9 @@ _SEALED_IMPLEMENTATION = {
     "_skill_snapshot": CodexSubscriptionCliTransport._skill_snapshot,
     "_skills_config": CodexSubscriptionCliTransport._skills_config,
     "_attempt_key": CodexSubscriptionCliTransport._attempt_key,
+    "_begin_runtime_capability": CodexSubscriptionCliTransport._begin_runtime_capability,
+    "_verify_runtime_capability": CodexSubscriptionCliTransport._verify_runtime_capability,
+    "_finish_runtime_capability": CodexSubscriptionCliTransport._finish_runtime_capability,
     "_attempt": CodexSubscriptionCliTransport._attempt,
     "_terminate": CodexSubscriptionCliTransport._terminate,
     "_command": CodexSubscriptionCliTransport._command,
@@ -1189,6 +1268,7 @@ def _is_exact_sealed_default_transport(value: object) -> bool:
     if (
         transport.auth_status_probe is not None
         or transport.command_factory is not None
+        or transport.runtime_capability is None
         or transport._sealed_default_process is not True
         or transport._sealed_constructor_capability is not _SEALED_LIVE_EXECUTION_CAPABILITY
     ):

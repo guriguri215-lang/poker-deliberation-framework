@@ -7,6 +7,8 @@ import os
 import re
 import stat
 import subprocess
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 from poker_deliberation.codex_bridge.canonical import sha256_bytes
@@ -24,6 +26,10 @@ from poker_deliberation.codex_bridge.models import (
     RuntimeAuthModeV1,
 )
 from poker_deliberation.codex_bridge.replay import BridgeReplayResult, replay_bridge
+from poker_deliberation.codex_bridge.runtime_scratch import (
+    PreparedRuntimeRoot,
+    RuntimeScratchIdentityError,
+)
 from poker_deliberation.codex_bridge.sdk_transport import OpenAIAPITransport
 from poker_deliberation.codex_bridge.source import project_verified_p3_terminal
 from poker_deliberation.codex_bridge.storage import BoundedCodexBridgeStore, VerifiedBridgeRead
@@ -48,6 +54,26 @@ _GIT_ENVIRONMENT_NAMES = (
 
 class BridgeProductError(ValueError):
     """Raised when a product operation would escape the bounded bridge contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class _FileSnapshot:
+    path: Path
+    size: int
+    modified_ns: int
+    changed_ns: int
+    device: int
+    inode: int
+    file_attributes: int
+    content_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthorizedGitignore:
+    relative: str
+    candidate_blob_id: str
+    candidate_bytes: bytes
+    working_file: _FileSnapshot
 
 
 def _is_link_or_reparse(status: os.stat_result) -> bool:
@@ -75,6 +101,47 @@ def _require_plain_path(path: Path, repository: Path) -> None:
             raise BridgeProductError("runtime scratch path traverses a non-directory")
         if current == path and not stat.S_ISDIR(status.st_mode):
             raise BridgeProductError("runtime scratch root is not a directory")
+
+
+def _file_snapshot(path: Path, label: str) -> _FileSnapshot:
+    try:
+        status = path.lstat()
+        if not stat.S_ISREG(status.st_mode) or _is_link_or_reparse(status):
+            raise BridgeProductError(f"runtime scratch {label} is not a plain file")
+        data = path.read_bytes()
+        after = path.lstat()
+    except BridgeProductError:
+        raise
+    except OSError as exc:
+        raise BridgeProductError(f"runtime scratch {label} inspection failed") from exc
+    before_identity = (
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+        status.st_dev,
+        status.st_ino,
+        getattr(status, "st_file_attributes", 0),
+    )
+    after_identity = (
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        after.st_dev,
+        after.st_ino,
+        getattr(after, "st_file_attributes", 0),
+    )
+    if before_identity != after_identity:
+        raise BridgeProductError(f"runtime scratch {label} changed while inspected")
+    return _FileSnapshot(
+        path=path,
+        size=status.st_size,
+        modified_ns=status.st_mtime_ns,
+        changed_ns=status.st_ctime_ns,
+        device=status.st_dev,
+        inode=status.st_ino,
+        file_attributes=getattr(status, "st_file_attributes", 0),
+        content_sha256=sha256_bytes(data),
+    )
 
 
 def _runtime_git(
@@ -141,11 +208,54 @@ def _git_object_id(data: bytes, label: str) -> str:
     return value
 
 
-def _fixed_candidate_tree(repository: Path) -> str:
-    completed = _runtime_git(repository, ("rev-parse", "--verify", "HEAD^{tree}"))
+def _fixed_candidate_commit(repository: Path) -> str:
+    completed = _runtime_git(repository, ("rev-parse", "--verify", "HEAD^{commit}"))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch candidate commit probe failed")
+    return _git_object_id(completed.stdout, "candidate commit")
+
+
+def _fixed_candidate_tree(repository: Path, candidate_commit: str) -> str:
+    completed = _runtime_git(
+        repository,
+        ("rev-parse", "--verify", f"{candidate_commit}^{{tree}}"),
+    )
     if completed.returncode != 0:
         raise BridgeProductError("runtime scratch candidate tree probe failed")
     return _git_object_id(completed.stdout, "candidate tree")
+
+
+def _candidate_tracked_runtime_paths(
+    repository: Path,
+    candidate_tree: str,
+) -> frozenset[str]:
+    completed = _runtime_git(repository, ("ls-tree", "-r", "--name-only", "-z", candidate_tree))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch candidate path probe failed")
+    return frozenset(path.replace("\\", "/") for path in _nul_paths(completed.stdout))
+
+
+def _fixed_blob_bytes(repository: Path, object_id: str) -> bytes:
+    completed = _runtime_git(repository, ("cat-file", "blob", object_id))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch candidate blob probe failed")
+    return completed.stdout
+
+
+def _git_index_snapshot(repository: Path) -> _FileSnapshot:
+    completed = _runtime_git(repository, ("rev-parse", "--git-path", "index"))
+    if completed.returncode != 0:
+        raise BridgeProductError("runtime scratch Git index path probe failed")
+    try:
+        raw_path = completed.stdout.decode("utf-8", errors="strict").strip()
+    except UnicodeDecodeError as exc:
+        raise BridgeProductError("runtime scratch Git index path output is malformed") from exc
+    if not raw_path:
+        raise BridgeProductError("runtime scratch Git index path output is malformed")
+    index_path = Path(raw_path)
+    if not index_path.is_absolute():
+        index_path = repository / index_path
+    return _file_snapshot(index_path, "Git index")
 
 
 def _literal_pathspec(relative: str) -> str:
@@ -221,8 +331,8 @@ def _authorized_runtime_gitignores(
     repository: Path,
     relative: str,
     candidate_tree: str,
-) -> frozenset[str]:
-    authorized: set[str] = set()
+) -> tuple[_AuthorizedGitignore, ...]:
+    authorized: list[_AuthorizedGitignore] = []
     for source_relative in _relevant_gitignore_paths(relative):
         source = repository / source_relative
         tree_entry = _tree_entry(repository, candidate_tree, source_relative)
@@ -254,8 +364,19 @@ def _authorized_runtime_gitignores(
             or _git_object_id(hashed.stdout, ".gitignore hash") != tree_entry[1]
         ):
             raise BridgeProductError("runtime scratch .gitignore bytes are not clean")
-        authorized.add(source_relative)
-    return frozenset(authorized)
+        candidate_bytes = _fixed_blob_bytes(repository, tree_entry[1])
+        working_file = _file_snapshot(source, ".gitignore authority")
+        if sha256_bytes(candidate_bytes) != working_file.content_sha256:
+            raise BridgeProductError("runtime scratch .gitignore bytes are not clean")
+        authorized.append(
+            _AuthorizedGitignore(
+                relative=source_relative,
+                candidate_blob_id=tree_entry[1],
+                candidate_bytes=candidate_bytes,
+                working_file=working_file,
+            )
+        )
+    return tuple(authorized)
 
 
 def _path_overlaps_tracked(relative: str, tracked_paths: frozenset[str]) -> bool:
@@ -272,17 +393,41 @@ def _path_overlaps_tracked(relative: str, tracked_paths: frozenset[str]) -> bool
     return False
 
 
-def _ignored_by_tracked_gitignore(
+def _ignored_by_fixed_gitignore(
     repository: Path,
     relative: str,
-    authorized_gitignores: frozenset[str],
+    authorized_gitignores: tuple[_AuthorizedGitignore, ...],
 ) -> bool:
-    directory_probe = f"{relative.rstrip('/')}/".encode() + b"\0"
-    completed = _runtime_git(
-        repository,
-        ("check-ignore", "--no-index", "-v", "-z", "--stdin"),
-        input_bytes=directory_probe,
-    )
+    """Evaluate only candidate-tree ignore bytes in a single-use isolated repository."""
+
+    try:
+        temporary_context = tempfile.TemporaryDirectory(prefix="poker-deliberation-runtime-ignore-")
+    except OSError as exc:
+        raise BridgeProductError("runtime scratch isolated ignore probe failed") from exc
+    with temporary_context as temporary_name:
+        snapshot = Path(temporary_name).resolve(strict=True)
+        if snapshot == repository or snapshot.is_relative_to(repository):
+            raise BridgeProductError("runtime scratch isolated ignore probe is inside repository")
+        initialized = _runtime_git(snapshot, ("init", "-q"))
+        if initialized.returncode != 0:
+            raise BridgeProductError("runtime scratch isolated ignore probe failed")
+        info_exclude = snapshot / ".git" / "info" / "exclude"
+        try:
+            info_exclude.write_bytes(b"")
+            for authority in authorized_gitignores:
+                destination = snapshot / authority.relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(authority.candidate_bytes)
+            (snapshot / relative).parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise BridgeProductError("runtime scratch isolated ignore probe failed") from exc
+
+        directory_probe = f"{relative.rstrip('/')}/".encode() + b"\0"
+        completed = _runtime_git(
+            snapshot,
+            ("check-ignore", "--no-index", "-v", "-z", "--stdin"),
+            input_bytes=directory_probe,
+        )
     if completed.returncode == 1:
         return False
     if completed.returncode != 0:
@@ -297,7 +442,8 @@ def _ignored_by_tracked_gitignore(
     if source_path.is_absolute():
         return False
     source_relative = source_path.as_posix()
-    return source_relative in authorized_gitignores and source_path.name == ".gitignore"
+    authorized_paths = {authority.relative for authority in authorized_gitignores}
+    return source_relative in authorized_paths and source_path.name == ".gitignore"
 
 
 def confined_runtime_scratch_path(path: Path, repository_root: Path) -> Path:
@@ -328,26 +474,51 @@ def confined_runtime_scratch_path(path: Path, repository_root: Path) -> Path:
     if reported_root != repository:
         raise BridgeProductError("runtime scratch repository identity mismatch")
     relative = resolved.relative_to(repository).as_posix()
-    candidate_tree = _fixed_candidate_tree(repository)
+    candidate_commit = _fixed_candidate_commit(repository)
+    candidate_tree = _fixed_candidate_tree(repository, candidate_commit)
+    index_before = _git_index_snapshot(repository)
     authorized_gitignores = _authorized_runtime_gitignores(
         repository,
         relative,
         candidate_tree,
     )
-    tracked_paths = _tracked_runtime_paths(repository)
-    if _path_overlaps_tracked(relative, tracked_paths):
+    candidate_tracked_paths = _candidate_tracked_runtime_paths(repository, candidate_tree)
+    index_tracked_paths = _tracked_runtime_paths(repository)
+    if _path_overlaps_tracked(
+        relative,
+        candidate_tracked_paths | index_tracked_paths,
+    ):
         raise BridgeProductError("runtime scratch root overlaps a tracked path")
-    if not _ignored_by_tracked_gitignore(repository, relative, authorized_gitignores):
+    if not _ignored_by_fixed_gitignore(repository, relative, authorized_gitignores):
         raise BridgeProductError(
             "runtime scratch root is not ignored by a tracked repository .gitignore"
         )
     if (
-        _fixed_candidate_tree(repository) != candidate_tree
+        _fixed_candidate_commit(repository) != candidate_commit
+        or _fixed_candidate_tree(repository, candidate_commit) != candidate_tree
+        or _git_index_snapshot(repository) != index_before
         or _authorized_runtime_gitignores(repository, relative, candidate_tree)
         != authorized_gitignores
+        or _candidate_tracked_runtime_paths(repository, candidate_tree) != candidate_tracked_paths
+        or _tracked_runtime_paths(repository) != index_tracked_paths
     ):
         raise BridgeProductError("runtime scratch .gitignore authority changed during validation")
-    return resolved
+    _require_plain_path(lexical, repository)
+    final_resolved = confined_product_path(path, repository)
+    if final_resolved != resolved:
+        raise BridgeProductError("runtime scratch path changed during validation")
+    return final_resolved
+
+
+def _prepare_runtime_scratch_path(path: Path, repository_root: Path) -> PreparedRuntimeRoot:
+    """Revalidate and exclusively create a single-use runtime filesystem capability."""
+
+    repository = repository_root.resolve(strict=True)
+    confined = confined_runtime_scratch_path(path, repository)
+    try:
+        return PreparedRuntimeRoot.create(confined, repository)
+    except RuntimeScratchIdentityError as exc:
+        raise BridgeProductError("runtime scratch root preparation failed") from exc
 
 
 def confined_product_path(path: Path, repository_root: Path) -> Path:
@@ -578,19 +749,30 @@ def execute_product_role(
         raise BridgeProductError("current P3-030C source no longer matches the bridge context")
     transport: BridgeTransport
     if auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION:
+        prepared_runtime = _prepare_runtime_scratch_path(runtime_root, repository_root)
+        if prepared_runtime.path != runtime:
+            raise BridgeProductError("runtime scratch path changed before preparation")
         if codex_binary is None:
             try:
                 from codex_cli_bin import bundled_codex_path  # type: ignore[import-untyped]
             except ImportError as exc:
                 raise BridgeProductError("subscription runtime extra is not installed") from exc
             codex_binary = bundled_codex_path()
-        transport = CodexSubscriptionCliTransport(runtime, codex_binary=codex_binary)
+        transport = CodexSubscriptionCliTransport(
+            runtime,
+            codex_binary=codex_binary,
+            runtime_capability=prepared_runtime,
+        )
     elif auth_mode is RuntimeAuthModeV1.OPENAI_API:
         transport = OpenAIAPITransport(
             runtime,
             repository_root=repository_root,
             repository_commit_id=plan.repository_commit_id,
             repository_tree_id=plan.repository_tree_id,
+            runtime_capability_factory=lambda: _prepare_runtime_scratch_path(
+                runtime_root,
+                repository_root,
+            ),
         )
     else:  # pragma: no cover - enum construction rejects unknown modes
         raise BridgeProductError("unknown execution auth mode")

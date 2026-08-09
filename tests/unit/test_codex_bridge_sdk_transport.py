@@ -22,6 +22,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeTransportUsageV1,
     RuntimeAuthModeV1,
 )
+from poker_deliberation.codex_bridge.runtime_scratch import PreparedRuntimeRoot
 from poker_deliberation.codex_bridge.sdk_transport import OpenAIAPITransport
 from poker_deliberation.codex_bridge.sdk_worker import _file_sha256, _write_runtime_config
 from poker_deliberation.codex_bridge.transport import (
@@ -152,6 +153,35 @@ def test_sdk_transport_refuses_live_api_without_versioned_cost_authority(
     assert popen_calls == 0
     assert not (tmp_path / "runtime").exists()
     assert "synthetic-secret-canary" not in str(caught.value)
+
+
+def test_sdk_runtime_capability_rejects_path_change_before_worker_storage(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    runtime_root = repository / "tmp" / "runs" / "runtime-synthetic-private-canary"
+    capability = PreparedRuntimeRoot.create(runtime_root, repository)
+    request = prepared_bridge_request(
+        tmp_path / "p3",
+        auth_mode=RuntimeAuthModeV1.OPENAI_API,
+    )
+    transport = OpenAIAPITransport(
+        runtime_root,
+        worker_command_factory=lambda _home, _cwd: pytest.fail("worker must not launch"),
+        runtime_capability=capability,
+    )
+    changed_root = repository / "tmp" / "runs" / "changed-synthetic-secret-canary"
+    transport.runtime_root = changed_root
+
+    with pytest.raises(BridgeTransportFailure) as caught:
+        transport._create_attempt(request)
+
+    assert caught.value.reason_code == "runtime_scratch_identity_changed"
+    assert caught.value.effect_state is BridgeEffectState.NOT_LAUNCHED
+    assert "synthetic-private-canary" not in str(caught.value)
+    assert "synthetic-secret-canary" not in str(caught.value)
+    assert not changed_root.exists()
 
 
 def test_worker_never_copies_configured_cap_into_observed_cost() -> None:

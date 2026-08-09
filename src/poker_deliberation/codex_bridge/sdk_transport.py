@@ -31,6 +31,10 @@ from poker_deliberation.codex_bridge.models import (
     BridgeTransportUsageV1,
     RuntimeAuthModeV1,
 )
+from poker_deliberation.codex_bridge.runtime_scratch import (
+    PreparedRuntimeRoot,
+    RuntimeScratchIdentityError,
+)
 from poker_deliberation.codex_bridge.transport import (
     BridgeTransportFailure,
     BridgeTransportFailureEvidence,
@@ -236,10 +240,18 @@ class OpenAIAPITransport:
         repository_tree_id: str | None = None,
         credential_env_name: str = "OPENAI_API_KEY",
         worker_command_factory: Callable[[Path, Path], list[str]] | None = None,
+        runtime_capability: PreparedRuntimeRoot | None = None,
+        runtime_capability_factory: Callable[[], PreparedRuntimeRoot] | None = None,
     ) -> None:
         if f"env:{credential_env_name}" != BRIDGE_OPENAI_API_CREDENTIAL_REFERENCE:
             raise ValueError("credential reference is outside the bridge contract")
-        self.runtime_root = runtime_root
+        self.runtime_root = runtime_root.resolve(strict=False)
+        self.runtime_capability = runtime_capability
+        self.runtime_capability_factory = runtime_capability_factory
+        if runtime_capability is not None and runtime_capability_factory is not None:
+            raise ValueError("runtime capability and factory are mutually exclusive")
+        if runtime_capability is not None and runtime_capability.path != self.runtime_root:
+            raise ValueError("runtime capability path mismatch")
         self.repository_root = repository_root
         self.repository_commit_id = repository_commit_id
         self.repository_tree_id = repository_tree_id
@@ -285,9 +297,84 @@ class OpenAIAPITransport:
         attempt = self.runtime_root / key
         return attempt / "home", attempt / "cwd"
 
+    def _begin_runtime_capability(self) -> None:
+        if self.runtime_capability is None and self.runtime_capability_factory is not None:
+            factory = self.runtime_capability_factory
+            self.runtime_capability_factory = None
+            try:
+                capability = factory()
+                if capability.path != self.runtime_root:
+                    raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            except Exception as exc:
+                raise BridgeTransportFailure(
+                    "runtime_scratch_identity_changed",
+                    effect_state=BridgeEffectState.NOT_LAUNCHED,
+                    launched_at=None,
+                    completed_at=datetime.now(UTC),
+                    duration_ms=0,
+                    stream_bytes=0,
+                ) from exc
+            self.runtime_capability = capability
+        if self.runtime_capability is None:
+            return
+        try:
+            if self.runtime_capability.path != self.runtime_root:
+                raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            self.runtime_capability.begin()
+        except RuntimeScratchIdentityError as exc:
+            raise BridgeTransportFailure(
+                "runtime_scratch_identity_changed",
+                effect_state=BridgeEffectState.NOT_LAUNCHED,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
+    def _verify_runtime_capability(self, *, process_started: bool = False) -> None:
+        if self.runtime_capability is None:
+            return
+        try:
+            if self.runtime_capability.path != self.runtime_root:
+                raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            self.runtime_capability.verify_active()
+        except RuntimeScratchIdentityError as exc:
+            raise BridgeTransportFailure(
+                "runtime_scratch_identity_changed",
+                effect_state=(
+                    BridgeEffectState.EFFECT_UNKNOWN
+                    if process_started
+                    else BridgeEffectState.NOT_LAUNCHED
+                ),
+                launched_at=datetime.now(UTC) if process_started else None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
+    def _finish_runtime_capability(self) -> None:
+        if self.runtime_capability is None:
+            return
+        try:
+            if self.runtime_capability.path != self.runtime_root:
+                raise RuntimeScratchIdentityError("runtime scratch capability path changed")
+            self.runtime_capability.finish()
+        except RuntimeScratchIdentityError as exc:
+            raise BridgeTransportFailure(
+                "runtime_scratch_identity_changed",
+                effect_state=BridgeEffectState.EFFECT_UNKNOWN,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
     def _create_attempt(self, request: BoundedCodexBridgeRequestV1) -> tuple[Path, Path]:
-        self.runtime_root.mkdir(parents=True, exist_ok=True)
+        self._begin_runtime_capability()
+        if self.runtime_capability is None:
+            self.runtime_root.mkdir(parents=True, exist_ok=True)
         verify_directory(self.runtime_root)
+        self._verify_runtime_capability()
         home, cwd = self._attempt_paths(request)
         attempt = home.parent
         if attempt.exists():
@@ -305,6 +392,7 @@ class OpenAIAPITransport:
         verify_directory(attempt)
         verify_directory(home)
         verify_directory(cwd)
+        self._verify_runtime_capability()
         return home, cwd
 
     def _require_credential_reference(self) -> None:
@@ -397,6 +485,7 @@ class OpenAIAPITransport:
             raise AssertionError("API attempt path changed during launch")
         process: subprocess.Popen[bytes] | None = None
         try:
+            self._verify_runtime_capability()
             process = subprocess.Popen(
                 command,
                 stdin=subprocess.PIPE,
@@ -458,6 +547,7 @@ class OpenAIAPITransport:
             time.sleep(0.02)
         stdout.join(timeout=2)
         stderr.join(timeout=2)
+        self._verify_runtime_capability(process_started=True)
         try:
             events, protocol_bytes = _parse_worker_lines(bytes(stdout.data))
             protocol_valid = True
@@ -669,7 +759,7 @@ class OpenAIAPITransport:
                 duration_ms=max(0, int((time.monotonic() - started) * 1000)),
                 stream_bytes=protocol_bytes,
             )
-        return BridgeTransportResult(
+        transport_result = BridgeTransportResult(
             auth_mode=self.auth_mode,
             transport_qualification=self.transport_qualification,
             response_bytes=response,
@@ -688,6 +778,8 @@ class OpenAIAPITransport:
             stream_bytes=stream_bytes,
             item_types=tuple(item_types_value),
         )
+        self._finish_runtime_capability()
+        return transport_result
 
 
 __all__ = ["OpenAIAPITransport"]

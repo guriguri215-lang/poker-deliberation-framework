@@ -607,19 +607,21 @@ def test_legacy_bridge_manifest_is_not_sealed_live_evidence() -> None:
         SanitizedLiveQualificationManifestV2,
     )
 
-    path = ROOT / "qualifications" / "p2-025b-codex-subscription-v1.json"
     with pytest.raises(ValueError):
-        parse_canonical_model(path.read_bytes(), SanitizedLiveQualificationManifestV2)
+        parse_canonical_model(
+            b'{"schema_version":"1.0.0"}',
+            SanitizedLiveQualificationManifestV2,
+        )
 
 
-def test_public_preflight_rejects_legacy_unsealed_live_manifest() -> None:
-
+def test_public_preflight_accepts_sealed_live_manifest() -> None:
     result = public_preflight._codex_bridge_public_artifacts_check(ROOT)
 
-    assert result.status == "fail"
+    assert result.status == "pass"
     assert isinstance(result.details, dict)
-    assert "bridge_public_evidence:noncanonical_or_invalid" in result.details["failures"]
-    assert result.details["subscription_live_qualified"] is False
+    assert result.details["failures"] == []
+    assert result.details["missing_public_evidence"] == []
+    assert result.details["subscription_live_qualified"] is True
     assert result.details["api_live_qualified"] is False
     assert result.details["subscription_live_evidence_authority"] == (
         "qualifications/p2-025b-codex-subscription-v1.json"

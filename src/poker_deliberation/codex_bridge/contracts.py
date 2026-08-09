@@ -111,10 +111,9 @@ _DEVELOPER_INSTRUCTIONS: Final[dict[BridgeRole, str]] = {
         "Adjudicate the three independently validated parent results against the immutable source "
         "evidence. Do not decide by vote, calculate, add evidence, infer a range, use tools, cite "
         "sources, assert named strategy systems or optimality, or issue a recommendation. Every "
-        "claim must reference all three supplied parent evidence IDs. Copy those exact IDs from "
-        "required_evidence_references without altering, shortening, or extending them. Return only "
-        "canonical minified JSON with recursively lexicographically sorted object keys; no "
-        "Markdown or trailing newline."
+        "claim must use all three supplied parent evidence IDs exactly. Return only canonical "
+        "minified JSON with recursively lexicographically sorted object keys; no Markdown or "
+        "trailing newline."
     )
     + _NEUTRAL_NARRATIVE_INSTRUCTIONS,
     BridgeRole.REPORT_WRITER: (

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "fixture_id": "p3-030d-bounded-river-review-workflow-v1",
+  "source_sha256": "cbb85f5fce0f83596e581cafee14ad8c154edd04661500ac420c9d43573edab1",
+  "range_sha256": "a4170f4c8c486747f6bcccae36a3914485892305be6405b4f059b8172e846756",
+  "expected_equity_numerator": 1,
+  "expected_equity_denominator": 1,
+  "expected_required_equity_numerator": 5,
+  "expected_required_equity_denominator": 24,
+  "expected_call_ev_numerator": 38,
+  "expected_call_ev_denominator": 1,
+  "expected_action_comparison": "call",
+  "expected_pending_roles": [
+    "strategy-analyst",
+    "math-tool-auditor",
+    "skeptic-falsifier",
+    "adjudicator",
+    "report-writer"
+  ]
+}

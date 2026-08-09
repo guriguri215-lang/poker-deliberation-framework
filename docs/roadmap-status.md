@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `13.0.0`
-- source SHA-256: `d3ea8dd24d32dc9a1ee99e96ac21b8f3e1740f883cea274302a0a8d93a93a8ef`
+- schema version: `14.0.0`
+- source SHA-256: `35dccb720d8af42b9f0660f62761e0964552ebc14ce7740644f5d0c986c88640`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -55,6 +55,7 @@
 | `P3-030A` | `RM-030` | `completed` | `P3-014A`, `P3-016A`, `P3-017A` | Versioned source, candidate, confirmation, authority, provenance, CLI, durable replay, exact-evidence evaluation, and LocalProvider-only adjudication for one complete retrospective NLHE hand and at most one versioned opponent range; no general natural-language or site parser, external provider or model, runtime bridge, external solver, range equity, multiopponent range, GTO, or equilibrium claim. | The approved caller-supplied candidate, explicit hash-bound confirmation, local-only adjudication, provenance replay, deterministic evaluation, documentation, and declared tests are implemented. |
 | `P3-030B` | `RM-030` | `completed` | `P3-030A`, `P3-015A` | Version 1 deterministic parsing for one documented finite Japanese retrospective 2-6 player NLHE cash grammar with integer chip units, zero ante and rake, at most 64 actions, exact UTF-8 half-open source spans, explicit focal call-or-fold decision, hand_validator then hand_pot_ledger then pot_odds execution, six independently confirmed hash domains, LocalProvider-only adjudication, durable provenance replay, and exact-evidence evaluation; no general natural-language or site parser, OCR, tournament, focal all-in or side-pot decision, range inference, external provider or model, runtime bridge, external solver, GTO, or equilibrium claim. | The approved bounded Japanese grammar, exact source-span evidence, six-hash confirmation contract, fixed local product path, durable provenance replay, evaluation fixture, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
 | `P3-030C` | `RM-030` | `completed` | `P2-024A`, `P3-015A`, `P3-016B`, `P3-017A`, `P3-030B` | One confirmed P3-030B river focal decision and one separate provenance-qualified VersionedRangeDefinitionV1 for the facing actor, exact P3-015A no-rake ledger, pot_odds, P3-016B exact-only heads-up river equity, Fraction required-equity and call-EV oracles, raked_call_ev with rake_percent zero, model-limited call/fold comparison, exact LocalProvider role/context/tool controls, typed terminal replay, and deterministic exact-evidence evaluation; no general natural language, actual Codex/Python runtime bridge, multiple ranges, multiway or earlier-street equity, Monte Carlo, all-in, side pot, rake, ante, external solver, GTO, equilibrium, or unconditional recommendation. | The approved bounded river call-or-fold integration, twelve-hash confirmation, exact seven-tool local path, Fraction and ULP oracles, context and provenance controls, typed terminal replay, deterministic evaluation, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
+| `P3-030D` | `RM-030` | `completed` | `P2-025B`, `P3-030C` | One repository-bound resumable workflow that composes the unchanged P3-030C bounded Japanese river call-EV path with the unchanged P2-025B five-role bridge controller, preserves all twelve P3-030C confirmation hashes, stores no duplicate raw source in its workflow or bridge namespace, defaults to local_only, prepares but never executes nonlocal role transport, and provides canonical status, resume, replay, linkage, CLI, and deterministic exact-evidence evaluation; no general natural-language or site parser, OCR, new range or calculator semantics, automatic role confirmation, live provider execution, external solver, GTO, equilibrium, or general Codex/Python interoperability. | The bounded workflow plan, twelve-hash confirmation, local deterministic terminal run, fixed five-role bridge preparation, canonical linkage, status/resume/replay surfaces, local-data separation checks, deterministic five-metric evaluation, documentation, and declared tests are implemented. |
 
 ## Current RM state
 
@@ -939,12 +940,13 @@
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, and P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice. P2-025B adds only a downstream bounded qualified review bridge and does not widen intake; RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.
+- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, and P3-030D composes that slice with P2-025B through a resumable local-first workflow without widening either contract. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.
 - Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake
   - bounded_japanese_nlhe_cash_parser
   - bounded_japanese_river_call_ev_review
+  - bounded_river_review_workflow
   - natural_language_or_site_parser
   - versioned_nlhe_range_grammar
 - Targets:
@@ -959,18 +961,26 @@
   - src/poker_deliberation/bounded_river_call_ev.py
   - src/poker_deliberation/bounded_river_call_ev_provenance.py
   - src/poker_deliberation/bounded_river_call_ev_evaluation.py
+  - src/poker_deliberation/bounded_river_review_workflow_models.py
+  - src/poker_deliberation/bounded_river_review_workflow.py
+  - src/poker_deliberation/bounded_river_review_workflow_evaluation.py
   - src/poker_deliberation/orchestrator.py
   - src/poker_deliberation/cli.py
   - src/poker_deliberation/storage/terminal_canonical.py
   - tests/fixtures/confirmed_review/v1/scenarios.json
   - tests/fixtures/bounded_natural_language/v1/scenarios.json
   - tests/fixtures/bounded_river_call_ev/v1/scenarios.json
+  - tests/fixtures/bounded_river_review_workflow/v1/scenarios.json
+  - tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt
+  - tests/fixtures/bounded_river_review_workflow/v1/range.json
   - scripts/run_confirmed_review_evaluation.py
   - scripts/run_bounded_natural_language_evaluation.py
   - scripts/run_bounded_river_call_ev_evaluation.py
+  - scripts/run_bounded_river_review_workflow_evaluation.py
   - docs/confirmed-review-intake.md
   - docs/bounded-natural-language-intake.md
   - docs/bounded-river-call-ev.md
+  - docs/bounded-river-review-workflow.md
 - Acceptance criteria:
   - P3-030A admits only one bounded UTF-8 retrospective source and a caller-supplied complete NLHE candidate after explicit source and candidate hash confirmation by a scoped authority for at most 24 hours.
   - P3-030A uses the exact LocalProvider and default tool registry with hand_validator, the approved optional no-rake cash ledger, and automatic range_validate then combos for at most one versioned range.
@@ -986,6 +996,10 @@
   - P3-030C commits its admission before executing each tool once in the exact hand_validator, hand_pot_ledger, pot_odds, range_validate, combos, holdem_equity, raked_call_ev order; manual conflicts, reordered or tampered prefixes, non-exact equity metadata, and binary64 projections outside the declared ULP bounds fail closed.
   - P3-030C stores exact reduced rational equity, required equity call_cost divided by pot_after_bet plus call_cost, no-rake call EV equity times contestable pot minus call_cost, zero focal fold EV, call-minus-fold EV, and only a model-limited CALCULATED comparison; range accuracy stays USER_CLAIM or ASSUMPTION and UNKNOWN, and strategic interpretation stays INFERENCE.
   - P3-030C uses exact LocalProvider assignments and P2-024A context envelopes without raw source text, persists seven typed integration artifacts plus the reused P3-016B binding, and requires all three deterministic evaluation metrics to equal 1.0.
+  - P3-030D persists a canonical workflow plan before confirmation, preserves every P3-030C confirmation hash, and links the verified P3 terminal manifest to one mode-bound P2-025B bridge manifest without copying the raw Japanese source into the workflow or bridge namespace.
+  - P3-030D status, resume, and replay verify the same canonical preparation, confirmation, terminal source, bridge source projection, and linkage; an interruption after the P3 terminal run can resume from verified storage without rerunning the parser or calculators.
+  - P3-030D defaults to local_only, creates no model runtime directory, and only prepares the five-role bridge plan; nonlocal role confirmation and execution remain in the existing explicit P2-025B commands and are never started by the workflow.
+  - The repository-owned P3-030D evaluation separately scores confirmation binding, exact decision math, runtime mode and fixed roles, resume and replay, and local-data separation, with acceptance only when all five metrics pass.
 - Tests:
   - tests/unit/test_confirmed_review_contract.py
   - tests/integration/test_confirmed_review_cli.py
@@ -1006,6 +1020,10 @@
   - tests/adversarial/test_bounded_river_call_ev_security.py
   - tests/adversarial/test_bounded_river_call_ev_terminal_security.py
   - tests/fault/test_bounded_river_call_ev_durability.py
+  - tests/unit/test_bounded_river_review_workflow.py
+  - tests/integration/test_bounded_river_review_workflow.py
+  - tests/integration/test_bounded_river_review_cli.py
+  - tests/integration/test_bounded_river_review_workflow_evaluation.py
 - Decision gate rationale:
   - Any expansion beyond the P3-030B bounded Japanese grammar into general natural-language, model-assisted, site-specific, or OCR parsing requires a new Decision gate covering ambiguity, source rights, privacy, and parser-quality evaluation
   - Any P2-025B expansion beyond the separately approved river-only Codex bridge, outbound fields, authentication modes, budgets, tool disablement, and reconciliation contract
@@ -1016,6 +1034,7 @@
   - P2-025B is a separately gated, downstream river-review-only Codex bridge and does not widen P3-030C intake, parsing, range, calculator, or report authority.
   - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
   - P3-030C reuses P3-015A and P3-016B without widening them; multiple ranges, multiway or earlier-street equity, external solver, GTO, and equilibrium remain outside this milestone.
+  - P3-030D composes P3-030C and P2-025B through canonical local workflow state only; it does not alter parser, range, calculator, role, outbound, runtime-mode, qualification, or live-execution authority.
 
 ## Synchronization contract
 

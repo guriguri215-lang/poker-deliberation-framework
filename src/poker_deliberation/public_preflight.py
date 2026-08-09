@@ -31,22 +31,23 @@ LARGE_FILE_BYTES = 1_000_000
 RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
     "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
 )
-EXPECTED_ROADMAP_SCHEMA_VERSION = "13.0.0"
-ROADMAP_MODULE_SHA256 = "9c6628eb74b7712106b64fb3356610e21d38a8f95284f967993cf144327de3f4"
+EXPECTED_ROADMAP_SCHEMA_VERSION = "14.0.0"
+ROADMAP_MODULE_SHA256 = "ef7905d9d0993f8790c303ef6ae44e5656573a630823091eeca40a206a3799af"
 RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
     "docs/bounded-codex-river-review-bridge.md",
     "docs/bounded-river-call-ev.md",
+    "docs/bounded-river-review-workflow.md",
     "docs/capabilities.md",
     "docs/limitations.md",
     "docs/range-grammar.md",
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "af4e2f8cd3141316001e56d7ae46019f1e27161aa7201480a164cf7c1aa4ec79"
+CAPABILITY_DOCUMENT_SET_SHA256 = "e5b45416bd9f07b5f02f55f80ec699f647961ab0b1aa16ca6095bcc5eb4ba87d"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
-    "caa1202b6f4f0e5dc2b436c45af7c8ba7e35e4855a9839ac8988bacbe835f839"
+    "6334a0426bd2ef395257ef89c79d7783cc2a42283e38cacd10c54b8815dd0747"
 )
 
 
@@ -1167,6 +1168,15 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "CALCULATED",
             "UNKNOWN",
             "実Codex/Python runtime",
+        ],
+        "docs/bounded-river-review-workflow.md": [
+            "P3-030D",
+            "P3-030C",
+            "P2-025B",
+            "local_only",
+            "ready_to_resume",
+            "raw source",
+            "外部solver",
         ],
     }
     required["docs/bounded-codex-river-review-bridge.md"] = [

@@ -104,7 +104,7 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 `.pytest-tmp/s-<process-hex>-<nonce>/`へ分離します。呼出側の明示`--basetemp`は上書きしません。
 固定共有ディレクトリを再利用しないため、並行sessionが互いのtempを開始時に削除しません。
 
-- **FACT**: `requires-python >=3.12`により、候補matrixはCPython 3.12-3.13、Windowsと
+- **ASSUMPTION**: `requires-python >=3.11`を根拠に、候補matrixはCPython 3.11-3.13、Windowsと
   Ubuntuとする。
 - **FACT**: 今回ローカルで実行する環境はWindows / CPython 3.12である。
 - **FACT**: 自動temp名はWindowsのpath消費を抑えるため短縮し、session固有性を維持する。

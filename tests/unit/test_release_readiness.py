@@ -69,7 +69,7 @@ def test_wheel_archive_requires_metadata_entry_point_license_and_package_data(
             "Metadata-Version: 2.4\n"
             "Name: poker-deliberation-framework\n"
             "Version: 0.1.0\n"
-            "Requires-Python: >=3.12\n"
+            "Requires-Python: >=3.11\n"
             "License-Expression: MIT\n",
         )
         archive.writestr(

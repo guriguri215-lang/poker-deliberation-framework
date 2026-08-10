@@ -109,7 +109,7 @@ def test_quality_and_public_preflight_commands_are_documented() -> None:
         assert command in capabilities
     assert "docs/capabilities.md" in readme
     assert "scripts\\public_preflight.py" in checklist
-    assert "CPython 3.12-3.13" in capabilities
+    assert "CPython 3.11-3.13" in capabilities
     assert "UNKNOWN" in capabilities
 
 

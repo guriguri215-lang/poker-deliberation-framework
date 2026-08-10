@@ -455,7 +455,7 @@ def inspect_wheel(path: Path) -> ArchiveEvidenceV1:
     metadata_consistent = (
         metadata.get("Name") == "poker-deliberation-framework"
         and metadata.get("Version") == "0.1.0"
-        and metadata.get("Requires-Python") == ">=3.12"
+        and metadata.get("Requires-Python") == ">=3.11"
         and (metadata.get("License-Expression") == "MIT" or metadata.get("License") == "MIT")
     )
     return ArchiveEvidenceV1(

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import importlib.metadata
+import io
 import json
 import os
 import platform
@@ -319,11 +321,63 @@ def _safe_extract_git_archive(archive: bytes, destination: Path) -> None:
     source = destination / "source"
     source.mkdir()
     with tarfile.open(archive_path, mode="r:") as stream:
-        for member in stream.getmembers():
+        for member in sorted(stream.getmembers(), key=lambda item: item.name):
             path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk():
+            if path.is_absolute() or ".." in path.parts:
                 raise ReleaseReadinessError("git archive contains an unsafe member")
-        stream.extractall(source)
+            target = source.joinpath(*path.parts)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                raise ReleaseReadinessError("git archive contains a non-regular member")
+            extracted = stream.extractfile(member)
+            if extracted is None:
+                raise ReleaseReadinessError("git archive member could not be read")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(extracted.read())
+            target.chmod(member.mode & 0o777)
+
+
+def normalize_sdist(path: Path, source_date_epoch: int) -> None:
+    canonical_path = path.with_suffix(path.suffix + ".canonical")
+    with tarfile.open(path, mode="r:gz") as source:
+        members = sorted(source.getmembers(), key=lambda item: item.name)
+        with (
+            canonical_path.open("wb") as raw_output,
+            gzip.GzipFile(
+                filename="",
+                mode="wb",
+                fileobj=raw_output,
+                mtime=source_date_epoch,
+            ) as compressed,
+            tarfile.open(
+                fileobj=compressed,
+                mode="w",
+                format=tarfile.PAX_FORMAT,
+            ) as output,
+        ):
+            for member in members:
+                if not member.isfile() and not member.isdir():
+                    raise ReleaseReadinessError("sdist contains a non-regular archive member")
+                normalized = tarfile.TarInfo(member.name)
+                normalized.type = member.type
+                normalized.mode = 0o755 if member.isdir() else 0o644
+                normalized.mtime = source_date_epoch
+                normalized.uid = 0
+                normalized.gid = 0
+                normalized.uname = ""
+                normalized.gname = ""
+                if member.isfile():
+                    extracted = source.extractfile(member)
+                    if extracted is None:
+                        raise ReleaseReadinessError("sdist member could not be read")
+                    payload = extracted.read()
+                    normalized.size = len(payload)
+                    output.addfile(normalized, io.BytesIO(payload))
+                else:
+                    output.addfile(normalized)
+    os.replace(canonical_path, path)
 
 
 def _build_once(
@@ -348,6 +402,9 @@ def _build_once(
         env["SOURCE_DATE_EPOCH"] = str(source_date_epoch)
         env["PYTHONHASHSEED"] = "0"
         _run([sys.executable, "-c", build_script, str(destination)], cwd=source, env=env)
+    for path in destination.iterdir():
+        if path.name.endswith(".tar.gz"):
+            normalize_sdist(path, source_date_epoch)
     artifacts: list[ArtifactEvidenceV1] = []
     for path in sorted(destination.iterdir(), key=lambda item: item.name):
         if path.suffix == ".whl":

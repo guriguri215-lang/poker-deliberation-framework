@@ -14,6 +14,7 @@ from scripts.release_readiness import (
     build_license_inventory,
     inspect_sdist,
     inspect_wheel,
+    normalize_sdist,
     parse_requirements_lock,
 )
 
@@ -136,3 +137,17 @@ def test_sdist_archive_rejects_local_intermediate_data(tmp_path: Path) -> None:
     evidence = inspect_sdist(sdist)
 
     assert evidence.forbidden_paths_absent is False
+
+
+def test_sdist_normalization_removes_archive_timestamp_variance(tmp_path: Path) -> None:
+    paths = (tmp_path / "first.tar.gz", tmp_path / "second.tar.gz")
+    for timestamp, path in enumerate(paths, 100):
+        with tarfile.open(path, "w:gz") as archive:
+            payload = b"same-content\n"
+            info = tarfile.TarInfo("candidate/PKG-INFO")
+            info.size = len(payload)
+            info.mtime = timestamp
+            archive.addfile(info, io.BytesIO(payload))
+        normalize_sdist(path, 1_700_000_000)
+
+    assert paths[0].read_bytes() == paths[1].read_bytes()

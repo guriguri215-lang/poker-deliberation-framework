@@ -8,6 +8,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Generator
 from pathlib import Path
+from types import TracebackType
 from uuid import uuid4
 
 import pytest
@@ -23,8 +24,9 @@ PYTEST_SESSION_TOKEN_ATTR = "_poker_session_token"
 def _remove_readonly(
     function: Callable[[str], object],
     path: str,
-    error: BaseException,
+    error_info: tuple[type[BaseException], BaseException, TracebackType | None],
 ) -> None:
+    error = error_info[1]
     if not isinstance(error, PermissionError):
         raise error
     os.chmod(path, stat.S_IWRITE)
@@ -75,10 +77,10 @@ if os.name == "nt":
         if target.parent != root:
             raise RuntimeError("hashed pytest directory escaped its configured short root")
         if target.exists():
-            shutil.rmtree(target, onexc=_remove_readonly)
+            shutil.rmtree(target, onerror=_remove_readonly)
         target.mkdir(parents=True, exist_ok=False)
         try:
             yield target
         finally:
             if target.exists() and target.parent == root:
-                shutil.rmtree(target, onexc=_remove_readonly)
+                shutil.rmtree(target, onerror=_remove_readonly)

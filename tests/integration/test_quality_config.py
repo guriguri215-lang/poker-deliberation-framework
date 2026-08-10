@@ -8,6 +8,7 @@ from conftest import (
     BASE_TEMP_REQUEST_ATTR,
     BASE_TEMP_SOURCE_ATTR,
     PYTEST_SESSION_TOKEN_ATTR,
+    _remove_readonly,
     _windows_tmp_target_name,
 )
 
@@ -40,6 +41,22 @@ def test_pytest_temp_root_is_ignored() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     assert ".pytest-tmp/" in gitignore
     assert not (ROOT / ".pytest-tmp").is_file()
+
+
+def test_readonly_cleanup_callback_uses_python_311_onerror_contract(tmp_path: Path) -> None:
+    target = tmp_path / "readonly-callback-target"
+    target.write_text("temporary", encoding="utf-8")
+    removed: list[str] = []
+
+    def remove(path: str) -> object:
+        removed.append(path)
+        Path(path).unlink()
+        return None
+
+    error = PermissionError("read-only fixture")
+    _remove_readonly(remove, str(target), (PermissionError, error, None))
+    assert removed == [str(target)]
+    assert not target.exists()
 
 
 def test_windows_tmp_target_is_isolated_between_pytest_processes() -> None:

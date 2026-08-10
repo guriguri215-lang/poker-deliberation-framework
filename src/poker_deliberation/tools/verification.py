@@ -341,7 +341,7 @@ def _verify_combos(
     combos = parse_weighted_range(
         str(payload["range"]), tuple(map(str, payload.get("dead_cards", [])))
     )
-    total = sum(combo.weight for combo in combos)
+    total = math.fsum(combo.weight for combo in combos)
     expected = {combo.cards: combo.weight / total for combo in combos}
     records = output["normalized_weights"]
     _expect(int(output["combo_count"]) == len(combos) == len(records), "weighted combo count")
@@ -356,7 +356,7 @@ def _verify_combos(
         _expect_close(
             observations, f"normalized_weight[{cards}]", actual[cards], expected_weight, policy
         )
-    _expect_close(observations, "normalized_weight_sum", sum(actual.values()), 1.0, policy)
+    _expect_close(observations, "normalized_weight_sum", math.fsum(actual.values()), 1.0, policy)
     return (*observations,)
 
 

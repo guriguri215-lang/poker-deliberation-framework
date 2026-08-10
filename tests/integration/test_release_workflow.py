@@ -20,6 +20,7 @@ def test_quality_workflow_has_one_full_test_matrix_and_separate_package_evidence
     triggers = workflow.get("on", workflow.get(True))
     jobs = workflow["jobs"]
     matrix = jobs["test-matrix"]["strategy"]["matrix"]
+    full_test_step = jobs["test-matrix"]["steps"][-1]
 
     assert triggers == {
         "pull_request": None,
@@ -31,6 +32,14 @@ def test_quality_workflow_has_one_full_test_matrix_and_separate_package_evidence
     assert tuple(matrix["os"]) == SUPPORTED_OPERATING_SYSTEMS
     assert tuple(matrix["python-version"]) == SUPPORTED_PYTHON_VERSIONS
     assert "python -m pytest" in workflow_text
+    assert full_test_step == {
+        "name": "Run full test suite once per matrix row",
+        "run": (
+            "python -m pytest --basetemp "
+            '"${{ runner.temp }}/poker-deliberation-tests-'
+            '${{ matrix.os }}-${{ matrix.python-version }}"'
+        ),
+    }
     assert workflow_text.count("Run full test suite once per matrix row") == 1
     assert "scripts/release_readiness.py" in workflow_text
     assert "actions/upload-artifact@v4" in workflow_text

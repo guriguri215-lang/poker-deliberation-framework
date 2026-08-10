@@ -42,7 +42,9 @@ jobs:
           python -m pip install --disable-pip-version-check -r requirements.lock
           python -m pip install --disable-pip-version-check --no-deps -e .
       - name: Run full test suite once per matrix row
-        run: python -m pytest
+        run: >-
+          python -m pytest
+          --basetemp "${{ runner.temp }}/poker-deliberation-tests-${{ matrix.os }}-${{ matrix.python-version }}"
 
   static-quality:
     name: static quality and tracked projections

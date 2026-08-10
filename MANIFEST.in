@@ -1,0 +1,12 @@
+include LICENSE
+include MANIFEST.in
+include README.md
+include requirements.lock
+include pyproject.toml
+include src/poker_deliberation/roadmap_status.json
+recursive-include docs *.md
+prune build
+prune dist
+prune runs
+prune tmp
+prune user_materials

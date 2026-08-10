@@ -1,0 +1,105 @@
+name: quality
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-matrix:
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        python-version:
+          - "3.11"
+          - "3.12"
+          - "3.13"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install locked test environment
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.lock
+          python -m pip install --disable-pip-version-check --no-deps -e .
+      - name: Run full test suite once per matrix row
+        run: python -m pytest
+
+  static-quality:
+    name: static quality and tracked projections
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install locked quality environment
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.lock
+          python -m pip install --disable-pip-version-check --no-deps -e .
+      - name: Run focused release contract tests
+        run: >-
+          python -m pytest
+          tests/unit/test_release_readiness.py
+          tests/integration/test_release_workflow.py
+          tests/integration/test_roadmap_status.py
+      - name: Run static quality gates
+        run: |
+          python -m ruff check .
+          python -m ruff format --check .
+          python -m mypy src
+          python scripts/generate_roadmap_status.py --check --require-tracked
+
+  package-evidence:
+    name: reproducible package and candidate evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install locked evidence environment
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.lock
+          python -m pip install --disable-pip-version-check --no-deps -e .
+      - name: Generate candidate-bound evidence
+        run: >-
+          python scripts/release_readiness.py
+          --repo .
+          --output-dir build/release-evidence
+      - name: Upload wheel, sdist, and evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: pre-release-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            build/release-evidence/artifacts/*
+            build/release-evidence/license-inventory.json
+            build/release-evidence/public-preflight.json
+            build/release-evidence/release-evidence.json
+          if-no-files-found: error
+          retention-days: 14

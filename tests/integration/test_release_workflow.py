@@ -27,6 +27,7 @@ def test_quality_workflow_has_one_full_test_matrix_and_separate_package_evidence
         "workflow_dispatch": None,
     }
     assert workflow["permissions"] == {"contents": "read"}
+    assert jobs["static-quality"]["runs-on"] == "windows-latest"
     assert tuple(matrix["os"]) == SUPPORTED_OPERATING_SYSTEMS
     assert tuple(matrix["python-version"]) == SUPPORTED_PYTHON_VERSIONS
     assert "python -m pytest" in workflow_text

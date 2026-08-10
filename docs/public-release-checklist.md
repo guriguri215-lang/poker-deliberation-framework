@@ -38,6 +38,8 @@ Markdownが必要なら`--format markdown`と`.md`出力を指定します。scr
 
 tracked worktreeがcleanな候補commitでは、公開preflightをpackage確認と同じcommit/treeへ束縛できます。
 出力先は既存内容のないignored `tmp/`または`build/`を指定します。
+候補matrixはWindows/Ubuntu × CPython 3.12/3.13です。CPython 3.11は既存の32-ULP
+weighted-combo検証を満たさず、封印済みruntime inventoryを維持するため対象外です。
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\release_readiness.py `

@@ -578,7 +578,7 @@ def _combo_tool(payload: dict[str, Any]) -> dict[str, Any]:
         combos = parse_weighted_range(
             str(payload["range"]), tuple(map(str, payload.get("dead_cards", [])))
         )
-        total_weight = math.fsum(combo.weight for combo in combos)
+        total_weight = sum(combo.weight for combo in combos)
         return {
             "range": payload["range"],
             "combo_count": len(combos),

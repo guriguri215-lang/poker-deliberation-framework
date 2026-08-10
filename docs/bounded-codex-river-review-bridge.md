@@ -41,7 +41,7 @@ subscriptionまたはAPI adapterを利用する人だけが同じpinned package�
 
 | 項目 | 固定値 |
 |---|---|
-| Python | `>=3.11`; qualification環境はCPython `3.12.13` |
+| Python | `>=3.12`; qualification環境はCPython `3.12.13` |
 | package | `openai-codex==0.144.4` |
 | bundled CLI | `openai-codex-cli-bin==0.144.4` / `codex-cli 0.144.4` |
 | license | Apache-2.0 |

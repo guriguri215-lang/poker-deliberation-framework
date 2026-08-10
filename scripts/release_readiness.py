@@ -30,7 +30,7 @@ from poker_deliberation.public_preflight import run_preflight  # type: ignore[im
 RELEASE_EVIDENCE_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
 LICENSE_INVENTORY_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
 SUPPORTED_OPERATING_SYSTEMS = ("ubuntu-latest", "windows-latest")
-SUPPORTED_PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
+SUPPORTED_PYTHON_VERSIONS = ("3.12", "3.13")
 WORKFLOW_PATH = ".github/workflows/quality.yml"
 _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _GIT_OID_PATTERN = r"^[0-9a-f]{40,64}$"
@@ -455,7 +455,7 @@ def inspect_wheel(path: Path) -> ArchiveEvidenceV1:
     metadata_consistent = (
         metadata.get("Name") == "poker-deliberation-framework"
         and metadata.get("Version") == "0.1.0"
-        and metadata.get("Requires-Python") == ">=3.11"
+        and metadata.get("Requires-Python") == ">=3.12"
         and (metadata.get("License-Expression") == "MIT" or metadata.get("License") == "MIT")
     )
     return ArchiveEvidenceV1(

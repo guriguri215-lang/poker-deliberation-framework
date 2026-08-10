@@ -110,7 +110,7 @@ P2-025Bの既存コマンドへ残します。詳細は
 
 | 項目 | 要件・確認状態 |
 |---|---|
-| Python | `pyproject.toml`ではPython 3.11以上。今回の手順はWindows 11 / CPython 3.12.13で確認。 |
+| Python | `pyproject.toml`ではPython 3.12以上。候補matrixはCPython 3.12/3.13、ローカル確認はWindows 11 / CPython 3.12.13。 |
 | OS | WindowsとUbuntuはcandidate matrix。全version・全OSのCI検証はなく、未実行行は**UNKNOWN**。 |
 | GPU | 現在のローカル経路では不要。 |
 | Network | default installと`local_only`実行には不要。依存package取得と明示したsubscription実行だけがnetworkを使う。現在のAPI adapterはlive-unqualifiedで送信前に拒否する。 |

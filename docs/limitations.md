@@ -145,8 +145,10 @@
   metadata, redacts matched values and identity candidates to fingerprints, and keeps secret/PII status
   UNKNOWN when an object, ref inventory, or supported text encoding cannot be read completely. Git
   author/committer/tagger identities are review candidates, not confirmed personal information.
-- CPython 3.11-3.13 on Windows/Ubuntu is a candidate matrix inferred from `requires-python`, not a set
-  of verified rows. Rows not executed locally or in CI remain UNKNOWN.
+- CPython 3.12-3.13 on Windows/Ubuntu is the release-candidate matrix declared by
+  `requires-python`. Rows not executed locally or in CI remain UNKNOWN.
+- CPython 3.11 is excluded from this candidate: its legacy float summation exceeded the existing
+  32-ULP weighted-combo verification contract, while RM-018A preserves the sealed runtime inventory.
 - On Windows, pytest path viability depends on the combined depth of the clone and temp paths and on
   long-path support in the OS/process configuration. The checked per-test `tmp_path` uses a short OS
   temporary root; other pytest temporary fixtures and explicit `--basetemp` paths do not establish

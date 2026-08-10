@@ -34,5 +34,5 @@ def test_quality_workflow_has_one_full_test_matrix_and_separate_package_evidence
     assert "scripts/release_readiness.py" in workflow_text
     assert "actions/upload-artifact@v4" in workflow_text
     assert workflow_text.count("ref: ${{ github.event.pull_request.head.sha || github.sha }}") == 3
-    assert "fetch-depth: 0" in workflow_text
+    assert workflow_text.count("fetch-depth: 0") == 3
     assert "--output-dir build/release-evidence" in workflow_text

@@ -31,8 +31,8 @@ LARGE_FILE_BYTES = 1_000_000
 RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
     "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
 )
-EXPECTED_ROADMAP_SCHEMA_VERSION = "14.0.0"
-ROADMAP_MODULE_SHA256 = "ef7905d9d0993f8790c303ef6ae44e5656573a630823091eeca40a206a3799af"
+EXPECTED_ROADMAP_SCHEMA_VERSION = "15.0.0"
+ROADMAP_MODULE_SHA256 = "02bd74e43f3d3dcdf76e94319c3b8bb970564d30dacc98c43560bd29a5024add"
 RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
@@ -45,7 +45,7 @@ CAPABILITY_DOCUMENT_PATHS = (
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "e5b45416bd9f07b5f02f55f80ec699f647961ab0b1aa16ca6095bcc5eb4ba87d"
+CAPABILITY_DOCUMENT_SET_SHA256 = "39330379a4d3674299ed13df5345d4002f6f565a299d6f71132ab61d79651898"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
     "6334a0426bd2ef395257ef89c79d7783cc2a42283e38cacd10c54b8815dd0747"
 )
@@ -1110,16 +1110,16 @@ def _capability_docs_check(repo: Path) -> CheckResult:
     required = {
         "README.md": [
             "docs/capabilities.md",
-            "docs/range-equity-bridge.md",
             "docs/bounded-codex-river-review-bridge.md",
             "LocalProvider",
             "OpenAIAgentsProvider",
-            "P3-016B",
             "P2-025B",
+            "P3-030E",
+            "show-bounded-river-review",
             "local_only",
             "codex_subscription",
             "openai_api",
-            "sealed actual-live qualified",
+            "現行qualificationは`UNKNOWN`",
         ],
         "docs/capabilities.md": [
             "implemented",
@@ -1130,7 +1130,8 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "versioned_nlhe_river_equity_bridge",
             "P3-016B",
             "990",
-            "sealed actual-live qualified",
+            "P3-030E",
+            "Current qualification: UNKNOWN",
         ],
         "docs/limitations.md": [
             "outbound analyze",
@@ -1141,7 +1142,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P3-016B",
             "all-in",
             "990",
-            "strict canonical V2 manifest",
+            "subscription_live_qualified=false",
         ],
         "docs/range-grammar.md": [
             "poker-deliberation.nlhe-range",
@@ -1171,12 +1172,14 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         ],
         "docs/bounded-river-review-workflow.md": [
             "P3-030D",
+            "P3-030E",
             "P3-030C",
             "P2-025B",
             "local_only",
             "ready_to_resume",
             "raw source",
             "外部solver",
+            "show-bounded-river-review",
         ],
     }
     required["docs/bounded-codex-river-review-bridge.md"] = [
@@ -1190,8 +1193,9 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "strategy-analyst",
         "effect_unknown",
         "live-unqualified",
-        "sealed actual-live qualified",
+        "candidate-bound historical",
         "strict canonical V2",
+        "subscription_live_qualified=false",
         "UNKNOWN",
     ]
     missing: list[str] = []
@@ -1257,14 +1261,12 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         readme_lines = (
             set(readme.read_text(encoding="utf-8").splitlines()) if readme.is_file() else set()
         )
-        if not any(
-            re.fullmatch(
-                rf"\*\*FACT\*\*: milestone/RMの公開状態と技術契約の正は、schema "
-                rf"{re.escape(roadmap_schema)}のpublic projectionである",
-                line.strip(),
-            )
-            for line in readme_lines
-        ):
+        expected_readme_statement = (
+            "**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema "
+            f"{roadmap_schema}の[`src/poker_deliberation/roadmap_status.json`]"
+            "(src/poker_deliberation/roadmap_status.json)です。"
+        )
+        if expected_readme_statement not in readme_lines:
             missing.append("README.md:roadmap_schema_statement")
         roadmap_doc = repo / "docs/roadmap-status.md"
         roadmap_lines = (
@@ -1491,6 +1493,8 @@ def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
     ):
         if not path.is_file():
             missing_public.append(label)
+    if len(missing_public) == 1:
+        failures.append("bridge_public_evidence:incomplete_pair")
 
     manifest: SanitizedLiveQualificationManifestV2 | None = None
     evaluation: BoundedCodexBridgeEvaluationResultV1 | None = None
@@ -1589,7 +1593,7 @@ def _codex_bridge_public_artifacts_check(repo: Path) -> CheckResult:
             "api_live_qualified": False,
             "subscription_live_qualified": status == "pass",
             "subscription_live_evidence_authority": (
-                public_manifest_path.relative_to(repo).as_posix()
+                public_manifest_path.relative_to(repo).as_posix() if status == "pass" else None
             ),
             "runtime_source_inventory_sha256": (
                 manifest.runtime_source_inventory_sha256 if manifest is not None else None

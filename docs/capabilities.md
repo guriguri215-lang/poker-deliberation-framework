@@ -35,14 +35,14 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `natural_language_or_site_parser` | **unavailable** | 一般自然言語およびsite-specific hand history parserはない。独立したbounded Japanese grammarをこの能力へ拡張しない。 |
 | `bounded_japanese_nlhe_cash_parser` | **implemented** | version 1の文書化済み日本語retrospective NLHE cash grammarを、exact UTF-8 span、6 hash確認、固定LocalProvider、限定tool、durable replayに接続する。一般自然言語・site parserではない。 |
 | `bounded_japanese_river_call_ev_review` | **implemented** | P3-030C専用admissionで、P3-030Bのriver fold完了履歴と明示確認済み単一rangeを、calculator-free source semantic replay、P3-015A ledger、P3-016B exact equity、既存`pot_odds`/`raked_call_ev`へ一度ずつ固定順で接続し、exact Fraction oracle、ULP検証、model限定call/fold比較、typed terminal replay、checkout/module/callable-origin拘束済み3 metric評価へ拘束する。tool budget拒否は独立external recordへ先行拘束する。一般戦略やGTOではない。 |
-| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。既定は`local_only`であり、このworkflow自体は非local role transportを実行しない。 |
+| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。P3-030Eは既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけをpure/read-only表示する。既定`local_only`はmodel/nonlocal runtimeを開始しない。 |
 | `confirmed_natural_language_review_intake` | **implemented** | 呼出側が作成した完全な候補を利用者がsource/candidate hashで明示確認した場合に限り、固定LocalProvider・限定tool・検証済みterminal reportへ接続する。自然言語の意味抽出やsite parserを実装したという意味ではない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `runtime_conformance_contract` | **implemented** | P2-025Aの役割inventory、assignment/context/resultのversioned contract、pure比較、verified Python product projectionを提供する。実行bridgeではない。 |
-| `local_only_runtime_mode` | **implemented** | API key、ChatGPT/Codex login、外部model、networkなしでdeterministic parser/calculator、LocalProvider、storage、replay、evaluationを利用する。 |
-| `bounded_codex_river_review_bridge` | **implemented** | **Qualification: sealed actual-live qualified.** P2-025Bはterminal verification済みP3-030C synthetic run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定して実装・qualification済みである。qualified claimはtracked strict canonical V2 manifestとpublic preflight合格に依存する。 |
-| `codex_subscription_bounded_river_review` | **implemented** | **Qualification: sealed actual-live qualified.** 保存済みChatGPT loginを使う明示経路はconfigured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。exact sealed default transportが生成したrole別attestationを持つtracked V2 manifestだけをactual-live根拠にする。 |
+| `local_only_runtime_mode` | **implemented** | API key、ChatGPT/Codex login、外部model、networkなしでdeterministic parser/calculator、LocalProvider、storage、replay、evaluation、verified report projectionを利用し、model/nonlocal runtimeを開始しない。 |
+| `bounded_codex_river_review_bridge` | **implemented** | **Current qualification: UNKNOWN.** P2-025B実装はterminal verification済みP3-030C run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定される。candidate-bound historical live evidenceはbytes不変で保存するが、current treeと一致するfresh canonical manifestがないため現行live資格は主張しない。 |
+| `codex_subscription_bounded_river_review` | **implemented** | **Current qualification: UNKNOWN.** 保存済みChatGPT loginを使う明示経路はconfigured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。過去candidateのsealed evidenceをcurrent-tree資格へ昇格せず、fresh runtime inventory・role conformance一致まで`subscription_live_qualified=false`とする。 |
 | `openai_api_bounded_river_review_adapter` | **disabled** | **Qualification: deterministic contract only / live-unqualified.** optional `openai_api` adapterはno-network contract test済みだが、price authority/hard cost stopがなく、process/network起動前にfail closedする。subscription qualificationをAPIへ拡張しない。 |
 | `codex_python_runtime_bridge` | **unavailable** | 一般Codex/Python bridgeはない。P2-025Bの別名bounded river-only bridgeを広いinteroperabilityへ拡張しない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
@@ -69,8 +69,9 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
   `undeclared`として保持する。
 - **FACT**: P2-025B限定bridgeだけは、terminal verification済みP3-030C river run、固定5 role、
   empty tool allowlist、fresh serial thread、mode-bound confirmation/resultへ限定した別artifact familyを
-  提供する。`codex_subscription`のactual-live claimはtracked strict canonical V2 manifestのsealed evidenceと
-  public preflight合格に限定される。通常経路は別実行面のままであり、一般bridgeではない。
+  提供する。candidate-bound historical evidenceは保存するが、current treeと一致するfresh strict canonical
+  V2 manifestがpublic preflightに合格するまで現行資格は`UNKNOWN`である。通常経路は別実行面のままであり、
+  一般bridgeではない。
 
 この数は品質指標ではありません。contract testは実装から件数を再計算し、文書との差を検出します。
 
@@ -84,8 +85,9 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 - P3-030Cはそのgrammarをriverのterminal fold履歴だけに絞り、別入力の単一rangeに対する
   heads-up exact equityとzero-rake single-decision call EVだけを比較する。複数range、multiway、
   earlier street、all-in、side pot、rake、ante、将来actionは拒否する。
-- P3-030DはP3-030CとP2-025Bを再実装せず、明示確認、状態保存、部分完了からのresume、read-only
-  replayだけを追加する。`codex_subscription`または`openai_api`を選んでもrole実行は既存の明示CLIへ残す。
+- P3-030DはP3-030CとP2-025Bを再実装せず、明示確認、状態保存、部分完了からのresume、provider/modelを
+  再実行しないartifact replayだけを追加する。`codex_subscription`または`openai_api`を選んでもrole実行は
+  既存の明示CLIへ残す。
 - toolはpayload/work/output capを持つが、in-process実行を強制停止するOS sandboxではない。
 - solver実行、収束、対象game/rake/stackの一致がない結果をGTO・均衡・正確なrangeと表示しない。
 
@@ -104,13 +106,16 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 `.pytest-tmp/s-<process-hex>-<nonce>/`へ分離します。呼出側の明示`--basetemp`は上書きしません。
 固定共有ディレクトリを再利用しないため、並行sessionが互いのtempを開始時に削除しません。
 
-- **ASSUMPTION**: `requires-python >=3.11`を根拠に、候補matrixはCPython 3.11-3.13、Windowsと
-  Ubuntuとする。
-- **FACT**: 今回ローカルで実行する環境はWindows / CPython 3.12である。
+- **FACT**: package metadataは`requires-python >=3.11`である。これは単独では検証済みmatrixを意味しない。
+- **FACT**: tracked GitHub Actions matrixはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを
+  実行する。Windows 3.13でstatic gate、Ubuntu 3.13でreproducible package evidenceも実行する。
+  PR head `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`のActions run `31462799513`は6 jobすべて合格した。
+- **FACT**: RM-018Aのbuild/install、license inventory、artifact SHA-256、offline preflightを
+  candidate commitへ結ぶ実装とworkflowが存在する。任意checkoutの`doctor`はcandidate evidenceではない。
 - **FACT**: 自動temp名はWindowsのpath消費を抑えるため短縮し、session固有性を維持する。
 - **UNKNOWN**: 深いclone先・深い明示`--basetemp`・long-path設定の異なるWindows環境。これらは
   `FileNotFoundError`等のOS path制約に影響され得るため、常時対応とは表示しない。
-- **UNKNOWN**: ローカルで実行していないOS/Python行、release candidate全体、remote CIの結果。
+- **UNKNOWN**: この文書を読む任意のworking treeに対応するcandidate-specific run結果、公開artifact、release、tag。
 - **UNKNOWN**: coverage thresholdは人間承認値がないため、現在のbaselineでは設定しない。
 
 公開判断は[公開前チェックリスト](public-release-checklist.md)を参照してください。

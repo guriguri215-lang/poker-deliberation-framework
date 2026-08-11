@@ -3,8 +3,8 @@
 この文書は`src/poker_deliberation/roadmap_status.json`から生成する公開projectionです。
 公開中の実装状態、依存関係、能力scope、受入条件、milestone、decision rationaleを示します。
 
-- schema version: `14.0.0`
-- source SHA-256: `35dccb720d8af42b9f0660f62761e0964552ebc14ce7740644f5d0c986c88640`
+- schema version: `15.0.0`
+- source SHA-256: `5ebe64254324f5a22489c6fecf3cd3f66a7454e560482cb78aa4731347a597d1`
 - `ready`は依存関係だけから計算し、decision gateの完了を意味しません。
 - release readinessはRM件数から推定せず、candidate固有のbuild/hash/matrix証拠を別途要求します。
 
@@ -46,7 +46,7 @@
 | `P2-028A` | `RM-028` | `in_progress` | `P2-011B`, `P2-012B`, `P2-013B`, `P2-027B` | Approved isolation boundary, durable external-effect state, cancellation, and reconciliation. | The approved Windows-first repository-owned synthetic helper slice is implemented and under qualification; arbitrary external code, provider/solver adapters, remote cancellation, and OS-enforced network isolation remain outside the implemented boundary. |
 | `P2-029A` | `RM-029` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-027B` | Offline input safety, redaction integrity, verified ICM tolerance, concise adjudicated reporting, and ordinary product-path dogfood. | The offline Python product path vertical slice is implemented, contract-tested, and dogfooded through verified terminal storage without external provider or solver execution. |
 | `P2-025A` | `RM-025` | `completed` | `P2-012B`, `P2-013B`, `P2-024A`, `P2-029A` | Versioned cross-runtime role, assignment, context, tool allowlist, approval, result, error, execution-audit, canonical fixture, and offline projection conformance without an execution bridge. | The strict conformance-only contract, versioned fixtures, and verified offline Python product projection are implemented without a runtime bridge. |
-| `P2-025B` | `RM-025` | `completed` | `P2-024A`, `P2-025A`, `P3-017A`, `P3-030C` | One terminally verified P3-030C river call-or-fold run projected into five fresh, serial, read-only roles with exact outbound confirmation, mode-bound identity, strict structured results, durable additive replay, no calculator delegation, no provider/model fallback, and no external solver; local_only requires no Codex or API, codex_subscription uses saved ChatGPT/Codex authentication, and the optional openai_api adapter remains default-disabled and live-unqualified. | The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete; the bounded saved-subscription route is sealed actual-live qualified by the tracked strict canonical V2 manifest and public preflight, while the optional API route remains disabled and live-unqualified. |
+| `P2-025B` | `RM-025` | `completed` | `P2-024A`, `P2-025A`, `P3-017A`, `P3-030C` | One terminally verified P3-030C river call-or-fold run projected into five fresh, serial, read-only roles with exact outbound confirmation, mode-bound identity, strict structured results, durable additive replay, no calculator delegation, no provider/model fallback, and no external solver; local_only requires no Codex or API, codex_subscription uses saved ChatGPT/Codex authentication, and the optional openai_api adapter remains default-disabled and live-unqualified. | The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete. Candidate-bound historical saved-subscription evidence is preserved, but current-tree qualification is UNKNOWN until a fresh matching canonical manifest passes public preflight; the optional API route remains disabled and live-unqualified. |
 | `P3-014A` | `RM-014` | `completed` | `RM-006`, `RM-012` | Repository-owned generic key-value grammar version 1, strict byte and Unicode behavior, bounded stable diagnostics, exact source and normalized-hand provenance, typed product persistence and reader verification, compatibility projection, canonical fixtures, and CLI-to-hand_validator integration; supported site none, with no natural-language or site-specific parser. | The approved strict versioned normalization vertical slice, typed provenance, compatibility boundaries, product reader verification, fixtures, and declared gates are implemented. |
 | `P3-015A` | `RM-015` | `completed` | `P3-014A` | Repository-owned generic_nlhe_cash_no_rake_v1, strict profile selection, exact caller-unit integer ledger, uncalled returns, contribution layers, eligibility, full-raise reopening, conservation, and an independent oracle through the existing ToolResult product path; supported site none. | The approved generic no-rake NLHE cash profile, exact side-pot ledger, independent oracle, product integration, documentation, and declared tests are implemented. |
 | `P3-016A` | `RM-016` | `completed` | `RM-006`, `P3-014A` | poker-deliberation.nlhe-range grammar version 1.0.0 for one provenance-qualified opponent range using explicit combos, pairs, canonical descending suited or offsuit classes, optional decimal @ weights represented as integer millionths, pre-blocker overlap rejection, exact hand and action-prefix binding, automatic range_validate then combos execution, and immutable/terminal semantic replay; no plus, intervals, exclusions, natural-language inference, external source import, equity integration, solver, or GTO claim. | The approved bounded grammar, provenance and game-condition binding, exact validation tool, canonical combo product slice, reader replay, documentation, fixtures, and declared tests are implemented. |
@@ -56,6 +56,7 @@
 | `P3-030B` | `RM-030` | `completed` | `P3-030A`, `P3-015A` | Version 1 deterministic parsing for one documented finite Japanese retrospective 2-6 player NLHE cash grammar with integer chip units, zero ante and rake, at most 64 actions, exact UTF-8 half-open source spans, explicit focal call-or-fold decision, hand_validator then hand_pot_ledger then pot_odds execution, six independently confirmed hash domains, LocalProvider-only adjudication, durable provenance replay, and exact-evidence evaluation; no general natural-language or site parser, OCR, tournament, focal all-in or side-pot decision, range inference, external provider or model, runtime bridge, external solver, GTO, or equilibrium claim. | The approved bounded Japanese grammar, exact source-span evidence, six-hash confirmation contract, fixed local product path, durable provenance replay, evaluation fixture, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
 | `P3-030C` | `RM-030` | `completed` | `P2-024A`, `P3-015A`, `P3-016B`, `P3-017A`, `P3-030B` | One confirmed P3-030B river focal decision and one separate provenance-qualified VersionedRangeDefinitionV1 for the facing actor, exact P3-015A no-rake ledger, pot_odds, P3-016B exact-only heads-up river equity, Fraction required-equity and call-EV oracles, raked_call_ev with rake_percent zero, model-limited call/fold comparison, exact LocalProvider role/context/tool controls, typed terminal replay, and deterministic exact-evidence evaluation; no general natural language, actual Codex/Python runtime bridge, multiple ranges, multiway or earlier-street equity, Monte Carlo, all-in, side pot, rake, ante, external solver, GTO, equilibrium, or unconditional recommendation. | The approved bounded river call-or-fold integration, twelve-hash confirmation, exact seven-tool local path, Fraction and ULP oracles, context and provenance controls, typed terminal replay, deterministic evaluation, documentation, and declared tests are implemented and passed the canonical local acceptance gates. |
 | `P3-030D` | `RM-030` | `completed` | `P2-025B`, `P3-030C` | One repository-bound resumable workflow that composes the unchanged P3-030C bounded Japanese river call-EV path with the unchanged P2-025B five-role bridge controller, preserves all twelve P3-030C confirmation hashes, stores no duplicate raw source in its workflow or bridge namespace, defaults to local_only, prepares but never executes nonlocal role transport, and provides canonical status, resume, replay, linkage, CLI, and deterministic exact-evidence evaluation; no general natural-language or site parser, OCR, new range or calculator semantics, automatic role confirmation, live provider execution, external solver, GTO, equilibrium, or general Codex/Python interoperability. | The bounded workflow plan, twelve-hash confirmation, local deterministic terminal run, fixed five-role bridge preparation, canonical linkage, status/resume/replay surfaces, local-data separation checks, deterministic five-metric evaluation, documentation, and declared tests are implemented. |
+| `P3-030E` | `RM-030` | `completed` | `P3-030D` | One pure read-only projection of the existing verified FinalReport plus workflow and bridge hashes/state for a P3-030D run, with report-writer output limited to stored conclusion codes and evidence hashes and local_only starting no model or nonlocal runtime; no parser, calculator, range, provider, solver, role authority, live qualification, new poker fact, or strategy recommendation expansion. | The pure read-only verified report projection, JSON/summary/Markdown CLI view, artifact correlation, local-only non-execution boundary, documentation, and declared tests are implemented. |
 
 ## Current RM state
 
@@ -78,7 +79,7 @@
 | `RM-015` | Hand rule profiles and side-pot accounting | `phase-3` | `P2` | `in_progress` | `RM-014` | `n/a` | `required` |
 | `RM-016` | Range grammar and provenance | `phase-3` | `P2` | `in_progress` | `RM-006`, `RM-014` | `n/a` | `required` |
 | `RM-017` | Executable evaluation harness | `phase-3` | `P1` | `in_progress` | `RM-006`, `RM-007`, `RM-012` | `n/a` | `required` |
-| `RM-018A` | Pre-release readiness | `pre-release` | `P1` | `planned` | `RM-001`, `RM-002`, `RM-003`, `RM-004`, `RM-005`, `RM-006`, `RM-007`, `RM-008`, `RM-009`, `RM-023` | `n/a` | `required` |
+| `RM-018A` | Pre-release readiness | `pre-release` | `P1` | `completed` | `RM-001`, `RM-002`, `RM-003`, `RM-004`, `RM-005`, `RM-006`, `RM-007`, `RM-008`, `RM-009`, `RM-023` | `n/a` | `required` |
 | `RM-018B` | Stable release gate | `stable-release` | `P1` | `planned` | `RM-018A`, `RM-010`, `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-027` | `n/a` | `required` |
 | `RM-019` | Decision-gated OpenAI provider | `phase-4` | `P2` | `planned` | `RM-010`, `RM-011`, `RM-012`, `RM-013`, `RM-024`, `RM-028` | `n/a` | `required` |
 | `RM-020` | External solver qualification adapter | `phase-4` | `P2` | `planned` | `RM-011`, `RM-012`, `RM-013`, `RM-017`, `RM-028` | `n/a` | `required` |
@@ -550,30 +551,32 @@
 
 ### RM-018A — Pre-release readiness
 
-- Status: `planned`
-- Status reason: The phase order is corrected, but build, matrix, license, and artifact evidence do not yet exist.
+- Status: `completed`
+- Status reason: Reproducible wheel/sdist build and isolated project-wheel smoke in a venv with qualified locked base site-packages, dependency license inventory, artifact SHA-256, offline preflight, and candidate-bound evidence generation are implemented. GitHub Actions run 31462799513 passed all six jobs for PR head fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf across Ubuntu/Windows and Python 3.12/3.13 plus static and package-evidence jobs; arbitrary checkouts still require their own candidate evidence.
 - Objective: Establish reproducible build and distribution evidence after Phase 1 and before any pre-release tag.
 - Capabilities:
   - none
 - Targets:
-  - CI
-  - build metadata
-  - wheel/sdist smoke
-  - license inventory
-  - release evidence manifest
+  - .github/workflows/quality.yml
+  - scripts/release_readiness.py
+  - pyproject.toml
+  - requirements.lock
+  - LICENSE
+  - docs/public-release-checklist.md
 - Acceptance criteria:
-  - Approved OS/Python matrix, clean build/install, wheel/sdist contents, CLI/package-data smoke, license inventory, artifact SHA-256, and offline preflight are tied to one candidate commit.
+  - The tracked GitHub Actions matrix runs full pytest on Windows/Ubuntu with Python 3.12/3.13, static gates on Windows 3.13, and reproducible package evidence on Ubuntu 3.13.
+  - Clean wheel/sdist builds, a venv with separately qualified locked base site-packages, no-index/no-deps project-wheel install, CLI/package-data smoke, dependency license inventory, artifact SHA-256, and offline preflight are tied to one candidate commit/tree.
+  - Roadmap completion and an arbitrary checkout doctor result are not accepted as candidate evidence, and no release, tag, or package publication is implied.
 - Tests:
-  - CI matrix
-  - isolated install
-  - package data
-  - dependency/license check
-  - artifact hash verification
+  - tests/unit/test_release_readiness.py
+  - tests/integration/test_release_workflow.py
 - Decision gate rationale:
   - supported matrix
   - release channel
   - distribution target
   - tag operation
+- Relations:
+  - RM-018A completes the reproducible pre-release evidence mechanism and its verified CI matrix; candidate-specific evidence remains separate in roadmap_summary and must be regenerated for each checkout selected for release.
 
 ### RM-018B — Stable release gate
 
@@ -603,7 +606,7 @@
 ### RM-019 — Decision-gated OpenAI provider
 
 - Status: `planned`
-- Status reason: P2-025B completed and sealed-actual-live-qualified a separately named river-only saved-subscription path, but does not start the broad provider milestone. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.
+- Status reason: P2-025B completed a separately named river-only saved-subscription path and preserves candidate-bound historical sealed evidence, but current-tree qualification is UNKNOWN and the bounded path does not start the broad provider milestone. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.
 - Objective: Connect an external provider only after data, model, trace, cost, timeout, and approval boundaries are authorized.
 - Capabilities:
   - openai_agents_outbound
@@ -935,13 +938,13 @@
   - tests/characterization/test_product_run_compatibility.py
 - Relations:
   - Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.
-  - At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone implemented only the separately qualified bounded bridge.
+  - At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone implemented only the bounded bridge, with candidate-bound historical qualification evidence.
 
 ### RM-030 — Natural-language canonical intake and adjudicated report integration
 
 - Status: `in_progress`
-- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, and P3-030D composes that slice with P2-025B through a resumable local-first workflow without widening either contract. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.
-- Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.
+- Status reason: P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, P3-030D composes that slice with P2-025B through a resumable local-first workflow, and P3-030E adds a pure read-only view of its existing verified report and correlation hashes/state without widening authority. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.
+- Objective: Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, provenance-bound reports, and pure verified report views without implying a general natural-language parser.
 - Capabilities:
   - confirmed_natural_language_review_intake
   - bounded_japanese_nlhe_cash_parser
@@ -964,6 +967,7 @@
   - src/poker_deliberation/bounded_river_review_workflow_models.py
   - src/poker_deliberation/bounded_river_review_workflow.py
   - src/poker_deliberation/bounded_river_review_workflow_evaluation.py
+  - src/poker_deliberation/reporting/bounded_river_review.py
   - src/poker_deliberation/orchestrator.py
   - src/poker_deliberation/cli.py
   - src/poker_deliberation/storage/terminal_canonical.py
@@ -973,6 +977,8 @@
   - tests/fixtures/bounded_river_review_workflow/v1/scenarios.json
   - tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt
   - tests/fixtures/bounded_river_review_workflow/v1/range.json
+  - examples/bounded_river_review_source_ja.txt
+  - examples/bounded_river_review_range.json
   - scripts/run_confirmed_review_evaluation.py
   - scripts/run_bounded_natural_language_evaluation.py
   - scripts/run_bounded_river_call_ev_evaluation.py
@@ -1000,6 +1006,9 @@
   - P3-030D status, resume, and replay verify the same canonical preparation, confirmation, terminal source, bridge source projection, and linkage; an interruption after the P3 terminal run can resume from verified storage without rerunning the parser or calculators.
   - P3-030D defaults to local_only, creates no model runtime directory, and only prepares the five-role bridge plan; nonlocal role confirmation and execution remain in the existing explicit P2-025B commands and are never started by the workflow.
   - The repository-owned P3-030D evaluation separately scores confirmation binding, exact decision math, runtime mode and fixed roles, resume and replay, and local-data separation, with acceptance only when all five metrics pass.
+  - P3-030E reads only a terminally verified P3-030D artifact chain and projects the existing verified FinalReport plus workflow and bridge hashes/state into deterministic JSON, summary, or Markdown without mutating storage or rerunning the parser, calculators, provider, or model.
+  - P3-030E report-writer output is limited to stored conclusion codes and evidence hashes; local_only starts no model or nonlocal runtime, and no parser, calculator, range, provider, solver, role authority, live qualification, new poker fact, or strategy recommendation is added.
+  - The public examples preserve the evaluated source fixture bytes exactly and the canonical compact range fixture bytes without a trailing line feed so strict canonical JSON parsing succeeds.
 - Tests:
   - tests/unit/test_confirmed_review_contract.py
   - tests/integration/test_confirmed_review_cli.py
@@ -1024,6 +1033,8 @@
   - tests/integration/test_bounded_river_review_workflow.py
   - tests/integration/test_bounded_river_review_cli.py
   - tests/integration/test_bounded_river_review_workflow_evaluation.py
+  - tests/golden/test_bounded_river_review_report_view.py
+  - tests/unit/test_public_preflight.py
 - Decision gate rationale:
   - Any expansion beyond the P3-030B bounded Japanese grammar into general natural-language, model-assisted, site-specific, or OCR parsing requires a new Decision gate covering ambiguity, source rights, privacy, and parser-quality evaluation
   - Any P2-025B expansion beyond the separately approved river-only Codex bridge, outbound fields, authentication modes, budgets, tool disablement, and reconciliation contract
@@ -1035,6 +1046,7 @@
   - At P3-030A completion, P2-028A had not started and was not activated by that local-only path.
   - P3-030C reuses P3-015A and P3-016B without widening them; multiple ranges, multiway or earlier-street equity, external solver, GTO, and equilibrium remain outside this milestone.
   - P3-030D composes P3-030C and P2-025B through canonical local workflow state only; it does not alter parser, range, calculator, role, outbound, runtime-mode, qualification, or live-execution authority.
+  - P3-030E is downstream of P3-030D and projects only the already verified FinalReport and workflow/bridge correlation state; it adds no execution, interpretation, or authority surface.
 
 ## Synchronization contract
 

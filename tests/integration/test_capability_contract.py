@@ -49,6 +49,7 @@ def test_capability_matrix_matches_code_and_doctor() -> None:
 
 def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() -> None:
     states = {item.capability_id: item.state for item in CAPABILITIES}
+    summaries = {item.capability_id: item.summary for item in CAPABILITIES}
     descriptions = default_registry().describe()
 
     assert states["phase_1_hardening"] == "implemented"
@@ -71,6 +72,12 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["bounded_japanese_nlhe_cash_parser"] == "implemented"
     assert states["bounded_japanese_river_call_ev_review"] == "implemented"
     assert states["bounded_river_review_workflow"] == "implemented"
+    assert "P3-030E" in summaries["bounded_river_review_workflow"]
+    assert "pure read-only view" in summaries["bounded_river_review_workflow"]
+    assert (
+        "current-tree live qualification is UNKNOWN"
+        in summaries["bounded_codex_river_review_bridge"]
+    )
     assert states["natural_language_or_site_parser"] == "unavailable"
     assert states["repository_synthetic_isolated_job_control"] == "implemented"
     assert states["process_sandbox"] == "unavailable"
@@ -109,7 +116,9 @@ def test_quality_and_public_preflight_commands_are_documented() -> None:
         assert command in capabilities
     assert "docs/capabilities.md" in readme
     assert "scripts\\public_preflight.py" in checklist
-    assert "CPython 3.11-3.13" in capabilities
+    assert "requires-python >=3.11" in capabilities
+    assert "Windows/Ubuntu" in capabilities
+    assert "CPython 3.12/3.13" in capabilities
     assert "UNKNOWN" in capabilities
 
 

@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
-ROADMAP_SCHEMA_VERSION = "14.0.0"
+ROADMAP_SCHEMA_VERSION = "15.0.0"
 __all__ = [
     "ROADMAP_RESOURCE",
     "ROADMAP_SCHEMA_VERSION",
@@ -84,6 +84,7 @@ EXPECTED_IMPLEMENTATION_MILESTONES = {
     "P3-030B",
     "P3-030C",
     "P3-030D",
+    "P3-030E",
 }
 # Compatibility alias for callers that imported the schema 4.x name.
 EXPECTED_PHASE_2_MILESTONES = EXPECTED_IMPLEMENTATION_MILESTONES
@@ -129,7 +130,7 @@ _RM029_STALE_ACTUAL_BRIDGE_RELATION = (
 _RM029_HISTORICAL_ACTUAL_BRIDGE_RELATION = (
     "At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required "
     "a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone "
-    "implemented only the separately qualified bounded bridge."
+    "implemented only the bounded bridge, with candidate-bound historical qualification evidence."
 )
 MILESTONE_FIELDS = {
     "id",
@@ -558,8 +559,18 @@ def validate_roadmap_update(
 
 def _repository_reference(reference: str) -> str | None:
     raw = reference.split("::", 1)[0].replace("\\", "/").rstrip("/")
-    path_prefixes = ("docs/", "evals/", "scripts/", "src/", "tests/", "tools/")
-    if raw == "pyproject.toml" or raw.startswith(path_prefixes):
+    root_files = {"LICENSE", "pyproject.toml", "requirements.lock"}
+    path_prefixes = (
+        ".github/workflows/",
+        "docs/",
+        "evals/",
+        "examples/",
+        "scripts/",
+        "src/",
+        "tests/",
+        "tools/",
+    )
+    if raw in root_files or raw.startswith(path_prefixes):
         return raw
     return None
 
@@ -572,14 +583,13 @@ def validate_repository_evidence(
     commit_paths: dict[str, set[str]] | None = None,
     changed_paths: dict[str, set[str]] | None = None,
 ) -> None:
-    """Validate current-tree paths supporting completed public roadmap claims."""
+    """Validate tracked current-tree paths and completed public roadmap evidence."""
 
     del known_commits, commit_paths, changed_paths
     validate_roadmap(document)
     root = repository_root.resolve()
     for item in roadmap_items(document):
-        if item["status"] != "completed":
-            continue
+        completed = item["status"] == "completed"
         references = _require_string_list(item["targets"], "targets") + _require_string_list(
             item["tests"], "tests"
         )
@@ -593,7 +603,9 @@ def validate_repository_evidence(
             except ValueError as exc:
                 raise ValueError(f"public roadmap path escapes repository: {reference}") from exc
             if not candidate.exists():
-                raise ValueError(f"public roadmap path does not exist: {reference}")
+                if completed:
+                    raise ValueError(f"public roadmap path does not exist: {reference}")
+                continue
             if tracked_paths is not None:
                 tracked = relative in tracked_paths
                 if candidate.is_dir():

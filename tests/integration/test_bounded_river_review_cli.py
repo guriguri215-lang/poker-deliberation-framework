@@ -2,18 +2,38 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
+from poker_deliberation.bounded_river_review_workflow_models import (
+    BoundedRiverReviewReportViewV1,
+)
 from poker_deliberation.cli import main
 from poker_deliberation.codex_bridge import product as bridge_product
+from poker_deliberation.reporting import (
+    render_bounded_river_review_markdown,
+    render_bounded_river_review_summary,
+)
 from poker_deliberation.storage.revision_canonical import canonical_json_bytes
 from tests.bounded_river_call_ev_support import range_definition, river_source
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _tree_snapshot(root: Path) -> tuple[tuple[str, ...], dict[str, bytes]]:
+    directories = tuple(
+        sorted(item.relative_to(root).as_posix() for item in root.rglob("*") if item.is_dir())
+    )
+    files = {
+        item.relative_to(root).as_posix(): item.read_bytes()
+        for item in root.rglob("*")
+        if item.is_file()
+    }
+    return directories, files
 
 
 def test_cli_runs_complete_local_only_workflow(
@@ -129,6 +149,64 @@ def test_cli_runs_complete_local_only_workflow(
         ):
             assert main([command, *common]) == 0
             assert json.loads(capsys.readouterr().out) == completed
+
+        api_key_marker = "private-api-key-marker"
+        monkeypatch.setenv("OPENAI_API_KEY", api_key_marker)
+
+        def unexpected_network(*args, **kwargs):
+            raise AssertionError("show must not open a network connection")
+
+        def unexpected_write(*args, **kwargs):
+            raise AssertionError("show must not invoke a filesystem write primitive")
+
+        monkeypatch.setattr(socket, "create_connection", unexpected_network)
+        monkeypatch.setattr(bridge_product.tempfile, "TemporaryDirectory", unexpected_write)
+        monkeypatch.setattr(Path, "mkdir", unexpected_write)
+        monkeypatch.setattr(Path, "write_bytes", unexpected_write)
+        before_show = _tree_snapshot(workflow_root)
+        assert main(["show-bounded-river-review", *common, "--format", "json"]) == 0
+        report_view_json = capsys.readouterr().out
+        report_view_payload = json.loads(report_view_json)
+        assert report_view_payload["state"] == "completed_local_only"
+        assert report_view_payload["bridge_mode"] == "local_only"
+        assert report_view_payload["completed_roles"] == []
+        assert report_view_payload["source_run_id"] == "run-workflow-cli"
+        assert report_view_payload["bridge_run_id"] == "bridge-workflow-cli"
+        assert report_view_payload["report_writer_additive_evidence"] == []
+        assert {
+            "plan_sha256",
+            "confirmation_sha256",
+            "linkage_sha256",
+            "source_terminal_manifest_sha256",
+            "source_terminal_inventory_sha256",
+            "bridge_manifest_sha256",
+            "bridge_inventory_sha256",
+            "final_report_artifact_sha256",
+        }.issubset(report_view_payload)
+        report_view = BoundedRiverReviewReportViewV1.model_validate_json(report_view_json)
+        rendered_outputs = [report_view_json]
+        for format_name, renderer in (
+            ("summary", render_bounded_river_review_summary),
+            ("markdown", render_bounded_river_review_markdown),
+        ):
+            assert (
+                main(
+                    [
+                        "show-bounded-river-review",
+                        *common,
+                        "--format",
+                        format_name,
+                    ]
+                )
+                == 0
+            )
+            rendered = capsys.readouterr().out
+            assert rendered == renderer(report_view) + "\n"
+            rendered_outputs.append(rendered)
+        assert _tree_snapshot(workflow_root) == before_show
+        assert all(api_key_marker not in output for output in rendered_outputs)
+        assert all(str(source_path) not in output for output in rendered_outputs)
+        assert all(source.decode("utf-8") not in output for output in rendered_outputs)
     finally:
         if workflow_root.exists():
             shutil.rmtree(workflow_root)

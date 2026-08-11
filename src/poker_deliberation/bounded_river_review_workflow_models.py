@@ -7,7 +7,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from poker_deliberation.codex_bridge.models import BridgeRole, RuntimeAuthModeV1
+from poker_deliberation.codex_bridge.models import (
+    BridgeConclusionCode,
+    BridgeRole,
+    BridgeTerminalStatus,
+    RuntimeAuthModeV1,
+)
+from poker_deliberation.schemas import FinalReport
 
 BOUNDED_RIVER_REVIEW_WORKFLOW_SCHEMA_VERSION = "1.0.0"
 BOUNDED_RIVER_REVIEW_WORKFLOW_MAX_ARTIFACT_BYTES = 1_000_000
@@ -127,9 +133,55 @@ class BoundedRiverReviewWorkflowStatusV1(_WorkflowModel):
     next_action: WorkflowNextAction
 
 
+class BoundedRiverReviewReportWriterEvidenceV1(_WorkflowModel):
+    """One validated report-writer conclusion/evidence-hash pair."""
+
+    conclusion_code: BridgeConclusionCode
+    referenced_evidence_sha256: str = Field(pattern=_SHA256_PATTERN)
+
+
+class BoundedRiverReviewReportViewV1(_WorkflowModel):
+    """Read-only projection of one fully linked bounded river review."""
+
+    schema_version: Literal["1.0.0"] = "1.0.0"
+    contract_id: Literal["poker-bounded-river-review-report-view"] = (
+        "poker-bounded-river-review-report-view"
+    )
+    workflow_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    state: WorkflowState
+    bridge_mode: RuntimeAuthModeV1
+    bridge_status: BridgeTerminalStatus
+    completed_roles: tuple[BridgeRole, ...] = ()
+    source_run_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    bridge_run_id: str = Field(pattern=_PORTABLE_ID_PATTERN)
+    plan_sha256: str = Field(pattern=_SHA256_PATTERN)
+    confirmation_sha256: str = Field(pattern=_SHA256_PATTERN)
+    linkage_sha256: str = Field(pattern=_SHA256_PATTERN)
+    source_terminal_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    source_terminal_inventory_sha256: str = Field(pattern=_SHA256_PATTERN)
+    bridge_manifest_sha256: str = Field(pattern=_SHA256_PATTERN)
+    bridge_inventory_sha256: str = Field(pattern=_SHA256_PATTERN)
+    final_report_artifact_sha256: str = Field(pattern=_SHA256_PATTERN)
+    report_writer_additive_evidence: tuple[BoundedRiverReviewReportWriterEvidenceV1, ...] = ()
+    final_report: FinalReport
+
+    @model_validator(mode="after")
+    def exact_report_and_optional_writer_evidence(
+        self,
+    ) -> BoundedRiverReviewReportViewV1:
+        if self.final_report.run_id != self.source_run_id:
+            raise ValueError("BRW_E_REPORT_BINDING")
+        writer_completed = BridgeRole.REPORT_WRITER in self.completed_roles
+        if writer_completed != bool(self.report_writer_additive_evidence):
+            raise ValueError("BRW_E_REPORT_WRITER")
+        return self
+
+
 __all__ = [
     "BOUNDED_RIVER_REVIEW_WORKFLOW_MAX_ARTIFACT_BYTES",
     "BOUNDED_RIVER_REVIEW_WORKFLOW_SCHEMA_VERSION",
+    "BoundedRiverReviewReportViewV1",
+    "BoundedRiverReviewReportWriterEvidenceV1",
     "BoundedRiverReviewWorkflowLinkageV1",
     "BoundedRiverReviewWorkflowPlanV1",
     "BoundedRiverReviewWorkflowStatusV1",

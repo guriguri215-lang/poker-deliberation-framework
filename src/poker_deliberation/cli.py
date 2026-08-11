@@ -59,6 +59,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
 )
 from poker_deliberation.bounded_river_review_workflow import (
     bounded_river_review_confirmation_preview,
+    bounded_river_review_report_view,
     bounded_river_review_workflow_status,
     confirm_bounded_river_review_workflow,
     prepare_bounded_river_review_workflow,
@@ -100,7 +101,12 @@ from poker_deliberation.normalization import (
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider, OpenAIAgentsProvider
 from poker_deliberation.range_models import VersionedRangeDefinitionV1
-from poker_deliberation.reporting import render_markdown, render_summary
+from poker_deliberation.reporting import (
+    render_bounded_river_review_markdown,
+    render_bounded_river_review_summary,
+    render_markdown,
+    render_summary,
+)
 from poker_deliberation.roadmap import roadmap_summary
 from poker_deliberation.schemas import CanonicalHand, CaseInput, Claim, EpistemicLabel, FinalReport
 from poker_deliberation.security import redact_sensitive
@@ -121,6 +127,7 @@ _BOUNDED_RIVER_REVIEW_COMMANDS = frozenset(
         "status-bounded-river-review",
         "resume-bounded-river-review",
         "replay-bounded-river-review",
+        "show-bounded-river-review",
     }
 )
 
@@ -129,6 +136,14 @@ def _configure_output() -> None:
     reconfigure = getattr(sys.stdout, "reconfigure", None)
     if reconfigure is not None:
         reconfigure(encoding="utf-8")
+
+
+def _bounded_river_cli_error_code(exc: ValueError) -> str:
+    code = str(exc)
+    suffix = code.removeprefix("BRW_E_")
+    if suffix != code and suffix and suffix == suffix.upper() and suffix.replace("_", "").isalnum():
+        return code
+    return "BRW_E_SCHEMA"
 
 
 def _read_json(path: str) -> dict[str, Any]:
@@ -556,6 +571,12 @@ def build_parser() -> argparse.ArgumentParser:
         river_workflow.add_argument("--workflow-id", required=True)
         river_workflow.add_argument("--repository-root", default=".")
         river_workflow.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    show_river_workflow = subparsers.add_parser("show-bounded-river-review")
+    show_river_workflow.add_argument("--workflow-root", required=True)
+    show_river_workflow.add_argument("--workflow-id", required=True)
+    show_river_workflow.add_argument("--repository-root", default=".")
+    show_river_workflow.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
 
     prepare_bridge = subparsers.add_parser("prepare-bounded-codex-bridge")
     prepare_bridge.add_argument("--source-run-id", required=True)
@@ -1103,6 +1124,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             _emit(workflow_status, args.format)
             return 0
+        if args.command == "show-bounded-river-review":
+            report_view = bounded_river_review_report_view(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+            )
+            if args.format == "json":
+                rendered_report_view: object = report_view
+            elif args.format == "summary":
+                rendered_report_view = render_bounded_river_review_summary(report_view)
+            else:
+                rendered_report_view = render_bounded_river_review_markdown(report_view)
+            _emit(rendered_report_view, args.format)
+            return 0
         if args.command == "prepare-bounded-codex-bridge":
             auth_mode = RuntimeAuthModeV1(args.auth_mode)
             bridge_read = prepare_product_bridge(
@@ -1392,7 +1428,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
         return 2
     except (ValueError, json.JSONDecodeError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
+        if getattr(args, "command", None) in _BOUNDED_RIVER_REVIEW_COMMANDS:
+            code = _bounded_river_cli_error_code(exc)
+            print(f"error: {code}", file=sys.stderr)
+        else:
+            print(f"error: {exc}", file=sys.stderr)
         return 2
 
 

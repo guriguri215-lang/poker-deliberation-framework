@@ -13,6 +13,11 @@
   比較はそのrangeとno-rake/no-future-betting modelに条件付けたcounterfactual call EVであり、
   実戦rangeの正確性、一般戦略、無条件の推奨、GTO、均衡を意味しない。P3-030B grammarはterminal
   foldを必要とするため、実際のcallで終わる履歴をP3-030Cのために拡張していない。
+- P3-030Dは既存P3-030C terminal runとP2-025B bridge planを状態・hashで結ぶだけであり、
+  parser、calculator、range、provider、solver、role authorityを追加しない。P3-030Eの
+  `show-bounded-river-review`も既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけを
+  pure/read-only projectionとして表示する。report-writerに許されるのは保存済みconclusion codeと
+  evidence hashの投影だけで、新しい数値、range、助言、GTO/equilibrium主張を生成しない。
 - P3-030Aの確認済みレビュー入力は、一般自然言語parserではない。呼出側が完全な
   `CanonicalHand`と任意の単一`VersionedRangeDefinitionV1`を提示し、利用者または検証済み
   application authorityがsource/candidate hashを明示確認した場合だけ、retrospectiveかつ
@@ -145,8 +150,11 @@
   metadata, redacts matched values and identity candidates to fingerprints, and keeps secret/PII status
   UNKNOWN when an object, ref inventory, or supported text encoding cannot be read completely. Git
   author/committer/tagger identities are review candidates, not confirmed personal information.
-- CPython 3.11-3.13 on Windows/Ubuntu is a candidate matrix inferred from `requires-python`, not a set
-  of verified rows. Rows not executed locally or in CI remain UNKNOWN.
+- Package metadataの`requires-python >=3.11`と、tracked GitHub Actions verification matrixは別である。
+  workflowはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを実行し、別jobでstatic gateと
+  candidate-bound reproducible package evidenceを検査する。PR head
+  `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`のActions run `31462799513`は6 jobすべて合格したが、
+  これは任意checkoutや公開releaseの合格を自動的に証明しない。
 - On Windows, pytest path viability depends on the combined depth of the clone and temp paths and on
   long-path support in the OS/process configuration. The checked per-test `tmp_path` uses a short OS
   temporary root; other pytest temporary fixtures and explicit `--basetemp` paths do not establish
@@ -154,8 +162,12 @@
 - Pytest may leave empty session directories after its own retention cleanup. The repository does not
   recursively remove the shared temp root or other sessions because hook ordering and concurrent runs
   make such cleanup unsafe; empty ignored directories are an intentional local-only trade-off.
-- Wheel/sdist contents, clean install, remote CI, and a coverage threshold are not asserted by the
-  current Phase 0/1 baseline.
+- RM-018Aのreproducible wheel/sdist buildと、separately qualified locked base site-packagesを使う
+  isolated venvへの`--no-index --no-deps` project-wheel install/package-data/CLI smoke、dependency license
+  inventory、artifact SHA-256、offline preflightをcandidate commitへ拘束する実装とCI workflowは存在する。
+  dependency自体を空環境へoffline installできるという証拠ではない。
+  roadmap完了や任意checkoutの`doctor`だけをcandidate evidenceとして扱わず、published release/tag/PyPIや
+  coverage thresholdは主張しない。
 - P2-012A のstructural revisionとP2-010Bの`poker-final-report-artifact-v2`は引き続き
   internal `structural_nonterminal`であり、それ単独ではcompleted/resumable/terminalを意味しない。
   通常product runは、これらのV1意味を変更しない別のP2-012B terminal V2 protocolを使う。
@@ -269,14 +281,17 @@
 
 ## P2-025B限定bridgeの制限
 
-- `local_only`はmodel reviewを生成しない。parser、calculator、LocalProvider、storage、replay、evaluationを
-  API key/login/networkなしで使えるという意味である。
+- `local_only`はmodel reviewを生成せず、model/nonlocal runtimeも開始しない。parser、calculator、
+  LocalProvider、storage、replay、evaluation、verified report projectionをAPI key/login/networkなしで
+  使えるという意味である。
 - `codex_subscription`はterminal verification済みP3-030C river call-or-fold run、1 explicit range、固定5
   role、fresh serial turnだけを扱う。一般Codex/Python bridge、任意prompt/agent、双方向sessionではない。
-- `codex_subscription`のsealed actual-live qualificationは、tracked strict canonical V2 manifestがpublic
-  preflightに合格する固定synthetic P3-030C・5 role経路だけに限定される。legacy manifest、
-  recorded/deterministic fixture、caller-controlled label、wrapped/injected transportをactual transport
-  evidenceとは扱わない。V2 manifestが欠落・非canonical・current treeと不整合ならqualified claimをfail closedで失う。
+- 過去candidateの`codex_subscription` sealed live manifestとdeterministic evaluationは、候補commit別の
+  historical evidenceとしてbytes不変で保存する。current treeのruntime inventory/role conformanceへ
+  一致するfresh canonical evidenceではないため、現行資格は`UNKNOWN`、
+  `subscription_live_qualified=false`である。legacy manifest、recorded/deterministic fixture、
+  caller-controlled label、wrapped/injected transportをcurrent actual transport evidenceへ昇格しない。
+  current canonical manifestが欠落する場合は`UNKNOWN`、存在しても非canonicalまたはinvalidなら`FAIL`とする。
 - `openai_api`はdefault-disabled、deterministic-contract-only、live-unqualifiedである。versioned price
   authorityとprovider hard cost stopがないため、API keyが存在してもprocess/network起動前に
   `api_live_execution_unqualified_cost_authority` / `not_launched`で拒否し、production-qualifiedまたは

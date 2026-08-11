@@ -271,6 +271,7 @@ def test_git_ignore_probe_does_not_inherit_credential_environment(
         environment = kwargs.get("env")
         assert isinstance(environment, dict)
         assert "OPENAI_API_KEY" not in environment
+        assert environment["GIT_NO_LAZY_FETCH"] == "1"
         return real_run(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(product.subprocess, "run", inspect_environment)

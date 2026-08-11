@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "14.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "15.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -152,7 +152,11 @@ def test_public_projection_preserves_status_scope_and_decision_rationale() -> No
     assert items["RM-028"]["status"] == "in_progress"
     assert items["RM-029"]["status"] == "completed"
     assert items["RM-025"]["priority"] == "P1"
-    assert items["RM-018A"]["status"] == "planned"
+    assert items["RM-018A"]["status"] == "completed"
+    assert "31462799513" in items["RM-018A"]["status_reason"]
+    assert "arbitrary checkouts" in items["RM-018A"]["status_reason"]
+    assert ".github/workflows/quality.yml" in items["RM-018A"]["targets"]
+    assert "scripts/release_readiness.py" in items["RM-018A"]["targets"]
     assert items["RM-018B"]["status"] == "planned"
     assert items["RM-010"]["milestones"] == {
         "entry": "P2-010A",
@@ -196,6 +200,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P3-030B",
         "P3-030C",
         "P3-030D",
+        "P3-030E",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -298,6 +303,12 @@ def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
     workflow_scope = milestones["P3-030D"]["scope"]
     assert "resumable workflow" in workflow_scope
     assert "never executes nonlocal role transport" in workflow_scope
+    assert milestones["P3-030E"]["status"] == "completed"
+    assert milestones["P3-030E"]["dependencies"] == ["P3-030D"]
+    report_view_scope = milestones["P3-030E"]["scope"]
+    assert "pure read-only projection" in report_view_scope
+    assert "existing verified FinalReport" in report_view_scope
+    assert "no parser, calculator, range, provider, solver, role authority" in report_view_scope
     assert items["RM-030"]["decision_gate"]["required"] is True  # type: ignore[index]
     rationale = items["RM-030"]["decision_gate"]["rationale"]  # type: ignore[index]
     assert any("P3-030B" in item for item in rationale)
@@ -406,10 +417,8 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     ]
     assert "five fresh, serial, read-only roles" in milestones["P2-025B"]["scope"]
     assert "live-unqualified" in milestones["P2-025B"]["scope"]
-    assert (
-        "bounded saved-subscription route is sealed actual-live qualified"
-        in milestones["P2-025B"]["status_reason"]
-    )
+    assert "current-tree qualification is UNKNOWN" in milestones["P2-025B"]["status_reason"]
+    assert "historical saved-subscription evidence" in milestones["P2-025B"]["status_reason"]
     assert (
         "optional API route remains disabled and live-unqualified"
         in (milestones["P2-025B"]["status_reason"])
@@ -436,6 +445,8 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     ]
     assert items["RM-019"]["status"] == "planned"
     assert "river-only saved-subscription path" in items["RM-019"]["status_reason"]
+    assert "historical sealed evidence" in items["RM-019"]["status_reason"]
+    assert "current-tree qualification is UNKNOWN" in items["RM-019"]["status_reason"]
     assert "optional API route remains disabled" in items["RM-019"]["status_reason"]
     assert items["RM-020"]["status"] == "planned"
 
@@ -552,19 +563,19 @@ def test_public_update_validation_preserves_contracts_and_legal_transitions() ->
 
     status_change = deepcopy(previous)
     items = _by_id(status_change)
-    items["RM-002"]["status"] = "in_progress"
-    items["RM-002"]["status_reason"] = "A published follow-up is in progress."
+    items["RM-029"]["status"] = "in_progress"
+    items["RM-029"]["status_reason"] = "A published follow-up is in progress."
     validate_roadmap_update(previous, status_change)
 
     unchanged_reason = deepcopy(previous)
-    _by_id(unchanged_reason)["RM-002"]["status"] = "in_progress"
+    _by_id(unchanged_reason)["RM-029"]["status"] = "in_progress"
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, unchanged_reason)
 
     whitespace_only_reason = deepcopy(previous)
-    _by_id(whitespace_only_reason)["RM-002"]["status"] = "in_progress"
-    _by_id(whitespace_only_reason)["RM-002"]["status_reason"] = (
-        str(_by_id(previous)["RM-002"]["status_reason"]) + " "
+    _by_id(whitespace_only_reason)["RM-029"]["status"] = "in_progress"
+    _by_id(whitespace_only_reason)["RM-029"]["status_reason"] = (
+        str(_by_id(previous)["RM-029"]["status_reason"]) + " "
     )
     with pytest.raises(ValueError, match="status transition requires a new reason"):
         validate_roadmap_update(previous, whitespace_only_reason)
@@ -647,7 +658,7 @@ def test_transition_validator_rejects_unknown_and_illegal_targets() -> None:
         validate_transition("planned", "proposed", transitions)
 
 
-def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
+def test_public_claim_paths_exist_as_required_and_are_tracked() -> None:
     document = load_roadmap()
     tracked = _tracked_paths()
 
@@ -663,6 +674,21 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
     with pytest.raises(ValueError, match="is not tracked"):
         validate_repository_evidence(untracked, ROOT, tracked_paths=tracked - {target})
 
+    missing_example = deepcopy(document)
+    _by_id(missing_example)["RM-001"]["targets"] = ["examples/missing.json"]
+    with pytest.raises(ValueError, match="does not exist"):
+        validate_repository_evidence(missing_example, ROOT, tracked_paths=tracked)
+
+    untracked_example = deepcopy(document)
+    example = "examples/bounded_river_review_range.json"
+    _by_id(untracked_example)["RM-030"]["targets"] = [example]
+    with pytest.raises(ValueError, match="is not tracked"):
+        validate_repository_evidence(untracked_example, ROOT, tracked_paths=tracked - {example})
+
+    future_planned = deepcopy(document)
+    _by_id(future_planned)["RM-021"]["targets"] = ["examples/future-planned.json"]
+    validate_repository_evidence(future_planned, ROOT, tracked_paths=tracked)
+
     escaping = deepcopy(document)
     _by_id(escaping)["RM-001"]["targets"] = ["src/../../outside.py"]
     with pytest.raises(ValueError, match="escapes repository"):
@@ -672,24 +698,21 @@ def test_completed_public_claim_paths_exist_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "14.0.0"
-    assert "schema 14.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert summary["schema_version"] == "15.0.0"
+    assert "schema 15.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
-        "completed": 18,
+        "completed": 19,
         "in_progress": 6,
-        "planned": 6,
+        "planned": 5,
         "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 23,
+        "completed": 24,
         "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []
-    assert summary["implementation_ready_ids"] == [
-        "RM-018A",
-        "RM-021",
-    ]
+    assert summary["implementation_ready_ids"] == ["RM-018B", "RM-021"]
     assert summary["release_readiness"]["pre_release"]["candidate_evidence"] == ("not_evaluated")
     assert "dependency-only" in summary["note"]
     assert len(summary["source_sha256"]) == 64

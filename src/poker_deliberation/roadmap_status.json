@@ -1,5 +1,5 @@
 {
-  "schema_version": "14.0.0",
+  "schema_version": "15.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -230,7 +230,7 @@
       "id": "P2-025B",
       "rm_id": "RM-025",
       "status": "completed",
-      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete; the bounded saved-subscription route is sealed actual-live qualified by the tracked strict canonical V2 manifest and public preflight, while the optional API route remains disabled and live-unqualified.",
+      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete. Candidate-bound historical saved-subscription evidence is preserved, but current-tree qualification is UNKNOWN until a fresh matching canonical manifest passes public preflight; the optional API route remains disabled and live-unqualified.",
       "dependencies": [
         "P2-024A",
         "P2-025A",
@@ -341,6 +341,16 @@
         "P3-030C"
       ],
       "scope": "One repository-bound resumable workflow that composes the unchanged P3-030C bounded Japanese river call-EV path with the unchanged P2-025B five-role bridge controller, preserves all twelve P3-030C confirmation hashes, stores no duplicate raw source in its workflow or bridge namespace, defaults to local_only, prepares but never executes nonlocal role transport, and provides canonical status, resume, replay, linkage, CLI, and deterministic exact-evidence evaluation; no general natural-language or site parser, OCR, new range or calculator semantics, automatic role confirmation, live provider execution, external solver, GTO, equilibrium, or general Codex/Python interoperability."
+    },
+    {
+      "id": "P3-030E",
+      "rm_id": "RM-030",
+      "status": "completed",
+      "status_reason": "The pure read-only verified report projection, JSON/summary/Markdown CLI view, artifact correlation, local-only non-execution boundary, documentation, and declared tests are implemented.",
+      "dependencies": [
+        "P3-030D"
+      ],
+      "scope": "One pure read-only projection of the existing verified FinalReport plus workflow and bridge hashes/state for a P3-030D run, with report-writer output limited to stored conclusion codes and evidence hashes and local_only starting no model or nonlocal runtime; no parser, calculator, range, provider, solver, role authority, live qualification, new poker fact, or strategy recommendation expansion."
     }
   ],
   "items": [
@@ -1125,8 +1135,8 @@
       "title": "Pre-release readiness",
       "phase": "pre-release",
       "priority": "P1",
-      "status": "planned",
-      "status_reason": "The phase order is corrected, but build, matrix, license, and artifact evidence do not yet exist.",
+      "status": "completed",
+      "status_reason": "Reproducible wheel/sdist build and isolated project-wheel smoke in a venv with qualified locked base site-packages, dependency license inventory, artifact SHA-256, offline preflight, and candidate-bound evidence generation are implemented. GitHub Actions run 31462799513 passed all six jobs for PR head fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf across Ubuntu/Windows and Python 3.12/3.13 plus static and package-evidence jobs; arbitrary checkouts still require their own candidate evidence.",
       "dependencies": [
         "RM-001",
         "RM-002",
@@ -1142,27 +1152,29 @@
       "capabilities": [],
       "objective": "Establish reproducible build and distribution evidence after Phase 1 and before any pre-release tag.",
       "targets": [
-        "CI",
-        "build metadata",
-        "wheel/sdist smoke",
-        "license inventory",
-        "release evidence manifest"
+        ".github/workflows/quality.yml",
+        "scripts/release_readiness.py",
+        "pyproject.toml",
+        "requirements.lock",
+        "LICENSE",
+        "docs/public-release-checklist.md"
       ],
       "acceptance_criteria": [
-        "Approved OS/Python matrix, clean build/install, wheel/sdist contents, CLI/package-data smoke, license inventory, artifact SHA-256, and offline preflight are tied to one candidate commit."
+        "The tracked GitHub Actions matrix runs full pytest on Windows/Ubuntu with Python 3.12/3.13, static gates on Windows 3.13, and reproducible package evidence on Ubuntu 3.13.",
+        "Clean wheel/sdist builds, a venv with separately qualified locked base site-packages, no-index/no-deps project-wheel install, CLI/package-data smoke, dependency license inventory, artifact SHA-256, and offline preflight are tied to one candidate commit/tree.",
+        "Roadmap completion and an arbitrary checkout doctor result are not accepted as candidate evidence, and no release, tag, or package publication is implied."
       ],
       "tests": [
-        "CI matrix",
-        "isolated install",
-        "package data",
-        "dependency/license check",
-        "artifact hash verification"
+        "tests/unit/test_release_readiness.py",
+        "tests/integration/test_release_workflow.py"
       ],
       "milestones": {
         "entry": null,
         "completion": null
       },
-      "relations": [],
+      "relations": [
+        "RM-018A completes the reproducible pre-release evidence mechanism and its verified CI matrix; candidate-specific evidence remains separate in roadmap_summary and must be regenerated for each checkout selected for release."
+      ],
       "decision_gate": {
         "required": true,
         "rationale": [
@@ -1227,7 +1239,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "planned",
-      "status_reason": "P2-025B completed and sealed-actual-live-qualified a separately named river-only saved-subscription path, but does not start the broad provider milestone. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.",
+      "status_reason": "P2-025B completed a separately named river-only saved-subscription path and preserves candidate-bound historical sealed evidence, but current-tree qualification is UNKNOWN and the bounded path does not start the broad provider milestone. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.",
       "dependencies": [
         "RM-010",
         "RM-011",
@@ -1779,7 +1791,7 @@
       },
       "relations": [
         "Uses the completed P2-012B terminal reader, P2-013B authority lifecycle, P2-024A context boundary, and P2-027B local-data boundary without starting RM-019, RM-020, or P2-028A.",
-        "At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone implemented only the separately qualified bounded bridge."
+        "At P2-029A completion, RM-025 was raised to P1 because cross-runtime semantic drift required a separate decision gate; P2-025A remained conformance-only, and the later P2-025B milestone implemented only the bounded bridge, with candidate-bound historical qualification evidence."
       ],
       "decision_gate": {
         "required": false,
@@ -1792,7 +1804,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, and P3-030D composes that slice with P2-025B through a resumable local-first workflow without widening either contract. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.",
+      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, P3-030D composes that slice with P2-025B through a resumable local-first workflow, and P3-030E adds a pure read-only view of its existing verified report and correlation hashes/state without widening authority. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.",
       "dependencies": [
         "RM-014"
       ],
@@ -1804,7 +1816,7 @@
         "natural_language_or_site_parser",
         "versioned_nlhe_range_grammar"
       ],
-      "objective": "Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, and provenance-bound reports without implying a general natural-language parser.",
+      "objective": "Provide separately approved, bounded flows from confirmed review material through canonical hand/range artifacts, deterministic calculators, adjudication, provenance-bound reports, and pure verified report views without implying a general natural-language parser.",
       "targets": [
         "src/poker_deliberation/confirmed_review_models.py",
         "src/poker_deliberation/confirmed_review.py",
@@ -1820,6 +1832,7 @@
         "src/poker_deliberation/bounded_river_review_workflow_models.py",
         "src/poker_deliberation/bounded_river_review_workflow.py",
         "src/poker_deliberation/bounded_river_review_workflow_evaluation.py",
+        "src/poker_deliberation/reporting/bounded_river_review.py",
         "src/poker_deliberation/orchestrator.py",
         "src/poker_deliberation/cli.py",
         "src/poker_deliberation/storage/terminal_canonical.py",
@@ -1829,6 +1842,8 @@
         "tests/fixtures/bounded_river_review_workflow/v1/scenarios.json",
         "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt",
         "tests/fixtures/bounded_river_review_workflow/v1/range.json",
+        "examples/bounded_river_review_source_ja.txt",
+        "examples/bounded_river_review_range.json",
         "scripts/run_confirmed_review_evaluation.py",
         "scripts/run_bounded_natural_language_evaluation.py",
         "scripts/run_bounded_river_call_ev_evaluation.py",
@@ -1856,7 +1871,10 @@
         "P3-030D persists a canonical workflow plan before confirmation, preserves every P3-030C confirmation hash, and links the verified P3 terminal manifest to one mode-bound P2-025B bridge manifest without copying the raw Japanese source into the workflow or bridge namespace.",
         "P3-030D status, resume, and replay verify the same canonical preparation, confirmation, terminal source, bridge source projection, and linkage; an interruption after the P3 terminal run can resume from verified storage without rerunning the parser or calculators.",
         "P3-030D defaults to local_only, creates no model runtime directory, and only prepares the five-role bridge plan; nonlocal role confirmation and execution remain in the existing explicit P2-025B commands and are never started by the workflow.",
-        "The repository-owned P3-030D evaluation separately scores confirmation binding, exact decision math, runtime mode and fixed roles, resume and replay, and local-data separation, with acceptance only when all five metrics pass."
+        "The repository-owned P3-030D evaluation separately scores confirmation binding, exact decision math, runtime mode and fixed roles, resume and replay, and local-data separation, with acceptance only when all five metrics pass.",
+        "P3-030E reads only a terminally verified P3-030D artifact chain and projects the existing verified FinalReport plus workflow and bridge hashes/state into deterministic JSON, summary, or Markdown without mutating storage or rerunning the parser, calculators, provider, or model.",
+        "P3-030E report-writer output is limited to stored conclusion codes and evidence hashes; local_only starts no model or nonlocal runtime, and no parser, calculator, range, provider, solver, role authority, live qualification, new poker fact, or strategy recommendation is added.",
+        "The public examples preserve the evaluated source fixture bytes exactly and the canonical compact range fixture bytes without a trailing line feed so strict canonical JSON parsing succeeds."
       ],
       "tests": [
         "tests/unit/test_confirmed_review_contract.py",
@@ -1881,7 +1899,9 @@
         "tests/unit/test_bounded_river_review_workflow.py",
         "tests/integration/test_bounded_river_review_workflow.py",
         "tests/integration/test_bounded_river_review_cli.py",
-        "tests/integration/test_bounded_river_review_workflow_evaluation.py"
+        "tests/integration/test_bounded_river_review_workflow_evaluation.py",
+        "tests/golden/test_bounded_river_review_report_view.py",
+        "tests/unit/test_public_preflight.py"
       ],
       "milestones": {
         "entry": "P3-030A",
@@ -1893,7 +1913,8 @@
         "P2-025B is a separately gated, downstream river-review-only Codex bridge and does not widen P3-030C intake, parsing, range, calculator, or report authority.",
         "At P3-030A completion, P2-028A had not started and was not activated by that local-only path.",
         "P3-030C reuses P3-015A and P3-016B without widening them; multiple ranges, multiway or earlier-street equity, external solver, GTO, and equilibrium remain outside this milestone.",
-        "P3-030D composes P3-030C and P2-025B through canonical local workflow state only; it does not alter parser, range, calculator, role, outbound, runtime-mode, qualification, or live-execution authority."
+        "P3-030D composes P3-030C and P2-025B through canonical local workflow state only; it does not alter parser, range, calculator, role, outbound, runtime-mode, qualification, or live-execution authority.",
+        "P3-030E is downstream of P3-030D and projects only the already verified FinalReport and workflow/bridge correlation state; it adds no execution, interpretation, or authority surface."
       ],
       "decision_gate": {
         "required": true,

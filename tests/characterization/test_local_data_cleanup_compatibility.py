@@ -72,6 +72,7 @@ def test_cleanup_is_additive_python_api_and_does_not_add_cli_surface() -> None:
         "replay-bounded-codex-bridge",
         "show",
         "show-bounded-codex-role-request",
+        "show-bounded-river-review",
         "status-bounded-river-review",
     }
     assert "cleanup" not in subparsers.choices

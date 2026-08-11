@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -139,7 +140,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 14.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 15.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -168,17 +169,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 14.0.0", "schema 10.0.0\n<!-- schema 14.0.0 -->"),
+        "README.md": ("schema 15.0.0", "schema 10.0.0\n<!-- schema 15.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `14.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `14.0.0` -->",
+            "schema version: `15.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `15.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "14.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "14.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "15.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "15.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "14.0.0"',
+            '"schema_version": "15.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }
@@ -614,17 +615,132 @@ def test_legacy_bridge_manifest_is_not_sealed_live_evidence() -> None:
         )
 
 
-def test_public_preflight_accepts_sealed_live_manifest() -> None:
+def test_public_preflight_rejects_invalid_current_bridge_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    required = (
+        "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
+        "tests/fixtures/codex_bridge/v1/cases.json",
+        "scripts/run_codex_bridge_evaluation.py",
+        "scripts/run_codex_bridge_live_qualification.py",
+    )
+    for relative in required:
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    current_evaluation = repo / "qualifications/p2-025b-deterministic-evaluation-v1.json"
+    current_manifest = repo / "qualifications/p2-025b-codex-subscription-v1.json"
+    current_evaluation.parent.mkdir(parents=True)
+    current_evaluation.write_bytes(b"{}")
+    current_manifest.write_bytes(b'{"schema_version":"1.0.0"}')
+    monkeypatch.setattr(
+        public_preflight,
+        "_tracked_paths",
+        lambda _repo: [
+            *required,
+            current_evaluation.relative_to(repo).as_posix(),
+            current_manifest.relative_to(repo).as_posix(),
+        ],
+    )
+
+    result = public_preflight._codex_bridge_public_artifacts_check(repo)
+
+    assert result.status == "fail"
+    assert result.details["failures"] == ["bridge_public_evidence:noncanonical_or_invalid"]
+    assert result.details["subscription_live_qualified"] is False
+    assert result.details["subscription_live_evidence_authority"] is None
+
+
+@pytest.mark.parametrize(
+    ("present_name", "missing_label"),
+    [
+        ("p2-025b-deterministic-evaluation-v1.json", "subscription_live_manifest"),
+        ("p2-025b-codex-subscription-v1.json", "deterministic_evaluation"),
+    ],
+)
+def test_public_preflight_rejects_incomplete_current_bridge_evidence_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    present_name: str,
+    missing_label: str,
+) -> None:
+    repo = tmp_path / "repo"
+    required = (
+        "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
+        "tests/fixtures/codex_bridge/v1/cases.json",
+        "scripts/run_codex_bridge_evaluation.py",
+        "scripts/run_codex_bridge_live_qualification.py",
+    )
+    for relative in required:
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, target)
+    historical = (
+        ROOT
+        / "qualifications"
+        / "historical"
+        / "3b8772a587f270acccee32e33f3df68187dda418"
+        / present_name
+    )
+    current = repo / "qualifications" / present_name
+    current.parent.mkdir(parents=True)
+    shutil.copyfile(historical, current)
+    tracked = [*required, current.relative_to(repo).as_posix()]
+    monkeypatch.setattr(public_preflight, "_tracked_paths", lambda _repo: tracked)
+
+    result = public_preflight._codex_bridge_public_artifacts_check(repo)
+
+    assert result.status == "fail"
+    assert result.details["failures"] == ["bridge_public_evidence:incomplete_pair"]
+    assert result.details["missing_public_evidence"] == [missing_label]
+    assert result.details["subscription_live_qualified"] is False
+    assert result.details["subscription_live_evidence_authority"] is None
+
+
+def test_public_bounded_river_examples_match_evaluated_canonical_fixtures() -> None:
+    from poker_deliberation.codex_bridge.canonical import parse_canonical_model
+    from poker_deliberation.range_models import VersionedRangeDefinitionV1
+
+    fixture_root = ROOT / "tests/fixtures/bounded_river_review_workflow/v1"
+    example_source = (ROOT / "examples/bounded_river_review_source_ja.txt").read_bytes()
+    fixture_source = (fixture_root / "source-ja.txt").read_bytes()
+    example_range = (ROOT / "examples/bounded_river_review_range.json").read_bytes()
+    fixture_range = (fixture_root / "range.json").read_bytes()
+
+    assert example_source == fixture_source
+    assert fixture_range.endswith(b"\n")
+    assert example_range == fixture_range[:-1]
+    assert not example_range.endswith(b"\n")
+    parse_canonical_model(example_range, VersionedRangeDefinitionV1)
+
+
+def test_public_preflight_keeps_historical_live_evidence_out_of_current_qualification() -> None:
     result = public_preflight._codex_bridge_public_artifacts_check(ROOT)
 
-    assert result.status == "pass"
+    assert result.status == "unknown"
     assert isinstance(result.details, dict)
     assert result.details["failures"] == []
-    assert result.details["missing_public_evidence"] == []
-    assert result.details["subscription_live_qualified"] is True
+    assert result.details["missing_public_evidence"] == [
+        "deterministic_evaluation",
+        "subscription_live_manifest",
+    ]
+    assert result.details["subscription_live_qualified"] is False
     assert result.details["api_live_qualified"] is False
-    assert result.details["subscription_live_evidence_authority"] == (
-        "qualifications/p2-025b-codex-subscription-v1.json"
+    assert result.details["subscription_live_evidence_authority"] is None
+    historical = (
+        ROOT / "qualifications" / "historical" / ("3b8772a587f270acccee32e33f3df68187dda418")
+    )
+    subscription = historical / "p2-025b-codex-subscription-v1.json"
+    evaluation = historical / "p2-025b-deterministic-evaluation-v1.json"
+    assert subscription.is_file()
+    assert evaluation.is_file()
+    assert hashlib.sha256(subscription.read_bytes()).hexdigest() == (
+        "9de2368cb221f11a7b84bf38da6275d0779a21c28a9c8545f25f8cc8e221bdf1"
+    )
+    assert hashlib.sha256(evaluation.read_bytes()).hexdigest() == (
+        "f387234557c1ae90d8cd86803458d1f8ed6b1483e7c99ccd938fb605022271db"
     )
 
 
@@ -648,9 +764,10 @@ def test_bridge_documentation_matches_subscription_auth_probe_stream_contract() 
 def test_bridge_documentation_requires_fresh_sealed_live_evidence() -> None:
     text = (ROOT / "docs" / "bounded-codex-river-review-bridge.md").read_text(encoding="utf-8")
 
-    assert "qualifications/p2-025b-codex-subscription-v1.json" in text
+    assert "qualifications/historical/3b8772a587f270acccee32e33f3df68187dda418/" in text
     assert "strict canonical V2 sealed live manifest" in text
-    assert "legacy V1 manifestしかない場合" in text
+    assert "current canonical path" in text
+    assert "subscription_live_qualified=false" in text
     assert "fresh live" in text
     assert "same-privilege caller" in text
     assert "p25-live-" not in text
@@ -664,11 +781,14 @@ def test_public_docs_separate_runtime_qualification_states() -> None:
     limitations = (ROOT / "docs" / "limitations.md").read_text(encoding="utf-8")
 
     for text in (readme, capabilities):
-        assert "sealed actual-live qualified" in text
+        assert "historical" in text
+        assert "UNKNOWN" in text
+        assert "sealed actual-live qualified" not in text
         assert "local_only" in text
-        assert "networkなし" in text
         assert "live-unqualified" in text
-    assert "strict canonical V2 manifest" in limitations
+    assert "model/nonlocal runtime" in readme
+    assert "networkなし" in capabilities
+    assert "subscription_live_qualified=false" in limitations
     assert "caller-controlled label" in limitations
 
 
@@ -684,11 +804,12 @@ def test_public_docs_limit_no_bridge_claim_to_ordinary_surfaces() -> None:
     assert "Python does not launch Codex agents" not in limitations
 
 
-def test_readme_distinguishes_local_build_evidence_from_release_unknowns() -> None:
+def test_readme_distinguishes_verified_matrix_from_candidate_and_release_evidence() -> None:
     text = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "ローカルwheel/sdist build" in text
-    assert "`--no-index --no-deps` default" in text
-    assert "API keyなしの`local_only` smokeが成功" in text
-    assert "remote CI、未実行のOS/Python matrix、GitHub上の公開release artifact" in text
-    assert "wheel/sdist、clean-install matrix" not in text
+    assert "requires-python >=3.11" in text
+    assert "windows-latest" in text
+    assert "ubuntu-latest" in text
+    assert "CPython `3.12` / `3.13`" in text
+    assert "特定candidate" in text
+    assert "公開済みrelease、tag、PyPI packageはありません" in text

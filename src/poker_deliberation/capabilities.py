@@ -101,8 +101,9 @@ CAPABILITIES: tuple[Capability, ...] = (
         "bounded_river_review_workflow",
         "implemented",
         "P3-030D composes one confirmed P3-030C review with one mode-bound P2-025B "
-        "five-role bridge plan through canonical status, resume, linkage, and replay; it "
-        "does not execute nonlocal role transport.",
+        "five-role bridge plan through canonical status, resume, linkage, and replay. P3-030E "
+        "adds a pure read-only view of the existing verified FinalReport plus workflow and "
+        "bridge hashes/state; neither path executes nonlocal role transport.",
     ),
     Capability(
         "confirmed_natural_language_review_intake",
@@ -139,19 +140,22 @@ CAPABILITIES: tuple[Capability, ...] = (
         "local_only_runtime_mode",
         "implemented",
         "The explicit local_only mode runs deterministic parsing, calculators, LocalProvider, "
-        "storage, replay, and evaluation without Codex, an API key, or network access.",
+        "storage, replay, evaluation, and verified report projection without starting Codex, "
+        "a model or nonlocal runtime, an API key, or network access.",
     ),
     Capability(
         "bounded_codex_river_review_bridge",
         "implemented",
-        "The P2-025B bounded bridge is qualified only for one verified P3-030C river review "
-        "through five fresh, serial, read-only saved-subscription turns with durable replay.",
+        "The P2-025B bounded bridge is implemented only for one verified P3-030C river review "
+        "and five fresh, serial, read-only turns with durable replay. Candidate-bound historical "
+        "live evidence is preserved, but current-tree live qualification is UNKNOWN.",
     ),
     Capability(
         "codex_subscription_bounded_river_review",
         "implemented",
-        "The explicit saved-ChatGPT-login route passed the repository-owned public synthetic "
-        "five-role actual-live qualification without an API key or provider fallback.",
+        "The explicit saved-ChatGPT-login route has a bounded no-fallback implementation and "
+        "candidate-bound historical live evidence; it is not currently live-qualified until "
+        "fresh evidence matches the current runtime inventory and role conformance.",
     ),
     Capability(
         "openai_api_bounded_river_review_adapter",

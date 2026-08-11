@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import secrets
+import stat
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,26 +30,52 @@ from poker_deliberation.bounded_river_call_ev_models import (
 )
 from poker_deliberation.bounded_river_review_workflow_models import (
     BOUNDED_RIVER_REVIEW_WORKFLOW_MAX_ARTIFACT_BYTES,
+    BoundedRiverReviewReportViewV1,
+    BoundedRiverReviewReportWriterEvidenceV1,
     BoundedRiverReviewWorkflowLinkageV1,
     BoundedRiverReviewWorkflowPlanV1,
     BoundedRiverReviewWorkflowStatusV1,
     WorkflowNextAction,
     WorkflowState,
 )
-from poker_deliberation.codex_bridge.controller import BoundedCodexBridgeController
-from poker_deliberation.codex_bridge.models import BridgeSourceContextV1, RuntimeAuthModeV1
+from poker_deliberation.budgets.durable_store import DurableBudgetStore
+from poker_deliberation.codex_bridge.canonical import (
+    parse_canonical_model as parse_bridge_canonical_model,
+)
+from poker_deliberation.codex_bridge.controller import (
+    BoundedCodexBridgeController,
+    role_artifact_name,
+)
+from poker_deliberation.codex_bridge.models import (
+    BRIDGE_ROLE_ORDER,
+    BridgeRole,
+    BridgeRoleResultV1,
+    BridgeRunPlanV1,
+    BridgeSourceContextV1,
+    RuntimeAuthModeV1,
+)
 from poker_deliberation.codex_bridge.product import (
+    confined_product_path,
     confined_runtime_scratch_path,
     prepare_product_bridge,
 )
-from poker_deliberation.codex_bridge.replay import replay_bridge
+from poker_deliberation.codex_bridge.replay import (
+    BridgeReplayError,
+    BridgeReplayResult,
+    replay_bridge,
+)
 from poker_deliberation.codex_bridge.source import project_verified_p3_terminal
 from poker_deliberation.codex_bridge.source_reader import (
     P3TerminalSourceReadError,
+    VerifiedP3TerminalSourceV1,
     read_verified_p3_terminal_source,
 )
-from poker_deliberation.codex_bridge.storage import BoundedCodexBridgeStore, VerifiedBridgeRead
-from poker_deliberation.config import AppConfig
+from poker_deliberation.codex_bridge.storage import (
+    BoundedCodexBridgeStore,
+    BridgeStorageError,
+    VerifiedBridgeRead,
+)
+from poker_deliberation.config import AppConfig, migrate_budget_config
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider
 from poker_deliberation.range_models import VersionedRangeDefinitionV1
@@ -59,10 +86,18 @@ from poker_deliberation.storage.revision_canonical import (
     sha256_bytes,
     validate_run_id,
 )
+from poker_deliberation.storage.revision_lock import (
+    verify_directory,
+    verify_regular_single_link,
+)
 from poker_deliberation.storage.terminal_models import (
     ProductRunError,
     ProductRunFailureCode,
     VerifiedRunReadV2,
+)
+from poker_deliberation.storage.terminal_store import (
+    DurableBudgetCoordinator,
+    TerminalRunStore,
 )
 
 _PLAN_HASH_DOMAIN = "poker-bounded-river-review-workflow-plan-v1"
@@ -122,12 +157,65 @@ def bounded_river_confirmation_hashes(
     )
 
 
-def _workflow_root(repository_root: Path, workflow_root: Path) -> Path:
-    root = confined_runtime_scratch_path(workflow_root, repository_root)
-    root.mkdir(parents=True, exist_ok=True)
-    if confined_runtime_scratch_path(workflow_root, repository_root) != root:
+def _require_plain_workflow_path(path: Path, repository: Path) -> None:
+    current = repository
+    for part in path.relative_to(repository).parts:
+        current /= part
+        try:
+            status = current.lstat()
+        except FileNotFoundError:
+            break
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        is_reparse = bool(getattr(status, "st_file_attributes", 0) & reparse_flag)
+        if stat.S_ISLNK(status.st_mode) or is_reparse:
+            _fail("BRW_E_STORAGE")
+        if not stat.S_ISDIR(status.st_mode):
+            _fail("BRW_E_STORAGE")
+
+
+def _confined_read_only_workflow_root(path: Path, repository_root: Path) -> Path:
+    """Confine an existing workflow read without Git probes or filesystem writes."""
+
+    repository = repository_root.resolve(strict=True)
+    if not repository.is_dir():
         _fail("BRW_E_STORAGE")
-    return root
+    raw_parts = tuple(part.casefold() for part in path.parts)
+    if ".." in raw_parts or any(part in {".git", "user_materials"} for part in raw_parts):
+        _fail("BRW_E_STORAGE")
+    lexical = Path(os.path.abspath(path))
+    try:
+        lexical.relative_to(repository)
+    except ValueError as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
+    _require_plain_workflow_path(lexical, repository)
+    resolved = confined_product_path(path, repository)
+    _require_plain_workflow_path(lexical, repository)
+    if confined_product_path(path, repository) != resolved:
+        _fail("BRW_E_STORAGE")
+    return resolved
+
+
+def _workflow_root(
+    repository_root: Path,
+    workflow_root: Path,
+    *,
+    create: bool = True,
+    pure_read: bool = False,
+) -> Path:
+    try:
+        if create and pure_read:
+            _fail("BRW_E_STORAGE")
+        confine = _confined_read_only_workflow_root if pure_read else confined_runtime_scratch_path
+        root = confine(workflow_root, repository_root)
+        if create:
+            root.mkdir(parents=True, exist_ok=True)
+        if confine(workflow_root, repository_root) != root:
+            _fail("BRW_E_STORAGE")
+        return root
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
 
 
 def _workflow_directory(root: Path, workflow_id: str) -> Path:
@@ -157,13 +245,42 @@ def _write_new(path: Path, value: BaseModel) -> bytes:
     return data
 
 
+def _entry_exists(path: Path) -> bool:
+    """Distinguish an absent entry from a broken or otherwise unsafe link."""
+
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
+    return True
+
+
+def _stat_identity(status: os.stat_result) -> tuple[int, ...]:
+    return (
+        status.st_mode,
+        status.st_size,
+        status.st_mtime_ns,
+        status.st_ctime_ns,
+        status.st_dev,
+        status.st_ino,
+        status.st_nlink,
+        getattr(status, "st_file_attributes", 0),
+    )
+
+
 def _read_model(path: Path, model: type[BaseModel]) -> BaseModel:
     try:
-        size = path.stat().st_size
+        verify_directory(path.parent)
+        before = verify_regular_single_link(path)
+        size = before.st_size
         if size < 1 or size > BOUNDED_RIVER_REVIEW_WORKFLOW_MAX_ARTIFACT_BYTES:
             _fail("BRW_E_STORAGE")
         data = path.read_bytes()
-        if len(data) != size:
+        after = verify_regular_single_link(path)
+        verify_directory(path.parent)
+        if len(data) != size or _stat_identity(after) != _stat_identity(before):
             _fail("BRW_E_STORAGE")
         return parse_canonical_model(data, model)
     except (OSError, ValueError) as exc:
@@ -172,10 +289,16 @@ def _read_model(path: Path, model: type[BaseModel]) -> BaseModel:
         raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
 
 
-def _read_plan(directory: Path) -> BoundedRiverReviewWorkflowPlanV1:
+def _read_plan(
+    directory: Path,
+    *,
+    workflow_id: str | None = None,
+) -> BoundedRiverReviewWorkflowPlanV1:
     plan = _read_model(directory / "plan.json", BoundedRiverReviewWorkflowPlanV1)
     assert isinstance(plan, BoundedRiverReviewWorkflowPlanV1)
-    if plan.plan_sha256 != bounded_river_review_plan_sha256(plan):
+    if plan.plan_sha256 != bounded_river_review_plan_sha256(plan) or (
+        workflow_id is not None and plan.workflow_id != workflow_id
+    ):
         _fail("BRW_E_PLAN_BINDING")
     return plan
 
@@ -241,6 +364,49 @@ def _read_linkage(directory: Path) -> BoundedRiverReviewWorkflowLinkageV1:
     return linkage
 
 
+def _verify_linkage_plan_binding(
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    confirmation: BoundedRiverCallEvConfirmationV1,
+    linkage: BoundedRiverReviewWorkflowLinkageV1,
+) -> None:
+    if (
+        linkage.workflow_id,
+        linkage.plan_sha256,
+        linkage.confirmation_sha256,
+        linkage.source_run_id,
+        linkage.bridge_run_id,
+        linkage.auth_mode,
+    ) != (
+        plan.workflow_id,
+        plan.plan_sha256,
+        confirmation.confirmation_sha256,
+        plan.source_run_id,
+        plan.bridge_run_id,
+        plan.auth_mode,
+    ):
+        _fail("BRW_E_LINKAGE")
+
+
+def _verify_linkage_storage_binding(
+    directory: Path,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    confirmation: BoundedRiverCallEvConfirmationV1,
+    linkage: BoundedRiverReviewWorkflowLinkageV1,
+    source_read: VerifiedRunReadV2,
+    bridge_read: VerifiedBridgeRead,
+) -> None:
+    _verify_linkage_plan_binding(plan, confirmation, linkage)
+    if (
+        linkage.source_terminal_manifest_sha256,
+        linkage.source_terminal_inventory_sha256,
+    ) != (
+        source_read.manifest_sha256,
+        source_read.manifest.inventory_sha256,
+    ):
+        _fail("BRW_E_LINKAGE")
+    _verify_linked_bridge_ancestor(directory, plan, linkage, bridge_read)
+
+
 def prepare_bounded_river_review_workflow(
     source_bytes: bytes,
     range_definition: VersionedRangeDefinitionV1,
@@ -269,7 +435,7 @@ def prepare_bounded_river_review_workflow(
 
     root = _workflow_root(repository_root, workflow_root)
     directory = _workflow_directory(root, workflow_id)
-    if directory.exists():
+    if _entry_exists(directory):
         _fail("BRW_E_WORKFLOW_EXISTS")
     preparation = prepare_bounded_river_call_ev_intake(
         source_bytes,
@@ -311,7 +477,7 @@ def prepare_bounded_river_review_workflow(
         os.replace(temporary, directory)
     except OSError as exc:
         raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
-    read_plan = _read_plan(directory)
+    read_plan = _read_plan(directory, workflow_id=workflow_id)
     read_preparation = _read_preparation(directory)
     if read_plan != plan or read_preparation != preparation:
         _fail("BRW_E_STORAGE")
@@ -365,9 +531,9 @@ def confirm_bounded_river_review_workflow(
     confirmed_at: datetime | None = None,
     expires_at: datetime | None = None,
 ) -> BoundedRiverCallEvConfirmationV1:
-    root = _workflow_root(repository_root, workflow_root)
+    root = _workflow_root(repository_root, workflow_root, create=False)
     directory = _workflow_directory(root, workflow_id)
-    plan = _read_plan(directory)
+    plan = _read_plan(directory, workflow_id=workflow_id)
     preparation = _read_preparation(directory)
     if expected_plan_sha256 != plan.plan_sha256:
         _fail("BRW_E_PLAN_BINDING")
@@ -376,7 +542,7 @@ def confirm_bounded_river_review_workflow(
     if expected_hashes != bounded_river_confirmation_hashes(preparation.candidate):
         _fail("BRW_E_CONFIRMATION_BINDING")
     confirmation_path = directory / "confirmation.json"
-    if confirmation_path.exists():
+    if _entry_exists(confirmation_path):
         _fail("BRW_E_ALREADY_CONFIRMED")
     confirmation = create_bounded_river_call_ev_confirmation(
         preparation.candidate,
@@ -403,6 +569,8 @@ def confirm_bounded_river_review_workflow(
 def _verified_source_read(
     config: AppConfig,
     source_run_id: str,
+    *,
+    expected_source_sha256: str,
 ) -> tuple[VerifiedRunReadV2, BridgeSourceContextV1, str]:
     orchestrator = Orchestrator(config=config, provider=LocalProvider())
     read = orchestrator.product_store.read_current(source_run_id)
@@ -413,6 +581,8 @@ def _verified_source_read(
         )
     except P3TerminalSourceReadError as exc:
         raise BoundedRiverReviewWorkflowError("BRW_E_SOURCE_RUN") from exc
+    if hashlib.sha256(verified.source_bytes).hexdigest() != expected_source_sha256:
+        _fail("BRW_E_SOURCE_BINDING")
     source = project_verified_p3_terminal(
         read,
         source_revision_root=orchestrator.product_store.revision_root,
@@ -420,14 +590,138 @@ def _verified_source_read(
     return read, source, verified.confirmation.confirmation_sha256
 
 
+def _read_only_product_store(config: AppConfig) -> TerminalRunStore:
+    """Build verified terminal readers without initializing any storage root."""
+
+    legacy_root, revision_root, budget_root = config.resolved_storage_roots()
+    config._validate_nonoverlapping_roots((legacy_root, revision_root, budget_root))
+    policy = migrate_budget_config(config.budgets).policy
+    budget = DurableBudgetCoordinator(
+        DurableBudgetStore(
+            budget_root,
+            legacy_root,
+            max_artifact_bytes=policy.max_artifact_bytes,
+            max_run_bytes=policy.max_run_bytes,
+        ),
+        policy,
+    )
+    return TerminalRunStore(
+        revision_root,
+        legacy_root,
+        budget=budget,
+        max_artifact_bytes=policy.max_artifact_bytes,
+        max_run_bytes=policy.max_run_bytes,
+    )
+
+
+def _read_source_terminal_for_view(
+    config: AppConfig,
+    source_run_id: str,
+) -> tuple[VerifiedRunReadV2, Path]:
+    """Read one terminal snapshot without parsing its FinalReport or creating roots."""
+
+    try:
+        product_store = _read_only_product_store(config)
+        read = product_store.read_current(source_run_id)
+    except (OSError, ProductRunError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_SOURCE_RUN") from exc
+    return read, product_store.revision_root
+
+
+def _replay_verified_source_for_view(
+    read: VerifiedRunReadV2,
+    *,
+    source_revision_root: Path,
+) -> tuple[BridgeSourceContextV1, VerifiedP3TerminalSourceV1]:
+    """Semantically replay P3 only after workflow/bridge/linkage verification."""
+
+    try:
+        verified = read_verified_p3_terminal_source(
+            read,
+            source_revision_root=source_revision_root,
+        )
+        source = project_verified_p3_terminal(
+            read,
+            source_revision_root=source_revision_root,
+        )
+    except (OSError, P3TerminalSourceReadError, ProductRunError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_SOURCE_RUN") from exc
+    return source, verified
+
+
 def _bridge_read(
     directory: Path,
     plan: BoundedRiverReviewWorkflowPlanV1,
 ) -> VerifiedBridgeRead | None:
     bridge_root = directory / "bridge"
-    if not bridge_root.exists():
+    if not _entry_exists(bridge_root):
         return None
     return BoundedCodexBridgeStore(bridge_root).read_current(plan.bridge_run_id)
+
+
+def _verify_linked_bridge_ancestor(
+    directory: Path,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    linkage: BoundedRiverReviewWorkflowLinkageV1,
+    current: VerifiedBridgeRead,
+) -> None:
+    """Prove the immutable linked bridge revision is in the verified current lineage."""
+
+    store = BoundedCodexBridgeStore(directory / "bridge")
+    _run, _control, _transactions, revisions, _pointer = store._paths(plan.bridge_run_id)
+    matches = 0
+    try:
+        for ordinal in range(1, current.pointer.revision + 1):
+            candidates = store._revision_candidates(revisions, ordinal)
+            if len(candidates) != 1:
+                _fail("BRW_E_LINKAGE")
+            _prior_pointer, manifest, _marker, _artifacts = store._pointer_for_revision(
+                plan.bridge_run_id,
+                candidates[0],
+            )
+            if (
+                manifest.manifest_sha256 == linkage.bridge_manifest_sha256
+                and manifest.inventory_sha256 == linkage.bridge_inventory_sha256
+            ):
+                matches += 1
+    except (BridgeStorageError, OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_LINKAGE") from exc
+    if matches != 1:
+        _fail("BRW_E_LINKAGE")
+
+
+def _verified_bridge_run_plan(
+    bridge: VerifiedBridgeRead,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+) -> BridgeRunPlanV1:
+    try:
+        bridge_plan = parse_bridge_canonical_model(
+            bridge.artifact_bytes("run_plan.json"),
+            BridgeRunPlanV1,
+        )
+    except (BridgeStorageError, KeyError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE_BINDING") from exc
+    expected_total_max_cost = (
+        plan.api_max_cost_micro_usd * len(BRIDGE_ROLE_ORDER)
+        if plan.api_max_cost_micro_usd is not None
+        else None
+    )
+    if (
+        bridge_plan.bridge_run_id != plan.bridge_run_id
+        or bridge_plan.auth_mode is not plan.auth_mode
+        or bridge_plan.source.source_terminal_run_id != plan.source_run_id
+        or bridge_plan.repository_commit_id != plan.repository_commit_id
+        or bridge_plan.repository_tree_id != plan.repository_tree_id
+        or bridge_plan.total_max_cost_micro_usd != expected_total_max_cost
+    ):
+        _fail("BRW_E_BRIDGE_BINDING")
+    return bridge_plan
 
 
 def _verify_bridge_source(
@@ -438,10 +732,15 @@ def _verify_bridge_source(
     bridge = _bridge_read(directory, plan)
     if bridge is None:
         _fail("BRW_E_BRIDGE")
+    bridge_plan = _verified_bridge_run_plan(bridge, plan)
     stored_source = BoundedCodexBridgeController(
         BoundedCodexBridgeStore(directory / "bridge")
     ).read_source_context(plan.bridge_run_id)
-    if stored_source != expected_source or bridge.pointer.auth_mode is not plan.auth_mode:
+    if (
+        stored_source != expected_source
+        or bridge_plan.source != stored_source.source
+        or bridge.pointer.auth_mode is not plan.auth_mode
+    ):
         _fail("BRW_E_BRIDGE_BINDING")
     return bridge
 
@@ -456,34 +755,16 @@ def _link(
     linked_at: datetime,
 ) -> BoundedRiverReviewWorkflowLinkageV1:
     path = directory / "linkage.json"
-    if path.exists():
+    if _entry_exists(path):
         existing = _read_linkage(directory)
-        expected = (
-            plan.workflow_id,
-            plan.plan_sha256,
-            confirmation.confirmation_sha256,
-            plan.source_run_id,
-            source_read.manifest_sha256,
-            source_read.manifest.inventory_sha256,
-            plan.bridge_run_id,
-            plan.auth_mode,
-            bridge_read.manifest.manifest_sha256,
-            bridge_read.manifest.inventory_sha256,
+        _verify_linkage_storage_binding(
+            directory,
+            plan,
+            confirmation,
+            existing,
+            source_read,
+            bridge_read,
         )
-        actual = (
-            existing.workflow_id,
-            existing.plan_sha256,
-            existing.confirmation_sha256,
-            existing.source_run_id,
-            existing.source_terminal_manifest_sha256,
-            existing.source_terminal_inventory_sha256,
-            existing.bridge_run_id,
-            existing.auth_mode,
-            existing.bridge_manifest_sha256,
-            existing.bridge_inventory_sha256,
-        )
-        if actual != expected:
-            _fail("BRW_E_LINKAGE")
         return existing
     provisional = BoundedRiverReviewWorkflowLinkageV1(
         workflow_id=plan.workflow_id,
@@ -563,9 +844,9 @@ def run_bounded_river_review_workflow(
     workflow_id: str,
     clock: Clock = _now,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    root = _workflow_root(repository_root, workflow_root)
+    root = _workflow_root(repository_root, workflow_root, create=False)
     directory = _workflow_directory(root, workflow_id)
-    plan = _read_plan(directory)
+    plan = _read_plan(directory, workflow_id=workflow_id)
     preparation = _read_preparation(directory)
     confirmation = _read_confirmation(directory)
     _verify_confirmation_binding(plan, preparation, confirmation)
@@ -587,7 +868,9 @@ def run_bounded_river_review_workflow(
     if report.run_id != plan.source_run_id or report.run_status != "completed":
         _fail("BRW_E_SOURCE_RUN")
     source_read, source_context, source_confirmation_sha256 = _verified_source_read(
-        config, plan.source_run_id
+        config,
+        plan.source_run_id,
+        expected_source_sha256=plan.source_sha256,
     )
     return _complete_from_verified_source(
         config=config,
@@ -611,9 +894,9 @@ def resume_bounded_river_review_workflow(
     workflow_id: str,
     clock: Clock = _now,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    root = _workflow_root(repository_root, workflow_root)
+    root = _workflow_root(repository_root, workflow_root, create=False)
     directory = _workflow_directory(root, workflow_id)
-    if (directory / "linkage.json").exists():
+    if _entry_exists(directory / "linkage.json"):
         return replay_bounded_river_review_workflow(
             config=config,
             repository_root=repository_root,
@@ -621,7 +904,7 @@ def resume_bounded_river_review_workflow(
             workflow_id=workflow_id,
         )
     if source_bytes is None:
-        plan = _read_plan(directory)
+        plan = _read_plan(directory, workflow_id=workflow_id)
         preparation = _read_preparation(directory)
         confirmation = _read_confirmation(directory)
         _verify_confirmation_binding(plan, preparation, confirmation)
@@ -629,7 +912,9 @@ def resume_bounded_river_review_workflow(
             _fail("BRW_E_PREPARATION")
         try:
             source_read, source_context, source_confirmation_sha256 = _verified_source_read(
-                config, plan.source_run_id
+                config,
+                plan.source_run_id,
+                expected_source_sha256=plan.source_sha256,
             )
         except ProductRunError as exc:
             if exc.failure.code is ProductRunFailureCode.RUN_NOT_FOUND:
@@ -666,6 +951,23 @@ def _status_from_bridge(
     source_terminal_manifest_sha256: str,
 ) -> BoundedRiverReviewWorkflowStatusV1:
     replayed = replay_bridge(bridge)
+    return _status_from_replayed_bridge(
+        plan,
+        bridge,
+        replayed,
+        confirmation_sha256=confirmation_sha256,
+        source_terminal_manifest_sha256=source_terminal_manifest_sha256,
+    )
+
+
+def _status_from_replayed_bridge(
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    bridge: VerifiedBridgeRead,
+    replayed: BridgeReplayResult,
+    *,
+    confirmation_sha256: str,
+    source_terminal_manifest_sha256: str,
+) -> BoundedRiverReviewWorkflowStatusV1:
     if replayed.status == "succeeded":
         state: WorkflowState = "completed"
         next_action: WorkflowNextAction = "none"
@@ -712,14 +1014,19 @@ def bounded_river_review_workflow_status(
     workflow_root: Path,
     workflow_id: str,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    root = _workflow_root(repository_root, workflow_root)
+    root = _workflow_root(
+        repository_root,
+        workflow_root,
+        create=False,
+        pure_read=True,
+    )
     directory = _workflow_directory(root, workflow_id)
-    plan = _read_plan(directory)
+    plan = _read_plan(directory, workflow_id=workflow_id)
     preparation = _read_preparation(directory)
     if sha256_bytes(canonical_json_bytes(preparation)) != plan.preparation_sha256:
         _fail("BRW_E_PLAN_BINDING")
     confirmation_path = directory / "confirmation.json"
-    if not confirmation_path.exists():
+    if not _entry_exists(confirmation_path):
         return BoundedRiverReviewWorkflowStatusV1(
             workflow_id=plan.workflow_id,
             state="awaiting_confirmation",
@@ -741,7 +1048,11 @@ def bounded_river_review_workflow_status(
                     source_read,
                     source_context,
                     source_confirmation_sha256,
-                ) = _verified_source_read(config, plan.source_run_id)
+                ) = _verified_source_read(
+                    config,
+                    plan.source_run_id,
+                    expected_source_sha256=plan.source_sha256,
+                )
             except ProductRunError as exc:
                 if exc.failure.code is not ProductRunFailureCode.RUN_NOT_FOUND:
                     raise BoundedRiverReviewWorkflowError("BRW_E_SOURCE_RUN") from exc
@@ -773,12 +1084,14 @@ def bounded_river_review_workflow_status(
             next_action="run",
         )
     source_read, source_context, source_confirmation_sha256 = _verified_source_read(
-        config, plan.source_run_id
+        config,
+        plan.source_run_id,
+        expected_source_sha256=plan.source_sha256,
     )
     if source_confirmation_sha256 != confirmation.confirmation_sha256:
         _fail("BRW_E_SOURCE_BINDING")
     bridge = _verify_bridge_source(directory, plan, source_context)
-    if not (directory / "linkage.json").exists():
+    if not _entry_exists(directory / "linkage.json"):
         partial = _status_from_bridge(
             plan,
             bridge,
@@ -787,32 +1100,206 @@ def bounded_river_review_workflow_status(
         )
         return partial.model_copy(update={"state": "ready_to_resume", "next_action": "resume"})
     linkage = _read_linkage(directory)
-    expected = (
-        plan.workflow_id,
-        plan.plan_sha256,
-        confirmation.confirmation_sha256,
-        source_read.manifest_sha256,
-        source_read.manifest.inventory_sha256,
-        bridge.manifest.manifest_sha256,
-        bridge.manifest.inventory_sha256,
+    _verify_linkage_storage_binding(
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        source_read,
+        bridge,
     )
-    actual = (
-        linkage.workflow_id,
-        linkage.plan_sha256,
-        linkage.confirmation_sha256,
-        linkage.source_terminal_manifest_sha256,
-        linkage.source_terminal_inventory_sha256,
-        linkage.bridge_manifest_sha256,
-        linkage.bridge_inventory_sha256,
-    )
-    if actual != expected:
-        _fail("BRW_E_LINKAGE")
     return _status_from_bridge(
         plan,
         bridge,
         confirmation_sha256=confirmation.confirmation_sha256,
         source_terminal_manifest_sha256=source_read.manifest_sha256,
     )
+
+
+def _project_report_writer_evidence(
+    result: BridgeRoleResultV1,
+    *,
+    bridge_run_id: str,
+    auth_mode: RuntimeAuthModeV1,
+) -> tuple[BoundedRiverReviewReportWriterEvidenceV1, ...]:
+    if (
+        result.output.role is not BridgeRole.REPORT_WRITER
+        or result.output.bridge_run_id != bridge_run_id
+        or result.output.auth_mode is not auth_mode
+    ):
+        _fail("BRW_E_REPORT_WRITER")
+    references = {
+        item.evidence_id: item.evidence_sha256 for item in result.output.evidence_references
+    }
+    pairs = tuple(
+        BoundedRiverReviewReportWriterEvidenceV1(
+            conclusion_code=claim.conclusion_code,
+            referenced_evidence_sha256=references[evidence_id],
+        )
+        for claim in (*result.output.conclusions, *result.output.uncertainties)
+        for evidence_id in claim.evidence_ids
+    )
+    if not pairs:
+        _fail("BRW_E_REPORT_WRITER")
+    return pairs
+
+
+def _report_writer_additive_evidence(
+    bridge: VerifiedBridgeRead,
+    *,
+    completed_roles: tuple[BridgeRole, ...],
+    plan: BoundedRiverReviewWorkflowPlanV1,
+) -> tuple[BoundedRiverReviewReportWriterEvidenceV1, ...]:
+    result_name = role_artifact_name(BridgeRole.REPORT_WRITER, "result")
+    result_present = result_name in bridge.artifacts
+    writer_completed = BridgeRole.REPORT_WRITER in completed_roles
+    if result_present != writer_completed:
+        _fail("BRW_E_REPORT_WRITER")
+    if not result_present:
+        return ()
+    try:
+        parsed = parse_bridge_canonical_model(
+            bridge.artifact_bytes(result_name),
+            BridgeRoleResultV1,
+        )
+        return _project_report_writer_evidence(
+            parsed,
+            bridge_run_id=plan.bridge_run_id,
+            auth_mode=plan.auth_mode,
+        )
+    except (BridgeStorageError, KeyError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_REPORT_WRITER") from exc
+
+
+def bounded_river_review_report_view(
+    *,
+    config: AppConfig,
+    repository_root: Path,
+    workflow_root: Path,
+    workflow_id: str,
+) -> BoundedRiverReviewReportViewV1:
+    """Project a linked review without parser, calculator, provider, model, or writes."""
+
+    try:
+        root = _workflow_root(
+            repository_root,
+            workflow_root,
+            create=False,
+            pure_read=True,
+        )
+    except (OSError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
+    directory = _workflow_directory(root, workflow_id)
+    plan = _read_plan(directory, workflow_id=workflow_id)
+    preparation = _read_preparation(directory)
+    if sha256_bytes(canonical_json_bytes(preparation)) != plan.preparation_sha256:
+        _fail("BRW_E_PLAN_BINDING")
+    confirmation = _read_confirmation(directory)
+    _verify_confirmation_binding(plan, preparation, confirmation)
+    if not _entry_exists(directory / "linkage.json"):
+        _fail("BRW_E_LINKAGE")
+    linkage = _read_linkage(directory)
+    _verify_linkage_plan_binding(plan, confirmation, linkage)
+
+    source_read, source_revision_root = _read_source_terminal_for_view(
+        config,
+        linkage.source_run_id,
+    )
+    if source_read.run_id != linkage.source_run_id:
+        _fail("BRW_E_SOURCE_BINDING")
+    try:
+        bridge = _bridge_read(directory, plan)
+        if bridge is None:
+            _fail("BRW_E_BRIDGE")
+        replayed = replay_bridge(bridge)
+        bridge_plan = _verified_bridge_run_plan(bridge, plan)
+    except (BridgeReplayError, BridgeStorageError, OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE") from exc
+    _verify_linkage_storage_binding(
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        source_read,
+        bridge,
+    )
+    source_context, verified_source = _replay_verified_source_for_view(
+        source_read,
+        source_revision_root=source_revision_root,
+    )
+    try:
+        stored_source = parse_bridge_canonical_model(
+            bridge.artifact_bytes("source_context.json"),
+            BridgeSourceContextV1,
+        )
+    except (BridgeStorageError, KeyError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE_BINDING") from exc
+    if (
+        stored_source != source_context
+        or bridge_plan.source != stored_source.source
+        or bridge.pointer.auth_mode is not plan.auth_mode
+    ):
+        _fail("BRW_E_BRIDGE_BINDING")
+    if (
+        source_context.source.source_terminal_run_id != linkage.source_run_id
+        or source_context.source.source_candidate_sha256 != confirmation.candidate_sha256
+        or verified_source.confirmation.confirmation_sha256 != confirmation.confirmation_sha256
+        or hashlib.sha256(verified_source.source_bytes).hexdigest() != plan.source_sha256
+    ):
+        _fail("BRW_E_SOURCE_BINDING")
+
+    try:
+        report_bytes = source_read.payload_bytes("final_report.json")
+        report_payloads = tuple(
+            item
+            for item in source_read.payloads
+            if item.inventory.logical_name == "final_report.json"
+        )
+        if (
+            len(report_payloads) != 1
+            or canonical_json_bytes(verified_source.report) != report_bytes
+            or report_payloads[0].inventory.sha256 != sha256_bytes(report_bytes)
+        ):
+            _fail("BRW_E_REPORT_BINDING")
+        status = _status_from_replayed_bridge(
+            plan,
+            bridge,
+            replayed,
+            confirmation_sha256=confirmation.confirmation_sha256,
+            source_terminal_manifest_sha256=source_read.manifest_sha256,
+        )
+        writer_evidence = _report_writer_additive_evidence(
+            bridge,
+            completed_roles=replayed.completed_roles,
+            plan=plan,
+        )
+        return BoundedRiverReviewReportViewV1(
+            workflow_id=plan.workflow_id,
+            state=status.state,
+            bridge_mode=plan.auth_mode,
+            bridge_status=replayed.status,
+            completed_roles=replayed.completed_roles,
+            source_run_id=linkage.source_run_id,
+            bridge_run_id=linkage.bridge_run_id,
+            plan_sha256=plan.plan_sha256,
+            confirmation_sha256=confirmation.confirmation_sha256,
+            linkage_sha256=linkage.linkage_sha256,
+            source_terminal_manifest_sha256=source_read.manifest_sha256,
+            source_terminal_inventory_sha256=source_read.manifest.inventory_sha256,
+            bridge_manifest_sha256=bridge.manifest.manifest_sha256,
+            bridge_inventory_sha256=bridge.manifest.inventory_sha256,
+            final_report_artifact_sha256=sha256_bytes(report_bytes),
+            report_writer_additive_evidence=writer_evidence,
+            final_report=verified_source.report,
+        )
+    except (BridgeReplayError, BridgeStorageError, KeyError, OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_REPORT_BINDING") from exc
 
 
 def replay_bounded_river_review_workflow(
@@ -838,6 +1325,7 @@ __all__ = [
     "bounded_river_review_confirmation_preview",
     "bounded_river_review_linkage_sha256",
     "bounded_river_review_plan_sha256",
+    "bounded_river_review_report_view",
     "bounded_river_review_workflow_status",
     "confirm_bounded_river_review_workflow",
     "prepare_bounded_river_review_workflow",

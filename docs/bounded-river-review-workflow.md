@@ -1,8 +1,10 @@
-# 限定リバー検討の再開可能workflow
+# 限定リバー検討の再開可能workflowとverified report view
 
 P3-030Dは、既存のP3-030C限定日本語river call-EV reviewと、既存のP2-025B固定5役bridgeを
 1つのlocal-first workflowとして構成します。parser、range、poker calculator、role controllerを
 再実装せず、明示確認、canonicalな状態保存、status、resume、replay、両実行面のlinkageを追加します。
+P3-030Eは、このworkflowへpure/read-onlyなreport表示を加えます。新しいreportを生成せず、既存の
+verified `FinalReport`とworkflow/bridgeのhash・stateだけを表示します。
 
 ## 実装範囲
 
@@ -13,6 +15,9 @@ P3-030Dは、既存のP3-030C限定日本語river call-EV reviewと、既存のP
 - P3 terminal作成後またはbridge準備後に中断しても、検証済みstorageから`resume`できる。
 - `status`と`replay`は、plan、preparation、confirmation、P3 terminal、bridge source projection、
   linkageを再検証する。replayはparser、calculator、provider、modelを再実行しない。
+- `show-bounded-river-review`は同じverified artifact chainから`json`、`summary`、`markdown`を
+  投影する。report-writerが表示できるのは保存済みconclusion codeとevidence hashだけであり、
+  新しい計算、range、戦略判断を追加しない。
 
 一般自然言語・site固有history・OCR、複数range、multiwayまたはearlier-street equity、rake、all-in、
 side pot、外部solver、GTO/equilibrium、一般Codex/Python bridgeは範囲外です。
@@ -21,7 +26,8 @@ side pot、外部solver、GTO/equilibrium、一般Codex/Python bridgeは範囲�
 
 `--auth-mode`の既定値は`local_only`です。この場合、P3-030Cのローカル計算とterminal保存を完了し、
 固定5役のbridge planだけを準備して`completed_local_only`になります。model runtime directory、API key、
-保存済みChatGPT login、networkは使いません。
+保存済みChatGPT login、networkは使わず、model/nonlocal runtimeを開始しません。P3-030Eの表示も
+同じlocal-only read境界内で、parser、calculator、provider、modelを起動しません。
 
 `codex_subscription`または`openai_api`を明示しても、このworkflowはrole transportを開始しません。
 bridge準備後は`awaiting_role_review`となり、request表示、role別確認、実行、reconcileはP2-025Bの
@@ -59,10 +65,15 @@ poker-deliberate resume-bounded-river-review `
 
 poker-deliberate replay-bounded-river-review `
   --workflow-root .\tmp\runs\river-review-001 --workflow-id river-review-001
+
+poker-deliberate show-bounded-river-review `
+  --workflow-root .\tmp\runs\river-review-001 --workflow-id river-review-001 `
+  --repository-root . --format markdown
 ```
 
 P3 terminal作成前の`resume`には元の`--source`が必要です。terminal作成後はraw sourceをworkflowへ
-複製せず、検証済みstorageから再開できます。
+複製せず、検証済みstorageから再開できます。`show-bounded-river-review`はterminal verification済みの
+workflowだけを受理し、raw sourceや未検証のflat fileからreportを再構成しません。
 
 ## 状態
 
@@ -80,10 +91,14 @@ P3 terminal作成前の`resume`には元の`--source`が必要です。terminal�
 
 workflow plan、preparation、confirmation、linkage、bridge artifactは指定したGit管理外rootにだけ保存し、
 raw日本語sourceをworkflow/bridge namespaceへ複製しません。認証情報の値はplan、status、errorへ保存・表示
-しません。元sourceとrangeの保管・削除方針は呼出側が管理します。
+しません。report viewはsource terminalのraw source bytesを検証とhash相関のために読みますが、表示、複製、
+bridge投影はせず、既存FinalReportのverified projectionと相関hash/stateに限定します。credentialとmodel
+traceも表示・複製しません。元sourceとrangeの保管・削除方針は呼出側が管理します。
 
 repository-owned評価は、confirmation binding、exact decision math、runtime modeと固定role、
 resume/replay、local-data separationの5 metricを独立に採点します。外部modelとsolverは実行しません。
+P3-030Eのtestは、表示のpure/read-only性、artifact verification、format parity、report-writerの
+conclusion/evidence allowlist、local_onlyでmodel/nonlocal runtimeを開始しないことを検査します。
 
 ```powershell
 python scripts\run_bounded_river_review_workflow_evaluation.py --help

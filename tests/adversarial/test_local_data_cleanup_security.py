@@ -33,7 +33,6 @@ from poker_deliberation.storage.revision_models import (
     RunStorageError,
     RunStorageFailureCode,
 )
-from poker_deliberation.storage.terminal_models import ProductRunError
 from tests.fault.test_local_data_cleanup_failures import _prepare_delete_fixture
 from tests.integration.test_local_data_cleanup_executor import (
     CleanupAuthority,
@@ -325,10 +324,10 @@ def test_dangling_former_product_namespace_is_not_treated_as_detached(
     except OSError:
         pytest.skip("directory symlink creation is not available")
 
-    with pytest.raises(ProductRunError) as caught:
+    with pytest.raises(RunStorageError) as caught:
         orchestrator.product_store.foundation.acquire_detached_run_authority("security-run")
 
-    assert caught.value.failure.code.value == "path_confinement_failed"
+    assert caught.value.failure.code is RunStorageFailureCode.PATH_CONFINEMENT_FAILED
 
 
 def test_dangling_cleanup_current_pointer_is_effect_unknown(tmp_path: Path) -> None:

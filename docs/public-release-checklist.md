@@ -34,6 +34,31 @@ Markdownが必要なら`--format markdown`と`.md`出力を指定します。scr
 `--others --exclude-standard`で得た公開候補だけです。wheel/sdistをbuildしないため、実archive内容は
 `UNKNOWN`のまま残します。
 
+## RM-018A候補証拠
+
+tracked worktreeがcleanな候補commitでは、公開preflightをpackage確認と同じcommit/treeへ束縛できます。
+出力先は既存内容のないignored `tmp/`または`build/`を指定します。
+RM-018Aの実証matrixはWindows/Ubuntu × CPython 3.12/3.13です。`requires-python >=3.11`は
+install可能範囲を示しますが、CPython 3.11は既存の32-ULP weighted-combo検証を満たさないため、
+この候補のsupportは**UNKNOWN**です。封印済みruntime inventoryは変更しません。
+
+```powershell
+.\.venv\Scripts\python.exe scripts\release_readiness.py `
+  --repo . `
+  --output-dir tmp\rm-018a-evidence
+```
+
+このhelperは候補commitの`git archive`から2回clean buildし、wheel/sdistの名前・size・SHA-256が一致する
+ことを要求します。archive内容、`roadmap_status.json`、console entry point、MIT metadata、隔離venvへの
+project wheelの`--no-index --no-deps`導入、CLI help、doctor、networkを拒否した`local_only` policy、
+`requirements.lock`と現在のinstalled metadataだけを使うlicense inventory、public preflightを確認します。
+依存packageの外部license調査は行わず、metadata不足は`unknown_packages`へ残します。
+
+`release-evidence.json`はstrict canonical schema、candidate commit/tree、workflow matrix、artifact hash、
+実行環境・command結果を保持します。ローカルpath、credential、ユーザー識別情報は含めません。生成した
+wheel/sdist、license inventory、preflight、evidenceはGitへcommitせず、GitHub workflowでは14日保持の
+candidate artifactとしてだけuploadします。
+
 ## statusの意味
 
 - `pass`: 宣言したローカル検査範囲では条件を満たしたFACT。

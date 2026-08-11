@@ -480,14 +480,21 @@ def test_worker_config_is_strict_read_only_and_disables_provider_retries(
     }
 
 
-def test_exact_sdk_cli_license_and_bundled_binary_identity() -> None:
-    from codex_cli_bin import bundled_codex_path  # type: ignore[import-untyped]
-
+def test_exact_sdk_cli_version_and_license_identity() -> None:
     assert importlib.metadata.version("openai-codex") == "0.144.4"
     assert importlib.metadata.version("openai-codex-cli-bin") == "0.144.4"
     for distribution in ("openai-codex", "openai-codex-cli-bin"):
         metadata = importlib.metadata.metadata(distribution)
         assert (metadata.get("License-Expression") or metadata.get("License")) == "Apache-2.0"
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="sealed P2-025B binary digest qualifies the bundled Windows runtime",
+)
+def test_qualified_windows_bundled_binary_identity() -> None:
+    from codex_cli_bin import bundled_codex_path  # type: ignore[import-untyped]
+
     assert _file_sha256(bundled_codex_path()) == BRIDGE_RUNTIME_BINARY_SHA256
 
 
@@ -688,7 +695,7 @@ def test_sdk_transport_timeout_reports_only_observable_effect_state(
     assert (caught.value.thread_id_sha256 is not None) is launched
 
 
-def test_sdk_transport_output_cap_preserves_prior_launch_evidence(
+def test_sdk_transport_output_cap_preserves_observable_launch_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     sdk_request: BoundedCodexBridgeRequestV1,
@@ -707,7 +714,13 @@ def test_sdk_transport_output_cap_preserves_prior_launch_evidence(
         transport.execute(sdk_request)
 
     assert caught.value.reason_code == "worker_output_cap_exceeded"
-    assert caught.value.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+    if caught.value.thread_id_sha256 is None:
+        assert caught.value.turn_id_sha256 is None
+        assert caught.value.effect_state is BridgeEffectState.EFFECT_UNKNOWN
+    else:
+        assert caught.value.thread_id_sha256 == "a" * 64
+        assert caught.value.turn_id_sha256 == "b" * 64
+        assert caught.value.effect_state is BridgeEffectState.CANCEL_UNCONFIRMED
 
 
 def test_sdk_transport_runtime_unavailable_is_not_launched(

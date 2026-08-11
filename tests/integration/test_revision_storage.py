@@ -761,8 +761,10 @@ def test_stale_cas_and_recreated_bound_legacy_root_fail_closed(short_tmp: Path) 
     assert conflict.value.failure.code is RunStorageFailureCode.RUN_CONFLICT
     assert store.read_current("Run-storage").current_revision == 1
 
-    legacy.rmdir()
+    parked_legacy = short_tmp / "legacy-original"
+    legacy.rename(parked_legacy)
     legacy.mkdir()
+    parked_legacy.rmdir()
     with pytest.raises(RunStorageError) as identity:
         store.read_current("Run-storage")
     assert identity.value.failure.code is RunStorageFailureCode.ROOT_INITIALIZATION_INCOMPLETE

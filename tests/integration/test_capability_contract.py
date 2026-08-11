@@ -74,6 +74,10 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert states["bounded_river_review_workflow"] == "implemented"
     assert "P3-030E" in summaries["bounded_river_review_workflow"]
     assert "pure read-only view" in summaries["bounded_river_review_workflow"]
+    assert "P3-030F" in summaries["bounded_river_review_workflow"]
+    assert (
+        "one confirmed next-role execution at a time" in summaries["bounded_river_review_workflow"]
+    )
     assert (
         "current-tree live qualification is UNKNOWN"
         in summaries["bounded_codex_river_review_bridge"]

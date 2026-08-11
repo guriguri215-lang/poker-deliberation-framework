@@ -103,7 +103,10 @@ CAPABILITIES: tuple[Capability, ...] = (
         "P3-030D composes one confirmed P3-030C review with one mode-bound P2-025B "
         "five-role bridge plan through canonical status, resume, linkage, and replay. P3-030E "
         "adds a pure read-only view of the existing verified FinalReport plus workflow and "
-        "bridge hashes/state; neither path executes nonlocal role transport.",
+        "bridge hashes/state. P3-030F adds workflow-bound preview, explicit all-field "
+        "confirmation, and one confirmed next-role execution at a time for supervised "
+        "nonlocal mode; local_only role operations reject without transport, and automatic "
+        "confirmation, bulk or parallel execution, retry, skip, and fallback are absent.",
     ),
     Capability(
         "confirmed_natural_language_review_intake",

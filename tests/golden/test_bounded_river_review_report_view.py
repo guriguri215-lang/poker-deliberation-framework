@@ -81,6 +81,7 @@ def _report_writer_result() -> BridgeRoleResultV1:
 
 def test_report_view_renderers_preserve_final_report_suffix_and_drop_writer_narrative() -> None:
     result = _report_writer_result()
+    raw_source_marker = "private Japanese source must never enter the report view"
     evidence = _project_report_writer_evidence(
         result,
         bridge_run_id=result.output.bridge_run_id,
@@ -113,11 +114,18 @@ def test_report_view_renderers_preserve_final_report_suffix_and_drop_writer_narr
     summary = render_bounded_river_review_summary(view)
     markdown = render_bounded_river_review_markdown(view)
 
-    assert summary.endswith(render_summary(report))
-    assert markdown.endswith(render_markdown(report))
-    assert result.output.conclusions[0].narrative not in view.model_dump_json()
-    assert result.output.conclusions[0].narrative not in summary
-    assert result.output.conclusions[0].narrative not in markdown
+    expected_summary = render_summary(report)
+    expected_markdown = render_markdown(report)
+    assert summary.endswith(expected_summary)
+    assert markdown.endswith(expected_markdown)
+    summary_header = summary[: -len(expected_summary)]
+    markdown_header = markdown[: -len(expected_markdown)]
+    assert canonical_json_bytes(view.final_report) == canonical_json_bytes(report)
+    for rendered in (view.model_dump_json(), summary_header, markdown_header):
+        assert result.output.conclusions[0].narrative not in rendered
+        assert result.output.conclusions[0].claim_id not in rendered
+        assert result.output.evidence_references[0].evidence_id not in rendered
+        assert raw_source_marker not in rendered
     assert view.model_dump(mode="json")["report_writer_additive_evidence"] == [
         {
             "conclusion_code": "report_bound",

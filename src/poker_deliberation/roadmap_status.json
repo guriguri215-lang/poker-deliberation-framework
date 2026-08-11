@@ -1,5 +1,5 @@
 {
-  "schema_version": "15.0.0",
+  "schema_version": "16.0.0",
   "source_policy": {
     "canonical": true,
     "projection": "public",
@@ -351,6 +351,17 @@
         "P3-030D"
       ],
       "scope": "One pure read-only projection of the existing verified FinalReport plus workflow and bridge hashes/state for a P3-030D run, with report-writer output limited to stored conclusion codes and evidence hashes and local_only starting no model or nonlocal runtime; no parser, calculator, range, provider, solver, role authority, live qualification, new poker fact, or strategy recommendation expansion."
+    },
+    {
+      "id": "P3-030F",
+      "rm_id": "RM-030",
+      "status": "completed",
+      "status_reason": "The supervised next-role preview, explicit cross-bound confirmation, single-role execution, additive workflow and report projection, deterministic five-role completion, local-only refusal, documentation, and declared tests are implemented without changing P2-025B or FinalReport authority.",
+      "dependencies": [
+        "P2-025B",
+        "P3-030E"
+      ],
+      "scope": "One supervised workflow continuation that previews exact request bytes and hash, context envelope, runtime policy and identity, auth mode, model and provider, credential reference, and retention for only the next fixed role; requires explicit confirmation cross-bound to the workflow plan, linkage, current bridge lineage, and role; executes one role at a time; resumes safely through fixed five-role terminal completion; adds only report role name, conclusion code, result and evidence hashes, lineage, and terminal state; and refuses transport in local_only without changing P2-025B bridge or P3 FinalReport authority. No auto-confirm, bulk or parallel execution, automatic retry, role skip, fallback, live qualification, parser, calculator, range, solver, GTO, or equilibrium expansion is included."
     }
   ],
   "items": [
@@ -1804,7 +1815,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "in_progress",
-      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, P3-030D composes that slice with P2-025B through a resumable local-first workflow, and P3-030E adds a pure read-only view of its existing verified report and correlation hashes/state without widening authority. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.",
+      "status_reason": "P3-030A implements the caller-supplied candidate path, P3-030B implements the bounded Japanese grammar, P3-030C completes the bounded one-confirmed-range river exact-equity/no-rake call-EV product slice, P3-030D composes that slice with P2-025B through a resumable local-first workflow, P3-030E adds a pure read-only view of its existing verified report and correlation hashes/state, and P3-030F adds supervised confirmed one-role-at-a-time execution through the fixed five-role terminal workflow without widening P2-025B or FinalReport authority. RM-030 remains in_progress because general natural-language/site/OCR/model-assisted parsing is unimplemented. The milestone table remains authoritative for current status.",
       "dependencies": [
         "RM-014"
       ],
@@ -1870,10 +1881,13 @@
         "P3-030C uses exact LocalProvider assignments and P2-024A context envelopes without raw source text, persists seven typed integration artifacts plus the reused P3-016B binding, and requires all three deterministic evaluation metrics to equal 1.0.",
         "P3-030D persists a canonical workflow plan before confirmation, preserves every P3-030C confirmation hash, and links the verified P3 terminal manifest to one mode-bound P2-025B bridge manifest without copying the raw Japanese source into the workflow or bridge namespace.",
         "P3-030D status, resume, and replay verify the same canonical preparation, confirmation, terminal source, bridge source projection, and linkage; an interruption after the P3 terminal run can resume from verified storage without rerunning the parser or calculators.",
-        "P3-030D defaults to local_only, creates no model runtime directory, and only prepares the five-role bridge plan; nonlocal role confirmation and execution remain in the existing explicit P2-025B commands and are never started by the workflow.",
+        "P3-030D defaults to local_only, creates no model runtime directory, and prepares the five-role bridge plan; P3-030F delegates only the next explicitly confirmed role through the unchanged P2-025B controller, while local_only starts no role transport.",
         "The repository-owned P3-030D evaluation separately scores confirmation binding, exact decision math, runtime mode and fixed roles, resume and replay, and local-data separation, with acceptance only when all five metrics pass.",
         "P3-030E reads only a terminally verified P3-030D artifact chain and projects the existing verified FinalReport plus workflow and bridge hashes/state into deterministic JSON, summary, or Markdown without mutating storage or rerunning the parser, calculators, provider, or model.",
         "P3-030E report-writer output is limited to stored conclusion codes and evidence hashes; local_only starts no model or nonlocal runtime, and no parser, calculator, range, provider, solver, role authority, live qualification, new poker fact, or strategy recommendation is added.",
+        "P3-030F previews exact request bytes and hash, context envelope, runtime policy and identity, auth mode, model and provider, credential reference, and retention for only the next fixed role; execution requires explicit confirmation cross-bound to the workflow plan, linkage, current bridge lineage, and role, and proceeds one role at a time.",
+        "P3-030F resumes from verified storage through fixed five-role terminal completion without rerunning the parser, calculators, or completed roles; local_only starts no transport, and automatic confirmation, bulk or parallel execution, retry, skip, fallback, and live qualification remain prohibited.",
+        "P3-030F adds to the verified report view only role name, conclusion code, result and evidence hashes, lineage, and terminal state, leaving the existing P3 FinalReport as the sole poker and numerical judgment authority and leaving P2-025B role order, runtime modes, canonical bytes, and confirmation authority unchanged.",
         "The public examples preserve the evaluated source fixture bytes exactly and the canonical compact range fixture bytes without a trailing line feed so strict canonical JSON parsing succeeds."
       ],
       "tests": [
@@ -1914,7 +1928,8 @@
         "At P3-030A completion, P2-028A had not started and was not activated by that local-only path.",
         "P3-030C reuses P3-015A and P3-016B without widening them; multiple ranges, multiway or earlier-street equity, external solver, GTO, and equilibrium remain outside this milestone.",
         "P3-030D composes P3-030C and P2-025B through canonical local workflow state only; it does not alter parser, range, calculator, role, outbound, runtime-mode, qualification, or live-execution authority.",
-        "P3-030E is downstream of P3-030D and projects only the already verified FinalReport and workflow/bridge correlation state; it adds no execution, interpretation, or authority surface."
+        "P3-030E is downstream of P3-030D and projects only the already verified FinalReport and workflow/bridge correlation state; it adds no execution, interpretation, or authority surface.",
+        "P3-030F depends on P2-025B and P3-030E and supervises only the next fixed bridge role through explicit preview, cross-bound confirmation, and one-role execution; it does not widen P2-025B transport, qualification, role order, or authority, and does not replace the existing P3 FinalReport."
       ],
       "decision_gate": {
         "required": true,

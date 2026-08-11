@@ -31,6 +31,9 @@ POSIXではPython pathを`./.venv/bin/python`へ置き換えてください。
 - 限定レビューをcanonical workflowとして保存し、status、resume、replayを行う。
 - P3-030Eの`show-bounded-river-review`で、既存のverified `FinalReport`とworkflow/bridgeの
   hash・stateだけをread-only表示する。表示はparser、calculator、provider、modelを再実行しない。
+- P3-030Fの`show-bounded-river-review-role-request`から始まるworkflow wrapperで、nonlocal modeの
+  次の1 roleだけをpreview、全fieldの明示確認、workflow-ownedなcanonical hash receiptの保存、
+  1回のexecuteという順で監督実行する。
 - Codex上で同梱Skillと専門agent定義を利用する。通常のCodex利用とPython CLIは別実行面であり、
   P2-025Bだけがterminal検証済みの限定river reviewを固定5 roleへ渡す専用bridgeである。
 
@@ -125,7 +128,26 @@ $null = Read-Host "source、range、focal、tool plan、plan hash、12個のhash
 表示された12個のhashをそれぞれの明示flagへ渡します。`local_only`はmodel/nonlocal runtimeを
 開始せず、完了後のreport viewも保存済みverified artifactだけを読みます。
 
-詳細な状態、resume、replay、保存範囲は
+P3-030Fでnonlocal roleを監督実行する場合、各roleの最初のコマンドは
+`show-bounded-river-review-role-request`です。statusの`next_role`と`role_state`を確認し、previewの
+17個の`confirmation_fields`をすべて個別の`--expected-*`として
+`confirm-bounded-river-review-role-request`へ渡して確認した後、
+`execute-bounded-river-review-role`を1回だけ実行します。confirm成功時には、workflow plan、linkage、
+bridge lineage、role、17 field、P2 confirmationを結ぶ`binding_sha256`付きのrole confirmation receiptを
+workflow側へ保存します。既存のlower-level P2 CLIで直接confirmしただけではworkflowの実行許可にならず、
+receiptがない間は`awaiting_confirmation`です。P2 confirmationだけが残った中断は、fresh showの値と
+同じauthority/confirmation/idempotency IDを明示してworkflow confirmを行うとreceiptを作成できます。
+次のroleでも同じ3段階を繰り返します。
+
+statusは`role_request_expires_at`と`role_confirmation_expires_at`も表示します。期限切れは
+`role_state=expired`となり、role wrapperは`BRW_E_ROLE_EXPIRED`で停止します。
+`reconciliation_required`のterminalまたは`in_progress`も自動retryしません。
+`local_only`では、このrole用show/confirm/execute wrapperは`BRW_E_LOCAL_ONLY`で拒否されます。
+自動確認、期限切れの自動再確認、一括または並列実行、retry、skip、新しいmodeへの切替、
+mode/model/provider fallbackはありません。既存の
+P3 `FinalReport`、parser/calculator、明示済み単一opponent range、7-tool exact semanticsは変わりません。
+`codex_subscription`の現行qualificationは`UNKNOWN`です。具体的な全flag、状態遷移、resume、replay、
+保存範囲は
 [限定river review workflow](docs/bounded-river-review-workflow.md)を参照してください。
 
 ## 実行環境
@@ -196,7 +218,7 @@ PowerShellでは[`scripts/check_quality.ps1`](scripts/check_quality.ps1)、candi
 [`scripts/release_readiness.py`](scripts/release_readiness.py)、公開候補のoffline検査は
 [`scripts/public_preflight.py`](scripts/public_preflight.py)を使います。
 
-**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema 15.0.0の[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema 16.0.0の[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 milestone完了とcandidate-specific release evidenceは別です。
 
 ## 主な文書

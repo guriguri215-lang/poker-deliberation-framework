@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "15.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "16.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -201,6 +201,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P3-030C",
         "P3-030D",
         "P3-030E",
+        "P3-030F",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -309,6 +310,21 @@ def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
     assert "pure read-only projection" in report_view_scope
     assert "existing verified FinalReport" in report_view_scope
     assert "no parser, calculator, range, provider, solver, role authority" in report_view_scope
+    assert milestones["P3-030F"]["status"] == "completed"
+    assert milestones["P3-030F"]["dependencies"] == ["P2-025B", "P3-030E"]
+    supervised_scope = milestones["P3-030F"]["scope"]
+    assert "exact request bytes and hash" in supervised_scope
+    assert "only the next fixed role" in supervised_scope
+    assert "explicit confirmation cross-bound" in supervised_scope
+    assert "executes one role at a time" in supervised_scope
+    assert "fixed five-role terminal completion" in supervised_scope
+    assert "refuses transport in local_only" in supervised_scope
+    assert "without changing P2-025B bridge or P3 FinalReport authority" in supervised_scope
+    assert "No auto-confirm, bulk or parallel execution" in supervised_scope
+    assert "live qualification, parser, calculator, range, solver, GTO" in supervised_scope
+    assert "general natural-language/site/OCR/model-assisted parsing is unimplemented" in str(
+        items["RM-030"]["status_reason"]
+    )
     assert items["RM-030"]["decision_gate"]["required"] is True  # type: ignore[index]
     rationale = items["RM-030"]["decision_gate"]["rationale"]  # type: ignore[index]
     assert any("P3-030B" in item for item in rationale)
@@ -462,6 +478,9 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
     )
     assert "P3-030C completes the bounded" in str(items["RM-030"]["status_reason"])
     assert "P3-030D composes that slice" in str(items["RM-030"]["status_reason"])
+    assert "P3-030F adds supervised confirmed one-role-at-a-time execution" in str(
+        items["RM-030"]["status_reason"]
+    )
     assert "P3-030C is an implementation candidate" not in str(items["RM-030"]["status_reason"])
     assert "At P3-030A completion, P2-028A had not started" in str(items["RM-030"]["relations"])
     assert "At P2-029A completion, RM-025 was raised to P1" in str(items["RM-029"]["relations"])
@@ -698,8 +717,8 @@ def test_public_claim_paths_exist_as_required_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "15.0.0"
-    assert "schema 15.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert summary["schema_version"] == "16.0.0"
+    assert "schema 16.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 19,
@@ -708,7 +727,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 24,
+        "completed": 25,
         "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []

@@ -180,7 +180,12 @@ def _executable_with_publication_fault(
         initialized_at=NOW,
     )
     value = request(operation, suffix=suffix, arguments=arguments)
-    budget = DurableBudgetStore(budget_root, legacy, wall_clock=lambda: NOW)
+    budget = DurableBudgetStore(
+        budget_root,
+        legacy,
+        clock=lambda: 0,
+        wall_clock=lambda: NOW,
+    )
     budget.create(
         value.budget_run_id,
         durable_policy(),

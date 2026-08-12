@@ -6,6 +6,14 @@ deterministic evidenceを変更せずに5つの限定review roleへ渡すP2-025B
 P3-030Fは、このcontractを変更せず、1つのverified workflowから次のroleだけをpreview、全field確認、
 1回のexecuteへ進めるsupervised wrapper lifecycleを追加します。
 
+ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
+hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
+現在資格を意味しません。
+
+ここでP3-030Fが受け取るverified P3 source/workflowは、repository-ownedなschema、hash、
+workflow/bridge linkage、state、numeric-contractの検査に合格したことを意味します。戦略品質、
+実戦rangeの正確性、GTO/equilibrium、外部solver一致、第三者認証、release readinessは証明しません。
+
 ## 公開状態
 
 - **FACT**: bridge/auth/canonical/storage core schemaは`1.0.0`、execution auditとsealed live qualification schemaは`2.0.0`である。
@@ -47,7 +55,7 @@ subscriptionまたはAPI adapterを利用する人だけが同じpinned package�
 
 | 項目 | 固定値 |
 |---|---|
-| Python | `>=3.11`; qualification環境はCPython `3.12.13` |
+| Python | `>=3.11`; historical candidate-bound qualification環境はCPython `3.12.13` |
 | package | `openai-codex==0.144.4` |
 | bundled CLI | `openai-codex-cli-bin==0.144.4` / `codex-cli 0.144.4` |
 | license | Apache-2.0 |

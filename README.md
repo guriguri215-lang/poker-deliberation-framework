@@ -6,17 +6,28 @@
 
 ## 最初に実行するコマンド
 
-Python環境を作り、repository rootで次を実行します。
+Python 3.12の環境を作り、repository rootで次を実行します。
+
+Windows PowerShell:
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m poker_deliberation doctor
+$python = ".\.venv\Scripts\python.exe"
+& $python -m pip install -e .
+& $python -m poker_deliberation doctor
+```
+
+POSIX shell:
+
+```bash
+python3.12 -m venv .venv
+python="./.venv/bin/python"
+"$python" -m pip install -e .
+"$python" -m poker_deliberation doctor
 ```
 
 最初のdependency取得にはnetworkが必要な場合があります。install完了後、既定の`local_only`経路は
 API key、保存済みChatGPT/Codex login、外部model、networkを使わずに実行できます。
-POSIXではPython pathを`./.venv/bin/python`へ置き換えてください。
 
 `doctor`最上位の`status=ok`は診断が完了したという意味です。個別能力には`disabled`または
 `unavailable`もあるため、同じ出力の`capabilities`を確認してください。
@@ -31,6 +42,11 @@ POSIXではPython pathを`./.venv/bin/python`へ置き換えてください。
 - 限定レビューをcanonical workflowとして保存し、status、resume、replayを行う。
 - P3-030Eの`show-bounded-river-review`で、既存のverified `FinalReport`とworkflow/bridgeの
   hash・stateだけをread-only表示する。表示はparser、calculator、provider、modelを再実行しない。
+
+ここでP3-030Eの`verified FinalReport`とreport projectionは、repository-ownedなschema、hash、
+workflow/bridge linkage、state、numeric-contractの検査に合格したことを意味します。戦略品質、
+実戦rangeの正確性、GTO/equilibrium、外部solver一致、第三者認証、release readinessは証明しません。
+
 - P3-030Fの`show-bounded-river-review-role-request`から始まるworkflow wrapperで、nonlocal modeの
   次の1 roleだけをpreview、全fieldの明示確認、workflow-ownedなcanonical hash receiptの保存、
   1回のexecuteという順で監督実行する。
@@ -139,6 +155,10 @@ receiptがない間は`awaiting_confirmation`です。P2 confirmationだけが�
 同じauthority/confirmation/idempotency IDを明示してworkflow confirmを行うとreceiptを作成できます。
 次のroleでも同じ3段階を繰り返します。
 
+ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
+hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
+現在資格を意味しません。
+
 statusは`role_request_expires_at`と`role_confirmation_expires_at`も表示します。期限切れは
 `role_state=expired`となり、role wrapperは`BRW_E_ROLE_EXPIRED`で停止します。
 `reconciliation_required`のterminalまたは`in_progress`も自動retryしません。
@@ -155,9 +175,9 @@ P3 `FinalReport`、parser/calculator、明示済み単一opponent range、7-tool
 - package metadataの要件は`requires-python >=3.11`です。これは全Python/OS組合せの実行証明ではありません。
 - tracked GitHub Actions verification matrixは`windows-latest` / `ubuntu-latest` × CPython `3.12` / `3.13`で、
   各rowがfull pytestを実行します。Windows 3.13でstatic gate、Ubuntu 3.13で再現buildと
-  candidate-bound package evidenceも生成します。PR head
-  `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`に対するActions run `31462799513`では、
-  matrix 4 row、static、package-evidenceの6 jobがすべて合格しました。
+  candidate-bound package evidenceも生成します。実行結果はcommit固有であり、passing CIだけではpublic
+  releaseまたはproduction readinessを証明しません。最新の証拠は
+  [Capabilities](docs/capabilities.md)と[Public roadmap status](docs/roadmap-status.md)を参照してください。
 - RM-018Aのreproducible build、qualified locked base site-packagesを使うisolated venvでの
   `--no-index --no-deps` project-wheel smoke、license inventory、artifact hash、offline preflightの仕組みは
   実装済みです。dependencyを空環境へoffline導入できるという主張ではありません。また、任意のworking
@@ -205,13 +225,34 @@ conclusion codeとevidence hashの表示だけです。parser、calculator、ran
 
 ## 品質確認
 
-canonical quality gateは次の4コマンドです。
+次はuser Quickstartの`pip install -e .`とは別の、CI-equivalentな開発環境setupです。Quickstartで
+作成したvenvのPythonを明示して、別のglobal Pythonへdependencyを入れないようにします。
 
-```text
-python -m pytest
-ruff check .
-ruff format --check .
-mypy src
+```powershell
+$python = ".\.venv\Scripts\python.exe"
+& $python -m pip install --disable-pip-version-check -r requirements.lock
+& $python -m pip install --disable-pip-version-check --no-deps -e .
+```
+
+setup後のcanonical quality gateは次の4コマンドです。
+
+```powershell
+& $python -m pytest
+& $python -m ruff check .
+& $python -m ruff format --check .
+& $python -m mypy src
+```
+
+POSIXでは同じvenvを次のように指定します。
+
+```bash
+python="./.venv/bin/python"
+"$python" -m pip install --disable-pip-version-check -r requirements.lock
+"$python" -m pip install --disable-pip-version-check --no-deps -e .
+"$python" -m pytest
+"$python" -m ruff check .
+"$python" -m ruff format --check .
+"$python" -m mypy src
 ```
 
 PowerShellでは[`scripts/check_quality.ps1`](scripts/check_quality.ps1)、candidate-bound build evidenceは

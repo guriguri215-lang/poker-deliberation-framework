@@ -52,6 +52,14 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `offline_evaluation_harness` | **implemented** | P3-017Aのstrictなoffline dataset、決定的exact-evidence scorer、provenance binding、再現可能なresult artifactを、外部実行なしで提供する。 |
 | `phase_1_hardening` | **implemented** | typed tool contract、contract v2の数値区分、実行時verification、ローカルoracle/metamorphic testを実装済み。 |
 
+ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
+hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
+現在資格を意味しません。
+
+P3-030Eの`verified FinalReport`とreport projectionは、repository-ownedなschema、hash、
+workflow/bridge linkage、state、numeric-contractの検査に合格したことを意味します。戦略品質、
+実戦rangeの正確性、GTO/equilibrium、外部solver一致、第三者認証、release readinessは証明しません。
+
 ## 22 tools、Codex 9役、Python 7役
 
 - **FACT**: `default_registry()`と`tools/manifest.yaml`には`22`個のtool名があり、計算または
@@ -100,13 +108,34 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 
 ## 品質とplatform
 
-開発用venvを有効化した環境でのcanonical quality gateは次の4コマンドです。
+user Quickstartの`pip install -e .`とは別に、CI-equivalentな開発環境を次のlocked installで準備します。
+作成済みvenvのPythonを明示し、別のglobal Pythonへdependencyを入れないようにします。
 
-```text
-python -m pytest
-ruff check .
-ruff format --check .
-mypy src
+```powershell
+$python = ".\.venv\Scripts\python.exe"
+& $python -m pip install --disable-pip-version-check -r requirements.lock
+& $python -m pip install --disable-pip-version-check --no-deps -e .
+```
+
+setup後のcanonical quality gateは次の4コマンドです。
+
+```powershell
+& $python -m pytest
+& $python -m ruff check .
+& $python -m ruff format --check .
+& $python -m mypy src
+```
+
+POSIXでは同じvenvを次のように指定します。
+
+```bash
+python="./.venv/bin/python"
+"$python" -m pip install --disable-pip-version-check -r requirements.lock
+"$python" -m pip install --disable-pip-version-check --no-deps -e .
+"$python" -m pytest
+"$python" -m ruff check .
+"$python" -m ruff format --check .
+"$python" -m mypy src
 ```
 
 pytestの既定tempは`tests/conftest.py`により、ワークスペース内のignoredな
@@ -116,7 +145,12 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 - **FACT**: package metadataは`requires-python >=3.11`である。これは単独では検証済みmatrixを意味しない。
 - **FACT**: tracked GitHub Actions matrixはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを
   実行する。Windows 3.13でstatic gate、Ubuntu 3.13でreproducible package evidenceも実行する。
-  PR head `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`のActions run `31462799513`は6 jobすべて合格した。
+  2026-08-12 20:06:17 JSTのfresh read-backでは、commit
+  `ad3f267345491651153a18be12e854632366e34a`のActions run `31583851426`で、Windows/Ubuntu ×
+  Python 3.12/3.13のfull-test 4 row、static quality、package evidenceの全6 jobが成功した。
+  これは同commitだけに対する証拠であり、public releaseまたはproduction readinessを証明しない。
+  run `31462799513`の6-job成功はcommit `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`だけに対する
+  historicalかつcommit-specificな証拠である。
 - **FACT**: RM-018Aのbuild/install、license inventory、artifact SHA-256、offline preflightを
   candidate commitへ結ぶ実装とworkflowが存在する。任意checkoutの`doctor`はcandidate evidenceではない。
 - **FACT**: 自動temp名はWindowsのpath消費を抑えるため短縮し、session固有性を維持する。

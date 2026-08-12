@@ -5,8 +5,17 @@ P3-030Dは、既存のP3-030C限定日本語river call-EV reviewと、既存のP
 再実装せず、明示確認、canonicalな状態保存、status、resume、replay、両実行面のlinkageを追加します。
 P3-030Eは、このworkflowへpure/read-onlyなreport表示を加えます。新しいreportを生成せず、既存の
 verified `FinalReport`とworkflow/bridgeのhash・stateだけを表示します。
+
+ここでP3-030Eの`verified FinalReport`とreport projectionは、repository-ownedなschema、hash、
+workflow/bridge linkage、state、numeric-contractの検査に合格したことを意味します。戦略品質、
+実戦rangeの正確性、GTO/equilibrium、外部solver一致、第三者認証、release readinessは証明しません。
+
 P3-030Fは、nonlocal modeで次の固定roleだけを、request preview、利用者による全fieldの明示確認、
 workflow-owned canonical confirmation receipt、1回のexecuteへ進めるworkflow-level wrapperを追加します。
+
+ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
+hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
+現在資格を意味しません。
 
 ## 実装範囲
 

@@ -14,6 +14,16 @@ from poker_deliberation.budgets import (
 from poker_deliberation.state_machine import RunState, WorkflowStateMachine
 
 
+class CountingMonotonicClock:
+    def __init__(self, current_ns: int = 0) -> None:
+        self.current_ns = current_ns
+        self.calls = 0
+
+    def now_ns(self) -> int:
+        self.calls += 1
+        return self.current_ns
+
+
 def test_fake_clock_accepts_exact_runtime_cap_and_rejects_over_cap() -> None:
     clock = FakeMonotonicClock()
     ledger = SerialUsageLedger(BudgetPolicyV2(max_runtime_seconds=1.0), clock=clock)
@@ -43,6 +53,51 @@ def test_runtime_failure_remains_fail_closed_across_state_machine_checks() -> No
 
     assert not machine.enforce_runtime()
     assert not machine.enforce_runtime()
+
+
+def test_checked_runtime_window_accepts_exact_cap_and_structures_overrun() -> None:
+    clock = FakeMonotonicClock()
+    machine = WorkflowStateMachine(
+        BudgetPolicyV2(max_runtime_seconds=1.0),
+        state=RunState.INDEPENDENT_ANALYSIS,
+        clock=clock,
+    )
+    clock.advance_ns(1_000_000_000)
+
+    window = machine.checked_runtime_window()
+
+    assert window is not None
+    snapshot, observed_at_ns, deadline_ns = window
+    assert snapshot.active_runtime_ns == 1_000_000_000
+    assert observed_at_ns == 1_000_000_000
+    assert deadline_ns == 1_000_000_000
+    assert machine.last_budget_failure is None
+    assert machine.state is RunState.INDEPENDENT_ANALYSIS
+    assert machine.events == []
+
+    clock.advance_ns(1)
+    assert machine.checked_runtime_window() is None
+    assert machine.last_budget_failure is not None
+    assert machine.last_budget_failure.code is BudgetFailureCode.RUNTIME_EXCEEDED
+    assert machine.state is RunState.FAILED_WITH_LIMITATIONS
+    assert machine.events[-1].source is RunState.INDEPENDENT_ANALYSIS
+    assert machine.events[-1].target is RunState.FAILED_WITH_LIMITATIONS
+    assert machine.events[-1].reason.startswith("strict budget observation failed:")
+
+    event_count = len(machine.events)
+    assert machine.checked_runtime_window() is None
+    assert len(machine.events) == event_count
+
+
+def test_checked_runtime_window_reads_the_clock_exactly_once() -> None:
+    clock = CountingMonotonicClock()
+    machine = WorkflowStateMachine(BudgetPolicyV2(max_runtime_seconds=1.0), clock=clock)
+    calls_before_window = clock.calls
+
+    window = machine.checked_runtime_window()
+
+    assert window is not None
+    assert clock.calls == calls_before_window + 1
 
 
 def test_runtime_failure_replaces_unpublished_completion_with_valid_failure() -> None:

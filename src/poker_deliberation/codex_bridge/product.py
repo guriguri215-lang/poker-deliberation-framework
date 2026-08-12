@@ -685,6 +685,10 @@ def confirm_product_role(
     expected_model: str | None,
     expected_credential_reference: str,
     expected_remote_retention_policy: str,
+    expected_current_revision: int | None = None,
+    expected_current_manifest_sha256: str | None = None,
+    expected_current_inventory_sha256: str | None = None,
+    expected_current_pointer_sha256: str | None = None,
 ) -> VerifiedBridgeRead:
     root = confined_product_path(bridge_root, repository_root)
     controller = BoundedCodexBridgeController(BoundedCodexBridgeStore(root))
@@ -708,6 +712,10 @@ def confirm_product_role(
         expected_model=expected_model,
         expected_credential_reference=expected_credential_reference,
         expected_remote_retention_policy=expected_remote_retention_policy,
+        expected_current_revision=expected_current_revision,
+        expected_current_manifest_sha256=expected_current_manifest_sha256,
+        expected_current_inventory_sha256=expected_current_inventory_sha256,
+        expected_current_pointer_sha256=expected_current_pointer_sha256,
     )
 
 

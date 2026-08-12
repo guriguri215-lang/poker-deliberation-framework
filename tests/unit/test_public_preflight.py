@@ -140,7 +140,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 15.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 16.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -169,17 +169,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 15.0.0", "schema 10.0.0\n<!-- schema 15.0.0 -->"),
+        "README.md": ("schema 16.0.0", "schema 10.0.0\n<!-- schema 16.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `15.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `15.0.0` -->",
+            "schema version: `16.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `16.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "15.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "15.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "16.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "16.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "15.0.0"',
+            '"schema_version": "16.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }
@@ -188,6 +188,50 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
         path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
 
     assert _capability_docs_check(repo).status == "fail"
+
+
+@pytest.mark.parametrize(
+    ("relative", "marker"),
+    (
+        ("README.md", "P3-030F"),
+        ("README.md", "show-bounded-river-review-role-request"),
+        ("docs/capabilities.md", "P3-030F"),
+        ("docs/bounded-codex-river-review-bridge.md", "P3-030F"),
+        (
+            "docs/bounded-codex-river-review-bridge.md",
+            "show-bounded-river-review-role-request",
+        ),
+        ("docs/bounded-river-review-workflow.md", "P3-030F"),
+        (
+            "docs/bounded-river-review-workflow.md",
+            "show-bounded-river-review-role-request",
+        ),
+        (
+            "docs/bounded-river-review-workflow.md",
+            "confirm-bounded-river-review-role-request",
+        ),
+        (
+            "docs/bounded-river-review-workflow.md",
+            "execute-bounded-river-review-role",
+        ),
+    ),
+)
+def test_capability_preflight_requires_supervised_role_workflow_markers(
+    tmp_path: Path,
+    relative: str,
+    marker: str,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    path = repo / relative
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(marker, "removed-supervised-marker"),
+        encoding="utf-8",
+    )
+
+    result = _capability_docs_check(repo)
+
+    assert result.status == "fail"
+    assert f"{relative}:{marker}" in result.details["missing_markers"]
 
 
 def test_capability_preflight_rejects_computed_schema_reassignment(

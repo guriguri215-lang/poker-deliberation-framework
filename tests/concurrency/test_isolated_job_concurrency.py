@@ -87,6 +87,8 @@ def _coordinator_fixture(
     backend: WindowsJobBackend | None = None,
     operation: SyntheticOperation = SyntheticOperation.SUCCESS,
     arguments: SyntheticArgumentsV1 | None = None,
+    wall_clock_ms: int = 3_000,
+    budget_runtime_seconds: float | None = None,
 ):
     legacy = tmp_path / "legacy"
     legacy.mkdir()
@@ -108,9 +110,18 @@ def _coordinator_fixture(
     )
     value = request(operation, suffix=suffix, arguments=arguments)
     budget = DurableBudgetStore(budget_root, legacy, wall_clock=lambda: NOW)
+    budget_policy = durable_policy()
+    if budget_runtime_seconds is not None:
+        budget_policy = budget_policy.model_copy(
+            update={
+                "base_policy": budget_policy.base_policy.model_copy(
+                    update={"max_runtime_seconds": budget_runtime_seconds}
+                )
+            }
+        )
     budget.create(
         value.budget_run_id,
-        durable_policy(),
+        budget_policy,
         operation_id=f"initialize-{suffix}",
     )
     job_store = IsolatedJobStore(job_root, legacy, clock=lambda: NOW)
@@ -126,7 +137,7 @@ def _coordinator_fixture(
     lineage = lineage_for(value, envelope)
     policy = policy_for(
         workspace,
-        job_limits=limits(wall_clock_ms=3_000),
+        job_limits=limits(wall_clock_ms=wall_clock_ms),
     )
     kwargs = {
         "context_envelope": envelope,
@@ -244,11 +255,14 @@ def test_running_exact_duplicate_cannot_abort_first_callers_lease(
 
 
 def test_cancel_is_durable_tree_wide_and_budget_settled(tmp_path: Path) -> None:
+    wall_clock_ms = 30_000
     value, policy, coordinator, job_store, budget, kwargs = _coordinator_fixture(
         tmp_path,
         suffix="cancel",
         operation=SyntheticOperation.HANG,
-        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+        arguments=SyntheticArgumentsV1(duration_ms=60_000),
+        wall_clock_ms=wall_clock_ms,
+        budget_runtime_seconds=90.0,
     )
 
     result = coordinator.execute(

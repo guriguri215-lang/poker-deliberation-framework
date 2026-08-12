@@ -6,7 +6,7 @@ import hashlib
 import os
 import secrets
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Set
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, NoReturn
@@ -32,15 +32,23 @@ from poker_deliberation.bounded_river_review_workflow_models import (
     BOUNDED_RIVER_REVIEW_WORKFLOW_MAX_ARTIFACT_BYTES,
     BoundedRiverReviewReportViewV1,
     BoundedRiverReviewReportWriterEvidenceV1,
+    BoundedRiverReviewRoleConfirmationBindingV1,
     BoundedRiverReviewWorkflowLinkageV1,
     BoundedRiverReviewWorkflowPlanV1,
     BoundedRiverReviewWorkflowStatusV1,
     WorkflowNextAction,
+    WorkflowRoleState,
     WorkflowState,
 )
 from poker_deliberation.budgets.durable_store import DurableBudgetStore
 from poker_deliberation.codex_bridge.canonical import (
+    canonical_json_bytes as bridge_canonical_json_bytes,
+)
+from poker_deliberation.codex_bridge.canonical import (
     parse_canonical_model as parse_bridge_canonical_model,
+)
+from poker_deliberation.codex_bridge.canonical import (
+    sha256_bytes as bridge_sha256_bytes,
 )
 from poker_deliberation.codex_bridge.controller import (
     BoundedCodexBridgeController,
@@ -48,16 +56,23 @@ from poker_deliberation.codex_bridge.controller import (
 )
 from poker_deliberation.codex_bridge.models import (
     BRIDGE_ROLE_ORDER,
+    BoundedCodexBridgeRequestV1,
     BridgeRole,
+    BridgeRoleConfirmationV1,
     BridgeRoleResultV1,
     BridgeRunPlanV1,
     BridgeSourceContextV1,
     RuntimeAuthModeV1,
 )
 from poker_deliberation.codex_bridge.product import (
+    BridgeProductError,
     confined_product_path,
     confined_runtime_scratch_path,
+    confirm_product_role,
+    execute_product_role,
     prepare_product_bridge,
+    read_product_request,
+    role_request_preview,
 )
 from poker_deliberation.codex_bridge.replay import (
     BridgeReplayError,
@@ -79,6 +94,7 @@ from poker_deliberation.config import AppConfig, migrate_budget_config
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import LocalProvider
 from poker_deliberation.range_models import VersionedRangeDefinitionV1
+from poker_deliberation.storage.directory_durability import sync_directory
 from poker_deliberation.storage.revision_canonical import (
     canonical_domain_sha256,
     canonical_json_bytes,
@@ -102,6 +118,7 @@ from poker_deliberation.storage.terminal_store import (
 
 _PLAN_HASH_DOMAIN = "poker-bounded-river-review-workflow-plan-v1"
 _LINKAGE_HASH_DOMAIN = "poker-bounded-river-review-workflow-linkage-v1"
+_ROLE_CONFIRMATION_BINDING_HASH_DOMAIN = "poker-bounded-river-review-role-confirmation-binding-v1"
 _WORKFLOW_DIRECTORY_DOMAIN = b"poker-bounded-river-review-workflow-directory-v1\0"
 Clock = Callable[[], datetime]
 
@@ -134,6 +151,15 @@ def bounded_river_review_linkage_sha256(
     return canonical_domain_sha256(
         _LINKAGE_HASH_DOMAIN,
         _without_hash(linkage, "linkage_sha256"),
+    )
+
+
+def bounded_river_review_role_confirmation_binding_sha256(
+    binding: BoundedRiverReviewRoleConfirmationBindingV1,
+) -> str:
+    return canonical_domain_sha256(
+        _ROLE_CONFIRMATION_BINDING_HASH_DOMAIN,
+        _without_hash(binding, "binding_sha256"),
     )
 
 
@@ -696,6 +722,322 @@ def _verify_linked_bridge_ancestor(
         _fail("BRW_E_LINKAGE")
 
 
+def _role_confirmation_binding_path(directory: Path, role: BridgeRole) -> Path:
+    ordinal = BRIDGE_ROLE_ORDER.index(role)
+    return directory / f"role-confirmation-binding-{ordinal}-{role.value}.json"
+
+
+def _bridge_role_request(
+    bridge: VerifiedBridgeRead,
+    role: BridgeRole,
+) -> BoundedCodexBridgeRequestV1:
+    try:
+        request = parse_bridge_canonical_model(
+            bridge.artifact_bytes(role_artifact_name(role, "request")),
+            BoundedCodexBridgeRequestV1,
+        )
+    except (BridgeStorageError, KeyError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_BINDING") from exc
+    if request.context.assignment.role is not role:
+        _fail("BRW_E_ROLE_BINDING")
+    return request
+
+
+def _bridge_role_confirmation(
+    bridge: VerifiedBridgeRead,
+    role: BridgeRole,
+) -> BridgeRoleConfirmationV1 | None:
+    name = role_artifact_name(role, "confirmation")
+    if name not in bridge.artifacts:
+        return None
+    try:
+        parsed = parse_bridge_canonical_model(
+            bridge.artifact_bytes(name),
+            BridgeRoleConfirmationV1,
+        )
+    except (BridgeStorageError, KeyError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_BINDING") from exc
+    if parsed.role is not role:
+        _fail("BRW_E_ROLE_BINDING")
+    return parsed
+
+
+def _verify_bridge_confirmation_request_binding(
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    request: BoundedCodexBridgeRequestV1,
+    confirmation: BridgeRoleConfirmationV1,
+) -> None:
+    policy = request.context.runtime_policy
+    assignment = request.context.assignment
+    if (
+        request.auth_mode is not plan.auth_mode
+        or assignment.bridge_run_id != plan.bridge_run_id
+        or confirmation.bridge_run_id != plan.bridge_run_id
+        or confirmation.auth_mode is not plan.auth_mode
+        or confirmation.role is not assignment.role
+        or confirmation.assignment_id != assignment.assignment_id
+        or confirmation.attempt_id != assignment.attempt_id
+        or confirmation.request_sha256 != request.request_sha256
+        or confirmation.request_bytes_sha256 != request.request_bytes_sha256
+        or confirmation.envelope_sha256 != request.context.envelope_sha256
+        or confirmation.runtime_policy_sha256 != policy.policy_sha256
+        or confirmation.runtime_identity != policy.runtime_identity
+        or confirmation.model_provider != policy.model_provider
+        or confirmation.model != policy.model
+        or confirmation.credential_reference != policy.credential_reference
+        or confirmation.authority.authority_kind != "local_user"
+        or confirmation.authority.authentication != "self_asserted"
+    ):
+        _fail("BRW_E_ROLE_BINDING")
+
+
+def _bridge_lineage_snapshot(
+    directory: Path,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    current: VerifiedBridgeRead,
+    *,
+    revision: int,
+    manifest_sha256: str,
+    inventory_sha256: str,
+    pointer_sha256: str,
+) -> tuple[object, object]:
+    if revision < 1 or revision > current.pointer.revision:
+        _fail("BRW_E_ROLE_BINDING")
+    store = BoundedCodexBridgeStore(directory / "bridge")
+    _run, _control, _transactions, revisions, _pointer = store._paths(plan.bridge_run_id)
+    try:
+        candidates = store._revision_candidates(revisions, revision)
+        if len(candidates) != 1:
+            _fail("BRW_E_ROLE_BINDING")
+        pointer, manifest, _marker, _artifacts = store._pointer_for_revision(
+            plan.bridge_run_id,
+            candidates[0],
+        )
+        if (
+            manifest.manifest_sha256 != manifest_sha256
+            or manifest.inventory_sha256 != inventory_sha256
+            or bridge_sha256_bytes(bridge_canonical_json_bytes(pointer)) != pointer_sha256
+        ):
+            _fail("BRW_E_ROLE_BINDING")
+        return pointer, manifest
+    except (BridgeStorageError, OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_BINDING") from exc
+
+
+def _verify_role_confirmation_binding(
+    directory: Path,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    workflow_confirmation: BoundedRiverCallEvConfirmationV1,
+    linkage: BoundedRiverReviewWorkflowLinkageV1,
+    bridge: VerifiedBridgeRead,
+    binding: BoundedRiverReviewRoleConfirmationBindingV1,
+) -> None:
+    request = _bridge_role_request(bridge, binding.role)
+    bridge_confirmation = _bridge_role_confirmation(bridge, binding.role)
+    if bridge_confirmation is None:
+        _fail("BRW_E_ROLE_BINDING")
+    _verify_bridge_confirmation_request_binding(plan, request, bridge_confirmation)
+    policy = request.context.runtime_policy
+    expected = (
+        plan.workflow_id,
+        plan.plan_sha256,
+        workflow_confirmation.confirmation_sha256,
+        linkage.linkage_sha256,
+        plan.bridge_run_id,
+        plan.auth_mode,
+        BRIDGE_ROLE_ORDER.index(binding.role),
+        request.request_sha256,
+        request.request_bytes_sha256,
+        request.context.envelope_sha256,
+        policy.policy_sha256,
+        policy.runtime_identity,
+        policy.model_provider,
+        policy.model,
+        policy.credential_reference,
+        policy.remote_retention_policy,
+        bridge_confirmation.authority.authority_id,
+        bridge_confirmation.confirmation_id,
+        bridge_confirmation.idempotency_key,
+        bridge_confirmation.confirmation_sha256,
+        bridge_confirmation.confirmed_at,
+        bridge_confirmation.expires_at,
+    )
+    actual = (
+        binding.workflow_id,
+        binding.plan_sha256,
+        binding.workflow_confirmation_sha256,
+        binding.linkage_sha256,
+        binding.bridge_run_id,
+        binding.auth_mode,
+        binding.role_ordinal,
+        binding.request_sha256,
+        binding.request_bytes_sha256,
+        binding.envelope_sha256,
+        binding.runtime_policy_sha256,
+        binding.runtime_identity,
+        binding.model_provider,
+        binding.model,
+        binding.credential_reference,
+        binding.remote_retention_policy,
+        binding.authority_id,
+        binding.confirmation_id,
+        binding.idempotency_key,
+        binding.bridge_confirmation_sha256,
+        binding.bridge_confirmation_confirmed_at,
+        binding.bridge_confirmation_expires_at,
+    )
+    if (
+        binding.binding_sha256 != bounded_river_review_role_confirmation_binding_sha256(binding)
+        or actual != expected
+    ):
+        _fail("BRW_E_ROLE_BINDING")
+    preview_pointer, preview_manifest = _bridge_lineage_snapshot(
+        directory,
+        plan,
+        bridge,
+        revision=binding.preview_bridge_revision,
+        manifest_sha256=binding.preview_bridge_manifest_sha256,
+        inventory_sha256=binding.preview_bridge_inventory_sha256,
+        pointer_sha256=binding.preview_bridge_pointer_sha256,
+    )
+    confirmed_pointer, confirmed_manifest = _bridge_lineage_snapshot(
+        directory,
+        plan,
+        bridge,
+        revision=binding.confirmed_bridge_revision,
+        manifest_sha256=binding.confirmed_bridge_manifest_sha256,
+        inventory_sha256=binding.confirmed_bridge_inventory_sha256,
+        pointer_sha256=binding.confirmed_bridge_pointer_sha256,
+    )
+    if binding.confirmed_bridge_revision == binding.preview_bridge_revision:
+        if confirmed_pointer != preview_pointer or confirmed_manifest != preview_manifest:
+            _fail("BRW_E_ROLE_BINDING")
+    elif (
+        binding.confirmed_bridge_revision != binding.preview_bridge_revision + 1
+        or getattr(confirmed_manifest, "previous_manifest_sha256", None)
+        != binding.preview_bridge_manifest_sha256
+        or getattr(confirmed_manifest, "expected_pointer_sha256", None)
+        != binding.preview_bridge_pointer_sha256
+    ):
+        _fail("BRW_E_ROLE_BINDING")
+
+
+def _verified_role_confirmation_bindings(
+    directory: Path,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    workflow_confirmation: BoundedRiverCallEvConfirmationV1,
+    linkage: BoundedRiverReviewWorkflowLinkageV1,
+    bridge: VerifiedBridgeRead,
+    replayed: BridgeReplayResult,
+) -> Mapping[BridgeRole, BoundedRiverReviewRoleConfirmationBindingV1]:
+    verified: dict[BridgeRole, BoundedRiverReviewRoleConfirmationBindingV1] = {}
+    for role in BRIDGE_ROLE_ORDER:
+        path = _role_confirmation_binding_path(directory, role)
+        if not _entry_exists(path):
+            continue
+        try:
+            parsed = _read_model(path, BoundedRiverReviewRoleConfirmationBindingV1)
+            assert isinstance(parsed, BoundedRiverReviewRoleConfirmationBindingV1)
+            if parsed.role is not role:
+                _fail("BRW_E_ROLE_BINDING")
+            _verify_role_confirmation_binding(
+                directory,
+                plan,
+                workflow_confirmation,
+                linkage,
+                bridge,
+                parsed,
+            )
+        except (OSError, ValueError) as exc:
+            if isinstance(exc, BoundedRiverReviewWorkflowError):
+                raise
+            raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_BINDING") from exc
+        verified[role] = parsed
+    names = set(bridge.artifacts)
+    roles_requiring_binding = set(replayed.completed_roles)
+    roles_requiring_binding.update(
+        role for role in BRIDGE_ROLE_ORDER if role_artifact_name(role, "admission") in names
+    )
+    if not roles_requiring_binding.issubset(verified):
+        _fail("BRW_E_ROLE_BINDING")
+    return verified
+
+
+def _create_role_confirmation_binding(
+    *,
+    directory: Path,
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    workflow_confirmation: BoundedRiverCallEvConfirmationV1,
+    linkage: BoundedRiverReviewWorkflowLinkageV1,
+    request: BoundedCodexBridgeRequestV1,
+    bridge_confirmation: BridgeRoleConfirmationV1,
+    preview_bridge: VerifiedBridgeRead,
+    confirmed_bridge: VerifiedBridgeRead,
+) -> BoundedRiverReviewRoleConfirmationBindingV1:
+    role = request.context.assignment.role
+    policy = request.context.runtime_policy
+    provisional = BoundedRiverReviewRoleConfirmationBindingV1(
+        workflow_id=plan.workflow_id,
+        plan_sha256=plan.plan_sha256,
+        workflow_confirmation_sha256=workflow_confirmation.confirmation_sha256,
+        linkage_sha256=linkage.linkage_sha256,
+        bridge_run_id=plan.bridge_run_id,
+        auth_mode=plan.auth_mode,
+        role=role,
+        role_ordinal=BRIDGE_ROLE_ORDER.index(role),
+        request_sha256=request.request_sha256,
+        request_bytes_sha256=request.request_bytes_sha256,
+        envelope_sha256=request.context.envelope_sha256,
+        runtime_policy_sha256=policy.policy_sha256,
+        runtime_identity=policy.runtime_identity,
+        model_provider=policy.model_provider,
+        model=policy.model,
+        credential_reference=policy.credential_reference,
+        remote_retention_policy=policy.remote_retention_policy,
+        authority_id=bridge_confirmation.authority.authority_id,
+        confirmation_id=bridge_confirmation.confirmation_id,
+        idempotency_key=bridge_confirmation.idempotency_key,
+        bridge_confirmation_sha256=bridge_confirmation.confirmation_sha256,
+        bridge_confirmation_confirmed_at=bridge_confirmation.confirmed_at,
+        bridge_confirmation_expires_at=bridge_confirmation.expires_at,
+        preview_bridge_revision=preview_bridge.pointer.revision,
+        preview_bridge_manifest_sha256=preview_bridge.manifest.manifest_sha256,
+        preview_bridge_inventory_sha256=preview_bridge.manifest.inventory_sha256,
+        preview_bridge_pointer_sha256=preview_bridge.pointer_sha256,
+        confirmed_bridge_revision=confirmed_bridge.pointer.revision,
+        confirmed_bridge_manifest_sha256=confirmed_bridge.manifest.manifest_sha256,
+        confirmed_bridge_inventory_sha256=confirmed_bridge.manifest.inventory_sha256,
+        confirmed_bridge_pointer_sha256=confirmed_bridge.pointer_sha256,
+        binding_sha256="0" * 64,
+    )
+    binding = provisional.model_copy(
+        update={
+            "binding_sha256": bounded_river_review_role_confirmation_binding_sha256(provisional)
+        }
+    )
+    path = _role_confirmation_binding_path(directory, role)
+    _write_new(path, binding)
+    try:
+        sync_directory(directory, hook="bounded_river_review.role_confirmation_binding")
+    except (OSError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
+    stored = _read_model(path, BoundedRiverReviewRoleConfirmationBindingV1)
+    assert isinstance(stored, BoundedRiverReviewRoleConfirmationBindingV1)
+    if stored != binding:
+        _fail("BRW_E_STORAGE")
+    _verify_role_confirmation_binding(
+        directory,
+        plan,
+        workflow_confirmation,
+        linkage,
+        confirmed_bridge,
+        stored,
+    )
+    return stored
+
+
 def _verified_bridge_run_plan(
     bridge: VerifiedBridgeRead,
     plan: BoundedRiverReviewWorkflowPlanV1,
@@ -729,20 +1071,25 @@ def _verify_bridge_source(
     plan: BoundedRiverReviewWorkflowPlanV1,
     expected_source: object,
 ) -> VerifiedBridgeRead:
-    bridge = _bridge_read(directory, plan)
-    if bridge is None:
-        _fail("BRW_E_BRIDGE")
-    bridge_plan = _verified_bridge_run_plan(bridge, plan)
-    stored_source = BoundedCodexBridgeController(
-        BoundedCodexBridgeStore(directory / "bridge")
-    ).read_source_context(plan.bridge_run_id)
-    if (
-        stored_source != expected_source
-        or bridge_plan.source != stored_source.source
-        or bridge.pointer.auth_mode is not plan.auth_mode
-    ):
-        _fail("BRW_E_BRIDGE_BINDING")
-    return bridge
+    try:
+        bridge = _bridge_read(directory, plan)
+        if bridge is None:
+            _fail("BRW_E_BRIDGE")
+        bridge_plan = _verified_bridge_run_plan(bridge, plan)
+        stored_source = BoundedCodexBridgeController(
+            BoundedCodexBridgeStore(directory / "bridge")
+        ).read_source_context(plan.bridge_run_id)
+        if (
+            stored_source != expected_source
+            or bridge_plan.source != stored_source.source
+            or bridge.pointer.auth_mode is not plan.auth_mode
+        ):
+            _fail("BRW_E_BRIDGE_BINDING")
+        return bridge
+    except (BridgeStorageError, OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE") from exc
 
 
 def _link(
@@ -949,15 +1296,73 @@ def _status_from_bridge(
     *,
     confirmation_sha256: str,
     source_terminal_manifest_sha256: str,
+    role_bindings: Set[BridgeRole] = frozenset(),
+    clock: Clock | None = None,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    replayed = replay_bridge(bridge)
+    try:
+        replayed = replay_bridge(bridge)
+    except (BridgeReplayError, BridgeStorageError, OSError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE") from exc
     return _status_from_replayed_bridge(
         plan,
         bridge,
         replayed,
         confirmation_sha256=confirmation_sha256,
         source_terminal_manifest_sha256=source_terminal_manifest_sha256,
+        role_bindings=role_bindings,
+        clock=clock,
     )
+
+
+def _role_progress(
+    plan: BoundedRiverReviewWorkflowPlanV1,
+    bridge: VerifiedBridgeRead,
+    replayed: BridgeReplayResult,
+    *,
+    role_bindings: Set[BridgeRole] = frozenset(),
+    clock: Clock | None = None,
+) -> tuple[BridgeRole | None, WorkflowRoleState, WorkflowNextAction]:
+    terminal_statuses = {
+        "succeeded",
+        "failed",
+        "timed_out",
+        "cancelled",
+        "cancel_unconfirmed",
+        "effect_unknown",
+    }
+    if (
+        replayed.status in terminal_statuses
+        or plan.auth_mode is RuntimeAuthModeV1.LOCAL_ONLY
+        or not replayed.pending_roles
+    ):
+        return None, "terminal", "none"
+
+    role = replayed.pending_roles[0]
+    names = set(bridge.artifacts)
+    request_name = role_artifact_name(role, "request")
+    confirmation_name = role_artifact_name(role, "confirmation")
+    admission_name = role_artifact_name(role, "admission")
+    audit_name = role_artifact_name(role, "audit")
+    if request_name not in names:
+        _fail("BRW_E_ROLE_STATE")
+    if admission_name in names and audit_name not in names:
+        return role, "in_progress", "none"
+    request = _bridge_role_request(bridge, role)
+    observed_at = (clock or _now)()
+    if confirmation_name in names and admission_name not in names:
+        confirmation = _bridge_role_confirmation(bridge, role)
+        if confirmation is None:  # pragma: no cover - name was present
+            _fail("BRW_E_ROLE_BINDING")
+        if observed_at >= confirmation.expires_at:
+            return role, "expired", "none"
+        if role not in role_bindings:
+            return role, "awaiting_confirmation", "show_role_request"
+        return role, "executable", "execute_role"
+    if confirmation_name not in names and admission_name not in names:
+        if observed_at >= request.context.assignment.expires_at:
+            return role, "expired", "none"
+        return role, "awaiting_confirmation", "show_role_request"
+    _fail("BRW_E_ROLE_STATE")
 
 
 def _status_from_replayed_bridge(
@@ -967,7 +1372,26 @@ def _status_from_replayed_bridge(
     *,
     confirmation_sha256: str,
     source_terminal_manifest_sha256: str,
+    role_bindings: Set[BridgeRole] = frozenset(),
+    clock: Clock | None = None,
 ) -> BoundedRiverReviewWorkflowStatusV1:
+    next_role, role_state, role_next_action = _role_progress(
+        plan,
+        bridge,
+        replayed,
+        role_bindings=role_bindings,
+        clock=clock,
+    )
+    role_request = (
+        _bridge_role_request(bridge, next_role)
+        if next_role is not None and role_state not in {"in_progress", "terminal"}
+        else None
+    )
+    role_confirmation = (
+        _bridge_role_confirmation(bridge, next_role)
+        if role_request is not None and next_role is not None
+        else None
+    )
     if replayed.status == "succeeded":
         state: WorkflowState = "completed"
         next_action: WorkflowNextAction = "none"
@@ -983,12 +1407,12 @@ def _status_from_replayed_bridge(
     elif plan.auth_mode is RuntimeAuthModeV1.LOCAL_ONLY:
         state = "completed_local_only"
         next_action = "none"
-    elif replayed.completed_roles:
+    elif replayed.completed_roles or role_state != "awaiting_confirmation":
         state = "role_review_in_progress"
-        next_action = "use_existing_bridge_commands"
+        next_action = role_next_action
     else:
         state = "awaiting_role_review"
-        next_action = "use_existing_bridge_commands"
+        next_action = role_next_action
     return BoundedRiverReviewWorkflowStatusV1(
         workflow_id=plan.workflow_id,
         state=state,
@@ -1002,6 +1426,14 @@ def _status_from_replayed_bridge(
         bridge_status=replayed.status,
         completed_roles=replayed.completed_roles,
         pending_roles=replayed.pending_roles,
+        next_role=next_role,
+        role_state=role_state,
+        role_request_expires_at=(
+            role_request.context.assignment.expires_at if role_request is not None else None
+        ),
+        role_confirmation_expires_at=(
+            role_confirmation.expires_at if role_confirmation is not None else None
+        ),
         reconciliation_required=replayed.reconciliation_required,
         next_action=next_action,
     )
@@ -1108,11 +1540,537 @@ def bounded_river_review_workflow_status(
         source_read,
         bridge,
     )
-    return _status_from_bridge(
+    try:
+        replayed = replay_bridge(bridge)
+    except (BridgeReplayError, BridgeStorageError, OSError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE") from exc
+    bindings = _verified_role_confirmation_bindings(
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        bridge,
+        replayed,
+    )
+    return _status_from_replayed_bridge(
         plan,
         bridge,
+        replayed,
         confirmation_sha256=confirmation.confirmation_sha256,
         source_terminal_manifest_sha256=source_read.manifest_sha256,
+        role_bindings=set(bindings),
+    )
+
+
+def _verified_role_workflow(
+    *,
+    config: AppConfig,
+    repository_root: Path,
+    workflow_root: Path,
+    workflow_id: str,
+    pure_read: bool,
+    clock: Clock | None = None,
+) -> tuple[
+    Path,
+    BoundedRiverReviewWorkflowPlanV1,
+    BoundedRiverCallEvConfirmationV1,
+    BoundedRiverReviewWorkflowLinkageV1,
+    VerifiedRunReadV2,
+    VerifiedBridgeRead,
+    BridgeReplayResult,
+    BoundedRiverReviewWorkflowStatusV1,
+]:
+    root = _workflow_root(
+        repository_root,
+        workflow_root,
+        create=False,
+        pure_read=pure_read,
+    )
+    directory = _workflow_directory(root, workflow_id)
+    plan = _read_plan(directory, workflow_id=workflow_id)
+    preparation = _read_preparation(directory)
+    if sha256_bytes(canonical_json_bytes(preparation)) != plan.preparation_sha256:
+        _fail("BRW_E_PLAN_BINDING")
+    confirmation = _read_confirmation(directory)
+    _verify_confirmation_binding(plan, preparation, confirmation)
+    if not _entry_exists(directory / "linkage.json"):
+        _fail("BRW_E_LINKAGE")
+    linkage = _read_linkage(directory)
+    _verify_linkage_plan_binding(plan, confirmation, linkage)
+
+    source_read, source_revision_root = _read_source_terminal_for_view(
+        config,
+        linkage.source_run_id,
+    )
+    if source_read.run_id != linkage.source_run_id:
+        _fail("BRW_E_SOURCE_BINDING")
+    source_context, verified_source = _replay_verified_source_for_view(
+        source_read,
+        source_revision_root=source_revision_root,
+    )
+    try:
+        bridge = _verify_bridge_source(directory, plan, source_context)
+        replayed = replay_bridge(bridge)
+    except (BridgeReplayError, BridgeStorageError, OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE") from exc
+    _verify_linkage_storage_binding(
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        source_read,
+        bridge,
+    )
+    if (
+        source_context.source.source_terminal_run_id != linkage.source_run_id
+        or source_context.source.source_candidate_sha256 != confirmation.candidate_sha256
+        or verified_source.confirmation.confirmation_sha256 != confirmation.confirmation_sha256
+        or hashlib.sha256(verified_source.source_bytes).hexdigest() != plan.source_sha256
+    ):
+        _fail("BRW_E_SOURCE_BINDING")
+    bindings = _verified_role_confirmation_bindings(
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        bridge,
+        replayed,
+    )
+    status = _status_from_replayed_bridge(
+        plan,
+        bridge,
+        replayed,
+        confirmation_sha256=confirmation.confirmation_sha256,
+        source_terminal_manifest_sha256=source_read.manifest_sha256,
+        role_bindings=set(bindings),
+        clock=clock,
+    )
+    return (
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        source_read,
+        bridge,
+        replayed,
+        status,
+    )
+
+
+def _verified_role_mutation_context(
+    observed: tuple[
+        Path,
+        BoundedRiverReviewWorkflowPlanV1,
+        BoundedRiverCallEvConfirmationV1,
+        BoundedRiverReviewWorkflowLinkageV1,
+        VerifiedRunReadV2,
+        VerifiedBridgeRead,
+        BridgeReplayResult,
+        BoundedRiverReviewWorkflowStatusV1,
+    ],
+    *,
+    config: AppConfig,
+    repository_root: Path,
+    workflow_root: Path,
+    workflow_id: str,
+    observed_at: datetime,
+) -> tuple[
+    Path,
+    BoundedRiverReviewWorkflowPlanV1,
+    BoundedRiverCallEvConfirmationV1,
+    BoundedRiverReviewWorkflowLinkageV1,
+    VerifiedRunReadV2,
+    VerifiedBridgeRead,
+    BridgeReplayResult,
+    BoundedRiverReviewWorkflowStatusV1,
+]:
+    """Re-authorize the mutation path and reject any snapshot transition."""
+
+    mutable = _verified_role_workflow(
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+        pure_read=False,
+        clock=lambda: observed_at,
+    )
+    (
+        observed_directory,
+        observed_plan,
+        observed_confirmation,
+        observed_linkage,
+        observed_source,
+        observed_bridge,
+        observed_replayed,
+        observed_status,
+    ) = observed
+    (
+        mutable_directory,
+        mutable_plan,
+        mutable_confirmation,
+        mutable_linkage,
+        mutable_source,
+        mutable_bridge,
+        mutable_replayed,
+        mutable_status,
+    ) = mutable
+    if (
+        observed_directory != mutable_directory
+        or observed_plan != mutable_plan
+        or observed_confirmation != mutable_confirmation
+        or observed_linkage != mutable_linkage
+        or observed_source.manifest_sha256 != mutable_source.manifest_sha256
+        or observed_source.manifest.inventory_sha256 != mutable_source.manifest.inventory_sha256
+        or observed_bridge.pointer != mutable_bridge.pointer
+        or observed_bridge.pointer_sha256 != mutable_bridge.pointer_sha256
+        or observed_bridge.manifest.manifest_sha256 != mutable_bridge.manifest.manifest_sha256
+        or observed_bridge.manifest.inventory_sha256 != mutable_bridge.manifest.inventory_sha256
+        or observed_replayed != mutable_replayed
+        or observed_status != mutable_status
+    ):
+        _fail("BRW_E_ROLE_BINDING")
+    return mutable
+
+
+def bounded_river_review_role_request_preview(
+    *,
+    config: AppConfig,
+    repository_root: Path,
+    workflow_root: Path,
+    workflow_id: str,
+) -> dict[str, object]:
+    """Show the exact next role request from one verified linked workflow."""
+
+    (
+        directory,
+        plan,
+        confirmation,
+        linkage,
+        source_read,
+        bridge,
+        _replayed,
+        status,
+    ) = _verified_role_workflow(
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+        pure_read=True,
+    )
+    if plan.auth_mode is RuntimeAuthModeV1.LOCAL_ONLY:
+        _fail("BRW_E_LOCAL_ONLY")
+    if status.reconciliation_required:
+        _fail("BRW_E_ROLE_RECONCILIATION")
+    if status.role_state == "expired":
+        _fail("BRW_E_ROLE_EXPIRED")
+    if status.next_role is None or status.role_state in {"in_progress", "terminal"}:
+        _fail("BRW_E_ROLE_STATE")
+    role = status.next_role
+    try:
+        request = read_product_request(
+            repository_root=repository_root,
+            bridge_root=directory / "bridge",
+            bridge_run_id=plan.bridge_run_id,
+            role=role,
+            auth_mode=plan.auth_mode,
+        )
+        request_preview = role_request_preview(request)
+    except (BridgeProductError, BridgeStorageError, OSError, ValueError) as exc:
+        raise BoundedRiverReviewWorkflowError("BRW_E_BRIDGE") from exc
+    policy = request.context.runtime_policy
+    return {
+        "schema_version": "1.0.0",
+        "contract_id": "poker-bounded-river-review-role-request-preview",
+        "workflow_id": plan.workflow_id,
+        "workflow_plan_sha256": plan.plan_sha256,
+        "workflow_confirmation_sha256": confirmation.confirmation_sha256,
+        "workflow_linkage_sha256": linkage.linkage_sha256,
+        "source_terminal_manifest_sha256": source_read.manifest_sha256,
+        "source_terminal_inventory_sha256": source_read.manifest.inventory_sha256,
+        "linked_bridge_manifest_sha256": linkage.bridge_manifest_sha256,
+        "linked_bridge_inventory_sha256": linkage.bridge_inventory_sha256,
+        "current_bridge_revision": bridge.pointer.revision,
+        "current_bridge_status": bridge.pointer.status,
+        "current_bridge_manifest_sha256": bridge.manifest.manifest_sha256,
+        "current_bridge_inventory_sha256": bridge.manifest.inventory_sha256,
+        "current_bridge_pointer_sha256": bridge.pointer_sha256,
+        "next_role": role,
+        "next_role_state": status.role_state,
+        "request": request_preview,
+        "confirmation_fields": {
+            "expected_plan_sha256": plan.plan_sha256,
+            "expected_linkage_sha256": linkage.linkage_sha256,
+            "expected_bridge_revision": bridge.pointer.revision,
+            "expected_bridge_manifest_sha256": bridge.manifest.manifest_sha256,
+            "expected_bridge_inventory_sha256": bridge.manifest.inventory_sha256,
+            "expected_bridge_pointer_sha256": bridge.pointer_sha256,
+            "expected_role": role,
+            "expected_auth_mode": plan.auth_mode,
+            "expected_request_sha256": request.request_sha256,
+            "expected_request_bytes_sha256": request.request_bytes_sha256,
+            "expected_envelope_sha256": request.context.envelope_sha256,
+            "expected_runtime_policy_sha256": policy.policy_sha256,
+            "expected_runtime_identity": policy.runtime_identity,
+            "expected_model_provider": policy.model_provider,
+            "expected_model": policy.model,
+            "expected_credential_reference": policy.credential_reference,
+            "expected_remote_retention_policy": policy.remote_retention_policy,
+        },
+    }
+
+
+def confirm_bounded_river_review_role_request(
+    *,
+    config: AppConfig,
+    repository_root: Path,
+    workflow_root: Path,
+    workflow_id: str,
+    authority_id: str,
+    confirmation_id: str,
+    idempotency_key: str,
+    expected_plan_sha256: str,
+    expected_linkage_sha256: str,
+    expected_bridge_revision: int,
+    expected_bridge_manifest_sha256: str,
+    expected_bridge_inventory_sha256: str,
+    expected_bridge_pointer_sha256: str,
+    expected_role: BridgeRole,
+    expected_auth_mode: RuntimeAuthModeV1,
+    expected_request_sha256: str,
+    expected_request_bytes_sha256: str,
+    expected_envelope_sha256: str,
+    expected_runtime_policy_sha256: str,
+    expected_runtime_identity: str,
+    expected_model_provider: str,
+    expected_model: str | None,
+    expected_credential_reference: str,
+    expected_remote_retention_policy: str,
+) -> BoundedRiverReviewWorkflowStatusV1:
+    """Confirm only the next role, cross-bound to one verified workflow snapshot."""
+
+    observed_at = _now()
+    observed = _verified_role_workflow(
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+        pure_read=True,
+        clock=lambda: observed_at,
+    )
+    plan = observed[1]
+    status = observed[7]
+    if plan.auth_mode is RuntimeAuthModeV1.LOCAL_ONLY:
+        _fail("BRW_E_LOCAL_ONLY")
+    if status.reconciliation_required:
+        _fail("BRW_E_ROLE_RECONCILIATION")
+    if status.role_state == "expired":
+        _fail("BRW_E_ROLE_EXPIRED")
+    if status.next_role is None or status.role_state != "awaiting_confirmation":
+        _fail("BRW_E_ROLE_STATE")
+    mutable = _verified_role_mutation_context(
+        observed,
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+        observed_at=observed_at,
+    )
+    (
+        directory,
+        plan,
+        workflow_confirmation,
+        linkage,
+        _source,
+        bridge,
+        _replayed,
+        status,
+    ) = mutable
+    if status.reconciliation_required:
+        _fail("BRW_E_ROLE_RECONCILIATION")
+    if status.role_state == "expired":
+        _fail("BRW_E_ROLE_EXPIRED")
+    if status.next_role is None or status.role_state != "awaiting_confirmation":
+        _fail("BRW_E_ROLE_STATE")
+    if expected_role is not status.next_role:
+        _fail("BRW_E_ROLE_ORDER")
+    request = _bridge_role_request(bridge, status.next_role)
+    policy = request.context.runtime_policy
+    if (
+        expected_plan_sha256 != plan.plan_sha256
+        or expected_linkage_sha256 != linkage.linkage_sha256
+        or expected_bridge_revision != bridge.pointer.revision
+        or expected_bridge_manifest_sha256 != bridge.manifest.manifest_sha256
+        or expected_bridge_inventory_sha256 != bridge.manifest.inventory_sha256
+        or expected_bridge_pointer_sha256 != bridge.pointer_sha256
+        or expected_auth_mode is not plan.auth_mode
+        or expected_request_sha256 != request.request_sha256
+        or expected_request_bytes_sha256 != request.request_bytes_sha256
+        or expected_envelope_sha256 != request.context.envelope_sha256
+        or expected_runtime_policy_sha256 != policy.policy_sha256
+        or expected_runtime_identity != policy.runtime_identity
+        or expected_model_provider != policy.model_provider
+        or expected_model != policy.model
+        or expected_credential_reference != policy.credential_reference
+        or expected_remote_retention_policy != policy.remote_retention_policy
+    ):
+        _fail("BRW_E_ROLE_BINDING")
+    if _now() >= request.context.assignment.expires_at:
+        _fail("BRW_E_ROLE_EXPIRED")
+    bridge_confirmation = _bridge_role_confirmation(bridge, status.next_role)
+    if bridge_confirmation is None:
+        try:
+            confirmed = confirm_product_role(
+                repository_root=repository_root,
+                bridge_root=directory / "bridge",
+                bridge_run_id=plan.bridge_run_id,
+                role=status.next_role,
+                authority_id=authority_id,
+                confirmation_id=confirmation_id,
+                idempotency_key=idempotency_key,
+                expected_request_sha256=expected_request_sha256,
+                expected_request_bytes_sha256=expected_request_bytes_sha256,
+                expected_envelope_sha256=expected_envelope_sha256,
+                expected_runtime_policy_sha256=expected_runtime_policy_sha256,
+                expected_auth_mode=expected_auth_mode,
+                expected_runtime_identity=expected_runtime_identity,
+                expected_model_provider=expected_model_provider,
+                expected_model=expected_model,
+                expected_credential_reference=expected_credential_reference,
+                expected_remote_retention_policy=expected_remote_retention_policy,
+                expected_current_revision=expected_bridge_revision,
+                expected_current_manifest_sha256=expected_bridge_manifest_sha256,
+                expected_current_inventory_sha256=expected_bridge_inventory_sha256,
+                expected_current_pointer_sha256=expected_bridge_pointer_sha256,
+            )
+        except (BridgeProductError, BridgeStorageError, OSError, ValueError) as exc:
+            raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_BINDING") from exc
+        if (
+            confirmed.pointer.revision != expected_bridge_revision + 1
+            or confirmed.manifest.previous_manifest_sha256 != expected_bridge_manifest_sha256
+            or confirmed.manifest.expected_pointer_sha256 != expected_bridge_pointer_sha256
+        ):
+            _fail("BRW_E_ROLE_BINDING")
+        bridge_confirmation = _bridge_role_confirmation(confirmed, status.next_role)
+        if bridge_confirmation is None:  # pragma: no cover - controller contract
+            _fail("BRW_E_ROLE_BINDING")
+    else:
+        confirmed = bridge
+    _verify_bridge_confirmation_request_binding(plan, request, bridge_confirmation)
+    if (
+        bridge_confirmation.authority.authority_id != authority_id
+        or bridge_confirmation.confirmation_id != confirmation_id
+        or bridge_confirmation.idempotency_key != idempotency_key
+    ):
+        _fail("BRW_E_ROLE_BINDING")
+    if _now() >= bridge_confirmation.expires_at:
+        _fail("BRW_E_ROLE_EXPIRED")
+    _create_role_confirmation_binding(
+        directory=directory,
+        plan=plan,
+        workflow_confirmation=workflow_confirmation,
+        linkage=linkage,
+        request=request,
+        bridge_confirmation=bridge_confirmation,
+        preview_bridge=bridge,
+        confirmed_bridge=confirmed,
+    )
+    return bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+    )
+
+
+def execute_bounded_river_review_role(
+    *,
+    config: AppConfig,
+    repository_root: Path,
+    workflow_root: Path,
+    workflow_id: str,
+    runtime_root: Path,
+    codex_binary: Path | None = None,
+) -> BoundedRiverReviewWorkflowStatusV1:
+    """Execute the one confirmed next role, without retry or fallback."""
+
+    observed_at = _now()
+    observed = _verified_role_workflow(
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+        pure_read=True,
+        clock=lambda: observed_at,
+    )
+    plan = observed[1]
+    status = observed[7]
+    if plan.auth_mode is RuntimeAuthModeV1.LOCAL_ONLY:
+        _fail("BRW_E_LOCAL_ONLY")
+    if status.reconciliation_required or status.role_state == "in_progress":
+        _fail("BRW_E_ROLE_RECONCILIATION")
+    if status.role_state == "expired":
+        _fail("BRW_E_ROLE_EXPIRED")
+    if status.next_role is None or status.role_state != "executable":
+        _fail("BRW_E_ROLE_STATE")
+    mutable = _verified_role_mutation_context(
+        observed,
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
+        observed_at=observed_at,
+    )
+    directory, plan, _confirmation, _linkage, _source, _bridge, _replayed, status = mutable
+    if status.reconciliation_required or status.role_state == "in_progress":
+        _fail("BRW_E_ROLE_RECONCILIATION")
+    if status.role_state == "expired":
+        _fail("BRW_E_ROLE_EXPIRED")
+    if status.next_role is None or status.role_state != "executable":
+        _fail("BRW_E_ROLE_STATE")
+    bridge_confirmation = _bridge_role_confirmation(_bridge, status.next_role)
+    if bridge_confirmation is None:
+        _fail("BRW_E_ROLE_BINDING")
+    if _now() >= bridge_confirmation.expires_at:
+        _fail("BRW_E_ROLE_EXPIRED")
+    try:
+        execute_product_role(
+            config=config,
+            repository_root=repository_root,
+            bridge_root=directory / "bridge",
+            runtime_root=runtime_root,
+            bridge_run_id=plan.bridge_run_id,
+            role=status.next_role,
+            auth_mode=plan.auth_mode,
+            codex_binary=codex_binary,
+        )
+    except (BridgeProductError, BridgeStorageError, OSError, ValueError) as exc:
+        try:
+            reread = _verified_role_workflow(
+                config=config,
+                repository_root=repository_root,
+                workflow_root=workflow_root,
+                workflow_id=workflow_id,
+                pure_read=True,
+            )
+            reread_status = reread[7]
+            if reread_status.reconciliation_required or reread_status.role_state == "in_progress":
+                raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_RECONCILIATION") from exc
+            if reread_status.role_state == "expired":
+                raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_EXPIRED") from exc
+        except BoundedRiverReviewWorkflowError as reread_error:
+            if str(reread_error) in {
+                "BRW_E_ROLE_RECONCILIATION",
+                "BRW_E_ROLE_EXPIRED",
+            }:
+                raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_ROLE_EXECUTION") from exc
+    return bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository_root,
+        workflow_root=workflow_root,
+        workflow_id=workflow_id,
     )
 
 
@@ -1253,6 +2211,14 @@ def bounded_river_review_report_view(
         _fail("BRW_E_SOURCE_BINDING")
 
     try:
+        bindings = _verified_role_confirmation_bindings(
+            directory,
+            plan,
+            confirmation,
+            linkage,
+            bridge,
+            replayed,
+        )
         report_bytes = source_read.payload_bytes("final_report.json")
         report_payloads = tuple(
             item
@@ -1271,6 +2237,7 @@ def bounded_river_review_report_view(
             replayed,
             confirmation_sha256=confirmation.confirmation_sha256,
             source_terminal_manifest_sha256=source_read.manifest_sha256,
+            role_bindings=set(bindings),
         )
         writer_evidence = _report_writer_additive_evidence(
             bridge,
@@ -1326,8 +2293,12 @@ __all__ = [
     "bounded_river_review_linkage_sha256",
     "bounded_river_review_plan_sha256",
     "bounded_river_review_report_view",
+    "bounded_river_review_role_confirmation_binding_sha256",
+    "bounded_river_review_role_request_preview",
     "bounded_river_review_workflow_status",
+    "confirm_bounded_river_review_role_request",
     "confirm_bounded_river_review_workflow",
+    "execute_bounded_river_review_role",
     "prepare_bounded_river_review_workflow",
     "replay_bounded_river_review_workflow",
     "resume_bounded_river_review_workflow",

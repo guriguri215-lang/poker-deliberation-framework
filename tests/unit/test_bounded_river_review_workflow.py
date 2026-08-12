@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,22 +15,30 @@ from poker_deliberation.bounded_river_review_workflow import (
     bounded_river_review_linkage_sha256,
     bounded_river_review_plan_sha256,
     bounded_river_review_report_view,
+    bounded_river_review_role_request_preview,
     bounded_river_review_workflow_status,
+    confirm_bounded_river_review_role_request,
     confirm_bounded_river_review_workflow,
+    execute_bounded_river_review_role,
     prepare_bounded_river_review_workflow,
     replay_bounded_river_review_workflow,
     run_bounded_river_review_workflow,
 )
 from poker_deliberation.codex_bridge import product as bridge_product
+from poker_deliberation.codex_bridge.contracts import admit_role_request
 from poker_deliberation.codex_bridge.controller import BoundedCodexBridgeController
 from poker_deliberation.codex_bridge.models import (
     BRIDGE_ROLE_ORDER,
-    BridgeConfirmationAuthorityV1,
     BridgeRole,
     BridgeRoleResultV1,
     RuntimeAuthModeV1,
 )
-from poker_deliberation.codex_bridge.storage import BoundedCodexBridgeStore
+from poker_deliberation.codex_bridge.replay import replay_bridge
+from poker_deliberation.codex_bridge.storage import (
+    BoundedCodexBridgeStore,
+    BridgeStorageError,
+    BridgeStoredArtifact,
+)
 from poker_deliberation.codex_bridge.transport import DeterministicReadOnlyTransport
 from poker_deliberation.storage.revision_canonical import (
     canonical_json_bytes,
@@ -147,33 +156,92 @@ class _StepClock:
         return value
 
 
-def _confirm_bridge_role(
-    controller: BoundedCodexBridgeController,
-    bridge_run_id: str,
-    role: BridgeRole,
-) -> None:
-    request = controller.read_role_request(bridge_run_id, role)
-    controller.confirm_role(
-        bridge_run_id,
-        role,
-        authority=BridgeConfirmationAuthorityV1(
-            authority_id="local-test-user",
-            authority_kind="local_user",
-            authentication="self_asserted",
-        ),
-        confirmation_id=f"confirmation-{bridge_run_id}-{role.value}",
-        idempotency_key=f"idempotency-{bridge_run_id}-{role.value}",
-        expected_request_sha256=request.request_sha256,
-        expected_request_bytes_sha256=request.request_bytes_sha256,
-        expected_envelope_sha256=request.context.envelope_sha256,
-        expected_runtime_policy_sha256=request.context.runtime_policy.policy_sha256,
-        expected_auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
-        expected_runtime_identity=request.context.runtime_policy.runtime_identity,
-        expected_model_provider=request.context.runtime_policy.model_provider,
-        expected_model=request.context.runtime_policy.model,
-        expected_credential_reference=request.context.runtime_policy.credential_reference,
-        expected_remote_retention_policy=(request.context.runtime_policy.remote_retention_policy),
+def _confirm_workflow_role(
+    *,
+    repository: Path,
+    config,
+    plan,
+    preview: dict[str, object],
+):
+    fields = dict(preview["confirmation_fields"])
+    role = preview["next_role"]
+    assert fields["expected_role"] is role
+    return confirm_bounded_river_review_role_request(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+        authority_id="local-test-user",
+        confirmation_id=f"confirmation-{plan.bridge_run_id}-{role.value}",
+        idempotency_key=f"idempotency-{plan.bridge_run_id}-{role.value}",
+        **fields,
     )
+
+
+def _confirm_p2_role_directly(
+    *,
+    repository: Path,
+    plan,
+    preview: dict[str, object],
+):
+    fields = dict(preview["confirmation_fields"])
+    role = preview["next_role"]
+    workflow_directory = next((repository / "tmp" / "workflows").rglob("linkage.json")).parent
+    return bridge_product.confirm_product_role(
+        repository_root=repository,
+        bridge_root=workflow_directory / "bridge",
+        bridge_run_id=plan.bridge_run_id,
+        role=role,
+        authority_id="local-test-user",
+        confirmation_id=f"confirmation-{plan.bridge_run_id}-{role.value}",
+        idempotency_key=f"idempotency-{plan.bridge_run_id}-{role.value}",
+        expected_request_sha256=fields["expected_request_sha256"],
+        expected_request_bytes_sha256=fields["expected_request_bytes_sha256"],
+        expected_envelope_sha256=fields["expected_envelope_sha256"],
+        expected_runtime_policy_sha256=fields["expected_runtime_policy_sha256"],
+        expected_auth_mode=fields["expected_auth_mode"],
+        expected_runtime_identity=fields["expected_runtime_identity"],
+        expected_model_provider=fields["expected_model_provider"],
+        expected_model=fields["expected_model"],
+        expected_credential_reference=fields["expected_credential_reference"],
+        expected_remote_retention_policy=fields["expected_remote_retention_policy"],
+        expected_current_revision=fields["expected_bridge_revision"],
+        expected_current_manifest_sha256=fields["expected_bridge_manifest_sha256"],
+        expected_current_inventory_sha256=fields["expected_bridge_inventory_sha256"],
+        expected_current_pointer_sha256=fields["expected_bridge_pointer_sha256"],
+    )
+
+
+def _deterministic_role_executor(
+    *,
+    clock: _StepClock,
+    calls: list[BridgeRole],
+):
+    transport = DeterministicReadOnlyTransport(
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+        clock=clock,
+    )
+
+    def execute(**kwargs):
+        clock.current = max(clock.current, datetime.now(UTC))
+        role = kwargs["role"]
+        assert kwargs["auth_mode"] is RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+        assert kwargs["codex_binary"] is None
+        controller = BoundedCodexBridgeController(
+            BoundedCodexBridgeStore(kwargs["bridge_root"]),
+            clock=clock,
+        )
+        source = controller.read_source_context(kwargs["bridge_run_id"])
+        calls.append(role)
+        return controller.execute_confirmed_role(
+            kwargs["bridge_run_id"],
+            role,
+            auth_mode=kwargs["auth_mode"],
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            transport=transport,
+        )
+
+    return execute
 
 
 def _tree_snapshot(root: Path) -> tuple[tuple[str, ...], dict[str, bytes]]:
@@ -698,6 +766,498 @@ def test_replay_rejects_rehashed_linkage_identity_cross_binding(
             )
 
 
+def test_local_only_role_operations_reject_before_runtime_or_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, plan, _confirmation = _complete_local_only(tmp_path, monkeypatch)
+    runtime_root = repository / "tmp" / "runtime-must-not-exist"
+    transport_calls: list[dict[str, object]] = []
+    runtime_path_calls: list[tuple[object, ...]] = []
+
+    def unexpected_transport(**kwargs) -> None:
+        transport_calls.append(kwargs)
+        raise AssertionError("local_only must not enter the role transport seam")
+
+    def unexpected_runtime_path(*args, **kwargs) -> None:
+        runtime_path_calls.append((*args, kwargs))
+        raise AssertionError("local_only must not enter runtime path preparation")
+
+    monkeypatch.setattr(workflow, "execute_product_role", unexpected_transport)
+    monkeypatch.setattr(workflow, "confined_runtime_scratch_path", unexpected_runtime_path)
+    status = bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert status.state == "completed_local_only"
+    assert status.next_role is None
+    assert status.role_state == "terminal"
+    assert status.next_action == "none"
+
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_LOCAL_ONLY$"):
+        bounded_river_review_role_request_preview(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+        )
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_LOCAL_ONLY$"):
+        confirm_bounded_river_review_role_request(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            authority_id="local-test-user",
+            confirmation_id="confirmation-local-only-role",
+            idempotency_key="idempotency-local-only-role",
+            expected_plan_sha256="0" * 64,
+            expected_linkage_sha256="0" * 64,
+            expected_bridge_revision=0,
+            expected_bridge_manifest_sha256="0" * 64,
+            expected_bridge_inventory_sha256="0" * 64,
+            expected_bridge_pointer_sha256="0" * 64,
+            expected_role=BridgeRole.STRATEGY_ANALYST,
+            expected_auth_mode=RuntimeAuthModeV1.LOCAL_ONLY,
+            expected_request_sha256="0" * 64,
+            expected_request_bytes_sha256="0" * 64,
+            expected_envelope_sha256="0" * 64,
+            expected_runtime_policy_sha256="0" * 64,
+            expected_runtime_identity="local-only-test-runtime",
+            expected_model_provider="none",
+            expected_model=None,
+            expected_credential_reference="none",
+            expected_remote_retention_policy="none",
+        )
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_LOCAL_ONLY$"):
+        execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=runtime_root,
+        )
+    assert transport_calls == []
+    assert runtime_path_calls == []
+    assert not runtime_root.exists()
+
+
+def test_direct_p2_confirmation_requires_workflow_receipt_and_reconciles_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, plan, _confirmation, initial = _complete_workflow(
+        tmp_path,
+        monkeypatch,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+    )
+    assert initial.role_state == "awaiting_confirmation"
+    assert initial.role_request_expires_at is not None
+    assert initial.role_confirmation_expires_at is None
+    real_now = workflow._now
+    monkeypatch.setattr(workflow, "_now", lambda: initial.role_request_expires_at)
+    expired_request = bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert expired_request.role_state == "expired"
+    assert expired_request.role_request_expires_at == initial.role_request_expires_at
+    assert expired_request.next_action == "none"
+    monkeypatch.setattr(workflow, "_now", real_now)
+    preview = bounded_river_review_role_request_preview(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    direct = _confirm_p2_role_directly(repository=repository, plan=plan, preview=preview)
+
+    unbound = bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert unbound.next_role is preview["next_role"]
+    assert unbound.role_state == "awaiting_confirmation"
+    assert unbound.next_action == "show_role_request"
+    assert unbound.role_confirmation_expires_at is not None
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_STATE$"):
+        execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=repository / "tmp" / "runtime",
+        )
+
+    recovery_preview = bounded_river_review_role_request_preview(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert recovery_preview["current_bridge_revision"] == direct.pointer.revision
+    mutation_path_calls: list[Path] = []
+
+    def mutation_path(path: Path, _repository_root: Path) -> Path:
+        mutation_path_calls.append(path)
+        return path.resolve()
+
+    monkeypatch.setattr(workflow, "confined_runtime_scratch_path", mutation_path)
+    recovered = _confirm_workflow_role(
+        repository=repository,
+        config=config,
+        plan=plan,
+        preview=recovery_preview,
+    )
+    assert mutation_path_calls
+    assert recovered.role_state == "executable"
+    assert recovered.next_action == "execute_role"
+    workflow_directory = next((repository / "tmp" / "workflows").rglob("linkage.json")).parent
+    receipt_paths = tuple(workflow_directory.glob("role-confirmation-binding-*.json"))
+    assert len(receipt_paths) == 1
+    receipt = parse_canonical_model(
+        receipt_paths[0].read_bytes(),
+        workflow.BoundedRiverReviewRoleConfirmationBindingV1,
+    )
+    assert receipt.preview_bridge_revision == direct.pointer.revision
+    assert receipt.confirmed_bridge_revision == direct.pointer.revision
+    assert (
+        BoundedCodexBridgeStore(workflow_directory / "bridge")
+        .read_current(plan.bridge_run_id)
+        .pointer.revision
+        == direct.pointer.revision
+    )
+
+    expired_at = receipt.bridge_confirmation_expires_at + timedelta(microseconds=1)
+    monkeypatch.setattr(workflow, "_now", lambda: expired_at)
+    expired = bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert expired.role_state == "expired"
+    assert expired.role_confirmation_expires_at == receipt.bridge_confirmation_expires_at
+    assert expired.next_action == "none"
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_EXPIRED$"):
+        execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=repository / "tmp" / "runtime",
+        )
+
+
+def test_missing_receipt_after_p2_commit_requires_explicit_reshow_and_reconfirm(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, plan, _confirmation, _initial = _complete_workflow(
+        tmp_path,
+        monkeypatch,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+    )
+    preview = bounded_river_review_role_request_preview(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    original_write_new = workflow._write_new
+
+    def interrupted_receipt_write(path: Path, value):
+        if isinstance(value, workflow.BoundedRiverReviewRoleConfirmationBindingV1):
+            raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE")
+        return original_write_new(path, value)
+
+    monkeypatch.setattr(workflow, "_write_new", interrupted_receipt_write)
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_STORAGE$"):
+        _confirm_workflow_role(
+            repository=repository,
+            config=config,
+            plan=plan,
+            preview=preview,
+        )
+    workflow_directory = next((repository / "tmp" / "workflows").rglob("linkage.json")).parent
+    committed = BoundedCodexBridgeStore(workflow_directory / "bridge").read_current(
+        plan.bridge_run_id
+    )
+    assert workflow.role_artifact_name(BridgeRole.STRATEGY_ANALYST, "confirmation") in set(
+        committed.artifacts
+    )
+    assert not tuple(workflow_directory.glob("role-confirmation-binding-*.json"))
+    unbound = bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert unbound.role_state == "awaiting_confirmation"
+
+    monkeypatch.setattr(workflow, "_write_new", original_write_new)
+    recovery_preview = bounded_river_review_role_request_preview(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    recovered = _confirm_workflow_role(
+        repository=repository,
+        config=config,
+        plan=plan,
+        preview=recovery_preview,
+    )
+    assert recovered.role_state == "executable"
+    assert len(tuple(workflow_directory.glob("role-confirmation-binding-*.json"))) == 1
+
+
+def test_role_receipt_tamper_and_missing_completed_receipt_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, plan, _confirmation, _initial = _complete_workflow(
+        tmp_path,
+        monkeypatch,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+    )
+    preview = bounded_river_review_role_request_preview(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    _confirm_workflow_role(
+        repository=repository,
+        config=config,
+        plan=plan,
+        preview=preview,
+    )
+    workflow_directory = next((repository / "tmp" / "workflows").rglob("linkage.json")).parent
+    receipt_path = next(workflow_directory.glob("role-confirmation-binding-*.json"))
+    receipt_bytes = receipt_path.read_bytes()
+    receipt = parse_canonical_model(
+        receipt_bytes,
+        workflow.BoundedRiverReviewRoleConfirmationBindingV1,
+    )
+    assert receipt.confirmed_bridge_revision == receipt.preview_bridge_revision + 1
+    receipt_path.write_bytes(
+        canonical_json_bytes(receipt.model_copy(update={"binding_sha256": "0" * 64}))
+    )
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_BINDING$"):
+        bounded_river_review_workflow_status(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+        )
+    receipt_path.write_bytes(receipt_bytes)
+
+    clock = _StepClock()
+    calls: list[BridgeRole] = []
+    monkeypatch.setattr(
+        workflow,
+        "execute_product_role",
+        _deterministic_role_executor(clock=clock, calls=calls),
+    )
+    completed = execute_bounded_river_review_role(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+        runtime_root=repository / "tmp" / "runtime",
+    )
+    assert completed.completed_roles == (BridgeRole.STRATEGY_ANALYST,)
+    receipt_path.unlink()
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_BINDING$"):
+        bounded_river_review_workflow_status(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+        )
+
+
+def test_role_workflow_maps_bridge_source_storage_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, plan, _confirmation = _complete_local_only(tmp_path, monkeypatch)
+
+    def broken_bridge_source(*args, **kwargs):
+        raise BridgeStorageError("private bridge storage detail")
+
+    monkeypatch.setattr(workflow, "_verify_bridge_source", broken_bridge_source)
+    with pytest.raises(BoundedRiverReviewWorkflowError) as exc_info:
+        bounded_river_review_role_request_preview(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+        )
+    assert str(exc_info.value) == "BRW_E_BRIDGE"
+    assert "private bridge storage detail" not in str(exc_info.value)
+
+
+def test_execute_maps_durable_admission_failure_to_reconciliation_and_preflights_all(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, config, plan, _confirmation, _initial = _complete_workflow(
+        tmp_path,
+        monkeypatch,
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+    )
+    preview = bounded_river_review_role_request_preview(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    confirmed = _confirm_workflow_role(
+        repository=repository,
+        config=config,
+        plan=plan,
+        preview=preview,
+    )
+    assert confirmed.next_role is BridgeRole.STRATEGY_ANALYST
+    fields = dict(preview["confirmation_fields"])
+    transport_calls = 0
+
+    def admit_then_fail(**kwargs):
+        nonlocal transport_calls
+        transport_calls += 1
+        store = BoundedCodexBridgeStore(kwargs["bridge_root"])
+        current = store.read_current(kwargs["bridge_run_id"])
+        role = kwargs["role"]
+        request = workflow._bridge_role_request(current, role)
+        bridge_confirmation = workflow._bridge_role_confirmation(current, role)
+        assert bridge_confirmation is not None
+        source = BoundedCodexBridgeController(store).read_source_context(kwargs["bridge_run_id"])
+        admitted_at = datetime.now(UTC)
+        admission = admit_role_request(
+            request,
+            bridge_confirmation,
+            admitted_at=admitted_at,
+            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        )
+        publication = store.prepare_request(
+            run_plan=workflow._verified_bridge_run_plan(current, plan),
+            status="in_progress",
+            expected=current,
+            published_at=admitted_at,
+            artifacts=(
+                *current.decoded_artifacts(),
+                BridgeStoredArtifact(
+                    workflow.role_artifact_name(role, "admission"),
+                    "admission",
+                    admission,
+                ),
+            ),
+        )
+        store.publish(publication)
+        raise bridge_product.BridgeProductError("transport failed after admission")
+
+    monkeypatch.setattr(workflow, "execute_product_role", admit_then_fail)
+    with pytest.raises(
+        BoundedRiverReviewWorkflowError,
+        match=r"^BRW_E_ROLE_RECONCILIATION$",
+    ):
+        execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=repository / "tmp" / "runtime",
+        )
+    reconciled = bounded_river_review_workflow_status(
+        config=config,
+        repository_root=repository,
+        workflow_root=repository / "tmp" / "workflows",
+        workflow_id=plan.workflow_id,
+    )
+    assert reconciled.role_state == "in_progress"
+    assert reconciled.reconciliation_required is True
+    for operation in (
+        lambda: bounded_river_review_role_request_preview(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+        ),
+        lambda: confirm_bounded_river_review_role_request(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            authority_id="local-test-user",
+            confirmation_id="confirmation-reconciliation-preflight",
+            idempotency_key="idempotency-reconciliation-preflight",
+            **fields,
+        ),
+        lambda: execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=repository / "tmp" / "runtime-2",
+        ),
+    ):
+        with pytest.raises(
+            BoundedRiverReviewWorkflowError,
+            match=r"^BRW_E_ROLE_RECONCILIATION$",
+        ):
+            operation()
+    assert transport_calls == 1
+
+
+def test_role_progress_projects_admitted_role_as_in_progress_without_retry() -> None:
+    role = BridgeRole.STRATEGY_ANALYST
+    artifacts = {
+        workflow.role_artifact_name(role, artifact_kind): object()
+        for artifact_kind in ("request", "confirmation", "admission")
+    }
+    plan = SimpleNamespace(
+        workflow_id="workflow-in-progress",
+        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+        plan_sha256="1" * 64,
+        source_run_id="source-in-progress",
+        bridge_run_id="bridge-in-progress",
+    )
+    bridge = SimpleNamespace(
+        artifacts=artifacts,
+        manifest=SimpleNamespace(manifest_sha256="2" * 64),
+    )
+    replayed = SimpleNamespace(
+        status="in_progress",
+        completed_roles=(),
+        pending_roles=(role,),
+        reconciliation_required=True,
+    )
+
+    assert workflow._role_progress(
+        plan,
+        bridge,
+        replayed,
+    ) == (role, "in_progress", "none")
+    status = workflow._status_from_replayed_bridge(
+        plan,
+        bridge,
+        replayed,
+        confirmation_sha256="3" * 64,
+        source_terminal_manifest_sha256="4" * 64,
+    )
+    assert status.next_role is role
+    assert status.role_state == "in_progress"
+    assert status.reconciliation_required is True
+    assert status.next_action == "none"
+
+
 def test_report_view_accepts_linked_ancestor_after_real_five_role_progress(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -721,21 +1281,133 @@ def test_report_view_accepts_linked_ancestor_after_real_five_role_progress(
     )
     store = BoundedCodexBridgeStore(workflow_directory / "bridge")
     clock = _StepClock()
-    controller = BoundedCodexBridgeController(store, clock=clock)
-    transport = DeterministicReadOnlyTransport(
-        auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
-        clock=clock,
+    execution_calls: list[BridgeRole] = []
+    monkeypatch.setattr(
+        workflow,
+        "execute_product_role",
+        _deterministic_role_executor(clock=clock, calls=execution_calls),
     )
 
-    for role in BRIDGE_ROLE_ORDER:
-        _confirm_bridge_role(controller, plan.bridge_run_id, role)
-        controller.execute_confirmed_role(
-            plan.bridge_run_id,
-            role,
-            auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
-            current_source_terminal_manifest_sha256=(initial_view.source_terminal_manifest_sha256),
-            transport=transport,
+    status = initial_status
+    assert status.next_role is BRIDGE_ROLE_ORDER[0]
+    assert status.role_state == "awaiting_confirmation"
+    assert status.next_action == "show_role_request"
+    for ordinal, role in enumerate(BRIDGE_ROLE_ORDER):
+        current_before_preview = store.read_current(plan.bridge_run_id)
+        authoritative = replay_bridge(current_before_preview)
+        assert authoritative.pending_roles[0] is role
+        assert status.next_role is authoritative.pending_roles[0]
+        assert status.completed_roles == BRIDGE_ROLE_ORDER[:ordinal]
+
+        preview = bounded_river_review_role_request_preview(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
         )
+        assert preview["next_role"] is authoritative.pending_roles[0]
+        assert preview["next_role_state"] == "awaiting_confirmation"
+        assert preview["workflow_plan_sha256"] == plan.plan_sha256
+        assert preview["workflow_linkage_sha256"] == linkage.linkage_sha256
+        assert preview["current_bridge_revision"] == current_before_preview.pointer.revision
+        assert (
+            preview["current_bridge_manifest_sha256"]
+            == current_before_preview.manifest.manifest_sha256
+        )
+        assert (
+            preview["current_bridge_inventory_sha256"]
+            == current_before_preview.manifest.inventory_sha256
+        )
+        assert preview["current_bridge_pointer_sha256"] == current_before_preview.pointer_sha256
+        request_preview = preview["request"]
+        assert request_preview["role"] is role
+        assert request_preview["provider_fallback_allowed"] is False
+        assert request_preview["model_fallback_allowed"] is False
+        assert store.read_current(plan.bridge_run_id) == current_before_preview
+
+        if ordinal == 0:
+            stale_fields = dict(preview["confirmation_fields"])
+            stale_fields["expected_bridge_pointer_sha256"] = "f" * 64
+            with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_BINDING$"):
+                confirm_bounded_river_review_role_request(
+                    config=config,
+                    repository_root=repository,
+                    workflow_root=repository / "tmp" / "workflows",
+                    workflow_id=plan.workflow_id,
+                    authority_id="local-test-user",
+                    confirmation_id="confirmation-stale-lineage",
+                    idempotency_key="idempotency-stale-lineage",
+                    **stale_fields,
+                )
+            assert store.read_current(plan.bridge_run_id) == current_before_preview
+            with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_STATE$"):
+                execute_bounded_river_review_role(
+                    config=config,
+                    repository_root=repository,
+                    workflow_root=repository / "tmp" / "workflows",
+                    workflow_id=plan.workflow_id,
+                    runtime_root=repository / "tmp" / "runtime",
+                )
+            assert execution_calls == []
+
+        confirmed = _confirm_workflow_role(
+            repository=repository,
+            config=config,
+            plan=plan,
+            preview=preview,
+        )
+        assert confirmed.next_role is role
+        assert confirmed.role_state == "executable"
+        assert confirmed.next_action == "execute_role"
+        assert confirmed.completed_roles == BRIDGE_ROLE_ORDER[:ordinal]
+        assert execution_calls == list(BRIDGE_ROLE_ORDER[:ordinal])
+
+        status = execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=repository / "tmp" / "runtime",
+        )
+        assert execution_calls == list(BRIDGE_ROLE_ORDER[: ordinal + 1])
+        assert status.completed_roles == BRIDGE_ROLE_ORDER[: ordinal + 1]
+        assert status.pending_roles == BRIDGE_ROLE_ORDER[ordinal + 1 :]
+        if ordinal + 1 < len(BRIDGE_ROLE_ORDER):
+            assert status.state == "role_review_in_progress"
+            assert status.next_role is status.pending_roles[0]
+            assert status.role_state == "awaiting_confirmation"
+            assert status.next_action == "show_role_request"
+            with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_STATE$"):
+                execute_bounded_river_review_role(
+                    config=config,
+                    repository_root=repository,
+                    workflow_root=repository / "tmp" / "workflows",
+                    workflow_id=plan.workflow_id,
+                    runtime_root=repository / "tmp" / "runtime",
+                )
+            assert execution_calls == list(BRIDGE_ROLE_ORDER[: ordinal + 1])
+        else:
+            assert status.state == "completed"
+            assert status.next_role is None
+            assert status.role_state == "terminal"
+            assert status.next_action == "none"
+
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_STATE$"):
+        bounded_river_review_role_request_preview(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+        )
+    with pytest.raises(BoundedRiverReviewWorkflowError, match=r"^BRW_E_ROLE_STATE$"):
+        execute_bounded_river_review_role(
+            config=config,
+            repository_root=repository,
+            workflow_root=repository / "tmp" / "workflows",
+            workflow_id=plan.workflow_id,
+            runtime_root=repository / "tmp" / "runtime",
+        )
+    assert execution_calls == list(BRIDGE_ROLE_ORDER)
 
     current = store.read_current(plan.bridge_run_id)
     assert current.manifest.manifest_sha256 != linkage.bridge_manifest_sha256

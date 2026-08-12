@@ -17,7 +17,9 @@
   parser、calculator、range、provider、solver、role authorityを追加しない。P3-030Eの
   `show-bounded-river-review`も既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけを
   pure/read-only projectionとして表示する。report-writerに許されるのは保存済みconclusion codeと
-  evidence hashの投影だけで、新しい数値、range、助言、GTO/equilibrium主張を生成しない。
+  evidence hashの投影だけで、新しい数値、range、助言、GTO/equilibrium主張を生成しない。P3-030Fは
+  nonlocal modeの次の1 roleに限定した監督wrapperであり、既存P3 `FinalReport`、parser/calculator、
+  明示済み単一opponent range、7-tool exact semantics、P2-025B role authorityを変更しない。
 - P3-030Aの確認済みレビュー入力は、一般自然言語parserではない。呼出側が完全な
   `CanonicalHand`と任意の単一`VersionedRangeDefinitionV1`を提示し、利用者または検証済み
   application authorityがsource/candidate hashを明示確認した場合だけ、retrospectiveかつ
@@ -283,9 +285,20 @@
 
 - `local_only`はmodel reviewを生成せず、model/nonlocal runtimeも開始しない。parser、calculator、
   LocalProvider、storage、replay、evaluation、verified report projectionをAPI key/login/networkなしで
-  使えるという意味である。
+  使えるという意味である。P3-030Fのrole用show/confirm/execute wrapperはすべて
+  `BRW_E_LOCAL_ONLY`で拒否され、transportやruntime directoryを開始しない。
 - `codex_subscription`はterminal verification済みP3-030C river call-or-fold run、1 explicit range、固定5
   role、fresh serial turnだけを扱う。一般Codex/Python bridge、任意prompt/agent、双方向sessionではない。
+- P3-030Fのnonlocal wrapperはstatusの`next_role` / `role_state`が示す次の1 roleだけを、exact request
+  preview、17個すべての`confirmation_fields`の明示確認、workflow-owned canonical hash receipt、1回の
+  executeの順に進める。lower-level P2 CLIによるdirect confirmationだけではworkflow receiptを作らず、
+  `awaiting_confirmation`のままである。P2 confirmationだけが残った中断はfresh showと一致する
+  authority/confirmation/idempotency IDを使う明示的なworkflow confirmでreceiptを補えるが、admissionまたは
+  completed roleにreceiptがなければ`BRW_E_ROLE_BINDING`でfail closedし、自動修復しない。
+- statusの`role_request_expires_at` / `role_confirmation_expires_at`を過ぎると`role_state=expired`となり、
+  show/confirm/executeは`BRW_E_ROLE_EXPIRED`で停止する。自動再確認、automatic retry、skip、新しいmode、
+  mode/model/provider fallbackはない。`reconciliation_required`がterminalまたは`in_progress`であれば
+  `BRW_E_ROLE_RECONCILIATION`で停止し、実行済みroleやcalculatorを再実行しない。
 - 過去candidateの`codex_subscription` sealed live manifestとdeterministic evaluationは、候補commit別の
   historical evidenceとしてbytes不変で保存する。current treeのruntime inventory/role conformanceへ
   一致するfresh canonical evidenceではないため、現行資格は`UNKNOWN`、

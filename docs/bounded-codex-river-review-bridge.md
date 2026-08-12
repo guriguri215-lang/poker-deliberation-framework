@@ -3,6 +3,8 @@
 この文書は、terminal verificationに成功した1つのP3-030C river call-or-fold runを、既存の
 deterministic evidenceを変更せずに5つの限定review roleへ渡すP2-025B contractを定義します。
 一般Codex/Python bridge、自然言語parser、range推定、solverまたはGTO機能ではありません。
+P3-030Fは、このcontractを変更せず、1つのverified workflowから次のroleだけをpreview、全field確認、
+1回のexecuteへ進めるsupervised wrapper lifecycleを追加します。
 
 ## 公開状態
 
@@ -14,6 +16,9 @@ deterministic evidenceを変更せずに5つの限定review roleへ渡すP2-025B
   管理する。subscription/API/model間fallbackはない。現在はversioned price authorityとprovider hard
   cost stopがないため、明示選択してもprocess/network起動前に`not_launched`で拒否する。
 - **FACT**: deterministic contract evaluationはactual model executionの証拠ではない。
+- **FACT**: P3-030F wrapperはworkflow plan、linkage、current bridge lineage、次の固定roleへ確認を
+  cross-bindし、exact P2 confirmationを`binding_sha256`付きのworkflow-owned canonical receiptへ保存する。
+  自動確認・再確認、一括・並列実行、retry、skip、新mode、mode/model/provider fallbackを許可しない。
 - **FACT**: 固定synthetic P3-030C・5 role経路にはcandidate-bound historical sealed live evidenceがある。
   そのmanifestは過去candidateの証拠としてbytes不変で保存し、current treeの資格へ昇格しない。
 - **UNKNOWN**: current treeと一致するfresh strict canonical V2 manifestは現在のcanonical pathにない。
@@ -84,6 +89,8 @@ API keyがない場合もsubscriptionへfallbackせず、要求modelが使えな
 default packageだけでdeterministic parser、calculator、LocalProvider、storage、terminal replay、evaluationを
 利用できます。bridgeのprepare/show/replayもlocal policyを検証できますが、
 `execute-bounded-codex-role --auth-mode local_only`はmodel/network transportを起動せず拒否します。
+P3-030Fのworkflow-level role用show/confirm/execute wrapperは、3 commandすべてを
+`BRW_E_LOCAL_ONLY`で拒否し、runtime directoryやtransportを開始しません。
 
 ### codex_subscription
 
@@ -281,14 +288,52 @@ effect stateは`not_launched`、`launched`、`succeeded`、`failed`、`timed_out
 `cancel_unconfirmed`、`effect_unknown`です。crash before launch、after launch before response、after response
 before publicationを区別し、admissionはtransportより先にdurable publicationします。
 
-## CLI lifecycle
+## P3-030F workflow wrapper lifecycle
+
+P3-030Fでは、既存P2-025Bのlower-level request、confirmation、admission、result、audit、replayを
+変更せず、verified P3 workflowから次の固定roleだけを操作します。roleごとの最初のcommandは
+`show-bounded-river-review-role-request`です。このread-only previewが返す
+17個の`confirmation_fields`のplan/linkage/current revision・manifest・inventory・pointer、role/auth、
+request/request-bytes/envelope/runtime-policy、runtime identity、model/provider、credential reference、
+remote retentionを、利用者がすべて確認します。
+
+次に`confirm-bounded-river-review-role-request`へ全fieldを個別の`--expected-*`として渡します。
+確認成功時、wrapperはworkflow plan/confirmation、linkage、role順、17 field、exact P2 confirmationの
+identity/hash/expiry、preview/confirmed bridge lineageをrole別canonical receiptへ結びます。このreceiptが
+検証できる場合だけ、必須`--runtime-root`を付けた`execute-bounded-river-review-role`が、そのroleを1回
+実行できます。runtime rootはsingle-useなので、各roleでrepository内のignore済みnamespaceに別の、まだ
+存在しないdirectoryを指定し、前roleのdirectoryを再利用しません。
+
+lower-level `confirm-bounded-codex-role-request`を直接実行しただけではP3-030F workflow receiptにならず、
+wrapper statusは`awaiting_confirmation`のままです。P2 confirmation保存後・receipt保存前の中断も、fresh
+showの17 fieldと既存confirmationに一致するauthority/confirmation/idempotency IDをwrapper confirmへ
+明示すれば、P2 confirmationを再発行せずreceiptを作成できます。admission済みまたはcompleted roleに
+receiptがなければ`BRW_E_ROLE_BINDING`でfail closedし、自動修復しません。
+
+statusは、未確認なら
+`next_role=<次の固定role>` / `role_state=awaiting_confirmation` /
+`next_action=show_role_request`、確認済みなら同じ`next_role` / `role_state=executable` /
+`next_action=execute_role`、期限切れなら`role_state=expired` / `next_action=none`、完了なら
+`next_role=null` / `role_state=terminal` / `next_action=none`です。`role_request_expires_at`と、存在する場合の
+`role_confirmation_expires_at`も表示し、期限切れのshow/confirm/executeは`BRW_E_ROLE_EXPIRED`で停止します。
+admission後の`in_progress`または`reconciliation_required=true`のterminal stateは
+`BRW_E_ROLE_RECONCILIATION`で停止します。どちらも自動再確認、retry、skip、新mode、fallbackを行いません。
+全flagを含む例は
+[限定river review workflow](bounded-river-review-workflow.md)を参照してください。
+
+このwrapperは既存P3 `FinalReport`を置換せず、parser、calculator、明示済み単一opponent range、
+`hand_validator`、`hand_pot_ledger`、`pot_odds`、`range_validate`、`combos`、`holdem_equity`、
+`raked_call_ev`の7-tool exact semanticsを変更・再実行しません。現行の
+`codex_subscription` qualificationは引き続き`UNKNOWN`です。
+
+## P2-025B lower-level CLI lifecycle
 
 bridge pathはrepository内のignored `tmp/`または`runs/`配下を推奨します。`--runtime-root`は
 tracked repository `.gitignore`がdirectoryとして除外するuntracked scratch namespace（例:
 `tmp/bridge-runtime`、`runs/bridge-runtime`）だけを受理します。公開候補、tracked path、ambient/global/
 `.git/info`由来だけのignore、link/reparse、`.git`、`user_materials/`、repository escape、既存product
-storageとの重複はlaunch前に拒否します。prepareはclean checkoutの指定commit/treeとmodule originを
-検証します。
+storageとの重複はlaunch前に拒否します。runtime rootは1 role/attemptだけのsingle-useで、次roleでは
+別の未作成rootが必要です。prepareはclean checkoutの指定commit/treeとmodule originを検証します。
 
 ```powershell
 # 1. verified P3-030C sourceからrunをprepare
@@ -322,6 +367,9 @@ poker-deliberate replay-bounded-codex-bridge `
 
 後続role requestは先行resultに依存するため、各roleについてshow、利用者確認、confirm、executeを繰り返し
 ます。network/model executionを起動する一括commandやautomatic retryはありません。
+このlower-level lifecycleのconfirmationはP2-025Bを直接操作するためのものです。P3-030F workflowから
+executeする場合は、それだけではworkflow authorizationにならず、fresh workflow showと一致する明示confirmで
+workflow-owned receiptを作る必要があります。
 
 ## Evaluationとqualification
 

@@ -60,8 +60,11 @@ from poker_deliberation.bounded_river_call_ev_models import (
 from poker_deliberation.bounded_river_review_workflow import (
     bounded_river_review_confirmation_preview,
     bounded_river_review_report_view,
+    bounded_river_review_role_request_preview,
     bounded_river_review_workflow_status,
+    confirm_bounded_river_review_role_request,
     confirm_bounded_river_review_workflow,
+    execute_bounded_river_review_role,
     prepare_bounded_river_review_workflow,
     replay_bounded_river_review_workflow,
     resume_bounded_river_review_workflow,
@@ -128,6 +131,9 @@ _BOUNDED_RIVER_REVIEW_COMMANDS = frozenset(
         "resume-bounded-river-review",
         "replay-bounded-river-review",
         "show-bounded-river-review",
+        "show-bounded-river-review-role-request",
+        "confirm-bounded-river-review-role-request",
+        "execute-bounded-river-review-role",
     }
 )
 
@@ -577,6 +583,54 @@ def build_parser() -> argparse.ArgumentParser:
     show_river_workflow.add_argument("--workflow-id", required=True)
     show_river_workflow.add_argument("--repository-root", default=".")
     show_river_workflow.add_argument("--format", choices=_REPORT_FORMATS, default="markdown")
+
+    show_river_role_request = subparsers.add_parser("show-bounded-river-review-role-request")
+    show_river_role_request.add_argument("--workflow-root", required=True)
+    show_river_role_request.add_argument("--workflow-id", required=True)
+    show_river_role_request.add_argument("--repository-root", default=".")
+    show_river_role_request.add_argument("--format", choices=["json", "markdown"], default="json")
+
+    confirm_river_role_request = subparsers.add_parser("confirm-bounded-river-review-role-request")
+    confirm_river_role_request.add_argument("--workflow-root", required=True)
+    confirm_river_role_request.add_argument("--workflow-id", required=True)
+    confirm_river_role_request.add_argument("--repository-root", default=".")
+    confirm_river_role_request.add_argument("--authority-id", required=True)
+    confirm_river_role_request.add_argument("--confirmation-id", required=True)
+    confirm_river_role_request.add_argument("--idempotency-key", required=True)
+    confirm_river_role_request.add_argument("--expected-plan-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-linkage-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-bridge-revision", required=True, type=int)
+    confirm_river_role_request.add_argument("--expected-bridge-manifest-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-bridge-inventory-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-bridge-pointer-sha256", required=True)
+    confirm_river_role_request.add_argument(
+        "--expected-role",
+        choices=[item.value for item in BridgeRole],
+        required=True,
+    )
+    confirm_river_role_request.add_argument(
+        "--expected-auth-mode", choices=_AUTH_MODES, required=True
+    )
+    confirm_river_role_request.add_argument("--expected-request-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-request-bytes-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-envelope-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-runtime-policy-sha256", required=True)
+    confirm_river_role_request.add_argument("--expected-runtime-identity", required=True)
+    confirm_river_role_request.add_argument("--expected-model-provider", required=True)
+    confirm_river_role_request.add_argument("--expected-model", required=True)
+    confirm_river_role_request.add_argument("--expected-credential-reference", required=True)
+    confirm_river_role_request.add_argument("--expected-remote-retention-policy", required=True)
+    confirm_river_role_request.add_argument(
+        "--format", choices=["json", "markdown"], default="json"
+    )
+
+    execute_river_role = subparsers.add_parser("execute-bounded-river-review-role")
+    execute_river_role.add_argument("--workflow-root", required=True)
+    execute_river_role.add_argument("--workflow-id", required=True)
+    execute_river_role.add_argument("--repository-root", default=".")
+    execute_river_role.add_argument("--runtime-root", required=True)
+    execute_river_role.add_argument("--codex-binary")
+    execute_river_role.add_argument("--format", choices=["json", "markdown"], default="json")
 
     prepare_bridge = subparsers.add_parser("prepare-bounded-codex-bridge")
     prepare_bridge.add_argument("--source-run-id", required=True)
@@ -1139,6 +1193,66 @@ def main(argv: list[str] | None = None) -> int:
                 rendered_report_view = render_bounded_river_review_markdown(report_view)
             _emit(rendered_report_view, args.format)
             return 0
+        if args.command == "show-bounded-river-review-role-request":
+            role_request = bounded_river_review_role_request_preview(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+            )
+            _emit(role_request, args.format)
+            return 0
+        if args.command == "confirm-bounded-river-review-role-request":
+            workflow_status = confirm_bounded_river_review_role_request(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+                authority_id=args.authority_id,
+                confirmation_id=args.confirmation_id,
+                idempotency_key=args.idempotency_key,
+                expected_plan_sha256=args.expected_plan_sha256,
+                expected_linkage_sha256=args.expected_linkage_sha256,
+                expected_bridge_revision=args.expected_bridge_revision,
+                expected_bridge_manifest_sha256=args.expected_bridge_manifest_sha256,
+                expected_bridge_inventory_sha256=args.expected_bridge_inventory_sha256,
+                expected_bridge_pointer_sha256=args.expected_bridge_pointer_sha256,
+                expected_role=BridgeRole(args.expected_role),
+                expected_auth_mode=RuntimeAuthModeV1(args.expected_auth_mode),
+                expected_request_sha256=args.expected_request_sha256,
+                expected_request_bytes_sha256=args.expected_request_bytes_sha256,
+                expected_envelope_sha256=args.expected_envelope_sha256,
+                expected_runtime_policy_sha256=args.expected_runtime_policy_sha256,
+                expected_runtime_identity=args.expected_runtime_identity,
+                expected_model_provider=args.expected_model_provider,
+                expected_model=(None if args.expected_model == "none" else args.expected_model),
+                expected_credential_reference=args.expected_credential_reference,
+                expected_remote_retention_policy=args.expected_remote_retention_policy,
+            )
+            _emit(workflow_status, args.format)
+            return 0
+        if args.command == "execute-bounded-river-review-role":
+            workflow_status = execute_bounded_river_review_role(
+                config=AppConfig.from_env(),
+                repository_root=Path(args.repository_root),
+                workflow_root=Path(args.workflow_root),
+                workflow_id=args.workflow_id,
+                runtime_root=Path(args.runtime_root),
+                codex_binary=(Path(args.codex_binary) if args.codex_binary is not None else None),
+            )
+            _emit(workflow_status, args.format)
+            return (
+                2
+                if workflow_status.bridge_status
+                in {
+                    "failed",
+                    "timed_out",
+                    "cancelled",
+                    "cancel_unconfirmed",
+                    "effect_unknown",
+                }
+                else 0
+            )
         if args.command == "prepare-bounded-codex-bridge":
             auth_mode = RuntimeAuthModeV1(args.auth_mode)
             bridge_read = prepare_product_bridge(

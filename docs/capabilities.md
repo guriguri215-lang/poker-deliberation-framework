@@ -35,7 +35,7 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `natural_language_or_site_parser` | **unavailable** | 一般自然言語およびsite-specific hand history parserはない。独立したbounded Japanese grammarをこの能力へ拡張しない。 |
 | `bounded_japanese_nlhe_cash_parser` | **implemented** | version 1の文書化済み日本語retrospective NLHE cash grammarを、exact UTF-8 span、6 hash確認、固定LocalProvider、限定tool、durable replayに接続する。一般自然言語・site parserではない。 |
 | `bounded_japanese_river_call_ev_review` | **implemented** | P3-030C専用admissionで、P3-030Bのriver fold完了履歴と明示確認済み単一rangeを、calculator-free source semantic replay、P3-015A ledger、P3-016B exact equity、既存`pot_odds`/`raked_call_ev`へ一度ずつ固定順で接続し、exact Fraction oracle、ULP検証、model限定call/fold比較、typed terminal replay、checkout/module/callable-origin拘束済み3 metric評価へ拘束する。tool budget拒否は独立external recordへ先行拘束する。一般戦略やGTOではない。 |
-| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。P3-030Eは既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけをpure/read-only表示する。既定`local_only`はmodel/nonlocal runtimeを開始しない。 |
+| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。P3-030Eは既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけをpure/read-only表示する。P3-030Fはnonlocal modeで次の1 roleだけをrequest preview、17 fieldの明示確認、workflow-owned canonical hash receipt、1回のexecuteへ拘束する。direct P2 confirmationだけではworkflow上は未確認で、期限切れとreconciliationはtyped停止する。`local_only`はprocessを開始せず、自動確認・再確認、一括・並列、retry、skip、fallbackはない。 |
 | `confirmed_natural_language_review_intake` | **implemented** | 呼出側が作成した完全な候補を利用者がsource/candidate hashで明示確認した場合に限り、固定LocalProvider・限定tool・検証済みterminal reportへ接続する。自然言語の意味抽出やsite parserを実装したという意味ではない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
@@ -71,7 +71,11 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
   empty tool allowlist、fresh serial thread、mode-bound confirmation/resultへ限定した別artifact familyを
   提供する。candidate-bound historical evidenceは保存するが、current treeと一致するfresh strict canonical
   V2 manifestがpublic preflightに合格するまで現行資格は`UNKNOWN`である。通常経路は別実行面のままであり、
-  一般bridgeではない。
+  一般bridgeではない。P3-030Fは、この既存bridgeの次のroleだけをworkflow plan、linkage、current bridge
+  lineageへcross-bindして監督実行するwrapperであり、P2-025Bのrole順、request bytes、confirmation、result、
+  replayの意味を変更しない。wrapper確認はexact P2 confirmationとそのexpiryを
+  `binding_sha256`付きのworkflow-owned canonical receiptへ結び、receiptのないlower-level direct確認を
+  workflow実行許可として扱わない。
 
 この数は品質指標ではありません。contract testは実装から件数を再計算し、文書との差を検出します。
 
@@ -86,8 +90,11 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
   heads-up exact equityとzero-rake single-decision call EVだけを比較する。複数range、multiway、
   earlier street、all-in、side pot、rake、ante、将来actionは拒否する。
 - P3-030DはP3-030CとP2-025Bを再実装せず、明示確認、状態保存、部分完了からのresume、provider/modelを
-  再実行しないartifact replayだけを追加する。`codex_subscription`または`openai_api`を選んでもrole実行は
-  既存の明示CLIへ残す。
+  再実行しないartifact replayだけを追加する。P3-030Eの表示も既存artifactのpure projectionである。
+  P3-030Fのnonlocal wrapperはstatusの`next_role` / `role_state`に従い、各roleをpreview、全field確認、
+  canonical confirmation receipt、1回のexecuteへ直列化する。statusはrequest/confirmation expiryと
+  `expired` / reconciliation停止も投影する。admission・完了済みroleにreceiptがなければfail closedし、
+  既存P3 `FinalReport`、parser/calculator、単一range、7-tool exact semantics、P2-025B authorityは不変である。
 - toolはpayload/work/output capを持つが、in-process実行を強制停止するOS sandboxではない。
 - solver実行、収束、対象game/rake/stackの一致がない結果をGTO・均衡・正確なrangeと表示しない。
 

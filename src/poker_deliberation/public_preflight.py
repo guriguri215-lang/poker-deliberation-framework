@@ -31,8 +31,8 @@ LARGE_FILE_BYTES = 1_000_000
 RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
     "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
 )
-EXPECTED_ROADMAP_SCHEMA_VERSION = "15.0.0"
-ROADMAP_MODULE_SHA256 = "02bd74e43f3d3dcdf76e94319c3b8bb970564d30dacc98c43560bd29a5024add"
+EXPECTED_ROADMAP_SCHEMA_VERSION = "16.0.0"
+ROADMAP_MODULE_SHA256 = "055bc26da13b2cbc9da94dd0809037c0ff9128cf810b33942dfbed973879f8c7"
 RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
@@ -45,7 +45,7 @@ CAPABILITY_DOCUMENT_PATHS = (
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "39330379a4d3674299ed13df5345d4002f6f565a299d6f71132ab61d79651898"
+CAPABILITY_DOCUMENT_SET_SHA256 = "d233fa1e88baf207e4c4791b523bc6fdb64b8624e0bbf5cc648da87a4f9a05e1"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
     "6334a0426bd2ef395257ef89c79d7783cc2a42283e38cacd10c54b8815dd0747"
 )
@@ -1115,7 +1115,9 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "OpenAIAgentsProvider",
             "P2-025B",
             "P3-030E",
+            "P3-030F",
             "show-bounded-river-review",
+            "show-bounded-river-review-role-request",
             "local_only",
             "codex_subscription",
             "openai_api",
@@ -1131,6 +1133,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P3-016B",
             "990",
             "P3-030E",
+            "P3-030F",
             "Current qualification: UNKNOWN",
         ],
         "docs/limitations.md": [
@@ -1173,6 +1176,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "docs/bounded-river-review-workflow.md": [
             "P3-030D",
             "P3-030E",
+            "P3-030F",
             "P3-030C",
             "P2-025B",
             "local_only",
@@ -1180,10 +1184,15 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "raw source",
             "外部solver",
             "show-bounded-river-review",
+            "show-bounded-river-review-role-request",
+            "confirm-bounded-river-review-role-request",
+            "execute-bounded-river-review-role",
         ],
     }
     required["docs/bounded-codex-river-review-bridge.md"] = [
         "P2-025B",
+        "P3-030F",
+        "show-bounded-river-review-role-request",
         "local_only",
         "codex_subscription",
         "openai_api",

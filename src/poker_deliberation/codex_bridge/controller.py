@@ -379,8 +379,29 @@ class BoundedCodexBridgeController:
         expected_model: str | None,
         expected_credential_reference: str,
         expected_remote_retention_policy: str,
+        expected_current_revision: int | None = None,
+        expected_current_manifest_sha256: str | None = None,
+        expected_current_inventory_sha256: str | None = None,
+        expected_current_pointer_sha256: str | None = None,
     ) -> VerifiedBridgeRead:
         current = self.store.read_current(bridge_run_id)
+        current_expectations = (
+            expected_current_revision,
+            expected_current_manifest_sha256,
+            expected_current_inventory_sha256,
+            expected_current_pointer_sha256,
+        )
+        if any(item is not None for item in current_expectations) and (
+            any(item is None for item in current_expectations)
+            or current_expectations
+            != (
+                current.pointer.revision,
+                current.manifest.manifest_sha256,
+                current.manifest.inventory_sha256,
+                current.pointer_sha256,
+            )
+        ):
+            raise BridgeControllerError("bridge confirmation current lineage mismatch")
         if current.pointer.status not in {"approval_required", "in_progress"}:
             raise BridgeControllerError("terminal bridge run cannot accept confirmation")
         request = _model_at(

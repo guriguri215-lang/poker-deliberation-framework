@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 ROADMAP_RESOURCE = "roadmap_status.json"
-ROADMAP_SCHEMA_VERSION = "16.0.0"
+ROADMAP_SCHEMA_VERSION = "17.0.0"
 __all__ = [
     "ROADMAP_RESOURCE",
     "ROADMAP_SCHEMA_VERSION",
@@ -86,6 +86,7 @@ EXPECTED_IMPLEMENTATION_MILESTONES = {
     "P3-030D",
     "P3-030E",
     "P3-030F",
+    "P3-030G",
 }
 # Compatibility alias for callers that imported the schema 4.x name.
 EXPECTED_PHASE_2_MILESTONES = EXPECTED_IMPLEMENTATION_MILESTONES

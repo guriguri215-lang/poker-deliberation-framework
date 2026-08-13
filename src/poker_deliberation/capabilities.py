@@ -106,7 +106,14 @@ CAPABILITIES: tuple[Capability, ...] = (
         "bridge hashes/state. P3-030F adds workflow-bound preview, explicit all-field "
         "confirmation, and one confirmed next-role execution at a time for supervised "
         "nonlocal mode; local_only role operations reject without transport, and automatic "
-        "confirmation, bulk or parallel execution, retry, skip, and fallback are absent.",
+        "confirmation, bulk or parallel execution, retry, skip, and fallback are absent. "
+        "P3-030G adds a first-class deterministic production-workflow qualification harness "
+        "that drives all five fixed roles through the production preview, explicit 17-field "
+        "confirmation, and single-role execute wrappers using only an injected deterministic "
+        "read-only executor seam, then emits a sanitized self-hashed canonical manifest. Passing "
+        "that fixture is not actual-live/provider qualification: current live qualification "
+        "remains UNKNOWN, and separate live qualification requires five fresh preview and explicit "
+        "human-confirmation cycles.",
     ),
     Capability(
         "confirmed_natural_language_review_intake",

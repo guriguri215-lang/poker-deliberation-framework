@@ -40,7 +40,11 @@ _RUNTIME_SUPPORT_PATHS = (
     "pyproject.toml",
     "requirements.lock",
     "scripts/run_codex_bridge_live_qualification.py",
+    "scripts/run_bounded_river_review_workflow_evaluation.py",
     "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
+    "tests/fixtures/bounded_river_review_workflow/v1/range.json",
+    "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt",
+    "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json",
 )
 
 

@@ -121,6 +121,7 @@ _LINKAGE_HASH_DOMAIN = "poker-bounded-river-review-workflow-linkage-v1"
 _ROLE_CONFIRMATION_BINDING_HASH_DOMAIN = "poker-bounded-river-review-role-confirmation-binding-v1"
 _WORKFLOW_DIRECTORY_DOMAIN = b"poker-bounded-river-review-workflow-directory-v1\0"
 Clock = Callable[[], datetime]
+RoleExecutor = Callable[..., VerifiedBridgeRead]
 
 
 class BoundedRiverReviewWorkflowError(ValueError):
@@ -1821,6 +1822,15 @@ def bounded_river_review_role_request_preview(
     }
 
 
+def _exact_role_confirmation_fields_match(
+    supplied: tuple[object, ...],
+    authoritative: tuple[object, ...],
+) -> bool:
+    """Compare the exact, ordered 17-field confirmation contract without mutation."""
+
+    return len(supplied) == 17 and len(authoritative) == 17 and supplied == authoritative
+
+
 def confirm_bounded_river_review_role_request(
     *,
     config: AppConfig,
@@ -1897,23 +1907,45 @@ def confirm_bounded_river_review_role_request(
         _fail("BRW_E_ROLE_ORDER")
     request = _bridge_role_request(bridge, status.next_role)
     policy = request.context.runtime_policy
-    if (
-        expected_plan_sha256 != plan.plan_sha256
-        or expected_linkage_sha256 != linkage.linkage_sha256
-        or expected_bridge_revision != bridge.pointer.revision
-        or expected_bridge_manifest_sha256 != bridge.manifest.manifest_sha256
-        or expected_bridge_inventory_sha256 != bridge.manifest.inventory_sha256
-        or expected_bridge_pointer_sha256 != bridge.pointer_sha256
-        or expected_auth_mode is not plan.auth_mode
-        or expected_request_sha256 != request.request_sha256
-        or expected_request_bytes_sha256 != request.request_bytes_sha256
-        or expected_envelope_sha256 != request.context.envelope_sha256
-        or expected_runtime_policy_sha256 != policy.policy_sha256
-        or expected_runtime_identity != policy.runtime_identity
-        or expected_model_provider != policy.model_provider
-        or expected_model != policy.model
-        or expected_credential_reference != policy.credential_reference
-        or expected_remote_retention_policy != policy.remote_retention_policy
+    if not _exact_role_confirmation_fields_match(
+        (
+            expected_plan_sha256,
+            expected_linkage_sha256,
+            expected_bridge_revision,
+            expected_bridge_manifest_sha256,
+            expected_bridge_inventory_sha256,
+            expected_bridge_pointer_sha256,
+            expected_auth_mode,
+            expected_request_sha256,
+            expected_request_bytes_sha256,
+            expected_envelope_sha256,
+            expected_runtime_policy_sha256,
+            expected_runtime_identity,
+            expected_model_provider,
+            expected_model,
+            expected_credential_reference,
+            expected_remote_retention_policy,
+            expected_role,
+        ),
+        (
+            plan.plan_sha256,
+            linkage.linkage_sha256,
+            bridge.pointer.revision,
+            bridge.manifest.manifest_sha256,
+            bridge.manifest.inventory_sha256,
+            bridge.pointer_sha256,
+            plan.auth_mode,
+            request.request_sha256,
+            request.request_bytes_sha256,
+            request.context.envelope_sha256,
+            policy.policy_sha256,
+            policy.runtime_identity,
+            policy.model_provider,
+            policy.model,
+            policy.credential_reference,
+            policy.remote_retention_policy,
+            status.next_role,
+        ),
     ):
         _fail("BRW_E_ROLE_BINDING")
     if _now() >= request.context.assignment.expires_at:
@@ -1992,8 +2024,13 @@ def execute_bounded_river_review_role(
     workflow_id: str,
     runtime_root: Path,
     codex_binary: Path | None = None,
+    _role_executor: RoleExecutor | None = None,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    """Execute the one confirmed next role, without retry or fallback."""
+    """Execute the one confirmed next role, without retry or fallback.
+
+    ``_role_executor`` is an internal deterministic-evaluation seam. Product callers leave it
+    unset so the verified production executor remains authoritative.
+    """
 
     observed_at = _now()
     observed = _verified_role_workflow(
@@ -2034,8 +2071,9 @@ def execute_bounded_river_review_role(
         _fail("BRW_E_ROLE_BINDING")
     if _now() >= bridge_confirmation.expires_at:
         _fail("BRW_E_ROLE_EXPIRED")
+    role_executor = execute_product_role if _role_executor is None else _role_executor
     try:
-        execute_product_role(
+        role_executor(
             config=config,
             repository_root=repository_root,
             bridge_root=directory / "bridge",

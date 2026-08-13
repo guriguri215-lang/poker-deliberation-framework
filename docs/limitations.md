@@ -21,6 +21,14 @@
   nonlocal modeの次の1 roleに限定した監督wrapperであり、既存P3 `FinalReport`、parser/calculator、
   明示済み単一opponent range、7-tool exact semantics、P2-025B role authorityを変更しない。
 
+  P3-030GはP3-030D/Fのproduction preview、confirm、single-role execute wrapperを固定5 roleで通す
+  deterministic qualificationである。17 fieldはfixture管理のlocal authorityが機械的に照合し、role実行は
+  privateなdeterministic read-only executor seamを使うため、人間の確認、本人認証、actual-live/provider
+  qualificationを再現または証明しない。sanitized manifestが`qualification_status="passed"`でも
+  `transport_qualification="deterministic_fixture"`かつ`live_qualification_status="UNKNOWN"`であり、
+  raw source、prompt/outbound bytes、credential、narrative、model trace、`user_materials/`を含めない。
+  live qualificationは別手順で、固定5 roleそれぞれのfresh previewと人間による明示確認が必要である。
+
   ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
   hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
   現在資格を意味しません。
@@ -316,6 +324,9 @@
   `subscription_live_qualified=false`である。legacy manifest、recorded/deterministic fixture、
   caller-controlled label、wrapped/injected transportをcurrent actual transport evidenceへ昇格しない。
   current canonical manifestが欠落する場合は`UNKNOWN`、存在しても非canonicalまたはinvalidなら`FAIL`とする。
+- P3-030Gのdeterministic production-workflow manifestもcurrent actual transport evidenceではない。
+  fixture合格、self-hash、runtime inventory、固定5 role完了のいずれも、live model/provider executionや
+  人間による5回のpreview確認の代用にせず、現行live資格は`UNKNOWN`のままとする。
 - `openai_api`はdefault-disabled、deterministic-contract-only、live-unqualifiedである。versioned price
   authorityとprovider hard cost stopがないため、API keyが存在してもprocess/network起動前に
   `api_live_execution_unqualified_cost_authority` / `not_launched`で拒否し、production-qualifiedまたは

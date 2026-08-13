@@ -78,6 +78,19 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
     assert (
         "one confirmed next-role execution at a time" in summaries["bounded_river_review_workflow"]
     )
+    assert "P3-030G" in summaries["bounded_river_review_workflow"]
+    assert (
+        "deterministic production-workflow qualification harness"
+        in summaries["bounded_river_review_workflow"]
+    )
+    assert "sanitized self-hashed canonical manifest" in summaries["bounded_river_review_workflow"]
+    assert (
+        "current live qualification remains UNKNOWN" in summaries["bounded_river_review_workflow"]
+    )
+    assert (
+        "five fresh preview and explicit human-confirmation cycles"
+        in summaries["bounded_river_review_workflow"]
+    )
     assert (
         "current-tree live qualification is UNKNOWN"
         in summaries["bounded_codex_river_review_bridge"]

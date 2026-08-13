@@ -50,6 +50,18 @@ from tests.bounded_river_call_ev_support import app_config, range_definition, ri
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.mark.parametrize("field_index", range(17))
+def test_exact_role_confirmation_contract_rejects_each_field_mutation(
+    field_index: int,
+) -> None:
+    authoritative: tuple[object, ...] = tuple(f"field-{index}" for index in range(17))
+    supplied = list(authoritative)
+    supplied[field_index] = f"mismatch-{field_index}"
+
+    assert not workflow._exact_role_confirmation_fields_match(tuple(supplied), authoritative)
+    assert workflow._exact_role_confirmation_fields_match(authoritative, authoritative)
+
+
 def _allow_test_root(monkeypatch: pytest.MonkeyPatch) -> None:
     def allow(path: Path, _repository_root: Path) -> Path:
         return path.resolve()

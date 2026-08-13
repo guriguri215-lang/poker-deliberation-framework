@@ -50,6 +50,9 @@ workflow/bridge linkage、state、numeric-contractの検査に合格したこと
 - P3-030Fの`show-bounded-river-review-role-request`から始まるworkflow wrapperで、nonlocal modeの
   次の1 roleだけをpreview、全fieldの明示確認、workflow-ownedなcanonical hash receiptの保存、
   1回のexecuteという順で監督実行する。
+- P3-030Gのfirst-class deterministic production-workflow qualification harnessで、repository-owned
+  fixtureを実際のproduction preview、17-field confirm、single-role execute wrapperへ固定5 roleの順に通し、
+  sanitized self-hashed canonical manifestを生成する。
 - Codex上で同梱Skillと専門agent定義を利用する。通常のCodex利用とPython CLIは別実行面であり、
   P2-025Bだけがterminal検証済みの限定river reviewを固定5 roleへ渡す専用bridgeである。
 
@@ -159,6 +162,11 @@ receiptがない間は`awaiting_confirmation`です。P2 confirmationだけが�
 hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
 現在資格を意味しません。
 
+P3-030Gのdeterministic fixtureは、fresh previewの17 fieldをfixture管理のlocal authorityで
+production confirmへ正確に渡し、confirmだけではroleが実行されないことを確認してから、評価専用の
+deterministic read-only executor seamを通して各roleを1回ずつ実行します。外部model、provider、network、
+credentialは使いません。この機械的な確認は人間の確認やactual-live/provider qualificationではありません。
+
 statusは`role_request_expires_at`と`role_confirmation_expires_at`も表示します。期限切れは
 `role_state=expired`となり、role wrapperは`BRW_E_ROLE_EXPIRED`で停止します。
 `reconciliation_required`のterminalまたは`in_progress`も自動retryしません。
@@ -169,6 +177,8 @@ P3 `FinalReport`、parser/calculator、明示済み単一opponent range、7-tool
 `codex_subscription`の現行qualificationは`UNKNOWN`です。具体的な全flag、状態遷移、resume、replay、
 保存範囲は
 [限定river review workflow](docs/bounded-river-review-workflow.md)を参照してください。
+P3-030Gのdeterministic合格やsanitized manifestから現行live資格を推定しません。live qualificationは
+別手順であり、固定5 roleのそれぞれにfresh previewと人間による明示確認が必要です。
 
 ## 実行環境
 
@@ -259,7 +269,7 @@ PowerShellでは[`scripts/check_quality.ps1`](scripts/check_quality.ps1)、candi
 [`scripts/release_readiness.py`](scripts/release_readiness.py)、公開候補のoffline検査は
 [`scripts/public_preflight.py`](scripts/public_preflight.py)を使います。
 
-**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema 16.0.0の[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema 17.0.0の[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 milestone完了とcandidate-specific release evidenceは別です。
 
 ## 主な文書

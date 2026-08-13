@@ -20,6 +20,14 @@
   evidence hashの投影だけで、新しい数値、range、助言、GTO/equilibrium主張を生成しない。P3-030Fは
   nonlocal modeの次の1 roleに限定した監督wrapperであり、既存P3 `FinalReport`、parser/calculator、
   明示済み単一opponent range、7-tool exact semantics、P2-025B role authorityを変更しない。
+
+  ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
+  hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
+  現在資格を意味しません。
+
+  上記P3-030Eの`verified FinalReport`とreport projectionは、repository-ownedなschema、hash、
+  workflow/bridge linkage、state、numeric-contractの検査に合格したことを意味します。戦略品質、
+  実戦rangeの正確性、GTO/equilibrium、外部solver一致、第三者認証、release readinessは証明しません。
 - P3-030Aの確認済みレビュー入力は、一般自然言語parserではない。呼出側が完全な
   `CanonicalHand`と任意の単一`VersionedRangeDefinitionV1`を提示し、利用者または検証済み
   application authorityがsource/candidate hashを明示確認した場合だけ、retrospectiveかつ
@@ -154,9 +162,12 @@
   author/committer/tagger identities are review candidates, not confirmed personal information.
 - Package metadataの`requires-python >=3.11`と、tracked GitHub Actions verification matrixは別である。
   workflowはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを実行し、別jobでstatic gateと
-  candidate-bound reproducible package evidenceを検査する。PR head
-  `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`のActions run `31462799513`は6 jobすべて合格したが、
-  これは任意checkoutや公開releaseの合格を自動的に証明しない。
+  candidate-bound reproducible package evidenceを検査する。2026-08-12 20:06:17 JSTのfresh read-backでは、
+  commit `ad3f267345491651153a18be12e854632366e34a`のActions run `31583851426`で、Windows/Ubuntu ×
+  Python 3.12/3.13のfull-test 4 row、static quality、package evidenceの全6 jobが成功した。
+  これは同commitだけに対する証拠であり、public releaseまたはproduction readinessを証明しない。
+  run `31462799513`の6-job成功はcommit `fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf`だけに対する
+  historicalかつcommit-specificな証拠であり、任意checkoutや公開releaseを証明しない。
 - On Windows, pytest path viability depends on the combined depth of the clone and temp paths and on
   long-path support in the OS/process configuration. The checked per-test `tmp_path` uses a short OS
   temporary root; other pytest temporary fixtures and explicit `--basetemp` paths do not establish

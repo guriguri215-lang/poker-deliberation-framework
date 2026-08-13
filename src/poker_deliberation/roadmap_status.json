@@ -346,7 +346,7 @@
       "id": "P3-030E",
       "rm_id": "RM-030",
       "status": "completed",
-      "status_reason": "The pure read-only verified report projection, JSON/summary/Markdown CLI view, artifact correlation, local-only non-execution boundary, documentation, and declared tests are implemented.",
+      "status_reason": "The pure read-only verified report projection, JSON/summary/Markdown CLI view, artifact correlation, local-only non-execution boundary, documentation, and declared tests are implemented. Here, verified means passing repository-owned schema, hash, linkage, state, and numeric-contract checks; it does not prove strategy quality, real-world range accuracy, GTO/equilibrium, agreement with an external solver, third-party certification, or release readiness.",
       "dependencies": [
         "P3-030D"
       ],
@@ -356,7 +356,7 @@
       "id": "P3-030F",
       "rm_id": "RM-030",
       "status": "completed",
-      "status_reason": "The supervised next-role preview, explicit cross-bound confirmation, single-role execution, additive workflow and report projection, deterministic five-role completion, local-only refusal, documentation, and declared tests are implemented without changing P2-025B or FinalReport authority.",
+      "status_reason": "The supervised next-role preview, explicit cross-bound confirmation, single-role execution, additive workflow and report projection, deterministic five-role completion, local-only refusal, documentation, and declared tests are implemented without changing P2-025B or FinalReport authority. Here, role confirmation hash-binds the user's explicit agreement with all 17 previewed fields into the workflow receipt; it is not user identity authentication, approval of strategic judgment, external third-party verification, or evidence of current model/provider qualification.",
       "dependencies": [
         "P2-025B",
         "P3-030E"
@@ -1147,7 +1147,7 @@
       "phase": "pre-release",
       "priority": "P1",
       "status": "completed",
-      "status_reason": "Reproducible wheel/sdist build and isolated project-wheel smoke in a venv with qualified locked base site-packages, dependency license inventory, artifact SHA-256, offline preflight, and candidate-bound evidence generation are implemented. GitHub Actions run 31462799513 passed all six jobs for PR head fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf across Ubuntu/Windows and Python 3.12/3.13 plus static and package-evidence jobs; arbitrary checkouts still require their own candidate evidence.",
+      "status_reason": "Reproducible wheel/sdist build and isolated project-wheel smoke in a venv with qualified locked base site-packages, dependency license inventory, artifact SHA-256, offline preflight, and candidate-bound evidence generation are implemented. GitHub Actions run 31583851426 completed successfully for commit ad3f267345491651153a18be12e854632366e34a: all four Ubuntu/Windows and Python 3.12/3.13 full-test rows, static quality, and package evidence passed. This evidence is commit-specific and does not prove a public release or production readiness. Run 31462799513 remains historical and commit-specific six-job success evidence for PR head fcbf4b8eb51a1a3e91a11313ed85f481f631f0bf; arbitrary checkouts require their own candidate evidence.",
       "dependencies": [
         "RM-001",
         "RM-002",

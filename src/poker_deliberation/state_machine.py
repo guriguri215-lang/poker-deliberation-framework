@@ -182,31 +182,37 @@ class WorkflowStateMachine:
             self._last_budget_failure = None
             return True
         except BudgetLimitError as exc:
-            self._last_budget_failure = exc.failure
-            failure_reason = f"strict budget observation failed: {exc.failure.code}"
-        if self.state is RunState.COMPLETED:
-            if (
-                not self.events
-                or self.events[-1].target is not RunState.COMPLETED
-                or self.events[-1].source is not RunState.FINAL_SYNTHESIS
-            ):
-                raise ValueError("completed state lacks its final synthesis transition")
-            self.events[-1] = StateEvent(
-                source=RunState.FINAL_SYNTHESIS,
-                target=RunState.FAILED_WITH_LIMITATIONS,
-                reason=failure_reason,
-            )
-            self.state = RunState.FAILED_WITH_LIMITATIONS
-        elif self.state is not RunState.FAILED_WITH_LIMITATIONS:
-            self.events.append(
-                StateEvent(
-                    source=self.state,
+            self._project_budget_failure(exc.failure)
+        return False
+
+    def _project_budget_failure(self, failure: BudgetFailure) -> None:
+        """Project one latched ledger failure into the workflow state exactly once."""
+
+        failure_reason = f"strict budget observation failed: {failure.code}"
+        with self._transition_lock:
+            self._last_budget_failure = failure
+            if self.state is RunState.COMPLETED:
+                if (
+                    not self.events
+                    or self.events[-1].target is not RunState.COMPLETED
+                    or self.events[-1].source is not RunState.FINAL_SYNTHESIS
+                ):
+                    raise ValueError("completed state lacks its final synthesis transition")
+                self.events[-1] = StateEvent(
+                    source=RunState.FINAL_SYNTHESIS,
                     target=RunState.FAILED_WITH_LIMITATIONS,
                     reason=failure_reason,
                 )
-            )
-            self.state = RunState.FAILED_WITH_LIMITATIONS
-        return False
+                self.state = RunState.FAILED_WITH_LIMITATIONS
+            elif self.state is not RunState.FAILED_WITH_LIMITATIONS:
+                self.events.append(
+                    StateEvent(
+                        source=self.state,
+                        target=RunState.FAILED_WITH_LIMITATIONS,
+                        reason=failure_reason,
+                    )
+                )
+                self.state = RunState.FAILED_WITH_LIMITATIONS
 
     @property
     def last_budget_failure(self) -> BudgetFailure | None:
@@ -262,6 +268,17 @@ class WorkflowStateMachine:
 
     def runtime_window(self) -> tuple[BudgetSnapshot, int, int]:
         return self.ledger.runtime_window()
+
+    def checked_runtime_window(self) -> tuple[BudgetSnapshot, int, int] | None:
+        """Observe one runtime window and project any failure without a second clock read."""
+
+        try:
+            window = self.ledger.runtime_window()
+        except BudgetLimitError as exc:
+            self._project_budget_failure(exc.failure)
+            return None
+        self._last_budget_failure = None
+        return window
 
     def pause_active_runtime(self) -> None:
         self.ledger.pause()

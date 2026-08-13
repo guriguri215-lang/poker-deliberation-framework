@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from poker_deliberation.budgets import (
+    BudgetFailureCode,
     BudgetPolicyV2,
     ExecutionClass,
     FailureCategory,
@@ -506,6 +507,47 @@ class SequenceAfterActivationClock:
         value = self.values[min(self.index, len(self.values) - 1)]
         self.index += 1
         return value
+
+
+class ActivatingContextBuildService(ContextBuildService):
+    def __init__(self, clock: SequenceAfterActivationClock) -> None:
+        super().__init__()
+        self.clock = clock
+
+    def run(self, request):  # type: ignore[no-untyped-def]
+        outcome = super().run(request)
+        self.clock.activate()
+        return outcome
+
+
+def test_context_runtime_window_at_exact_cap_publishes_structured_failure(
+    tmp_path: Path,
+) -> None:
+    clock = SequenceAfterActivationClock([1_000_000_000, 1_000_000_001])
+    provider = CostedProvider(ExecutionClass.LOCAL_FREE, None)
+    run_id = "run-context-window-exact-cap"
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        provider=provider,
+        context_build_service=ActivatingContextBuildService(clock),
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    )
+
+    report = orchestrator.run(_strategy_case(), run_id=run_id)
+    state = orchestrator.store.read_json(run_id, "state.json")
+    verified = orchestrator.product_store.read_current(run_id)
+
+    assert provider.calls == 0
+    assert report.run_status == "failed_with_limitations"
+    assert "maximum runtime reached during context build" in report.data_quality
+    assert state["state"] == "FAILED_WITH_LIMITATIONS"
+    assert verified.read_status is RunReadStatus.FAILED
+    assert orchestrator._run_machines[run_id].last_budget_failure is not None
+    assert (
+        orchestrator._run_machines[run_id].last_budget_failure.code
+        is BudgetFailureCode.RUNTIME_EXCEEDED
+    )
 
 
 class ClockMutatingProvider(CostedProvider):

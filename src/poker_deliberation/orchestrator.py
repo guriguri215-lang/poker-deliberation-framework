@@ -2684,7 +2684,8 @@ class Orchestrator:
                     "自由文だけでは正確なポット・スタック・合法性を確定できません。CanonicalHandが必要です。"
                 )
             else:
-                if not machine.enforce_runtime():
+                hand_window = machine.checked_runtime_window()
+                if hand_window is None:
                     data_quality.append("strict runtime refused before hand validation")
                     _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
@@ -2702,7 +2703,7 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                hand_usage, hand_observed_at_ns, hand_deadline_ns = machine.runtime_window()
+                hand_usage, hand_observed_at_ns, hand_deadline_ns = hand_window
                 hand_request = ToolRequest(
                     request_id=_new_internal_id("tool-request"),
                     tool_name="hand_validator",
@@ -2855,7 +2856,8 @@ class Orchestrator:
                 )
             report_ids: set[str] = set()
             for index, assignment in enumerate(assignments):
-                if not machine.enforce_runtime():
+                analysis_window = machine.checked_runtime_window()
+                if analysis_window is None:
                     data_quality.append("maximum runtime reached before provider analysis")
                     _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
@@ -2873,7 +2875,7 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                usage_before, budget_observed_at_ns, run_deadline_ns = machine.runtime_window()
+                usage_before, budget_observed_at_ns, run_deadline_ns = analysis_window
                 remaining_ns = run_deadline_ns - budget_observed_at_ns
                 if remaining_ns <= 0:
                     machine.transition(
@@ -2950,7 +2952,8 @@ class Orchestrator:
                 dispatch = context_outcome.output.dispatches[0]
                 assignments[index] = dispatch.assignment
                 self.store.write_json(actual_run_id, "assignments.json", assignments)
-                if not machine.enforce_runtime():
+                context_window = machine.checked_runtime_window()
+                if context_window is None:
                     data_quality.append("maximum runtime reached during context build")
                     _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
@@ -2968,7 +2971,7 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                usage_before, budget_observed_at_ns, run_deadline_ns = machine.runtime_window()
+                usage_before, budget_observed_at_ns, run_deadline_ns = context_window
                 remaining_ns = run_deadline_ns - budget_observed_at_ns
                 if remaining_ns <= 0:
                     machine.transition(
@@ -2992,7 +2995,8 @@ class Orchestrator:
                         machine=machine,
                     )
                 provider_info = self.provider.availability()
-                if not machine.enforce_runtime():
+                preflight_window = machine.checked_runtime_window()
+                if preflight_window is None:
                     data_quality.append("maximum runtime reached during provider preflight")
                     _append_observed_budget_failure(data_quality, machine)
                     return self._synthesize(
@@ -3010,7 +3014,7 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                usage_before, budget_observed_at_ns, run_deadline_ns = machine.runtime_window()
+                usage_before, budget_observed_at_ns, run_deadline_ns = preflight_window
                 remaining_ns = run_deadline_ns - budget_observed_at_ns
                 if remaining_ns <= 0:
                     machine.transition(

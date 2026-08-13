@@ -115,6 +115,13 @@ def test_quality_and_public_preflight_commands_are_documented() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     capabilities = (ROOT / "docs" / "capabilities.md").read_text(encoding="utf-8")
     checklist = (ROOT / "docs" / "public-release-checklist.md").read_text(encoding="utf-8")
+    for command in (
+        "py -3.12 -m venv .venv",
+        "python3.12 -m venv .venv",
+        ".\\.venv\\Scripts\\python.exe",
+        "./.venv/bin/python",
+    ):
+        assert command in readme
     for command in ("python -m pytest", "ruff check .", "ruff format --check .", "mypy src"):
         assert command in readme
         assert command in capabilities

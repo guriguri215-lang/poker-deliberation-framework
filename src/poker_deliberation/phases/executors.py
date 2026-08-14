@@ -67,7 +67,9 @@ from poker_deliberation.schemas import (
 )
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools import ToolByteLimitError, ToolRegistry
-from poker_deliberation.tools.contracts import versioned_range_bridge_failure_input_matches
+from poker_deliberation.tools.contracts import (
+    versioned_range_bridge_failure_input_matches,
+)
 
 _PORTABLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -270,6 +272,11 @@ def validate_tool_research_output(
         raise PhaseContractError("tool usage observation moved backwards")
     if len(output.bindings) != len(value.requests):
         raise PhaseContractError("tool binding count does not match phase request")
+    expected_budget_error = (
+        f"strict budget failure: {output.budget_failure.code.value}"
+        if output.budget_failure is not None
+        else None
+    )
     seen_result_ids = set(value.existing_result_ids)
     for offset, (tool_request, binding) in enumerate(
         zip(value.requests, output.bindings, strict=True)
@@ -286,6 +293,15 @@ def validate_tool_research_output(
             raise PhaseContractError("tool execution binding correlation mismatch")
         _safe_unique_id(binding.result.result_id, seen_result_ids, "bound tool result ID")
         seen_result_ids.add(binding.result.result_id)
+        if (binding.result.error or "").startswith("strict budget failure: "):
+            classification = output.retry_classifications[offset]
+            if (
+                binding.result.error != expected_budget_error
+                or classification is None
+                or classification.category is not FailureCategory.BUDGET
+                or classification.retryable
+            ):
+                raise PhaseContractError("tool budget failure does not match its phase authority")
 
 
 def validate_analysis_output(
@@ -749,42 +765,42 @@ class ToolResearchExecutor:
                 try:
                     bind_versioned_range_failure = _binds_versioned_range_failure(tool_request)
                     phase_execute = getattr(self.registry, "execute_for_phase", None)
-                    if callable(phase_execute):
-                        raw_value = phase_execute(
-                            tool_request.tool_name,
-                            dict(tool_request.input),
-                            contract_version=tool_request.contract_version,
-                            budget_observed_at_ns=value.budget_observed_at_ns,
-                            run_deadline_ns=value.run_deadline_ns,
-                            runtime_limit_ns=(
-                                value.budget_policy.runtime_limit_ns
-                                if value.budget_policy is not None
-                                else None
+                    if not callable(phase_execute):
+                        return failed_outcome(
+                            isolated,
+                            PhaseFailure(
+                                code=PhaseFailureCode.VALIDATION,
+                                phase_id=PhaseId.TOOL_RESEARCH,
+                                attempt_id=isolated.attempt_id,
+                                retryable=False,
+                                message=(
+                                    f"{tool_request.tool_name}: registry lacks hard-isolated "
+                                    "phase execution"
+                                ),
                             ),
-                            active_runtime_ns=(
-                                value.budget_snapshot.active_runtime_ns
-                                if value.budget_snapshot is not None
-                                else None
-                            ),
-                            runtime_not_before_ns=(
-                                max(effect_observations) if effect_observations else None
-                            ),
-                            observation_sink=effect_observations,
-                            _bind_versioned_range_failure=bind_versioned_range_failure,
                         )
-                    elif bind_versioned_range_failure:
-                        raw_value = self.registry.execute(
-                            tool_request.tool_name,
-                            dict(tool_request.input),
-                            contract_version=tool_request.contract_version,
-                            _bind_versioned_range_failure=bind_versioned_range_failure,
-                        )
-                    else:
-                        raw_value = self.registry.execute(
-                            tool_request.tool_name,
-                            dict(tool_request.input),
-                            contract_version=tool_request.contract_version,
-                        )
+                    raw_value = phase_execute(
+                        tool_request.tool_name,
+                        dict(tool_request.input),
+                        contract_version=tool_request.contract_version,
+                        budget_observed_at_ns=value.budget_observed_at_ns,
+                        run_deadline_ns=value.run_deadline_ns,
+                        runtime_limit_ns=(
+                            value.budget_policy.runtime_limit_ns
+                            if value.budget_policy is not None
+                            else None
+                        ),
+                        active_runtime_ns=(
+                            value.budget_snapshot.active_runtime_ns
+                            if value.budget_snapshot is not None
+                            else None
+                        ),
+                        runtime_not_before_ns=(
+                            max(effect_observations) if effect_observations else None
+                        ),
+                        observation_sink=effect_observations,
+                        _bind_versioned_range_failure=bind_versioned_range_failure,
+                    )
                     raw_result = ToolResult.model_validate(raw_value)
                 except ToolByteLimitError as exc:
                     budget_failure = BudgetFailure(
@@ -860,6 +876,48 @@ class ToolResearchExecutor:
                     result = ToolResult.model_validate(
                         redact_sensitive(raw_result, enabled=not self.record_sensitive_data)
                     )
+                    reverify_result = getattr(self.registry, "reverify_materialized_result", None)
+                    if not callable(reverify_result):
+                        return failed_outcome(
+                            isolated,
+                            PhaseFailure(
+                                code=PhaseFailureCode.VALIDATION,
+                                phase_id=PhaseId.TOOL_RESEARCH,
+                                attempt_id=isolated.attempt_id,
+                                retryable=False,
+                                message=(
+                                    f"{tool_request.tool_name}: registry lacks canonical result "
+                                    "reverification"
+                                ),
+                            ),
+                        )
+                    try:
+                        if result.status is ToolStatus.FAILED:
+                            reverify_result(
+                                result,
+                                allow_fresh_execution_failure=True,
+                            )
+                        elif type(self.registry) is ToolRegistry:
+                            reverify_result(
+                                result,
+                                allow_fresh_phase_success=True,
+                            )
+                        else:
+                            reverify_result(result)
+                    except ValueError as exc:
+                        return failed_outcome(
+                            isolated,
+                            PhaseFailure(
+                                code=PhaseFailureCode.VALIDATION,
+                                phase_id=PhaseId.TOOL_RESEARCH,
+                                attempt_id=isolated.attempt_id,
+                                retryable=False,
+                                message=(
+                                    f"{tool_request.tool_name}: executable verification "
+                                    f"mismatch: {exc}"
+                                ),
+                            ),
+                        )
             else:
                 result = ToolResult(
                     result_id=fallback_result_id,

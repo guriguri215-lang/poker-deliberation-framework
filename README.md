@@ -174,11 +174,16 @@ statusは`role_request_expires_at`と`role_confirmation_expires_at`も表示し�
 自動確認、期限切れの自動再確認、一括または並列実行、retry、skip、新しいmodeへの切替、
 mode/model/provider fallbackはありません。既存の
 P3 `FinalReport`、parser/calculator、明示済み単一opponent range、7-tool exact semanticsは変わりません。
-`codex_subscription`の現行qualificationは`UNKNOWN`です。具体的な全flag、状態遷移、resume、replay、
-保存範囲は
+`codex_subscription`のcurrent qualificationの唯一の正は、current canonical pathにある
+strict canonical V2 live manifestと、それへ束縛されたdeterministic evaluationのpairに対するpublic preflight結果です。
+両方欠落は`UNKNOWN`、片方だけの欠落、noncanonical、invalid、untrackedまたはcurrent-tree binding不一致は
+`FAIL`、pairが揃い全binding checkに合格した場合だけ`subscription_live_qualified=true`です。具体的な
+全flag、状態遷移、resume、replay、保存範囲は
 [限定river review workflow](docs/bounded-river-review-workflow.md)を参照してください。
 P3-030Gのdeterministic合格やsanitized manifestから現行live資格を推定しません。live qualificationは
 別手順であり、固定5 roleのそれぞれにfresh previewと人間による明示確認が必要です。
+subscriptionの最初の3 roleは既存repository Skillを各1件だけpath/hash/commitへ束縛しますが、これは
+Skill選択と入力契約の証拠であり、modelによる意味的遵守やactual-live品質の証明ではありません。
 
 ## 実行環境
 
@@ -208,8 +213,9 @@ P3-030Gのdeterministic合格やsanitized manifestから現行live資格を推�
   未実装である。
 - 一般Codex/Python runtime bridgeはない。P2-025Bの専用bridgeを広いinteroperabilityへ拡張しない。
 - `openai_api` bounded adapterはdefault-disabledかつlive-unqualifiedで、現在は送信前にfail closedする。
-- 現在の`codex_subscription`実装にはcandidate-bound historical live evidenceがあるが、current treeに一致する
-  fresh evidenceはなく、現行qualificationは`UNKNOWN`である。API keyや過去manifestから現在の資格を推定しない。
+- `codex_subscription`のcurrent qualificationはREADMEやhistorical evidenceから推定せず、current canonical
+  V2 manifest、bound deterministic evaluation、public preflightの上記規則だけで判定する。API keyや過去manifestは
+  このauthorityを代替しない。
 - 一般process sandbox、network isolation、secure erase、at-rest encryptionは提供しない。
 
 全境界は[Current limitations](docs/limitations.md)を参照してください。

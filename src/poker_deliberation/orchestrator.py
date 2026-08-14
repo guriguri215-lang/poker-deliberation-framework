@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import FunctionType
@@ -92,6 +93,7 @@ from poker_deliberation.bounded_river_call_ev_models import (
     BOUNDED_RIVER_CALL_EV_TOOL_ORDER,
     MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
     MAX_BOUNDED_RIVER_CALL_EV_RUN_BYTES,
+    BoundedRiverCallEvBudgetFailureEvidenceV1,
     BoundedRiverCallEvDiagnosticCode,
     BoundedRiverCallEvResultV1,
 )
@@ -100,6 +102,7 @@ from poker_deliberation.bounded_river_call_ev_provenance import (
     verify_bounded_river_call_ev_structural_provenance,
 )
 from poker_deliberation.budgets import (
+    BudgetFailure,
     BudgetLimitError,
     BudgetPolicyV2,
     CancellationStatus,
@@ -116,8 +119,9 @@ from poker_deliberation.config import AppConfig, migrate_budget_config
 from poker_deliberation.confirmed_review import (
     ConfirmedReviewAdmission,
     ConfirmedReviewError,
+    _build_confirmed_review_provenance_from_same_run_authority,
+    _confirmed_review_same_run_publication_authority,
     admit_confirmed_review,
-    build_confirmed_review_provenance,
 )
 from poker_deliberation.confirmed_review_models import (
     MAX_CONFIRMED_REVIEW_ARTIFACT_BYTES,
@@ -143,6 +147,7 @@ from poker_deliberation.phases import (
     NormalizationService,
     PhaseContractError,
     PhaseId,
+    PhaseRequest,
     RoutingService,
     SynthesisService,
     ToolResearchExecutor,
@@ -259,6 +264,8 @@ from poker_deliberation.storage.bounded_river_call_ev_admission_store import (
 )
 from poker_deliberation.storage.bounded_river_call_ev_failure_store import (
     commit_bounded_river_call_ev_budget_failure_evidence,
+    read_bounded_river_call_ev_budget_failure_evidence,
+    verify_bounded_river_call_ev_budget_failure_evidence,
 )
 from poker_deliberation.storage.legacy_migration import (
     LegacyRunAdapter,
@@ -309,7 +316,7 @@ from poker_deliberation.storage.terminal_store import (
     TerminalRunStore,
     provisional_budget_binding,
 )
-from poker_deliberation.tools import ToolRegistry, default_registry
+from poker_deliberation.tools import ToolByteLimitError, ToolRegistry, default_registry
 
 _CONFIRMED_LOCAL_PROVIDER_AVAILABILITY = LocalProvider.availability
 _CONFIRMED_LOCAL_PROVIDER_ANALYZE = LocalProvider.analyze
@@ -318,6 +325,7 @@ _CONFIRMED_TOOL_EXECUTOR_RUN = ToolResearchExecutor.run
 _CONFIRMED_REGISTRY_DESCRIBE = ToolRegistry.describe
 _CONFIRMED_REGISTRY_EXECUTE = ToolRegistry.execute
 _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE = ToolRegistry.execute_for_phase
+_CONFIRMED_REGISTRY_REVERIFY = ToolRegistry.reverify_materialized_result
 _CONFIRMED_REGISTRY_NAMES = ToolRegistry.names
 _CONFIRMED_REGISTRY_RUNTIME_IDENTITY = ToolRegistry.runtime_identity_snapshot
 _CONFIRMED_SYSTEM_MONOTONIC_NOW = SystemMonotonicClock.now_ns
@@ -329,6 +337,8 @@ _CONFIRMED_CONTEXT_BUILD_RUN = ContextBuildService.run
 _CONFIRMED_CRITIQUE_RUN = CritiqueService.run
 _CONFIRMED_ADJUDICATION_RUN = AdjudicationService.run
 _CONFIRMED_SYNTHESIS_RUN = SynthesisService.run
+
+_ToolPublicationDispatchToken = tuple[object, str, str, str, int, int]
 
 
 def _callable_execution_token(value: object) -> str:
@@ -719,6 +729,14 @@ class Orchestrator:
         self._bounded_nl_admissions: dict[str, BoundedNaturalLanguageAdmission] = {}
         self._bounded_river_call_ev_admissions: dict[str, BoundedRiverCallEvAdmission] = {}
         self._bounded_river_call_ev_results: dict[str, BoundedRiverCallEvResultV1] = {}
+        self._phase_tool_publication_authorities: dict[str, dict[str, bytes]] = {}
+        canonical_registry = _CONFIRMED_FRESH_TOOL_VERIFICATION_REGISTRY(self)
+        self._canonical_tool_registry_runtime_snapshot = ToolRegistry.runtime_identity_snapshot(
+            canonical_registry
+        )
+        self._canonical_tool_registry_instance_callables = _instance_callable_snapshot(
+            canonical_registry
+        )
         self._confirmed_review_provider = self.provider
         self._confirmed_review_registry = self.registry
         self._confirmed_review_registry_sha256 = canonical_domain_sha256(
@@ -726,6 +744,9 @@ class Orchestrator:
             self.registry.describe(),
         )
         self._confirmed_review_registry_runtime_snapshot = ToolRegistry.runtime_identity_snapshot(
+            self.registry
+        )
+        self._confirmed_review_registry_instance_callables = _instance_callable_snapshot(
             self.registry
         )
         self._confirmed_review_registry_mapping = self.registry._tools
@@ -1177,6 +1198,218 @@ class Orchestrator:
                 "budget_failure_evidence",
             ) from exc
 
+    def _prepublication_tool_results_replayable(
+        self,
+        run_id: str,
+        report: FinalReport,
+    ) -> bool:
+        """Qualify every tool result before creating a durable current pointer.
+
+        Ordinary transient and budget failures have no independent execution
+        authority and therefore remain honest ephemeral failures.  The one
+        supported durable failure is the bounded river product's budget refusal,
+        whose append-only record is verified against its admission and exact
+        ToolResult before its typed failure is passed to the canonical registry.
+        """
+
+        budget_authorities: dict[str, BudgetFailure] = {}
+        admission = self._bounded_river_call_ev_admissions.get(run_id)
+        if admission is not None:
+            try:
+                embedded_payload = self.store.read_json(
+                    run_id,
+                    BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT,
+                )
+            except FileNotFoundError:
+                embedded = None
+            else:
+                embedded = BoundedRiverCallEvBudgetFailureEvidenceV1.model_validate_json(
+                    canonical_storage_json_bytes(embedded_payload),
+                    strict=True,
+                )
+            external = read_bounded_river_call_ev_budget_failure_evidence(
+                self.revision_runs_root,
+                run_id,
+                maximum_bytes=self.budget_policy.max_artifact_bytes,
+            )
+            if embedded is None:
+                if external:
+                    raise CanonicalStorageError(
+                        "bounded river budget authority lacks its buffered evidence"
+                    )
+            else:
+                if len(external) != 1 or external[0] != embedded:
+                    raise CanonicalStorageError("bounded river budget authorities do not match")
+                matching = tuple(
+                    result
+                    for result in report.tool_results
+                    if result.result_id == embedded.result_id
+                )
+                admission_record = read_bounded_river_call_ev_admission_record(
+                    self.revision_runs_root,
+                    run_id,
+                    maximum_bytes=self.budget_policy.max_artifact_bytes,
+                )
+                if len(matching) != 1 or admission_record is None:
+                    raise CanonicalStorageError("bounded river budget authority is not correlated")
+                verify_bounded_river_call_ev_budget_failure_evidence(
+                    embedded,
+                    binding=admission.binding,
+                    admission_record=admission_record,
+                    result=matching[0],
+                    policy=self.budget_policy,
+                )
+                budget_authorities[embedded.result_id] = embedded.failure
+
+        phase_authorities = (
+            self._phase_tool_publication_authorities.get(run_id, {})
+            if run_id in self._confirmed_review_admissions
+            else self._phase_tool_publication_authorities.pop(run_id, {})
+        )
+        if run_id in self._confirmed_review_admissions and (
+            set(phase_authorities) != {result.result_id for result in report.tool_results}
+            or any(
+                result.status is not ToolStatus.SUCCESS
+                or phase_authorities.get(result.result_id) != canonical_storage_json_bytes(result)
+                for result in report.tool_results
+            )
+        ):
+            return False
+        verification_registry = _CONFIRMED_FRESH_TOOL_VERIFICATION_REGISTRY(self)
+        try:
+            for result in report.tool_results:
+                if result.status is ToolStatus.SUCCESS and phase_authorities.get(
+                    result.result_id
+                ) == canonical_storage_json_bytes(result):
+                    continue
+                verification_registry.reverify_materialized_result(
+                    result,
+                    authoritative_budget_failure=budget_authorities.get(result.result_id),
+                )
+        except (
+            ArithmeticError,
+            BudgetLimitError,
+            OSError,
+            RecursionError,
+            RuntimeError,
+            ToolByteLimitError,
+            TypeError,
+            ValueError,
+        ):
+            return False
+        return True
+
+    def _tool_registry_policy_limits(self) -> tuple[int, int, float]:
+        return (
+            self.budget_policy.max_tool_input_bytes,
+            self.budget_policy.max_tool_output_bytes,
+            min(30.0, self.budget_policy.max_runtime_seconds),
+        )
+
+    def _fresh_tool_verification_registry(self) -> ToolRegistry:
+        max_payload_bytes, max_output_bytes, max_duration_seconds = (
+            _CONFIRMED_TOOL_REGISTRY_POLICY_LIMITS(self)
+        )
+        return default_registry(
+            max_payload_bytes=max_payload_bytes,
+            max_output_bytes=max_output_bytes,
+            max_duration_seconds=max_duration_seconds,
+        )
+
+    @staticmethod
+    def _tool_registry_class_runtime_is_exact() -> bool:
+        for cls, expected in _CONFIRMED_RUNTIME_CLASS_CALLABLES:
+            if cls is ToolRegistry:
+                return _callable_snapshot_is_exact(
+                    _class_callable_snapshot(ToolRegistry),
+                    expected,
+                )
+        return False
+
+    def _phase_tool_publication_runtime_is_exact(self) -> bool:
+        return not (
+            type(self) is not Orchestrator
+            or any(
+                name in vars(self) or getattr(Orchestrator, name, None) is not expected
+                for name, expected in _CONFIRMED_TOOL_PUBLICATION_HELPERS
+            )
+            or type(self.tool_research_executor) is not ToolResearchExecutor
+            or "run" in vars(self.tool_research_executor)
+            or ToolResearchExecutor.run is not _CONFIRMED_TOOL_EXECUTOR_RUN
+            or self.tool_research_executor.registry is not self.registry
+            or type(self.registry) is not ToolRegistry
+            or ToolRegistry.execute_for_phase is not _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE
+            or ToolRegistry.reverify_materialized_result is not _CONFIRMED_REGISTRY_REVERIFY
+            or not _CONFIRMED_TOOL_REGISTRY_CLASS_RUNTIME_IS_EXACT()
+            or not _callable_snapshot_is_exact(
+                _instance_callable_snapshot(self.registry),
+                self._canonical_tool_registry_instance_callables,
+            )
+            or (
+                self.registry.max_payload_bytes,
+                self.registry.max_output_bytes,
+                self.registry.max_duration_seconds,
+            )
+            != _CONFIRMED_TOOL_REGISTRY_POLICY_LIMITS(self)
+            or ToolRegistry.runtime_identity_snapshot(self.registry)
+            != self._canonical_tool_registry_runtime_snapshot
+        )
+
+    def _phase_tool_publication_dispatch_token(
+        self,
+        run_id: str,
+        request: PhaseRequest[ToolResearchInput],
+    ) -> _ToolPublicationDispatchToken | None:
+        """Bind exact runtime eligibility to one undispatched tool phase request."""
+
+        if (
+            request.run_id != run_id
+            or request.phase_id is not PhaseId.TOOL_RESEARCH
+            or not _CONFIRMED_PHASE_TOOL_PUBLICATION_RUNTIME_IS_EXACT(self)
+        ):
+            return None
+        return (
+            object(),
+            run_id,
+            request.attempt_id,
+            canonical_sha256(request),
+            id(self.tool_research_executor),
+            id(self.registry),
+        )
+
+    def _record_phase_tool_publication_authorities(
+        self,
+        run_id: str,
+        request: PhaseRequest[ToolResearchInput],
+        dispatch_token: _ToolPublicationDispatchToken | None,
+        output: ToolResearchOutput,
+    ) -> None:
+        """Retain authority only when pre/post-dispatch runtime identity agrees."""
+
+        if (
+            dispatch_token is None
+            or dispatch_token[1:]
+            != (
+                run_id,
+                request.attempt_id,
+                canonical_sha256(request),
+                id(self.tool_research_executor),
+                id(self.registry),
+            )
+            or not _CONFIRMED_PHASE_TOOL_PUBLICATION_RUNTIME_IS_EXACT(self)
+        ):
+            return
+        authorities = self._phase_tool_publication_authorities.setdefault(run_id, {})
+        for binding in output.bindings:
+            result = binding.result
+            if result.status is not ToolStatus.SUCCESS:
+                continue
+            exact = canonical_storage_json_bytes(result)
+            existing = authorities.get(result.result_id)
+            if existing is not None and existing != exact:
+                raise PhaseContractError("tool publication authority ID collision")
+            authorities[result.result_id] = exact
+
     def _reserve_legacy_migration_destination(self, run_id: str) -> None:
         """Atomically reserve an empty product namespace for one legacy migration."""
 
@@ -1250,6 +1483,11 @@ class Orchestrator:
                 run_deadline_ns=tool_deadline_ns,
             ),
         )
+        publication_dispatch_token = _CONFIRMED_PHASE_TOOL_PUBLICATION_DISPATCH_TOKEN(
+            self,
+            run_id,
+            phase_request,
+        )
         outcome = revalidate_outcome(
             phase_request,
             self.tool_research_executor.run(phase_request),
@@ -1263,6 +1501,13 @@ class Orchestrator:
         machine.apply_usage_at(
             outcome.output.usage_delta,
             observed_at_ns=outcome.output.usage_observed_at_ns,
+        )
+        _CONFIRMED_RECORD_PHASE_TOOL_PUBLICATION_AUTHORITIES(
+            self,
+            run_id,
+            phase_request,
+            publication_dispatch_token,
+            outcome.output,
         )
         return outcome.output
 
@@ -1396,6 +1641,7 @@ class Orchestrator:
         previous_read: VerifiedRunReadV2 | None = None,
         transaction_id_override: str | None = None,
         authority_verifier: Callable[[], None] | None = None,
+        runtime_guard: Callable[[str], int] | None = None,
     ) -> VerifiedRunReadV2:
         plan = self._publication_plans.pop(run_id, None)
         namespace = self._namespace_kind(run_id)
@@ -1468,6 +1714,9 @@ class Orchestrator:
             previous_pointer_sha256=(None if previous is None else previous.current_pointer_sha256),
             budget_policy=self.budget_policy,
         )
+        remaining_active_runtime_ns = (
+            None if runtime_guard is None else runtime_guard("payload_commitments")
+        )
         created_at = published_at if previous is None else previous.manifest.created_at
         request = TerminalPublishRequest(
             run_id=run_id,
@@ -1506,14 +1755,21 @@ class Orchestrator:
             legacy_source=None,
             lifecycle_audit_sha256=lifecycle_sha,
             payloads=payloads,
+            remaining_active_runtime_ns=remaining_active_runtime_ns,
         )
+        if runtime_guard is not None:
+            request = replace(
+                request,
+                remaining_active_runtime_ns=runtime_guard("budget_freeze"),
+            )
         frozen = self.product_store.freeze_budget_binding(request)
         if authority_verifier is None:
-            self.product_store.publish(frozen)
+            self.product_store.publish(frozen, runtime_guard=runtime_guard)
         else:
             self.product_store.publish_approval_decision(
                 frozen,
                 authority_verifier=authority_verifier,
+                runtime_guard=runtime_guard,
             )
         return self.product_store.read_current(run_id)
 
@@ -1789,6 +2045,7 @@ class Orchestrator:
             or ToolRegistry.describe is not _CONFIRMED_REGISTRY_DESCRIBE
             or ToolRegistry.execute is not _CONFIRMED_REGISTRY_EXECUTE
             or ToolRegistry.execute_for_phase is not _CONFIRMED_REGISTRY_EXECUTE_FOR_PHASE
+            or ToolRegistry.reverify_materialized_result is not _CONFIRMED_REGISTRY_REVERIFY
             or ToolRegistry.names is not _CONFIRMED_REGISTRY_NAMES
             or ToolRegistry.runtime_identity_snapshot is not _CONFIRMED_REGISTRY_RUNTIME_IDENTITY
             or SystemMonotonicClock.now_ns is not _CONFIRMED_SYSTEM_MONOTONIC_NOW
@@ -1798,15 +2055,9 @@ class Orchestrator:
             or any(name in vars(self.provider) for name in ("availability", "analyze"))
             or "run" in vars(self.analysis_executor)
             or "run" in vars(self.tool_research_executor)
-            or any(
-                name in vars(self.registry)
-                for name in (
-                    "describe",
-                    "execute",
-                    "execute_for_phase",
-                    "names",
-                    "runtime_identity_snapshot",
-                )
+            or not _callable_snapshot_is_exact(
+                _instance_callable_snapshot(self.registry),
+                self._confirmed_review_registry_instance_callables,
             )
             or self.analysis_executor.context_clock
             is not self._confirmed_review_analysis_context_clock
@@ -1822,6 +2073,8 @@ class Orchestrator:
                 self.registry.max_duration_seconds,
             )
             != self._confirmed_review_registry_limits
+            or self._confirmed_review_registry_limits
+            != _CONFIRMED_TOOL_REGISTRY_POLICY_LIMITS(self)
             or any(
                 type(service) is not expected_type
                 or expected_type.run is not expected_run
@@ -1997,53 +2250,6 @@ class Orchestrator:
                         "confirmation.idempotency_key",
                     )
                 return self._exact_terminal_report(current)
-            hand_payload = (
-                admission.case.hand.model_dump(mode="json")
-                if admission.case.hand is not None
-                else {}
-            )
-            hand_definition = self.registry._tools.get("hand_validator")
-            hand_contract = hand_definition.contract if hand_definition is not None else None
-            try:
-                if hand_definition is None or hand_contract is None:
-                    raise ValueError("hand validator contract is unavailable")
-                validated_hand = hand_contract.input_model.model_validate(hand_payload)
-                hand_output = hand_definition.function(
-                    validated_hand.model_dump(mode="python", exclude_unset=True)
-                )
-                hand_contract.output_model.model_validate(hand_output)
-            except (ValueError, TypeError, KeyError, ArithmeticError, RecursionError):
-                hand_output = {}
-            if hand_output.get("valid") is not True:
-                raise ConfirmedReviewError(
-                    ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING,
-                    "candidate.hand",
-                )
-            if "hand_pot_ledger" in admission.case.requested_tools:
-                raw_tool_inputs = admission.case.metadata.get("tool_inputs", {})
-                ledger_payload = (
-                    raw_tool_inputs.get("hand_pot_ledger", {})
-                    if isinstance(raw_tool_inputs, dict)
-                    else {}
-                )
-                if not isinstance(ledger_payload, dict) or admission.case.hand is None:
-                    raise ConfirmedReviewError(
-                        ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
-                        "candidate.ledger_profile",
-                    )
-                ledger_validation = self.registry.execute(
-                    "hand_pot_ledger",
-                    {
-                        **ledger_payload,
-                        "hand": admission.case.hand.model_dump(mode="json"),
-                    },
-                    contract_version=self.tool_contract_versions.get("hand_pot_ledger"),
-                )
-                if ledger_validation.status is not ToolStatus.SUCCESS:
-                    raise ConfirmedReviewError(
-                        ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL,
-                        "candidate.ledger_profile",
-                    )
             self._reserve_new_run_under_authority(case, run_id)
         return None
 
@@ -2253,6 +2459,7 @@ class Orchestrator:
             )
         finally:
             self._confirmed_review_admissions.pop(run_id, None)
+            self._phase_tool_publication_authorities.pop(run_id, None)
 
     def run_bounded_natural_language_review(
         self,
@@ -2425,6 +2632,8 @@ class Orchestrator:
         self._initialize_product_storage(actual_run_id)
         if not new_run_reserved:
             self._reserve_new_run(case, actual_run_id)
+        machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
+        self._run_machines[actual_run_id] = machine
         confirmed_admission = self._confirmed_review_admissions.get(actual_run_id)
         bounded_admission = self._bounded_nl_admissions.get(actual_run_id)
         bounded_river_admission = self._bounded_river_call_ev_admissions.get(actual_run_id)
@@ -2510,8 +2719,6 @@ class Orchestrator:
                 BOUNDED_RIVER_CALL_EV_BINDING_ARTIFACT,
                 bounded_river_admission.binding,
             )
-        machine = WorkflowStateMachine(self.budget_policy, clock=self.monotonic_clock)
-        self._run_machines[actual_run_id] = machine
         approvals = ApprovalLedger()
         approval_ledger_v2: ApprovalLedgerV2 | None = None
         disputes: list[Dispute] = []
@@ -2724,6 +2931,11 @@ class Orchestrator:
                         run_deadline_ns=hand_deadline_ns,
                     ),
                 )
+                publication_dispatch_token = _CONFIRMED_PHASE_TOOL_PUBLICATION_DISPATCH_TOKEN(
+                    self,
+                    actual_run_id,
+                    tool_phase_request,
+                )
                 tool_phase_outcome = revalidate_outcome(
                     tool_phase_request,
                     self.tool_research_executor.run(tool_phase_request),
@@ -2740,6 +2952,13 @@ class Orchestrator:
                     machine.apply_usage_at(
                         tool_phase_outcome.output.usage_delta,
                         observed_at_ns=tool_phase_outcome.output.usage_observed_at_ns,
+                    )
+                    _CONFIRMED_RECORD_PHASE_TOOL_PUBLICATION_AUTHORITIES(
+                        self,
+                        actual_run_id,
+                        tool_phase_request,
+                        publication_dispatch_token,
+                        tool_phase_outcome.output,
                     )
                 except BudgetLimitError as exc:
                     data_quality.append(f"strict usage settlement failed: {exc.failure.code}")
@@ -2803,7 +3022,17 @@ class Orchestrator:
                         completed=False,
                         machine=machine,
                     )
-                if not validation.output.get("valid", False):
+                if confirmed_admission is not None:
+                    if validation.status is not ToolStatus.SUCCESS:
+                        raise PhaseContractError(
+                            "mandatory hand validation failed outside budget authority"
+                        )
+                    if validation.output.get("valid") is not True:
+                        raise ConfirmedReviewError(
+                            ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA,
+                            "candidate.hand",
+                        )
+                elif not validation.output.get("valid", False):
                     data_quality.extend(map(str, validation.output.get("errors", [])))
                 data_quality.extend(map(str, validation.output.get("warnings", [])))
         if case.raw_text and case.hand is None and case.kind == "hand":
@@ -3707,6 +3936,13 @@ class Orchestrator:
                 completed=False,
                 machine=machine,
             )
+        if confirmed_admission is not None and any(
+            binding.result.status is not ToolStatus.SUCCESS
+            for binding in requested_tools_output.bindings
+        ):
+            raise PhaseContractError(
+                "mandatory confirmed-review tool execution failed outside budget authority"
+            )
         if auto_combo_payload is not None:
             auto_combo_results = [
                 binding.result
@@ -4057,7 +4293,6 @@ class Orchestrator:
                 security_events,
                 completed=False,
                 machine=machine,
-                pause_before_return=True,
             )
         machine.transition(RunState.FINAL_SYNTHESIS, "no pending approval blocks synthesis")
         final_report = self._synthesize(
@@ -4204,7 +4439,6 @@ class Orchestrator:
         *,
         completed: bool,
         machine: WorkflowStateMachine,
-        pause_before_return: bool = False,
     ) -> FinalReport:
         namespace = self._namespace_kind(run_id)
         previous = self._current_product_or_none(run_id) if namespace == "product" else None
@@ -4243,7 +4477,6 @@ class Orchestrator:
                 )
                 _append_observed_budget_failure(data_quality, machine)
                 completed = False
-                pause_before_return = False
         report = self._run_synthesis_service(
             run_id=run_id,
             case=case,
@@ -4271,7 +4504,6 @@ class Orchestrator:
                 data_quality.append(runtime_message)
             _append_observed_budget_failure(data_quality, machine)
             completed = False
-            pause_before_return = False
             report = self._run_synthesis_service(
                 run_id=run_id,
                 case=case,
@@ -4306,7 +4538,6 @@ class Orchestrator:
                 data_quality.append(runtime_message)
             _append_observed_budget_failure(data_quality, machine)
             completed = False
-            pause_before_return = False
             report = self._run_synthesis_service(
                 run_id=run_id,
                 case=case,
@@ -4331,9 +4562,6 @@ class Orchestrator:
             self.store.write_json(run_id, "state.json", machine.snapshot())
             self.store.write_json(run_id, "final_report.json", report)
             self.store.write_text(run_id, "final_report.md", render_markdown(report))
-        if pause_before_return:
-            machine.pause_active_runtime()
-            self.store.write_json(run_id, "state.json", machine.snapshot())
         if confirmed_admission is not None:
             raw_assignments = self.store.read_json(run_id, "assignments.json")
             if not isinstance(raw_assignments, list):
@@ -4345,20 +4573,34 @@ class Orchestrator:
             assignments = [
                 AgentAssignment.model_validate(assignment) for assignment in raw_assignments
             ]
-            provenance = build_confirmed_review_provenance(
-                confirmed_admission,
-                report,
-                assignments=assignments,
-                agent_reports=reports,
-                storage_root=self.product_store.revision_root,
-                storage_revision=planned_revision,
-                storage_transaction_id=transaction_id,
+            same_run_tool_authorities = self._phase_tool_publication_authorities.get(run_id, {})
+            result_ids = {result.result_id for result in report.tool_results}
+            results_are_authoritative = set(same_run_tool_authorities) == result_ids and all(
+                result.status is ToolStatus.SUCCESS
+                and same_run_tool_authorities.get(result.result_id)
+                == canonical_storage_json_bytes(result)
+                for result in report.tool_results
             )
-            self.store.write_json(
-                run_id,
-                "confirmed_review_provenance.json",
-                provenance,
-            )
+            if results_are_authoritative:
+                provenance = _build_confirmed_review_provenance_from_same_run_authority(
+                    confirmed_admission,
+                    report,
+                    same_run_tool_authorities=dict(same_run_tool_authorities),
+                    assignments=assignments,
+                    agent_reports=reports,
+                    storage_root=self.product_store.revision_root,
+                    storage_revision=planned_revision,
+                    storage_transaction_id=transaction_id,
+                )
+                self.store.write_json(
+                    run_id,
+                    "confirmed_review_provenance.json",
+                    provenance,
+                )
+            elif report.run_status == "completed":
+                raise PhaseContractError(
+                    "completed confirmed review lacks exact tool publication authority"
+                )
         if bounded_admission is not None:
             raw_assignments = self.store.read_json(run_id, "assignments.json")
             if not isinstance(raw_assignments, list):
@@ -4432,10 +4674,79 @@ class Orchestrator:
                     BOUNDED_RIVER_CALL_EV_PROVENANCE_ARTIFACT,
                     bounded_river_provenance,
                 )
+        if not _CONFIRMED_PREPUBLICATION_TOOL_RESULTS_REPLAYABLE(self, run_id, report):
+            persistence_failure = (
+                "product persistence refused: tool result lacks independent replay authority"
+            )
+            if persistence_failure not in report.data_quality:
+                report.data_quality.append(persistence_failure)
+            if persistence_failure not in report.limitations:
+                report.limitations.append(persistence_failure)
+            report.limitations = list(dict.fromkeys([*report.data_quality, *report.limitations]))
+            report.run_status = "failed_with_limitations"
+            report.confidence = ConfidenceGrade.D
+            return report
+
+        publication_runtime_committed = False
+
+        def publication_runtime_guard(stage: str) -> int:
+            nonlocal publication_runtime_committed
+            if stage == "current":
+                try:
+                    snapshot = machine.ledger.pause()
+                except BudgetLimitError:
+                    machine.enforce_runtime()
+                    raise
+                publication_runtime_committed = True
+                return self.budget_policy.runtime_limit_ns - snapshot.active_runtime_ns
+            window = machine.checked_runtime_window()
+            if window is not None:
+                _snapshot, observed_at_ns, deadline_ns = window
+                return deadline_ns - observed_at_ns
+            failure = machine.last_budget_failure
+            if failure is None:
+                raise PhaseContractError("terminal runtime guard failed without a budget failure")
+            raise BudgetLimitError(failure)
+
+        def runtime_failure_report() -> FinalReport:
+            runtime_message = "maximum runtime exceeded during terminal publication"
+            if runtime_message not in report.data_quality:
+                report.data_quality.append(runtime_message)
+            _append_observed_budget_failure(report.data_quality, machine)
+            report.limitations = list(dict.fromkeys([*report.data_quality, *report.limitations]))
+            report.run_status = "failed_with_limitations"
+            report.conclusion = "The run stopped because the terminal publication deadline expired."
+            report.confidence = ConfidenceGrade.D
+            return report
+
+        try:
+            publication_runtime_guard("tool_replay")
+        except BudgetLimitError:
+            return runtime_failure_report()
         self._publication_plans[run_id] = (planned_revision, transaction_id)
         try:
-            verified = self._publish_buffer(run_id, report)
+            if confirmed_admission is None:
+                verified = self._publish_buffer(
+                    run_id,
+                    report,
+                    runtime_guard=publication_runtime_guard,
+                )
+            else:
+                with _confirmed_review_same_run_publication_authority(
+                    confirmed_admission,
+                    report,
+                    self._phase_tool_publication_authorities.get(run_id, {}),
+                ):
+                    verified = self._publish_buffer(
+                        run_id,
+                        report,
+                        runtime_guard=publication_runtime_guard,
+                    )
+        except BudgetLimitError:
+            return runtime_failure_report()
         except ProductRunError as exc:
+            if isinstance(exc.__cause__, BudgetLimitError):
+                return runtime_failure_report()
             if (
                 strict_admission_present
                 and exc.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
@@ -4457,6 +4768,14 @@ class Orchestrator:
                 report.limitations.append(persistence_failure)
             report.run_status = "failed_with_limitations"
             return report
+        if not publication_runtime_committed:
+            publication_runtime_guard("current")
+        if not machine.enforce_runtime():
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.INTERNAL_INVARIANT_ERROR,
+                stage="post_publication_runtime_guard",
+            )
         expected_status = (
             RunReadStatus.APPROVAL_REQUIRED
             if report.run_status == "approval_required"
@@ -4474,8 +4793,74 @@ class Orchestrator:
             )
         return report
 
+    @staticmethod
+    def _verified_tool_budget_authorities(
+        read: VerifiedRunReadV2,
+        report: FinalReport,
+    ) -> dict[str, BudgetFailure]:
+        try:
+            evidence_bytes = read.payload_bytes(BOUNDED_RIVER_CALL_EV_FAILURE_EVIDENCE_ARTIFACT)
+        except KeyError:
+            return {}
+        evidence = BoundedRiverCallEvBudgetFailureEvidenceV1.model_validate_json(
+            evidence_bytes,
+            strict=True,
+        )
+        strict_failures = tuple(
+            result
+            for result in report.tool_results
+            if result.status is ToolStatus.FAILED
+            and (result.error or "").startswith("strict budget failure: ")
+        )
+        if (
+            len(strict_failures) != 1
+            or strict_failures[0].result_id != evidence.result_id
+            or strict_failures[0].tool_name != evidence.tool_name
+        ):
+            raise ValueError("budget failure evidence does not match the terminal report")
+        return {evidence.result_id: evidence.failure}
+
+    @staticmethod
+    def _legacy_unverified_report_projection(report: FinalReport) -> FinalReport:
+        limitation = "legacy_unverified_integrity_guarantees_missing"
+        limitations = list(report.limitations)
+        if limitation not in limitations:
+            limitations.append(limitation)
+        return report.model_copy(
+            update={
+                "run_status": "failed_with_limitations",
+                "limitations": limitations,
+            }
+        )
+
     def _exact_terminal_report(self, read: VerifiedRunReadV2) -> FinalReport:
         report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+        if read.read_status is RunReadStatus.LEGACY_UNVERIFIED:
+            return self._legacy_unverified_report_projection(report)
+        try:
+            verification_registry = _CONFIRMED_FRESH_TOOL_VERIFICATION_REGISTRY(self)
+            budget_authorities = self._verified_tool_budget_authorities(read, report)
+            for result in report.tool_results:
+                verification_registry.reverify_materialized_result(
+                    result,
+                    authoritative_budget_failure=budget_authorities.get(result.result_id),
+                )
+        except (
+            ArithmeticError,
+            BudgetLimitError,
+            OSError,
+            RecursionError,
+            RuntimeError,
+            ToolByteLimitError,
+            TypeError,
+            ValueError,
+        ):
+            raise self._product_error(
+                read.run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="load_report_tool_verification",
+                read_status=RunReadStatus.CORRUPT,
+            ) from None
         expected_status = {
             RunReadStatus.SUCCEEDED: "completed",
             RunReadStatus.APPROVAL_REQUIRED: "approval_required",
@@ -4521,6 +4906,32 @@ class Orchestrator:
                 read_status=RunReadStatus.INCOMPLETE,
             )
         report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
+        if read.read_status is RunReadStatus.LEGACY_UNVERIFIED:
+            return self._legacy_unverified_report_projection(report)
+        try:
+            verification_registry = _CONFIRMED_FRESH_TOOL_VERIFICATION_REGISTRY(self)
+            budget_authorities = self._verified_tool_budget_authorities(read, report)
+            for result in report.tool_results:
+                verification_registry.reverify_materialized_result(
+                    result,
+                    authoritative_budget_failure=budget_authorities.get(result.result_id),
+                )
+        except (
+            ArithmeticError,
+            BudgetLimitError,
+            OSError,
+            RecursionError,
+            RuntimeError,
+            ToolByteLimitError,
+            TypeError,
+            ValueError,
+        ):
+            raise self._product_error(
+                run_id,
+                ProductRunFailureCode.RUN_CORRUPT,
+                stage="load_report_tool_verification",
+                read_status=RunReadStatus.CORRUPT,
+            ) from None
         if read.read_status is RunReadStatus.SUCCEEDED:
             if report.run_status != "completed":
                 raise self._product_error(
@@ -4546,12 +4957,6 @@ class Orchestrator:
         }:
             report.run_status = "failed_with_limitations"
             limitation = f"verified product run status: {read.read_status.value}"
-            if limitation not in report.limitations:
-                report.limitations.append(limitation)
-            return report
-        if read.read_status is RunReadStatus.LEGACY_UNVERIFIED:
-            report.run_status = "failed_with_limitations"
-            limitation = "legacy_unverified_integrity_guarantees_missing"
             if limitation not in report.limitations:
                 report.limitations.append(limitation)
             return report
@@ -5498,5 +5903,45 @@ class Orchestrator:
             )
         return self.product_store.report_path(read, format_name)
 
+
+_CONFIRMED_TOOL_REGISTRY_POLICY_LIMITS = Orchestrator._tool_registry_policy_limits
+_CONFIRMED_FRESH_TOOL_VERIFICATION_REGISTRY = Orchestrator._fresh_tool_verification_registry
+_CONFIRMED_TOOL_REGISTRY_CLASS_RUNTIME_IS_EXACT = Orchestrator._tool_registry_class_runtime_is_exact
+_CONFIRMED_PHASE_TOOL_PUBLICATION_RUNTIME_IS_EXACT = (
+    Orchestrator._phase_tool_publication_runtime_is_exact
+)
+_CONFIRMED_PHASE_TOOL_PUBLICATION_DISPATCH_TOKEN = (
+    Orchestrator._phase_tool_publication_dispatch_token
+)
+_CONFIRMED_RECORD_PHASE_TOOL_PUBLICATION_AUTHORITIES = (
+    Orchestrator._record_phase_tool_publication_authorities
+)
+_CONFIRMED_PREPUBLICATION_TOOL_RESULTS_REPLAYABLE = (
+    Orchestrator._prepublication_tool_results_replayable
+)
+_CONFIRMED_TOOL_PUBLICATION_HELPERS = (
+    ("_tool_registry_policy_limits", _CONFIRMED_TOOL_REGISTRY_POLICY_LIMITS),
+    ("_fresh_tool_verification_registry", _CONFIRMED_FRESH_TOOL_VERIFICATION_REGISTRY),
+    (
+        "_tool_registry_class_runtime_is_exact",
+        _CONFIRMED_TOOL_REGISTRY_CLASS_RUNTIME_IS_EXACT,
+    ),
+    (
+        "_phase_tool_publication_runtime_is_exact",
+        _CONFIRMED_PHASE_TOOL_PUBLICATION_RUNTIME_IS_EXACT,
+    ),
+    (
+        "_phase_tool_publication_dispatch_token",
+        _CONFIRMED_PHASE_TOOL_PUBLICATION_DISPATCH_TOKEN,
+    ),
+    (
+        "_record_phase_tool_publication_authorities",
+        _CONFIRMED_RECORD_PHASE_TOOL_PUBLICATION_AUTHORITIES,
+    ),
+    (
+        "_prepublication_tool_results_replayable",
+        _CONFIRMED_PREPUBLICATION_TOOL_RESULTS_REPLAYABLE,
+    ),
+)
 
 _CONFIRMED_ORCHESTRATOR_MODULE_CALLABLES = _module_callable_snapshot()

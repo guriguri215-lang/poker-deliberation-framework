@@ -21,15 +21,16 @@ P3_016A_COMPATIBLE_BOUNDARY_SHA256 = {
         "93df8451f9825e0f09b43515df401a723b581cef3c41133118df48a1af4f2256"
     ),
     "src/poker_deliberation/phases/revision_coordinator.py": (
-        "10b457da988a935ce12a68cb7152f1844586160aa2d52b4c2fd23d3dacb6f75b"
+        "fcc5716766a51b99f62d77f3da69bebd6d437cae6bc783f4d685c0c289eff2e3"
     ),
 }
 
 
 def test_p2_027b_boundaries_remain_compatible_after_additive_range_schema() -> None:
     # P2-013B explicitly adds resume/reissue wiring to orchestrator.py and cli.py.
-    # P3-016A changes only CanonicalHand.known_ranges additively; the legacy
-    # RangeDefinition shape and P2-027B context/coordinator behavior stay characterized.
+    # P3-016A changes CanonicalHand.known_ranges additively.  The closeout also
+    # changes only the coordinator's persisted ToolResult replay boundary; the
+    # legacy RangeDefinition and P2-027B cleanup/context surfaces remain fixed.
     observed = {
         path: hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
         for path in P3_016A_COMPATIBLE_BOUNDARY_SHA256

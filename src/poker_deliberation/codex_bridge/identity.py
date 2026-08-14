@@ -37,6 +37,9 @@ _RUNTIME_SOURCE_EXCLUSIONS = frozenset(
     }
 )
 _RUNTIME_SUPPORT_PATHS = (
+    ".agents/skills/audit-poker-claim/SKILL.md",
+    ".agents/skills/review-poker-hand/SKILL.md",
+    ".agents/skills/run-poker-calculation/SKILL.md",
     "pyproject.toml",
     "requirements.lock",
     "scripts/run_codex_bridge_live_qualification.py",

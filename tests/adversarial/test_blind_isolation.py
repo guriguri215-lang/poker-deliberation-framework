@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import poker_deliberation.isolation as isolation_module
 import poker_deliberation.orchestrator as orchestrator_module
 from poker_deliberation.agents import ROLE_CATALOG
 from poker_deliberation.config import AppConfig
@@ -15,7 +16,17 @@ from poker_deliberation.isolation import (
 )
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.providers import DeterministicMockProvider
-from poker_deliberation.schemas import AgentReport, Assumption, CaseInput, Claim, EpistemicLabel
+from poker_deliberation.schemas import (
+    AgentReport,
+    Assumption,
+    CaseInput,
+    Claim,
+    EpistemicLabel,
+    Exactness,
+    NumericalExactness,
+    ToolResult,
+    ToolStatus,
+)
 
 
 def _case() -> dict[str, object]:
@@ -47,6 +58,41 @@ def _case() -> dict[str, object]:
         },
         "focal_decision": {"street": "flop", "action_index": 5, "actor": "h"},
     }
+
+
+def test_blind_context_fails_closed_when_isolated_hand_validation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, dict[str, object], str | None]] = []
+
+    class RefusingRegistry:
+        def execute(
+            self,
+            name: str,
+            payload: dict[str, object],
+            *,
+            contract_version: str | None = None,
+        ) -> ToolResult:
+            calls.append((name, payload, contract_version))
+            return ToolResult(
+                tool_name=name,
+                input=payload,
+                status=ToolStatus.FAILED,
+                exactness=Exactness.UNAVAILABLE,
+                numeric_exactness=NumericalExactness.UNAVAILABLE,
+                contract_version=contract_version or "1.0.0",
+                error="hard-isolated validation refused",
+            )
+
+    monkeypatch.setattr(isolation_module, "default_registry", RefusingRegistry)
+    case = CaseInput.model_validate(_case())
+
+    with pytest.raises(IsolationError, match="hard-isolated hand validation"):
+        build_blind_decision_context(case)
+    assert len(calls) == 1
+    assert calls[0][0] == "hand_validator"
+    assert calls[0][1] == case.hand.model_dump(mode="json")  # type: ignore[union-attr]
+    assert calls[0][2] == "2.0.0"
 
 
 def test_blind_payload_is_invariant_to_focal_size_later_actions_and_result() -> None:

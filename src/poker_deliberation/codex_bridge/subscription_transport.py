@@ -22,6 +22,7 @@ from poker_deliberation.codex_bridge.canonical import (
 )
 from poker_deliberation.codex_bridge.contracts import (
     outbound_request_bytes,
+    role_developer_instructions,
     role_output_schema_for_request,
 )
 from poker_deliberation.codex_bridge.identity import (
@@ -42,9 +43,11 @@ from poker_deliberation.codex_bridge.models import (
     SUBSCRIPTION_USAGE_HASH_DOMAIN,
     BoundedCodexBridgeRequestV1,
     BridgeEffectState,
+    BridgeRole,
     BridgeTransportUsageV1,
     CodexSubscriptionLiveExecutionEvidenceV1,
     RuntimeAuthModeV1,
+    repository_skill_for_role,
 )
 from poker_deliberation.codex_bridge.runtime_scratch import (
     PreparedRuntimeRoot,
@@ -71,6 +74,23 @@ _OS_ENVIRONMENT_NAMES = (
 _MAX_DISCOVERED_SKILLS = 256
 _MAX_SKILL_BYTES = 262_144
 _MAX_SKILL_TOTAL_BYTES = 2_097_152
+_MAX_SKILL_CATALOG_BYTES = 524_288
+_MAX_SKILL_CATALOG_MESSAGES = 64
+_MAX_SKILL_CATALOG_CONTENT_ITEMS = 256
+_MAX_SKILL_CATALOG_LINES = 4_096
+_MAX_SKILL_CATALOG_LINE_BYTES = 32_768
+_SKILL_CATALOG_TIMEOUT_SECONDS = 15.0
+_SKILL_CATALOG_PROBE_PROMPT = "Return no answer. Inspect the locally rendered prompt only."
+_REPOSITORY_SKILL_PATHS = tuple(
+    sorted(
+        {
+            f".agents/skills/{skill_id}/SKILL.md"
+            for role in BridgeRole
+            if (skill_id := repository_skill_for_role(role)) is not None
+        },
+        key=lambda item: item.encode("utf-8"),
+    )
+)
 _DISABLED_FEATURES = (
     "apps",
     "auth_elicitation",
@@ -113,16 +133,21 @@ _SUBSCRIPTION_RUNTIME_CONFIGURATION_HASH_DOMAIN = (
 )
 _SUBSCRIPTION_COMMAND_CONTRACT_HASH_DOMAIN = "poker-bounded-codex-subscription-command-contract-v1"
 _SUBSCRIPTION_LAUNCH_INTENT_HASH_DOMAIN = "poker-bounded-codex-subscription-launch-intent-v1"
+_SUBSCRIPTION_SKILL_CATALOG_HASH_DOMAIN = "poker-bounded-codex-skill-catalog-v1"
 _SEALED_LIVE_EXECUTION_CAPABILITY = object()
 
 
 @dataclass(frozen=True, slots=True)
 class _SkillState:
     configuration_path: Path
+    skill_id: str | None
+    source_path: str | None
+    enabled: bool
     size: int
     modified_ns: int
     file_identity: int
     content_sha256: str
+    source_content_sha256: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +196,26 @@ def _write_exclusive(path: Path, data: bytes) -> None:
         os.fsync(stream.fileno())
 
 
+def _read_bounded_regular_file(path: Path, maximum: int) -> tuple[bytes, os.stat_result]:
+    status = verify_regular_single_link(path)
+    if status.st_size > maximum:
+        raise ValueError("file size bound exceeded")
+    data = bytearray()
+    with path.open("rb") as stream:
+        while chunk := stream.read(65_536):
+            data.extend(chunk)
+            if len(data) > maximum:
+                raise ValueError("file size changed beyond its bound")
+        after = os.fstat(stream.fileno())
+    if (
+        after.st_size != status.st_size
+        or after.st_mtime_ns != status.st_mtime_ns
+        or after.st_ino != status.st_ino
+    ):
+        raise ValueError("file changed while it was inspected")
+    return bytes(data), status
+
+
 def _parse_events(data: bytes) -> list[dict[str, object]]:
     if not data or not data.endswith(b"\n"):
         raise ValueError("Codex JSONL is incomplete")
@@ -217,6 +262,119 @@ def _required_usage_int(value: dict[str, object], key: str) -> int:
     return item
 
 
+def _skill_catalog_sha256(
+    data: bytes,
+    *,
+    selected_skill_id: str | None,
+    staged_skill_path: Path | None,
+) -> str:
+    if not data or len(data) > _MAX_SKILL_CATALOG_BYTES:
+        raise ValueError("Codex Skill catalog size is invalid")
+    value = json.loads(data)
+    if not isinstance(value, list) or len(value) > _MAX_SKILL_CATALOG_MESSAGES:
+        raise ValueError("Codex prompt input is not a bounded message list")
+    blocks: list[str] = []
+    opening_boundary = "<skills_instructions>"
+    closing_boundary = "</skills_instructions>"
+    for message in value:
+        if not isinstance(message, dict):
+            raise ValueError("Codex prompt input message is malformed")
+        content = message.get("content")
+        if content is None:
+            continue
+        if not isinstance(content, list) or len(content) > _MAX_SKILL_CATALOG_CONTENT_ITEMS:
+            raise ValueError("Codex prompt input content is malformed")
+        for item in content:
+            if not isinstance(item, dict):
+                raise ValueError("Codex prompt input content item is malformed")
+            text = item.get("text")
+            if not isinstance(text, str):
+                continue
+            if opening_boundary not in text and closing_boundary not in text:
+                continue
+            if (
+                message.get("type") != "message"
+                or message.get("role") != "developer"
+                or item.get("type") != "input_text"
+            ):
+                raise ValueError("Codex Skill catalog authority is invalid")
+            if text.count(opening_boundary) != 1 or text.count(closing_boundary) != 1:
+                raise ValueError("Codex Skill catalog boundary is ambiguous")
+            start = text.index(opening_boundary)
+            end = text.index(closing_boundary) + len(closing_boundary)
+            if start != 0 or end != len(text):
+                raise ValueError("Codex Skill catalog is not a standalone developer input")
+            blocks.append(text)
+    if not blocks:
+        if selected_skill_id is not None or staged_skill_path is not None:
+            raise ValueError("Codex Skill catalog is missing its selected Skill")
+        return domain_sha256(
+            _SUBSCRIPTION_SKILL_CATALOG_HASH_DOMAIN,
+            {
+                "repository_entries": [],
+                "skills_instructions_sha256": None,
+            },
+        )
+    if len(blocks) != 1:
+        raise ValueError("Codex Skill catalog is missing or duplicated")
+    block = blocks[0]
+    lines = block.splitlines()
+    if len(lines) > _MAX_SKILL_CATALOG_LINES or any(
+        len(line.encode("utf-8")) > _MAX_SKILL_CATALOG_LINE_BYTES for line in lines
+    ):
+        raise ValueError("Codex Skill catalog line bound exceeded")
+    try:
+        available_index = lines.index("### Available skills")
+    except ValueError as exc:
+        raise ValueError("Codex Skill catalog heading is missing") from exc
+    entries: list[tuple[str, str]] = []
+    for line in lines[available_index + 1 :]:
+        if line == "</skills_instructions>":
+            break
+        if not line or not line.startswith("- "):
+            continue
+        identifier, separator, remainder = line[2:].partition(": ")
+        description, locator_separator, locator = remainder.rpartition(" (file: ")
+        if (
+            not separator
+            or not description
+            or not locator_separator
+            or not locator.endswith(")")
+            or not identifier
+            or len(identifier) > 128
+            or any(
+                not (character.isascii() and (character.isalnum() or character in "-_.:"))
+                for character in identifier
+            )
+        ):
+            raise ValueError("Codex Skill catalog entry is malformed")
+        entries.append((identifier, locator[:-1]))
+        if len(entries) > _MAX_DISCOVERED_SKILLS:
+            raise ValueError("Codex Skill catalog entry bound exceeded")
+    repository_ids = {Path(item).parent.name for item in _REPOSITORY_SKILL_PATHS}
+    repository_entries = [item for item in entries if item[0] in repository_ids]
+    if selected_skill_id is None:
+        if entries or staged_skill_path is not None:
+            raise ValueError("Codex Skill catalog exposed an unselected Skill")
+    else:
+        if selected_skill_id not in repository_ids or staged_skill_path is None:
+            raise ValueError("Codex Skill catalog expectation is invalid")
+        if len(entries) != 1 or entries[0][0] != selected_skill_id:
+            raise ValueError("Codex Skill catalog exclusive selection mismatch")
+        resolved_locator = Path(entries[0][1]).resolve(strict=True)
+        resolved_stage = staged_skill_path.resolve(strict=True)
+        if resolved_locator != resolved_stage:
+            raise ValueError("Codex Skill catalog selected the wrong execution copy")
+        verify_regular_single_link(resolved_locator)
+    return domain_sha256(
+        _SUBSCRIPTION_SKILL_CATALOG_HASH_DOMAIN,
+        {
+            "repository_entries": repository_entries,
+            "skills_instructions_sha256": sha256_bytes(block.encode("utf-8")),
+        },
+    )
+
+
 class CodexSubscriptionCliTransport:
     """No-fallback saved-login transport for one fresh ephemeral Codex exec turn."""
 
@@ -232,6 +390,9 @@ class CodexSubscriptionCliTransport:
         codex_binary: Path,
         auth_status_probe: Callable[[Path, dict[str, str]], bool] | None = None,
         command_factory: Callable[[Path, Path, Path], list[str]] | None = None,
+        skill_catalog_probe: (
+            Callable[[Path, dict[str, str], tuple[_SkillState, ...]], bytes] | None
+        ) = None,
         isolation_root: Path | None = None,
         credential_codex_home: Path | None = None,
         runtime_capability: PreparedRuntimeRoot | None = None,
@@ -247,12 +408,14 @@ class CodexSubscriptionCliTransport:
             raise ValueError("bundled Codex binary hash mismatch")
         self.auth_status_probe = auth_status_probe
         self.command_factory = command_factory
+        self.skill_catalog_probe = skill_catalog_probe
         # This private bit is only one input to the controller-side exact-type and
         # implementation-identity gate. It is deliberately never a qualification label.
         self._sealed_default_process = (
             type(self) is CodexSubscriptionCliTransport
             and auth_status_probe is None
             and command_factory is None
+            and skill_catalog_probe is None
             and default_isolation_root
             and default_credential_codex_home
             and runtime_capability is not None
@@ -282,6 +445,10 @@ class CodexSubscriptionCliTransport:
         repository_root = self._repository_root(self.runtime_root)
         if repository_root is not None and self.isolation_root.is_relative_to(repository_root):
             raise ValueError("subscription execution context must be outside the repository")
+        source_repository_root = repository_root or self._repository_root(Path(__file__).resolve())
+        if source_repository_root is None:
+            raise ValueError("subscription repository root cannot be resolved")
+        self.repository_root = source_repository_root.resolve(strict=True)
 
     @staticmethod
     def _paths_overlap(first: Path, second: Path) -> bool:
@@ -363,7 +530,10 @@ class CodexSubscriptionCliTransport:
             ) from exc
         return context
 
-    def _skill_snapshot(self) -> tuple[_SkillState, ...]:
+    def _skill_snapshot(
+        self,
+        request: BoundedCodexBridgeRequestV1,
+    ) -> tuple[_SkillState, ...]:
         try:
             codex_home = self.credential_codex_home.resolve(strict=True)
             if not codex_home.is_dir():
@@ -388,35 +558,78 @@ class CodexSubscriptionCliTransport:
                         resolved_root
                     ):
                         raise ValueError("skill path escapes its discovery root")
-                    status = verify_regular_single_link(resolved_file)
-                    if status.st_size > _MAX_SKILL_BYTES:
-                        raise ValueError("skill file size bound exceeded")
+                    contents, status = _read_bounded_regular_file(
+                        resolved_file,
+                        _MAX_SKILL_BYTES,
+                    )
                     total_bytes += status.st_size
                     if total_bytes > _MAX_SKILL_TOTAL_BYTES:
                         raise ValueError("skill total size bound exceeded")
-                    digest = hashlib.sha256()
-                    # The digest binds drift without retaining or logging skill content.
-                    with resolved_file.open("rb") as stream:
-                        while chunk := stream.read(65_536):
-                            digest.update(chunk)
-                        after = os.fstat(stream.fileno())
-                    if (
-                        after.st_size != status.st_size
-                        or after.st_mtime_ns != status.st_mtime_ns
-                        or after.st_ino != status.st_ino
-                    ):
-                        raise ValueError("skill changed while it was inspected")
                     states.append(
                         _SkillState(
                             configuration_path=resolved_file,
+                            skill_id=None,
+                            source_path=None,
+                            enabled=False,
                             size=status.st_size,
                             modified_ns=status.st_mtime_ns,
                             file_identity=status.st_ino,
-                            content_sha256=digest.hexdigest(),
+                            content_sha256=sha256_bytes(contents),
+                            source_content_sha256=None,
                         )
                     )
                     if len(states) > _MAX_DISCOVERED_SKILLS:
                         raise ValueError("skill discovery bound exceeded")
+            selected = request.context.assignment.conformance
+            if request.developer_instructions != role_developer_instructions(
+                selected.role,
+                selected,
+                RuntimeAuthModeV1.CODEX_SUBSCRIPTION,
+            ):
+                raise ValueError("subscription request uses a legacy role contract")
+            if selected.repository_skill_id != repository_skill_for_role(selected.role):
+                raise ValueError("subscription request lacks its repository Skill binding")
+            skill_id = selected.repository_skill_id
+            if skill_id is not None:
+                relative = f".agents/skills/{skill_id}/SKILL.md"
+                if relative not in _REPOSITORY_SKILL_PATHS:
+                    raise ValueError("repository Skill path is outside the allowlist")
+                repository_root = self.repository_root.resolve(strict=True)
+                resolved_file = repository_root.joinpath(*relative.split("/")).resolve(strict=True)
+                if not resolved_file.is_file() or not resolved_file.is_relative_to(repository_root):
+                    raise ValueError("repository Skill path escapes its authority")
+                contents, status = _read_bounded_regular_file(
+                    resolved_file,
+                    _MAX_SKILL_BYTES,
+                )
+                total_bytes += status.st_size
+                if total_bytes > _MAX_SKILL_TOTAL_BYTES:
+                    raise ValueError("skill total size bound exceeded")
+                content_sha256 = sha256_bytes(contents)
+                if (
+                    selected.repository_skill_source_path != relative
+                    or selected.repository_skill_content_sha256 != content_sha256
+                    or selected.repository_skill_version_kind != "repository_commit"
+                    or selected.repository_skill_version is None
+                    or selected.repository_skill_instructions
+                    != " ".join(contents.decode("utf-8", errors="strict").split())
+                ):
+                    raise ValueError("repository Skill binding mismatch")
+                states.append(
+                    _SkillState(
+                        configuration_path=resolved_file,
+                        skill_id=skill_id,
+                        source_path=relative,
+                        enabled=True,
+                        size=status.st_size,
+                        modified_ns=status.st_mtime_ns,
+                        file_identity=status.st_ino,
+                        content_sha256=content_sha256,
+                        source_content_sha256=content_sha256,
+                    )
+                )
+            if len(states) > _MAX_DISCOVERED_SKILLS:
+                raise ValueError("skill discovery bound exceeded")
         except Exception as exc:
             raise BridgeTransportFailure(
                 "subscription_context_preflight_failed",
@@ -426,15 +639,6 @@ class CodexSubscriptionCliTransport:
                 duration_ms=0,
                 stream_bytes=0,
             ) from exc
-        if not states:
-            raise BridgeTransportFailure(
-                "subscription_context_preflight_failed",
-                effect_state=BridgeEffectState.NOT_LAUNCHED,
-                launched_at=None,
-                completed_at=datetime.now(UTC),
-                duration_ms=0,
-                stream_bytes=0,
-            )
         states.sort(key=lambda item: str(item.configuration_path).encode("utf-8"))
         if len({item.configuration_path for item in states}) != len(states):
             raise BridgeTransportFailure(
@@ -447,12 +651,116 @@ class CodexSubscriptionCliTransport:
             )
         return tuple(states)
 
+    def _stage_skill_snapshot(
+        self,
+        *,
+        cwd: Path,
+        source_snapshot: tuple[_SkillState, ...],
+    ) -> tuple[_SkillState, ...]:
+        try:
+            resolved_cwd = cwd.resolve(strict=True)
+            verify_directory(resolved_cwd)
+            selected = tuple(item for item in source_snapshot if item.enabled)
+            if len(selected) > 1:
+                raise ValueError("multiple repository Skills were selected")
+            execution_states = [item for item in source_snapshot if not item.enabled]
+            for source in selected:
+                if source.skill_id is None or source.source_content_sha256 is None:
+                    raise ValueError("selected repository Skill lacks source identity")
+                source_bytes, source_status = _read_bounded_regular_file(
+                    source.configuration_path,
+                    _MAX_SKILL_BYTES,
+                )
+                if (
+                    source_status.st_size != source.size
+                    or source_status.st_mtime_ns != source.modified_ns
+                    or source_status.st_ino != source.file_identity
+                    or sha256_bytes(source_bytes) != source.source_content_sha256
+                ):
+                    raise ValueError("repository Skill source changed before staging")
+                staged_directory = (resolved_cwd / ".agents" / "skills" / source.skill_id).resolve(
+                    strict=False
+                )
+                if not staged_directory.is_relative_to(resolved_cwd):
+                    raise ValueError("repository Skill execution path escapes its cwd")
+                staged_directory.mkdir(parents=True, exist_ok=False)
+                for directory in (
+                    resolved_cwd / ".agents",
+                    resolved_cwd / ".agents" / "skills",
+                    staged_directory,
+                ):
+                    verify_directory(directory)
+                staged_path = staged_directory / "SKILL.md"
+                _write_exclusive(staged_path, source_bytes)
+                staged_bytes, staged_status = _read_bounded_regular_file(
+                    staged_path.resolve(strict=True),
+                    _MAX_SKILL_BYTES,
+                )
+                staged_sha256 = sha256_bytes(staged_bytes)
+                if staged_bytes != source_bytes or staged_sha256 != source.source_content_sha256:
+                    raise ValueError("repository Skill execution copy mismatch")
+                execution_states.append(
+                    _SkillState(
+                        configuration_path=staged_path.resolve(strict=True),
+                        skill_id=source.skill_id,
+                        source_path=source.source_path,
+                        enabled=True,
+                        size=staged_status.st_size,
+                        modified_ns=staged_status.st_mtime_ns,
+                        file_identity=staged_status.st_ino,
+                        content_sha256=staged_sha256,
+                        source_content_sha256=source.source_content_sha256,
+                    )
+                )
+            execution_states.sort(key=lambda item: str(item.configuration_path).encode("utf-8"))
+            if len({item.configuration_path for item in execution_states}) != len(execution_states):
+                raise ValueError("duplicate Skill configuration path")
+            return tuple(execution_states)
+        except Exception as exc:
+            raise BridgeTransportFailure(
+                "subscription_context_preflight_failed",
+                effect_state=BridgeEffectState.NOT_LAUNCHED,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
+    @staticmethod
+    def _observed_skill_snapshot(
+        snapshot: tuple[_SkillState, ...],
+    ) -> tuple[_SkillState, ...]:
+        observed: list[_SkillState] = []
+        total_bytes = 0
+        for expected in snapshot:
+            contents, status = _read_bounded_regular_file(
+                expected.configuration_path,
+                _MAX_SKILL_BYTES,
+            )
+            total_bytes += status.st_size
+            if total_bytes > _MAX_SKILL_TOTAL_BYTES:
+                raise ValueError("Skill snapshot total size bound exceeded")
+            observed.append(
+                _SkillState(
+                    configuration_path=expected.configuration_path,
+                    skill_id=expected.skill_id,
+                    source_path=expected.source_path,
+                    enabled=expected.enabled,
+                    size=status.st_size,
+                    modified_ns=status.st_mtime_ns,
+                    file_identity=status.st_ino,
+                    content_sha256=sha256_bytes(contents),
+                    source_content_sha256=expected.source_content_sha256,
+                )
+            )
+        return tuple(observed)
+
     @staticmethod
     def _skills_config(snapshot: tuple[_SkillState, ...]) -> str:
         entries = ",".join(
             "{path="
             + json.dumps(str(item.configuration_path), ensure_ascii=True)
-            + ",enabled=false}"
+            + f",enabled={'true' if item.enabled else 'false'}}}"
             for item in snapshot
         )
         return f"skills.config=[{entries}]"
@@ -605,25 +913,11 @@ class CodexSubscriptionCliTransport:
             except Exception:
                 pass
 
-    def _command(
+    def _configuration_args(
         self,
-        *,
-        cwd: Path,
-        schema: Path,
-        output: Path,
         skill_snapshot: tuple[_SkillState, ...],
     ) -> list[str]:
-        command = [
-            str(self.codex_binary),
-            "--strict-config",
-            "-a",
-            "never",
-            "-s",
-            "read-only",
-            "-m",
-            BRIDGE_MODEL_ID,
-            "-C",
-            str(cwd),
+        arguments = [
             "-c",
             'forced_login_method="chatgpt"',
             "-c",
@@ -661,10 +955,35 @@ class CodexSubscriptionCliTransport:
             "-c",
             "mcp_servers={}",
             "-c",
+            "skills.bundled.enabled=false",
+            "-c",
             self._skills_config(skill_snapshot),
         ]
         for feature in _DISABLED_FEATURES:
-            command.extend(("-c", f"features.{feature}=false"))
+            arguments.extend(("-c", f"features.{feature}=false"))
+        return arguments
+
+    def _command(
+        self,
+        *,
+        cwd: Path,
+        schema: Path,
+        output: Path,
+        skill_snapshot: tuple[_SkillState, ...],
+    ) -> list[str]:
+        command = [
+            str(self.codex_binary),
+            "--strict-config",
+            "-a",
+            "never",
+            "-s",
+            "read-only",
+            "-m",
+            BRIDGE_MODEL_ID,
+            "-C",
+            str(cwd),
+        ]
+        command.extend(self._configuration_args(skill_snapshot))
         command.extend(
             (
                 "exec",
@@ -684,6 +1003,114 @@ class CodexSubscriptionCliTransport:
         )
         return command
 
+    def _catalog_command(
+        self,
+        *,
+        cwd: Path,
+        skill_snapshot: tuple[_SkillState, ...],
+    ) -> list[str]:
+        # Codex 0.144.4 intentionally rejects --strict-config for debug commands.
+        # Every effective execution override is nevertheless reused here, and the
+        # production exec remains strict and ignores user configuration.
+        command = [
+            str(self.codex_binary),
+            "-a",
+            "never",
+            "-s",
+            "read-only",
+            "-m",
+            BRIDGE_MODEL_ID,
+            "-C",
+            str(cwd),
+        ]
+        command.extend(self._configuration_args(skill_snapshot))
+        command.extend(("debug", "prompt-input", _SKILL_CATALOG_PROBE_PROMPT))
+        return command
+
+    def _probe_skill_catalog(
+        self,
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+        skill_snapshot: tuple[_SkillState, ...],
+    ) -> str:
+        selected = tuple(item for item in skill_snapshot if item.enabled)
+        if len(selected) > 1:
+            raise BridgeTransportFailure(
+                "subscription_skill_catalog_probe_failed",
+                effect_state=BridgeEffectState.NOT_LAUNCHED,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            )
+        selected_skill_id = selected[0].skill_id if selected else None
+        staged_skill_path = selected[0].configuration_path if selected else None
+        try:
+            if self.skill_catalog_probe is not None:
+                raw_catalog = self.skill_catalog_probe(cwd, environment, skill_snapshot)
+                if not isinstance(raw_catalog, bytes):
+                    raise ValueError("injected Skill catalog probe returned non-bytes")
+            else:
+                process_factory = (
+                    _PINNED_SUBPROCESS_POPEN if self._sealed_default_process else subprocess.Popen
+                )
+                process = process_factory(
+                    self._catalog_command(cwd=cwd, skill_snapshot=skill_snapshot),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=cwd,
+                    env=environment,
+                )
+                assert process.stdout is not None
+                assert process.stderr is not None
+                stdout = _CappedReader(
+                    cast(BinaryIO, process.stdout),
+                    _MAX_SKILL_CATALOG_BYTES,
+                )
+                stderr = _CappedReader(cast(BinaryIO, process.stderr), _STDERR_CAP)
+                stdout.start()
+                stderr.start()
+                deadline = time.monotonic() + _SKILL_CATALOG_TIMEOUT_SECONDS
+                timed_out = False
+                while process.poll() is None:
+                    if stdout.overflow.is_set() or stderr.overflow.is_set():
+                        self._terminate(process)
+                        break
+                    if time.monotonic() >= deadline:
+                        timed_out = True
+                        self._terminate(process)
+                        break
+                    time.sleep(0.01)
+                stdout.join(timeout=2)
+                stderr.join(timeout=2)
+                if (
+                    timed_out
+                    or stdout.overflow.is_set()
+                    or stderr.overflow.is_set()
+                    or stdout.is_alive()
+                    or stderr.is_alive()
+                    or process.returncode != 0
+                    or stderr.data
+                ):
+                    raise ValueError("bounded Codex Skill catalog probe failed")
+                raw_catalog = bytes(stdout.data)
+            return _skill_catalog_sha256(
+                raw_catalog,
+                selected_skill_id=selected_skill_id,
+                staged_skill_path=staged_skill_path,
+            )
+        except Exception as exc:
+            raise BridgeTransportFailure(
+                "subscription_skill_catalog_probe_failed",
+                effect_state=BridgeEffectState.NOT_LAUNCHED,
+                launched_at=None,
+                completed_at=datetime.now(UTC),
+                duration_ms=0,
+                stream_bytes=0,
+            ) from exc
+
     def _command_contract_sha256(
         self,
         command: list[str],
@@ -696,11 +1123,15 @@ class CodexSubscriptionCliTransport:
         """Hash the executed command without publishing host-specific paths."""
 
         skill_binding = domain_sha256(
-            "poker-bounded-codex-subscription-disabled-skill-snapshot-v1",
+            "poker-bounded-codex-subscription-skill-snapshot-v2",
             [
                 {
                     "content_sha256": item.content_sha256,
+                    "enabled": item.enabled,
                     "size": item.size,
+                    "skill_id": item.skill_id,
+                    "source_path": item.source_path,
+                    "source_content_sha256": item.source_content_sha256,
                 }
                 for item in skill_snapshot
             ],
@@ -727,6 +1158,7 @@ class CodexSubscriptionCliTransport:
         *,
         environment: dict[str, str],
         command_contract_sha256: str,
+        skill_catalog_sha256: str,
     ) -> str:
         # The environment is an explicit allowlist and contains no credential values.
         # Only its digest is retained in the public evidence.
@@ -742,6 +1174,7 @@ class CodexSubscriptionCliTransport:
                 "command_contract_sha256": command_contract_sha256,
                 "disabled_features": _DISABLED_FEATURES,
                 "environment_sha256": environment_sha256,
+                "skill_catalog_sha256": skill_catalog_sha256,
                 "stderr_cap": _STDERR_CAP,
                 "stream_cap": MAX_STREAM_BYTES,
             },
@@ -873,6 +1306,9 @@ class CodexSubscriptionCliTransport:
                 duration_ms=0,
                 stream_bytes=0,
             )
+        # A legacy v1 request remains readable, but it cannot be launched as a
+        # new subscription execution without the complete repository Skill binding.
+        source_skill_snapshot = self._skill_snapshot(request)
         sealed_default = _is_exact_sealed_default_transport(self)
         repository_root: Path | None = None
         runtime_source_inventory_before: str | None = None
@@ -915,6 +1351,10 @@ class CodexSubscriptionCliTransport:
         attempt_key = self._attempt_key(request)
         attempt = self._attempt(attempt_key)
         process_context = self._process_context(attempt_key)
+        skill_snapshot = self._stage_skill_snapshot(
+            cwd=process_context.cwd,
+            source_snapshot=source_skill_snapshot,
+        )
         schema_path = attempt / "output-schema.json"
         output_path = attempt / "last-message.json"
         events_path = attempt / "raw-events.jsonl"
@@ -925,7 +1365,6 @@ class CodexSubscriptionCliTransport:
         _write_exclusive(schema_path, output_schema)
         environment = self._environment(process_context)
         self._probe_auth(cwd=process_context.cwd, environment=environment)
-        skill_snapshot = self._skill_snapshot()
         started = time.monotonic()
         try:
             command = (
@@ -945,9 +1384,15 @@ class CodexSubscriptionCliTransport:
                 output=output_path,
                 skill_snapshot=skill_snapshot,
             )
+            skill_catalog_sha256 = self._probe_skill_catalog(
+                cwd=process_context.cwd,
+                environment=environment,
+                skill_snapshot=skill_snapshot,
+            )
             runtime_configuration_sha256 = self._runtime_configuration_sha256(
                 environment=environment,
                 command_contract_sha256=command_contract_sha256,
+                skill_catalog_sha256=skill_catalog_sha256,
             )
             launch_intent_sha256 = self._launch_intent_sha256(
                 request,
@@ -955,7 +1400,10 @@ class CodexSubscriptionCliTransport:
                 command_contract_sha256=command_contract_sha256,
                 runtime_configuration_sha256=runtime_configuration_sha256,
             )
-            if self._skill_snapshot() != skill_snapshot:
+            if (
+                self._skill_snapshot(request) != source_skill_snapshot
+                or self._observed_skill_snapshot(skill_snapshot) != skill_snapshot
+            ):
                 raise BridgeTransportFailure(
                     "subscription_context_drift",
                     effect_state=BridgeEffectState.NOT_LAUNCHED,
@@ -1041,7 +1489,35 @@ class CodexSubscriptionCliTransport:
         )
         launched_at = now if launched else None
         duration_ms = max(0, int((time.monotonic() - started) * 1000))
-        if timed_out or stdout.overflow.is_set() or stderr.overflow.is_set():
+        terminal_cutoff = timed_out or stdout.overflow.is_set() or stderr.overflow.is_set()
+        try:
+            post_source_skill_snapshot = self._skill_snapshot(request)
+            post_execution_skill_snapshot = self._observed_skill_snapshot(skill_snapshot)
+        except Exception:
+            post_source_skill_snapshot = None
+            post_execution_skill_snapshot = None
+        if (
+            post_source_skill_snapshot != source_skill_snapshot
+            or post_execution_skill_snapshot != skill_snapshot
+        ):
+            raise BridgeTransportFailure(
+                "subscription_context_drift",
+                effect_state=(
+                    BridgeEffectState.CANCEL_UNCONFIRMED
+                    if launched and terminal_cutoff
+                    else BridgeEffectState.FAILED
+                    if launched
+                    else BridgeEffectState.EFFECT_UNKNOWN
+                ),
+                launched_at=launched_at,
+                completed_at=datetime.now(UTC),
+                duration_ms=duration_ms,
+                stream_bytes=stdout.total,
+                item_types=prefix_items,
+                thread_id_sha256=thread_hash,
+                turn_id_sha256=turn_hash,
+            )
+        if terminal_cutoff:
             raise BridgeTransportFailure(
                 "subscription_timeout" if timed_out else "subscription_output_cap_exceeded",
                 effect_state=(
@@ -1236,6 +1712,8 @@ _SEALED_IMPLEMENTATION = {
     "_process_context": CodexSubscriptionCliTransport._process_context,
     "_probe_auth": CodexSubscriptionCliTransport._probe_auth,
     "_skill_snapshot": CodexSubscriptionCliTransport._skill_snapshot,
+    "_stage_skill_snapshot": CodexSubscriptionCliTransport._stage_skill_snapshot,
+    "_observed_skill_snapshot": CodexSubscriptionCliTransport._observed_skill_snapshot,
     "_skills_config": CodexSubscriptionCliTransport._skills_config,
     "_attempt_key": CodexSubscriptionCliTransport._attempt_key,
     "_begin_runtime_capability": CodexSubscriptionCliTransport._begin_runtime_capability,
@@ -1243,7 +1721,10 @@ _SEALED_IMPLEMENTATION = {
     "_finish_runtime_capability": CodexSubscriptionCliTransport._finish_runtime_capability,
     "_attempt": CodexSubscriptionCliTransport._attempt,
     "_terminate": CodexSubscriptionCliTransport._terminate,
+    "_configuration_args": CodexSubscriptionCliTransport._configuration_args,
     "_command": CodexSubscriptionCliTransport._command,
+    "_catalog_command": CodexSubscriptionCliTransport._catalog_command,
+    "_probe_skill_catalog": CodexSubscriptionCliTransport._probe_skill_catalog,
     "_command_contract_sha256": CodexSubscriptionCliTransport._command_contract_sha256,
     "_runtime_configuration_sha256": (CodexSubscriptionCliTransport._runtime_configuration_sha256),
     "_launch_intent_sha256": CodexSubscriptionCliTransport._launch_intent_sha256,
@@ -1253,9 +1734,11 @@ _SEALED_IMPLEMENTATION = {
 _SEALED_MODULE_IMPLEMENTATION = {
     "_file_sha256": _file_sha256,
     "_write_exclusive": _write_exclusive,
+    "_read_bounded_regular_file": _read_bounded_regular_file,
     "_parse_events": _parse_events,
     "_thread_from_prefix": _thread_from_prefix,
     "_required_usage_int": _required_usage_int,
+    "_skill_catalog_sha256": _skill_catalog_sha256,
     "_CappedReader": _CappedReader,
 }
 _SEALED_CAPPED_READER_RUN = _CappedReader.run
@@ -1268,6 +1751,7 @@ def _is_exact_sealed_default_transport(value: object) -> bool:
     if (
         transport.auth_status_probe is not None
         or transport.command_factory is not None
+        or transport.skill_catalog_probe is not None
         or transport.runtime_capability is None
         or transport._sealed_default_process is not True
         or transport._sealed_constructor_capability is not _SEALED_LIVE_EXECUTION_CAPABILITY

@@ -1206,11 +1206,6 @@ def _validate_source_graph(
                     parsed.get(RANGE_EQUITY_BINDING_ARTIFACT),
                 ),
             )
-            verify_versioned_range_river_equity_tool_chain(
-                input_case,
-                final_report.tool_results,
-                run_status=final_report.run_status,
-            )
         except ValueError as exc:
             raise CanonicalStorageError("range-equity persisted cases do not correlate") from exc
     if input_marker_present != report_marker_present or (
@@ -1908,11 +1903,18 @@ def _validate_source_graph(
             raise CanonicalStorageError("final report embedded tool results mismatch")
         input_case = cast(CaseInput, parsed["input.json"])
         try:
-            verify_versioned_range_tool_chain(
-                input_case,
-                tool_results,
-                run_status=final_report_json.run_status,
-            )
+            if RANGE_EQUITY_BINDING_ARTIFACT in parsed:
+                verify_versioned_range_river_equity_tool_chain(
+                    input_case,
+                    tool_results,
+                    run_status=final_report_json.run_status,
+                )
+            else:
+                verify_versioned_range_tool_chain(
+                    input_case,
+                    tool_results,
+                    run_status=final_report_json.run_status,
+                )
         except ValueError as exc:
             raise CanonicalStorageError("versioned range tool chain replay failed") from exc
         final_contexts = bindings_of_type("final_report.json", ContextBindingV1)

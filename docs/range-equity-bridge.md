@@ -34,8 +34,9 @@ current pointerやbufferが追加されていないこととlegacy sourceが変�
 `VersionedRangeRiverEquityBindingV1`はcandidate、source range、検証済みcondition、canonical combo、
 exact oracle、target、decision index、3-tool plan、990 evaluations capを記録する。
 `VersionedRangeRiverEquityResultV1`は保存済みinput、strict binding artifact、tool resultから
-再構築できる。markerとbinding artifactはcomplete runだけでなく、0件を含むfailed tool prefixでも
-同時に存在して一致しなければならない。terminal publish/readはbuffer外のpre-execution admission
+再構築できる。markerとbinding artifactはcomplete runと、独立したreplay authorityを持つdurable terminalで
+同時に存在して一致しなければならない。再現不能な一時的tool failureや一般budget failureは
+`failed_with_limitations`のephemeral reportとして返し、durable current pointerを作らない。terminal publish/readはbuffer外のpre-execution admission
 recordも再読し、binding artifactとのdigest一致を要求する。このrecordが存在するrunを全marker・binding
 artifact不在のlegacy payloadへ作り替えることは拒否する。namespace確認、product namespace予約、record作成、
 buffer作成は同一per-run authorityで直列化するため、同じrun IDの通常runが途中へ割り込んで公開することもない。
@@ -116,7 +117,8 @@ P3-030Cは別の専用admissionとしてこのbridgeを再利用するが、P3-0
 `scripts/run_range_equity_evaluation.py`は、weightと有理数oracle、admission境界、failure/terminal replayを
 7 case・3 exact-evidence metricで検査する。990 comboの極端weightに対する128 ULP境界とexact outputへの
 Monte Carlo metadata混入拒否をexact/oracle metricに含める。binding artifact、pre-execution record、
-orphan recordのpre-tool run-ID conflictとcase alias拒否、failed-prefix downgrade、通常の手動exact equity
+orphan recordのpre-tool run-ID conflictとcase alias拒否、replay authorityのないfailed prefixがephemeralに留まり
+durable currentを作らないこと、通常の手動exact equity
 互換性もreplay/storage metricに含める。
 全metricのthresholdは`1.0`であり、欠落、追加、順序変更、
 evidence不一致はfail closedで`0.0`になる。結果artifactは対象commit SHAとtree SHAを必須で記録し、

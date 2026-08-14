@@ -84,17 +84,15 @@ def test_phase_1_and_runtime_surface_capabilities_match_executable_boundaries() 
         in summaries["bounded_river_review_workflow"]
     )
     assert "sanitized self-hashed canonical manifest" in summaries["bounded_river_review_workflow"]
-    assert (
-        "current live qualification remains UNKNOWN" in summaries["bounded_river_review_workflow"]
-    )
+    assert "both absent is UNKNOWN" in summaries["bounded_river_review_workflow"]
+    assert "invalid/binding-mismatched pair is FAIL" in summaries["bounded_river_review_workflow"]
     assert (
         "five fresh preview and explicit human-confirmation cycles"
         in summaries["bounded_river_review_workflow"]
     )
-    assert (
-        "current-tree live qualification is UNKNOWN"
-        in summaries["bounded_codex_river_review_bridge"]
-    )
+    assert "strict canonical V2 live manifest" in summaries["bounded_codex_river_review_bridge"]
+    assert "bound deterministic evaluation" in summaries["bounded_codex_river_review_bridge"]
+    assert "subscription_live_qualified=true" in summaries["bounded_codex_river_review_bridge"]
     assert states["natural_language_or_site_parser"] == "unavailable"
     assert states["repository_synthetic_isolated_job_control"] == "implemented"
     assert states["process_sandbox"] == "unavailable"

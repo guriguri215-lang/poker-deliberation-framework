@@ -332,8 +332,11 @@ processへ固定した`forced_login_method="chatgpt"`である。productはauth 
 
 CLI起動はpinned binary hash、configured model provider `openai`、approval `never`、read-only sandbox、
 history off、empty MCP、shell/web/file-write/apps/browser/computer/plugins/nested-agent feature offを固定する。
-`CODEX_HOME/skills`と`CODEX_HOME/plugins`だけをboundedに走査し、見つかった全`SKILL.md`をexact file pathで
-無効化する。content hashをlaunch直前に再検査し、driftやlink escapeをmodel起動前に拒否する。credential
+`CODEX_HOME/skills`と`CODEX_HOME/plugins`だけをboundedに走査し、見つかったambient `SKILL.md`をexact
+file pathで無効化する。最初の3 roleはrepository-owned Skillをroleごとにexact 1件だけ有効化し、その
+source path、content hash、repository commit、bounded instructionsをrequestへ束縛する。adjudicatorと
+report-writerにはSkillを割り当てない。content hashをlaunch直前と終了後に再検査し、driftやlink escapeを
+拒否する。この記録は選択・設定・入力束縛の証拠であり、modelによる意味的遵守のattestationではない。credential
 subtreeは走査しない。JSONLで
 `reasoning`/`agent_message`以外のitem、unexpected lifecycle、multiple/missing final message、model/runtime
 mismatchを観測するとfail closedにする。OS-level network isolationやremote sandbox attestationではない。

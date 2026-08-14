@@ -43,7 +43,6 @@ from poker_deliberation.schemas import (
     NumericalExactness,
     ToolResult,
     ToolStatus,
-    VerificationMetadata,
 )
 from poker_deliberation.security import redact_sensitive
 from poker_deliberation.tools.cards import evaluate_holdem, normalize_cards
@@ -829,27 +828,15 @@ def _failed_exact_tool_result_envelope_matches(result: ToolResult) -> bool:
 
 def _verification_matches_contract(result: ToolResult) -> None:
     try:
-        contract = contract_by_name()[result.tool_name]
-        evidence = contract.verify_floating(result.input, result.output)
-    except (KeyError, TypeError, ValueError) as exc:
+        from poker_deliberation.tools.registry import default_registry
+
+        default_registry().reverify_materialized_result(result)
+    except (TypeError, ValueError) as exc:
         raise VersionedRangeRiverEquityError(
             RangeEquityDiagnosticCode.CHAIN,
             f"{result.tool_name}.output",
             "tool verification inputs are not a strict bridge result",
         ) from exc
-    expected = VerificationMetadata(
-        method="executed tool-specific invariant checks",
-        checks=list(evidence.checks),
-        observations=list(evidence.observations),
-        tolerance=evidence.tolerance,
-        passed=True,
-    )
-    if result.verification != expected:
-        _fail(
-            RangeEquityDiagnosticCode.REPLAY,
-            f"{result.tool_name}.verification",
-            "verification metadata differs from deterministic replay",
-        )
 
 
 def build_versioned_range_river_equity_result(
@@ -859,6 +846,23 @@ def build_versioned_range_river_equity_result(
     """Rebuild and verify the exact bridge result from persisted artifacts."""
 
     _require_supported_replay_trees(case, tool_results)
+    try:
+        verify_versioned_range_tool_chain(case, tool_results, run_status="completed")
+    except (TypeError, ValueError) as exc:
+        raise VersionedRangeRiverEquityError(
+            RangeEquityDiagnosticCode.CHAIN,
+            "tool_results",
+            "versioned range prerequisite replay failed",
+        ) from exc
+    return _build_versioned_range_river_equity_result_after_base_replay(case, tool_results)
+
+
+def _build_versioned_range_river_equity_result_after_base_replay(
+    case: CaseInput,
+    tool_results: tuple[ToolResult, ...] | list[ToolResult],
+) -> VersionedRangeRiverEquityResultV1:
+    """Build the equity projection after the prerequisite chain was hard-replayed."""
+
     binding = _binding_from_case(case)
     if binding is None:
         _fail(RangeEquityDiagnosticCode.SCHEMA, "case.metadata", "bridge marker is missing")
@@ -877,14 +881,6 @@ def build_versioned_range_river_equity_result(
             "tool_results",
             "tool results must be exactly range_validate, combos, holdem_equity",
         )
-    try:
-        verify_versioned_range_tool_chain(case, tool_results, run_status="completed")
-    except (TypeError, ValueError) as exc:
-        raise VersionedRangeRiverEquityError(
-            RangeEquityDiagnosticCode.CHAIN,
-            "tool_results",
-            "versioned range prerequisite replay failed",
-        ) from exc
     hand, definition = _one_definition(case)
     hero_cards, board = _canonical_known_cards(hand)
     validation_result = _tool_result(tool_results, "range_validate")
@@ -941,7 +937,6 @@ def build_versioned_range_river_equity_result(
             "combos",
             "combos result is not exactly bound",
         )
-    _verification_matches_contract(combos_result)
     expected_equity_input = expected_versioned_range_equity_input(case, observed_validation)
     if (
         equity_result.status is not ToolStatus.SUCCESS
@@ -1100,7 +1095,7 @@ def verify_versioned_range_river_equity_tool_chain(
         )
     names = tuple(result.tool_name for result in tool_results)
     if run_status == "completed":
-        return build_versioned_range_river_equity_result(case, tool_results)
+        return _build_versioned_range_river_equity_result_after_base_replay(case, tool_results)
     if names != RANGE_EQUITY_TOOL_PLAN[: len(names)]:
         _fail(
             RangeEquityDiagnosticCode.CHAIN,
@@ -1110,7 +1105,7 @@ def verify_versioned_range_river_equity_tool_chain(
     if len(names) == len(RANGE_EQUITY_TOOL_PLAN) and all(
         result.status is ToolStatus.SUCCESS for result in tool_results
     ):
-        return build_versioned_range_river_equity_result(case, tool_results)
+        return _build_versioned_range_river_equity_result_after_base_replay(case, tool_results)
     if names and names[-1] == "holdem_equity":
         prior = tool_results[:-1]
         if not all(result.status is ToolStatus.SUCCESS for result in prior):

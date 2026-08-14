@@ -2,16 +2,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from pydantic import ValidationError
 
+import poker_deliberation.codex_bridge.conformance as conformance_module
 from poker_deliberation.codex_bridge.canonical import (
     BridgeCanonicalError,
     canonical_json_bytes,
     domain_sha256,
+    sha256_bytes,
 )
-from poker_deliberation.codex_bridge.conformance import build_bridge_role_conformance
+from poker_deliberation.codex_bridge.conformance import (
+    BridgeConformanceError,
+    build_bridge_role_conformance,
+)
 from poker_deliberation.codex_bridge.contracts import (
     BridgeContractError,
     admit_role_request,
@@ -22,6 +29,7 @@ from poker_deliberation.codex_bridge.contracts import (
     build_run_plan,
     build_runtime_policy,
     expected_evidence_references,
+    legacy_role_developer_instructions,
     role_output_schema,
     role_output_schema_for_request,
     validate_role_response,
@@ -40,8 +48,10 @@ from poker_deliberation.codex_bridge.models import (
     BridgeRole,
     BridgeRoleOutputV1,
     BridgeRoleResultV1,
+    BridgeSourceBindingV1,
     BridgeSourceContextV1,
     RuntimeAuthModeV1,
+    repository_skill_for_role,
 )
 from poker_deliberation.codex_bridge.transport import DeterministicReadOnlyTransport
 from tests.codex_bridge_support import REPOSITORY_ROOT, verified_bridge_source
@@ -140,6 +150,7 @@ def _request(tmp_path: Path) -> BoundedCodexBridgeRequestV1:
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
+        include_repository_skill_bindings=True,
     )
     return build_role_request(
         bridge_run_id="bridge-run-contract",
@@ -160,6 +171,7 @@ def _role_chain(
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
+        include_repository_skill_bindings=True,
     )
     policy = build_runtime_policy(auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION)
     expires_at = datetime(2030, 1, 1, tzinfo=UTC)
@@ -209,7 +221,8 @@ def test_verified_terminal_projects_minimal_exact_context(tmp_path: Path) -> Non
 
 
 def test_strategy_request_seeds_only_safe_neutral_narrative_forms(tmp_path: Path) -> None:
-    instructions = _request(tmp_path).developer_instructions
+    request = _request(tmp_path)
+    instructions = request.developer_instructions
     lowered = instructions.lower()
 
     assert (
@@ -220,15 +233,12 @@ def test_strategy_request_seeds_only_safe_neutral_narrative_forms(tmp_path: Path
     assert "Copy required_evidence_references exactly." in instructions
     assert "every narrative value is a closed enum" in lowered
     assert "do not write any other narrative text" in lowered
-    for forbidden in (
-        "gto",
-        "equilibrium",
-        "solver-derived",
-        "always",
-        "must",
-        "unconditionally",
-    ):
-        assert forbidden not in lowered
+    assert "never call a line gto or equilibrium" in lowered
+    assert "apply $review-poker-hand" in lowered
+    assert "context.assignment.conformance.repository_skill_instructions" in instructions
+    assert "## Bounded bridge mode" in (
+        request.context.assignment.conformance.repository_skill_instructions or ""
+    )
 
 
 def test_request_confirmation_admission_and_response_are_exactly_bound(
@@ -239,6 +249,7 @@ def test_request_confirmation_admission_and_response_are_exactly_bound(
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
+        include_repository_skill_bindings=True,
     )
     created = datetime(2029, 12, 31, 23, 40, tzinfo=UTC)
     plan = build_run_plan(
@@ -310,6 +321,9 @@ def test_request_confirmation_admission_and_response_are_exactly_bound(
     assert admission_record.effect_state == "not_launched"
     assert result.output == output
     assert result.result_sha256 != request.request_sha256
+    assert "applied_skill_id" not in type(output).model_fields
+    assert "applied_skill_content_sha256" not in type(output).model_fields
+    assert b"applied_skill" not in canonical_json_bytes(output)
 
     for narrative in (
         "５割の頻度でコールする。",
@@ -401,11 +415,24 @@ def test_role_conformance_is_exactly_bound_to_p2_025a_inventory() -> None:
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
+        include_repository_skill_bindings=True,
     )
 
     assert tuple(item.role for item in conformance) == BRIDGE_ROLE_ORDER
     assert all(item.role_read_only for item in conformance)
     assert all(item.declared_tool_allowlist == () for item in conformance)
+    assert tuple(item.repository_skill_id for item in conformance) == (
+        "review-poker-hand",
+        "run-poker-calculation",
+        "audit-poker-claim",
+        None,
+        None,
+    )
+    assert tuple(item.repository_skill_id for item in conformance) == tuple(
+        repository_skill_for_role(role) for role in BRIDGE_ROLE_ORDER
+    )
+    assert all(item.repository_skill_version == "1" * 40 for item in conformance[:3])
+    assert all(item.repository_skill_content_sha256 for item in conformance[:3])
     assert len({item.runtime_role_definition_sha256 for item in conformance}) == 5
     assert len({item.codex_runtime_inventory_sha256 for item in conformance}) == 1
     assert len({item.python_runtime_inventory_sha256 for item in conformance}) == 1
@@ -415,6 +442,154 @@ def test_role_conformance_is_exactly_bound_to_p2_025a_inventory() -> None:
     mutated["semantic_role"] = "math-audit"
     with pytest.raises(ValidationError, match="semantic mapping"):
         type(conformance[0]).model_validate(mutated, strict=True)
+
+
+def test_public_conformance_default_preserves_legacy_non_subscription_plans() -> None:
+    conformance = build_bridge_role_conformance(
+        REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+    )
+    source_binding = BridgeSourceBindingV1(
+        source_terminal_run_id="source-run-legacy-default",
+        source_terminal_revision=1,
+        source_terminal_transaction_id=f"txn-{'1' * 32}",
+        source_terminal_revision_root_sha256="1" * 64,
+        source_terminal_manifest_sha256="2" * 64,
+        source_terminal_inventory_sha256="3" * 64,
+        source_candidate_sha256="4" * 64,
+        source_binding_sha256="5" * 64,
+        source_result_sha256="6" * 64,
+        source_provenance_sha256="7" * 64,
+    )
+    source_context = cast(
+        BridgeSourceContextV1,
+        SimpleNamespace(source=source_binding),
+    )
+
+    assert all(not item.has_complete_repository_skill_binding for item in conformance)
+    assert b"repository_skill_" not in canonical_json_bytes(conformance)
+    for mode in (RuntimeAuthModeV1.LOCAL_ONLY, RuntimeAuthModeV1.OPENAI_API):
+        policy = build_runtime_policy(
+            auth_mode=mode,
+            api_max_cost_micro_usd=(204_000 if mode is RuntimeAuthModeV1.OPENAI_API else None),
+        )
+        plan = build_run_plan(
+            bridge_run_id=f"bridge-run-legacy-default-{mode.value}",
+            source_context=source_context,
+            runtime_policy=policy,
+            role_conformance=conformance,
+            repository_commit_id="1" * 40,
+            repository_tree_id="2" * 40,
+            created_at=datetime(2030, 1, 1, tzinfo=UTC),
+        )
+        assert plan.auth_mode is mode
+        assert all(not item.has_complete_repository_skill_binding for item in plan.role_conformance)
+
+    with pytest.raises(BridgeContractError, match="repository Skill binding"):
+        build_run_plan(
+            bridge_run_id="bridge-run-subscription-requires-explicit-skill-opt-in",
+            source_context=source_context,
+            runtime_policy=build_runtime_policy(auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION),
+            role_conformance=conformance,
+            repository_commit_id="1" * 40,
+            repository_tree_id="2" * 40,
+            created_at=datetime(2030, 1, 1, tzinfo=UTC),
+        )
+
+
+@pytest.mark.parametrize(
+    ("skill_text", "message"),
+    (
+        (
+            "---\nname: review-poker-hand\nname: review-poker-hand\n---\n"
+            "## Bounded bridge mode\nUse the bounded contract.\n",
+            "name differs",
+        ),
+        (
+            "---\nname: review-poker-hand\n---\n## Bounded bridge mode\n\n"
+            "## Workflow\nUse the ordinary workflow.\n",
+            "mode is empty",
+        ),
+        (
+            "---\nname: review-poker-hand\n---\n## Bounded bridge mode\n"
+            "Use the bounded contract.\n## Bounded bridge mode\nUse it again.\n",
+            "unique bounded bridge mode",
+        ),
+    ),
+)
+def test_repository_skill_document_rejects_ambiguous_or_empty_bounded_contract(
+    skill_text: str,
+    message: str,
+) -> None:
+    with pytest.raises(BridgeConformanceError, match=message):
+        conformance_module._validated_skill_instructions(skill_text, "review-poker-hand")
+
+
+def test_legacy_conformance_shape_keeps_canonical_bytes_and_rejects_partial_binding() -> None:
+    legacy = build_bridge_role_conformance(
+        REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        include_repository_skill_bindings=False,
+    )[0]
+    encoded = canonical_json_bytes(legacy)
+
+    assert b"repository_skill_" not in encoded
+    reparsed = type(legacy).model_validate_json(encoded, strict=True)
+    assert canonical_json_bytes(reparsed) == encoded
+    assert domain_sha256("legacy-v1-replay", reparsed) == domain_sha256(
+        "legacy-v1-replay",
+        encoded,
+    )
+
+    partial = legacy.model_dump(mode="python")
+    partial["repository_skill_id"] = "review-poker-hand"
+    with pytest.raises(ValidationError, match="absent or complete"):
+        type(legacy).model_validate(partial, strict=True)
+
+
+def test_legacy_replay_instructions_keep_exact_pre_skill_v1_bytes() -> None:
+    expected_sha256 = {
+        BridgeRole.STRATEGY_ANALYST: (
+            "58747821831e410f4a68dca5c681af33b05a8293658484d93b075e950a228f2d"
+        ),
+        BridgeRole.MATH_TOOL_AUDITOR: (
+            "00820692dd2fb0e457202e6f5dfd87117a56a8fe53273d59db53280fc912187d"
+        ),
+        BridgeRole.SKEPTIC_FALSIFIER: (
+            "ae8e6eb9d5316695b9634fc99a780028120ccca190de8829e112bc3ac6ba3d70"
+        ),
+        BridgeRole.ADJUDICATOR: (
+            "a3b63c2204cd49a904c6dbc685059a2196575b3e0e7284fd8c5dec4604d660af"
+        ),
+        BridgeRole.REPORT_WRITER: (
+            "79d2df9496427acb6ecb5a23fdf49bfd0aa2cba78295b42c8b51bd34213db41f"
+        ),
+    }
+
+    assert {
+        role: sha256_bytes(legacy_role_developer_instructions(role).encode("utf-8"))
+        for role in BRIDGE_ROLE_ORDER
+    } == expected_sha256
+
+
+def test_new_subscription_request_rejects_legacy_conformance() -> None:
+    legacy = build_bridge_role_conformance(
+        REPOSITORY_ROOT,
+        repository_commit_id="1" * 40,
+        include_repository_skill_bindings=False,
+    )[0]
+
+    with pytest.raises(BridgeContractError, match="repository Skill binding"):
+        build_role_request(
+            bridge_run_id="bridge-run-legacy-rejected",
+            role=BridgeRole.STRATEGY_ANALYST,
+            assignment_id="assignment-codex_subscription-legacy",
+            attempt_id="attempt-codex_subscription-legacy",
+            expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+            source_context=cast(BridgeSourceContextV1, object()),
+            runtime_policy=build_runtime_policy(auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION),
+            conformance=legacy,
+        )
 
 
 def test_dependent_outputs_cannot_bypass_parent_lineage() -> None:

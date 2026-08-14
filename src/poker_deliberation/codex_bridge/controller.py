@@ -315,6 +315,7 @@ class BoundedCodexBridgeController:
         role_conformance = build_bridge_role_conformance(
             repository_root,
             repository_commit_id=repository_commit_id,
+            include_repository_skill_bindings=(auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION),
         )
         plan = build_run_plan(
             bridge_run_id=bridge_run_id,
@@ -727,6 +728,10 @@ class BoundedCodexBridgeController:
             or current.pointer.auth_mode is not request.auth_mode
         ):
             raise BridgeControllerError("execution auth mode binding mismatch")
+        if request.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION and tuple(
+            item.has_complete_repository_skill_binding for item in plan.role_conformance
+        ) != (True, True, True, False, False):
+            raise BridgeControllerError("legacy subscription run cannot execute")
         self._assert_turn_order(current, role)
         confirmation = _model_at(
             current,

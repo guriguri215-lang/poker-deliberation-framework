@@ -13,6 +13,8 @@ from poker_deliberation.codex_bridge.contracts import (
     admit_role_request,
     build_role_request,
     build_run_plan,
+    expected_evidence_references,
+    legacy_role_developer_instructions,
     role_output_schema_for_request,
     validate_role_response,
 )
@@ -91,6 +93,17 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
         or plan.source != source.source
     ):
         raise BridgeReplayError("bridge storage anchors do not correlate")
+    skill_shape = tuple(
+        item.has_complete_repository_skill_binding for item in plan.role_conformance
+    )
+    no_skill_shape = (False, False, False, False, False)
+    expected_skill_shape = (
+        (True, True, True, False, False)
+        if plan.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+        else (False, False, False, False, False)
+    )
+    if skill_shape not in {expected_skill_shape, no_skill_shape}:
+        raise BridgeReplayError("bridge repository Skill binding shape failed replay")
 
     completed: list[BridgeRole] = []
     input_tokens = 0
@@ -109,6 +122,7 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
     results: dict[BridgeRole, BridgeRoleResultV1] = {}
     terminal_failure: BridgeExecutionAuditV1 | None = None
     runtime_policy = None
+    legacy_contract: bool | None = None
 
     for ordinal, role in enumerate(BRIDGE_ROLE_ORDER):
         request_name = role_artifact_name(role, "request")
@@ -140,6 +154,7 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
             != canonical_assignment_id(plan.bridge_run_id, plan.auth_mode, role)
             or assignment.attempt_id
             != canonical_attempt_id(plan.bridge_run_id, plan.auth_mode, role)
+            or assignment.conformance != plan.role_conformance[ordinal]
             or request.context.source_context != source
             or request.context.runtime_policy.policy_sha256 != plan.runtime_policy_sha256
             or assignment.assignment_id in assignments
@@ -165,20 +180,32 @@ def replay_bridge(read: VerifiedBridgeRead) -> BridgeReplayResult:
             assignment.parent_result_sha256s
         ):
             raise BridgeReplayError("bridge parent result lineage failed replay")
-        rebuilt_request = build_role_request(
-            bridge_run_id=plan.bridge_run_id,
-            role=role,
-            assignment_id=assignment.assignment_id,
-            attempt_id=assignment.attempt_id,
-            expires_at=assignment.expires_at,
-            source_context=source,
-            runtime_policy=request.context.runtime_policy,
-            conformance=plan.role_conformance[ordinal],
-            parent_results=expected_parents,
-        )
-        if rebuilt_request != request:
-            raise BridgeReplayError("bridge role request failed deterministic replay")
-        if ordinal == 0:
+        legacy_request = request.developer_instructions == legacy_role_developer_instructions(role)
+        if legacy_request and skill_shape != no_skill_shape:
+            raise BridgeReplayError("legacy role contract cannot carry repository Skill bindings")
+        if legacy_contract is None:
+            legacy_contract = legacy_request
+        elif legacy_contract is not legacy_request:
+            raise BridgeReplayError("bridge role contract generation changed within the run")
+        if legacy_request:
+            if expected_evidence_references(request) != request.required_evidence_references:
+                raise BridgeReplayError("legacy bridge role request failed exact replay")
+            role_output_schema_for_request(request)
+        else:
+            rebuilt_request = build_role_request(
+                bridge_run_id=plan.bridge_run_id,
+                role=role,
+                assignment_id=assignment.assignment_id,
+                attempt_id=assignment.attempt_id,
+                expires_at=assignment.expires_at,
+                source_context=source,
+                runtime_policy=request.context.runtime_policy,
+                conformance=plan.role_conformance[ordinal],
+                parent_results=expected_parents,
+            )
+            if rebuilt_request != request:
+                raise BridgeReplayError("bridge role request failed deterministic replay")
+        if ordinal == 0 and not legacy_request:
             rebuilt_plan = build_run_plan(
                 bridge_run_id=plan.bridge_run_id,
                 source_context=source,

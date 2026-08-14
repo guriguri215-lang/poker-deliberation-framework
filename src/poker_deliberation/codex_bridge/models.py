@@ -151,6 +151,16 @@ BoundedText = Annotated[
     Field(min_length=1, max_length=1024),
     AfterValidator(_safe_control),
 ]
+DeveloperInstructions = Annotated[
+    str,
+    Field(min_length=1, max_length=2048),
+    AfterValidator(_safe_control),
+]
+SkillInstructions = Annotated[
+    str,
+    Field(min_length=1, max_length=4096),
+    AfterValidator(_safe_control),
+]
 SAFE_INFERENCE_NARRATIVE: Final = (
     "The supplied evidence supports only the bounded comparison under its stated assumption."
 )
@@ -218,6 +228,26 @@ BRIDGE_ROLE_ORDER: Final = (
     BridgeRole.ADJUDICATOR,
     BridgeRole.REPORT_WRITER,
 )
+
+BridgeSkillId: TypeAlias = Literal[
+    "review-poker-hand",
+    "run-poker-calculation",
+    "audit-poker-claim",
+]
+
+_BRIDGE_ROLE_SKILLS: Final[dict[BridgeRole, BridgeSkillId | None]] = {
+    BridgeRole.STRATEGY_ANALYST: "review-poker-hand",
+    BridgeRole.MATH_TOOL_AUDITOR: "run-poker-calculation",
+    BridgeRole.SKEPTIC_FALSIFIER: "audit-poker-claim",
+    BridgeRole.ADJUDICATOR: None,
+    BridgeRole.REPORT_WRITER: None,
+}
+
+
+def repository_skill_for_role(role: BridgeRole) -> BridgeSkillId | None:
+    """Return the single canonical repository Skill assignment for a bridge role."""
+
+    return _BRIDGE_ROLE_SKILLS[role]
 
 
 class BridgeEffectState(StrEnum):
@@ -865,6 +895,46 @@ class BridgeRoleConformanceBindingV1(_BridgeModel):
     source_path: str = Field(pattern=r"^\.codex/agents/[a-z0-9-]+\.toml$")
     role_read_only: Literal[True] = True
     declared_tool_allowlist: tuple[()] = ()
+    # These additive fields are omitted, rather than serialized as null, so a
+    # pre-Skill v1 binding keeps its exact canonical bytes and hashes.
+    repository_skill_id: BridgeSkillId | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    repository_skill_source_path: BoundedText | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    repository_skill_content_sha256: Sha256 | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    repository_skill_version_kind: Literal["repository_commit"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    repository_skill_version: GitObjectId | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    repository_skill_instructions: SkillInstructions | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @property
+    def has_complete_repository_skill_binding(self) -> bool:
+        return all(
+            value is not None
+            for value in (
+                self.repository_skill_id,
+                self.repository_skill_source_path,
+                self.repository_skill_content_sha256,
+                self.repository_skill_version_kind,
+                self.repository_skill_version,
+                self.repository_skill_instructions,
+            )
+        )
 
     @model_validator(mode="after")
     def role_semantics_match(self) -> BridgeRoleConformanceBindingV1:
@@ -872,6 +942,25 @@ class BridgeRoleConformanceBindingV1(_BridgeModel):
             raise ValueError("bridge role differs from the P2-025A semantic mapping")
         if self.source_path != f".codex/agents/{self.role.value}.toml":
             raise ValueError("bridge role definition source path mismatch")
+        expected_skill = repository_skill_for_role(self.role)
+        values = (
+            self.repository_skill_id,
+            self.repository_skill_source_path,
+            self.repository_skill_content_sha256,
+            self.repository_skill_version_kind,
+            self.repository_skill_version,
+            self.repository_skill_instructions,
+        )
+        populated = sum(value is not None for value in values)
+        if populated not in {0, len(values)}:
+            raise ValueError("repository Skill binding must be absent or complete")
+        if populated == len(values) and (
+            expected_skill is None
+            or self.repository_skill_id != expected_skill
+            or self.repository_skill_source_path != f".agents/skills/{expected_skill}/SKILL.md"
+            or self.repository_skill_version_kind != "repository_commit"
+        ):
+            raise ValueError("bridge role repository Skill binding mismatch")
         return self
 
 
@@ -980,7 +1069,7 @@ class BoundedCodexBridgeRequestV1(_BridgeModel):
     contract_id: Literal["poker-bounded-codex-review-bridge"] = BRIDGE_CONTRACT_ID
     request_kind: Literal["bounded_read_only_role_review"] = "bounded_read_only_role_review"
     auth_mode: RuntimeAuthModeV1
-    developer_instructions: BoundedText
+    developer_instructions: DeveloperInstructions
     output_schema_sha256: Sha256
     allowed_conclusion_codes: tuple[BridgeConclusionCode, ...] = Field(
         min_length=1,
@@ -1107,6 +1196,12 @@ class BridgeRunPlanV1(_BridgeModel):
             for item in self.role_conformance
         ):
             raise ValueError("bridge conformance inventory binding mismatch")
+        if any(
+            item.has_complete_repository_skill_binding
+            and item.repository_skill_version != self.repository_commit_id
+            for item in self.role_conformance
+        ):
+            raise ValueError("repository Skill version differs from the run commit")
         if self.auth_mode is RuntimeAuthModeV1.OPENAI_API and (
             self.total_max_cost_micro_usd is None or self.total_max_cost_micro_usd <= 0
         ):
@@ -1886,6 +1981,7 @@ __all__ += [
     "BridgeRoleResultV1",
     "BridgeRunPlanV1",
     "BridgeRuntimePolicyV1",
+    "BridgeSkillId",
     "BridgeSourceBindingV1",
     "BridgeSourceContextV1",
     "BridgeTerminalManifestV1",
@@ -1894,4 +1990,5 @@ __all__ += [
     "CodexSubscriptionLiveExecutionEvidenceV1",
     "ExactRationalV1",
     "RuntimeAuthModeV1",
+    "repository_skill_for_role",
 ]

@@ -100,6 +100,36 @@ def test_exact_integer_oracle_preserves_weighted_win_and_loss() -> None:
     assert bridge.legacy_numeric_exactness == "floating-verified"
 
 
+@pytest.mark.parametrize(
+    "entrypoint",
+    (
+        build_versioned_range_river_equity_result,
+        verify_versioned_range_river_equity_tool_chain,
+    ),
+    ids=("build", "verify"),
+)
+def test_public_equity_replay_hard_replays_each_bound_tool_once(
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: object,
+) -> None:
+    from poker_deliberation.tools.registry import ToolRegistry
+
+    admission = admit_versioned_range_river_equity(versioned_river_equity_case())
+    results = _run_bound_tools(admission.case)
+    original = ToolRegistry.reverify_materialized_result
+    replayed: list[str] = []
+
+    def counted_replay(self: ToolRegistry, result: ToolResult) -> None:
+        replayed.append(result.tool_name)
+        original(self, result)
+
+    monkeypatch.setattr(ToolRegistry, "reverify_materialized_result", counted_replay)
+    assert callable(entrypoint)
+    entrypoint(admission.case, results)
+
+    assert replayed == ["range_validate", "combos", "holdem_equity"]
+
+
 def test_exact_integer_oracle_preserves_weighted_ties() -> None:
     candidate = versioned_river_equity_case(
         "4d5d@0.2,6h7h@0.8",

@@ -190,8 +190,10 @@ publishしてからtransportを1回だけ呼ぶ。resultは既存P3 artifactを�
 `codex_bridge/storage.py`がmarker-last revisionとして加算保存する。
 
 `codex_bridge/subscription_transport.py`は`codex exec --ephemeral --json --output-schema`を、approval
-`never`、read-only sandbox、history off、empty MCP、repository外single-use CWD/HOME、全discovered
-`SKILL.md`の明示disable、shell/web/apps/nested-agent等のfeature offで起動する。configured model provider
+`never`、read-only sandbox、history off、empty MCP、repository外single-use CWD/HOMEで起動する。ambientに
+discoveryされた`SKILL.md`はすべて明示disableし、最初の3 roleだけはrepository-owned Skillをroleごとに
+exact 1件allowlistして、source path、content hash、repository commit、bounded instructionsをrequestへ束縛する。
+adjudicator/report-writerにはSkillを割り当てない。shell/web/apps/nested-agent等のfeatureはoffにする。configured model provider
 `openai`とauth boundary `chatgpt`を分離し、同じexec processでforced authを検査する。JSONL lifecycleで
 `reasoning`と`agent_message`以外のitemを観測した場合はfail closedにする。effective backend identityと
 actual backend model inputは直接観測できないため`UNKNOWN`とし、requested値をobserved値へコピーしない。

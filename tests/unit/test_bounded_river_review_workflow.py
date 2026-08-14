@@ -118,6 +118,11 @@ def _complete_workflow(
         api_max_cost_micro_usd=api_max_cost_micro_usd,
     )
     shutil.copytree(REPOSITORY_ROOT / ".codex" / "agents", repository / ".codex" / "agents")
+    if auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION:
+        shutil.copytree(
+            REPOSITORY_ROOT / ".agents" / "skills",
+            repository / ".agents" / "skills",
+        )
     assert preparation.candidate is not None
     confirmation = confirm_bounded_river_review_workflow(
         repository_root=repository,
@@ -310,6 +315,7 @@ def test_workflow_root_authority_routes_mutations_and_pure_reads_separately(
         pass
 
     observed: list[tuple[bool, bool]] = []
+    allow_initial_preflight = True
 
     def probe_root(
         _repository_root: Path,
@@ -318,7 +324,12 @@ def test_workflow_root_authority_routes_mutations_and_pure_reads_separately(
         create: bool = True,
         pure_read: bool = False,
     ) -> Path:
+        nonlocal allow_initial_preflight
         observed.append((create, pure_read))
+        if allow_initial_preflight:
+            assert (create, pure_read) == (False, False)
+            allow_initial_preflight = False
+            return _workflow_root
         raise RootProbe
 
     monkeypatch.setattr(workflow, "_workflow_root", probe_root)
@@ -345,7 +356,8 @@ def test_workflow_root_authority_routes_mutations_and_pure_reads_separately(
             repository_commit_id="1" * 40,
             repository_tree_id="2" * 40,
         )
-    assert observed.pop() == (True, False)
+    assert observed.pop(0) == (False, False)
+    assert observed.pop(0) == (True, False)
 
     with pytest.raises(RootProbe):
         confirm_bounded_river_review_workflow(

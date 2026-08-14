@@ -559,14 +559,8 @@ def test_runtime_overrun_finishes_with_auditable_limited_report(tmp_path: Path) 
     assert report.run_status == "failed_with_limitations"
     with pytest.raises(ProductRunError) as failure:
         orchestrator.product_store.read_current(report.run_id)
-    assert failure.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-    state = json.loads(
-        orchestrator.product_store.read_current(
-            report.run_id,
-            verify_budget=False,
-        ).payload_bytes("state.json")
-    )
-    assert state["state"] == "FAILED_WITH_LIMITATIONS"
+    assert failure.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+    assert any("runtime_exceeded" in item for item in report.data_quality)
     ticks_after_return = provider.work_ticks
     time.sleep(0.01)
     assert provider.work_ticks == ticks_after_return

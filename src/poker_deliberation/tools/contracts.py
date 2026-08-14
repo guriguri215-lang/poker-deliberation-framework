@@ -7,6 +7,7 @@ objects; they are not independent sources of truth.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Annotated, Any, Literal
@@ -703,7 +704,33 @@ def versioned_range_bridge_failure_input_matches(
     payload: dict[str, Any],
     contract_version: str | None,
 ) -> bool:
-    """Return whether a request is a valid deterministic internal bridge input."""
+    """Check only the strict marker, schema, shape, and static input bounds.
+
+    This helper runs before hard-isolated dispatch and during serialized failure
+    checks, so it must never parse ranges, enumerate cards, or run a calculator.
+    Semantic validation remains inside the cancellable tool worker.
+    """
+
+    def bounded_range_text(value: str) -> bool:
+        try:
+            encoded = value.encode("utf-8", errors="strict")
+        except UnicodeEncodeError:
+            return False
+        return (
+            0 < len(encoded) <= MAX_RANGE_NOTATION_BYTES
+            and all(" " <= character <= "~" for character in value)
+            and value.count(",") < MAX_RANGE_TOKENS
+        )
+
+    def strict_json_model(payload: dict[str, Any], model: type[BaseModel]) -> BaseModel:
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return model.model_validate_json(encoded, strict=True)
 
     try:
         if contract_version != VERSIONED_RANGE_BRIDGE_CONTRACT_VERSION:
@@ -713,29 +740,25 @@ def versioned_range_bridge_failure_input_matches(
             "hand",
             "range_definition",
         }:
-            from poker_deliberation.range_grammar import validate_versioned_range
-
-            parsed_range = RangeValidateInput.model_validate(payload)
+            parsed_range = strict_json_model(payload, RangeValidateInput)
+            assert isinstance(parsed_range, RangeValidateInput)
             return (
-                validate_versioned_range(
-                    parsed_range.hand,
-                    parsed_range.range_definition,
-                ).status
-                == "success"
+                bounded_range_text(parsed_range.range_definition.notation)
+                and len(parsed_range.hand.actions) <= MAX_RANGE_ACTION_PREFIX
             )
         if tool_name == "combos" and set(payload) == {"range", "dead_cards"}:
-            from poker_deliberation.tools.combinations import parse_weighted_range
-
-            parsed_combos = CombosInput.model_validate(payload)
+            parsed_combos = strict_json_model(payload, CombosInput)
+            assert isinstance(parsed_combos, CombosInput)
             shape_matches = (
                 parsed_combos.hand_class is None
                 and parsed_combos.range is not None
                 and parsed_combos.dead_cards == []
             )
-            if not shape_matches or parsed_combos.range is None:
-                return False
-            parse_weighted_range(parsed_combos.range, ())
-            return True
+            return bool(
+                shape_matches
+                and parsed_combos.range is not None
+                and bounded_range_text(parsed_combos.range)
+            )
         if tool_name == "holdem_equity" and set(payload) == {
             "hero_range",
             "villain_range",
@@ -746,9 +769,9 @@ def versioned_range_bridge_failure_input_matches(
             "max_exact_evaluations",
         }:
             from poker_deliberation.range_equity_models import RANGE_EQUITY_MAX_EVALUATIONS
-            from poker_deliberation.tools.equity import holdem_equity
 
-            parsed_equity = HoldemEquityInput.model_validate(payload)
+            parsed_equity = strict_json_model(payload, HoldemEquityInput)
+            assert isinstance(parsed_equity, HoldemEquityInput)
             shape_matches = (
                 parsed_equity.game_type == "NLHE"
                 and parsed_equity.mode == "exact"
@@ -758,17 +781,11 @@ def versioned_range_bridge_failure_input_matches(
                 and parsed_equity.opponent_ranges is None
                 and parsed_equity.villain_ranges is None
             )
-            if not shape_matches:
-                return False
-            output = holdem_equity(
-                hero_range=parsed_equity.hero_range,
-                villain_range=parsed_equity.villain_range,
-                board=tuple(parsed_equity.board),
-                dead_cards=(),
-                mode="exact",
-                max_exact_evaluations=parsed_equity.max_exact_evaluations,
+            return bool(
+                shape_matches
+                and bounded_range_text(parsed_equity.hero_range)
+                and bounded_range_text(parsed_equity.villain_range)
             )
-            return output.get("exact") is True
     except (TypeError, ValueError, KeyError, ArithmeticError, RecursionError):
         return False
     return False

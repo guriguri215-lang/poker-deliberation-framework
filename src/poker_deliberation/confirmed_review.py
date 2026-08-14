@@ -6,10 +6,13 @@ import hashlib
 import json
 import re
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import get_ident
 from typing import Any, Literal, NoReturn, cast
 from uuid import uuid4
 
@@ -102,6 +105,32 @@ class ConfirmedReviewError(ValueError):
 
 def _fail(code: ConfirmedReviewDiagnosticCode, field_path: str) -> NoReturn:
     raise ConfirmedReviewError(code, field_path)
+
+
+@dataclass
+class _SameRunToolPublicationLease:
+    active: bool = True
+
+
+@dataclass(frozen=True)
+class _SameRunToolPublicationAuthority:
+    lease: _SameRunToolPublicationLease
+    owner_thread_id: int
+    run_id: str
+    source_sha256: str
+    candidate_bytes: bytes
+    confirmation_bytes: bytes
+    case_bytes: bytes
+    admitted_at: datetime
+    ordered_tool_result_bytes: tuple[tuple[str, bytes], ...]
+
+
+_ACTIVE_SAME_RUN_TOOL_PUBLICATION_AUTHORITY: ContextVar[_SameRunToolPublicationAuthority | None] = (
+    ContextVar(
+        "confirmed_review_same_run_tool_publication_authority",
+        default=None,
+    )
+)
 
 
 def _sha256(payload: bytes) -> str:
@@ -791,9 +820,11 @@ def _tool_support(result: ToolResult) -> ConfirmedReviewToolSupportV1:
     )
 
 
-def _expected_tool_results(
+def _expected_tool_inputs(
     admission: ConfirmedReviewAdmission,
-) -> dict[str, ToolResult]:
+    *,
+    same_run_tool_results: Sequence[ToolResult] | None = None,
+) -> dict[str, dict[str, Any]]:
     hand = admission.case.hand
     if hand is None:
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_MISSING, "candidate.hand")
@@ -808,21 +839,45 @@ def _expected_tool_results(
                 ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED,
                 "candidate.hand.known_ranges",
             )
-        validation = validate_versioned_range(candidate_input.hand, range_definition)
-        if validation.status != "success" or validation.canonical_notation is None:
-            _fail(
-                ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED,
-                "candidate.hand.known_ranges",
-            )
-        canonical_notation = validation.canonical_notation
         range_payload = {
             "schema_version": "1.0.0",
             "hand": hand_payload,
             "range_definition": range_definition.model_dump(mode="json"),
         }
         expected_inputs["range_validate"] = range_payload
+        canonical_notation: str | None
+        if same_run_tool_results is None:
+            validation = validate_versioned_range(candidate_input.hand, range_definition)
+            if validation.status != "success" or validation.canonical_notation is None:
+                _fail(
+                    ConfirmedReviewDiagnosticCode.CANDIDATE_RANGE_UNSUPPORTED,
+                    "candidate.hand.known_ranges",
+                )
+            canonical_notation = validation.canonical_notation
+        else:
+            range_results = [
+                result for result in same_run_tool_results if result.tool_name == "range_validate"
+            ]
+            if len(range_results) > 1:
+                _fail(
+                    ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                    "report.tool_results.authority",
+                )
+            raw_canonical_notation = (
+                range_results[0].output.get("canonical_notation") if range_results else None
+            )
+            if raw_canonical_notation is not None and (
+                not isinstance(raw_canonical_notation, str) or not raw_canonical_notation
+            ):
+                _fail(
+                    ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                    "report.tool_results.authority",
+                )
+            canonical_notation = (
+                raw_canonical_notation if isinstance(raw_canonical_notation, str) else None
+            )
         combo_payload = {
-            "range": canonical_notation,
+            "range": canonical_notation or "",
             "dead_cards": [],
         }
     if candidate_input.ledger_profile is not None:
@@ -839,6 +894,12 @@ def _expected_tool_results(
         expected_inputs["hand_pot_ledger"] = exact_ledger_payload
     if combo_payload is not None:
         expected_inputs["combos"] = combo_payload
+    return expected_inputs
+
+
+def _replayed_expected_tool_results(
+    expected_inputs: Mapping[str, dict[str, Any]],
+) -> dict[str, ToolResult]:
     registry = default_registry()
     expected: dict[str, ToolResult] = {}
     for tool_name, payload in expected_inputs.items():
@@ -850,6 +911,129 @@ def _expected_tool_results(
             )
         expected[tool_name] = result
     return expected
+
+
+def _validated_same_run_tool_authority(
+    admission: ConfirmedReviewAdmission,
+    report: FinalReport,
+    same_run_tool_authorities: Mapping[str, bytes],
+) -> tuple[tuple[str, bytes], ...]:
+    expected_inputs = _expected_tool_inputs(
+        admission,
+        same_run_tool_results=report.tool_results,
+    )
+    expected_names = list(expected_inputs)
+    actual_names = [result.tool_name for result in report.tool_results]
+    if (report.run_status == "completed" and actual_names != expected_names) or (
+        report.run_status == "failed_with_limitations"
+        and actual_names != expected_names[: len(actual_names)]
+    ):
+        _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
+    result_ids = [result.result_id for result in report.tool_results]
+    if (
+        report.run_status not in {"completed", "failed_with_limitations"}
+        or len(set(result_ids)) != len(result_ids)
+        or set(same_run_tool_authorities) != set(result_ids)
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "report.tool_results.authority",
+        )
+    ordered: list[tuple[str, bytes]] = []
+    for result in report.tool_results:
+        exact = canonical_json_bytes(result)
+        if (
+            result.status is not ToolStatus.SUCCESS
+            or result.input != expected_inputs[result.tool_name]
+            or same_run_tool_authorities.get(result.result_id) != exact
+        ):
+            _fail(
+                ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+                "report.tool_results.authority",
+            )
+        ordered.append((result.result_id, exact))
+    return tuple(ordered)
+
+
+@contextmanager
+def _confirmed_review_same_run_publication_authority(
+    admission: ConfirmedReviewAdmission,
+    report: FinalReport,
+    same_run_tool_authorities: Mapping[str, bytes],
+) -> Iterator[None]:
+    """Scope an in-memory authority to one synchronous terminal publication."""
+
+    if (
+        _ACTIVE_SAME_RUN_TOOL_PUBLICATION_AUTHORITY.get() is not None
+        or admission.confirmation.run_id != report.run_id
+        or report.reconstructed_input != admission.case.model_dump(mode="json")
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "runtime.tool_publication_authority",
+        )
+    ordered = _validated_same_run_tool_authority(
+        admission,
+        report,
+        same_run_tool_authorities,
+    )
+    authority = _SameRunToolPublicationAuthority(
+        lease=_SameRunToolPublicationLease(),
+        owner_thread_id=get_ident(),
+        run_id=report.run_id,
+        source_sha256=_sha256(admission.source_bytes),
+        candidate_bytes=canonical_json_bytes(admission.candidate),
+        confirmation_bytes=canonical_json_bytes(admission.confirmation),
+        case_bytes=canonical_json_bytes(admission.case),
+        admitted_at=admission.admitted_at,
+        ordered_tool_result_bytes=ordered,
+    )
+    token = _ACTIVE_SAME_RUN_TOOL_PUBLICATION_AUTHORITY.set(authority)
+    try:
+        yield
+    finally:
+        authority.lease.active = False
+        _ACTIVE_SAME_RUN_TOOL_PUBLICATION_AUTHORITY.reset(token)
+
+
+def _active_confirmed_review_same_run_tool_authorities(
+    *,
+    run_id: str,
+    case: CaseInput,
+    report: FinalReport,
+    source_bytes: bytes | None = None,
+    candidate: ReviewIntakeCandidateV1 | None = None,
+    confirmation: ReviewIntakeConfirmationV1 | None = None,
+    admitted_at: datetime | None = None,
+) -> dict[str, bytes] | None:
+    """Return the exact active authority, refusing any cross-run or mutated use."""
+
+    authority = _ACTIVE_SAME_RUN_TOOL_PUBLICATION_AUTHORITY.get()
+    if authority is None:
+        return None
+    ordered = tuple(
+        (result.result_id, canonical_json_bytes(result)) for result in report.tool_results
+    )
+    if (
+        not authority.lease.active
+        or authority.owner_thread_id != get_ident()
+        or authority.run_id != run_id
+        or report.run_id != run_id
+        or authority.case_bytes != canonical_json_bytes(case)
+        or authority.ordered_tool_result_bytes != ordered
+        or (source_bytes is not None and authority.source_sha256 != _sha256(source_bytes))
+        or (candidate is not None and authority.candidate_bytes != canonical_json_bytes(candidate))
+        or (
+            confirmation is not None
+            and authority.confirmation_bytes != canonical_json_bytes(confirmation)
+        )
+        or (admitted_at is not None and authority.admitted_at != admitted_at)
+    ):
+        _fail(
+            ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
+            "runtime.tool_publication_authority",
+        )
+    return dict(authority.ordered_tool_result_bytes)
 
 
 def _tool_result_semantic_projection(result: ToolResult) -> dict[str, Any]:
@@ -883,6 +1067,7 @@ _CONFIRMED_RUNTIME_DATA_QUALITY = frozenset(
         "confirmed terminal publication refused with less than 0.25 seconds remaining",
         "maximum runtime exceeded during final synthesis",
         "maximum runtime exceeded during final artifact writes",
+        "maximum runtime exceeded during terminal publication",
     }
 )
 
@@ -1108,6 +1293,33 @@ def _validate_confirmed_report_projection(
         "confirmed terminal publication refused with less than 0.25 seconds remaining",
         *additional_runtime_stages,
     }
+    final_followup_runtime_stages = (
+        "maximum runtime exceeded during final synthesis",
+        "maximum runtime exceeded during final artifact writes",
+        "maximum runtime exceeded during terminal publication",
+    )
+    observed_primary_runtime_stages = [
+        item for item in report.data_quality if item in primary_runtime_stages
+    ]
+    observed_final_followup_stages = [
+        item for item in report.data_quality if item in final_followup_runtime_stages
+    ]
+    observed_runtime_stage_order = [
+        item
+        for item in report.data_quality
+        if item in primary_runtime_stages or item in final_followup_runtime_stages
+    ]
+    runtime_stage_order_is_valid = (
+        len(observed_primary_runtime_stages) <= 1
+        and observed_final_followup_stages
+        == [
+            stage
+            for stage in final_followup_runtime_stages
+            if stage in observed_final_followup_stages
+        ]
+        and observed_runtime_stage_order
+        == [*observed_primary_runtime_stages, *observed_final_followup_stages]
+    )
 
     def runtime_stage_consistent(item: str) -> bool:
         record_count = len(report.agent_execution_records)
@@ -1145,15 +1357,11 @@ def _validate_confirmed_report_projection(
             return all_records_completed and actual_tool_names == list(expected_tool_names)
         if item == "confirmed terminal publication refused with less than 0.25 seconds remaining":
             return all_records_completed and actual_tool_names == list(expected_tool_names)
-        if item in {
-            "maximum runtime exceeded during final synthesis",
-            "maximum runtime exceeded during final artifact writes",
-        }:
+        if item in final_followup_runtime_stages:
+            item_position = report.data_quality.index(item)
             prior_runtime_stage = any(
-                other != item
-                and other in primary_runtime_stages
-                and runtime_stage_consistent(other)
-                for other in report.data_quality
+                other in primary_runtime_stages and runtime_stage_consistent(other)
+                for other in report.data_quality[:item_position]
             )
             return (
                 (all_records_completed and actual_tool_names == list(expected_tool_names))
@@ -1337,6 +1545,7 @@ def _validate_confirmed_report_projection(
         in {
             "maximum runtime exceeded during final synthesis",
             "maximum runtime exceeded during final artifact writes",
+            "maximum runtime exceeded during terminal publication",
         }
         and runtime_stage_consistent(item)
         for item in report.data_quality
@@ -1376,7 +1585,7 @@ def _validate_confirmed_report_projection(
                 )
             )
         )
-        or sum(item in primary_runtime_stages for item in report.data_quality) > 1
+        or not runtime_stage_order_is_valid
         or report.limitations != expected_limitations
         or (
             report.run_status == "completed"
@@ -1472,18 +1681,20 @@ def _build_confirmed_review_provenance(
     storage_revision: int | None = None,
     storage_transaction_id: str | None = None,
     require_storage_authority: bool,
+    same_run_tool_authorities: Mapping[str, bytes] | None = None,
 ) -> ConfirmedReviewProvenanceV1:
     """Build the typed authority wrapper after the ordinary report is complete."""
 
-    verified_admission = _admit_confirmed_review_at(
-        admission.source_bytes,
-        admission.candidate,
-        admission.confirmation,
-        admitted_at=admission.admitted_at,
-    )
-    if verified_admission != admission:
-        _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "admission")
-    admission = verified_admission
+    if same_run_tool_authorities is None:
+        verified_admission = _admit_confirmed_review_at(
+            admission.source_bytes,
+            admission.candidate,
+            admission.confirmation,
+            admitted_at=admission.admitted_at,
+        )
+        if verified_admission != admission:
+            _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "admission")
+        admission = verified_admission
     if report.run_id != admission.confirmation.run_id:
         _fail(ConfirmedReviewDiagnosticCode.CONFIRMATION_BINDING, "report.run_id")
     if report.reconstructed_input != admission.case.model_dump(mode="json"):
@@ -1523,8 +1734,13 @@ def _build_confirmed_review_provenance(
             ConfirmedReviewDiagnosticCode.REPORT_OVERREACH,
             "report.generated_at",
         )
-    expected_tool_results = _expected_tool_results(admission)
-    expected_tool_names = list(expected_tool_results)
+    expected_tool_inputs = _expected_tool_inputs(
+        admission,
+        same_run_tool_results=(
+            report.tool_results if same_run_tool_authorities is not None else None
+        ),
+    )
+    expected_tool_names = list(expected_tool_inputs)
     assignment_template_sequence = tuple(select_roles(admission.case))
     actual_tool_names = [result.tool_name for result in report.tool_results]
     if (report.run_status == "completed" and actual_tool_names != expected_tool_names) or (
@@ -1532,6 +1748,17 @@ def _build_confirmed_review_provenance(
         and actual_tool_names != expected_tool_names[: len(actual_tool_names)]
     ):
         _fail(ConfirmedReviewDiagnosticCode.CANDIDATE_TOOL, "report.tool_results")
+    if same_run_tool_authorities is None:
+        expected_tool_results = _replayed_expected_tool_results(
+            {tool_name: expected_tool_inputs[tool_name] for tool_name in actual_tool_names}
+        )
+    else:
+        _validated_same_run_tool_authority(
+            admission,
+            report,
+            same_run_tool_authorities,
+        )
+        expected_tool_results = {result.tool_name: result for result in report.tool_results}
     _validate_confirmed_report_projection(
         report,
         expected_agent_count=len(assignment_template_sequence),
@@ -1743,7 +1970,7 @@ def _build_confirmed_review_provenance(
                 "report.conclusion",
             )
     assignment_is_authoritative = assignments is not None
-    registered_tools = frozenset(default_registry().names())
+    registered_tools = frozenset(CONFIRMED_REVIEW_TOOL_ALLOWLIST)
     previous_completed_at: datetime | None = None
     for record_index, record in enumerate(report.agent_execution_records):
         expected_allowed_tools = (
@@ -1938,6 +2165,32 @@ def build_confirmed_review_provenance(
     )
 
 
+def _build_confirmed_review_provenance_from_same_run_authority(
+    admission: ConfirmedReviewAdmission,
+    report: FinalReport,
+    *,
+    same_run_tool_authorities: Mapping[str, bytes],
+    assignments: Sequence[AgentAssignment] | None = None,
+    agent_reports: Sequence[AgentReport] | None = None,
+    storage_root: Path | str | None = None,
+    storage_revision: int | None = None,
+    storage_transaction_id: str | None = None,
+) -> ConfirmedReviewProvenanceV1:
+    """Build in-run provenance from exact results emitted by the pinned runtime."""
+
+    return _build_confirmed_review_provenance(
+        admission,
+        report,
+        assignments=assignments,
+        agent_reports=agent_reports,
+        storage_root=storage_root,
+        storage_revision=storage_revision,
+        storage_transaction_id=storage_transaction_id,
+        require_storage_authority=True,
+        same_run_tool_authorities=same_run_tool_authorities,
+    )
+
+
 def verify_confirmed_review_provenance(
     *,
     source_bytes: bytes,
@@ -1955,15 +2208,34 @@ def verify_confirmed_review_provenance(
     """Replay every durable source-to-report binding without provider execution."""
 
     provenance = _strict_provenance(provenance)
-    admission = _admit_confirmed_review_at(
-        source_bytes,
-        candidate,
-        confirmation,
+    same_run_tool_authorities = _active_confirmed_review_same_run_tool_authorities(
+        run_id=confirmation.run_id,
+        case=case,
+        report=report,
+        source_bytes=source_bytes,
+        candidate=candidate,
+        confirmation=confirmation,
         admitted_at=provenance.admitted_at,
+    )
+    admission = (
+        _admit_confirmed_review_at(
+            source_bytes,
+            candidate,
+            confirmation,
+            admitted_at=provenance.admitted_at,
+        )
+        if same_run_tool_authorities is None
+        else ConfirmedReviewAdmission(
+            source_bytes=source_bytes,
+            candidate=candidate,
+            confirmation=confirmation,
+            admitted_at=provenance.admitted_at,
+            case=case,
+        )
     )
     if admission.case != case:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "input.json")
-    expected = build_confirmed_review_provenance(
+    expected = _build_confirmed_review_provenance(
         admission,
         report,
         assignments=assignments,
@@ -1971,6 +2243,8 @@ def verify_confirmed_review_provenance(
         storage_root=storage_root,
         storage_revision=storage_revision,
         storage_transaction_id=storage_transaction_id,
+        require_storage_authority=True,
+        same_run_tool_authorities=same_run_tool_authorities,
     )
     if provenance != expected:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")
@@ -1990,11 +2264,30 @@ def verify_confirmed_review_structural_provenance(
     """Replay a nonterminal buffer without treating its path as terminal authority."""
 
     provenance = _strict_provenance(provenance)
-    admission = _admit_confirmed_review_at(
-        source_bytes,
-        candidate,
-        confirmation,
+    same_run_tool_authorities = _active_confirmed_review_same_run_tool_authorities(
+        run_id=confirmation.run_id,
+        case=case,
+        report=report,
+        source_bytes=source_bytes,
+        candidate=candidate,
+        confirmation=confirmation,
         admitted_at=provenance.admitted_at,
+    )
+    admission = (
+        _admit_confirmed_review_at(
+            source_bytes,
+            candidate,
+            confirmation,
+            admitted_at=provenance.admitted_at,
+        )
+        if same_run_tool_authorities is None
+        else ConfirmedReviewAdmission(
+            source_bytes=source_bytes,
+            candidate=candidate,
+            confirmation=confirmation,
+            admitted_at=provenance.admitted_at,
+            case=case,
+        )
     )
     if admission.case != case:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "input.json")
@@ -2007,6 +2300,7 @@ def verify_confirmed_review_structural_provenance(
         storage_revision=provenance.terminal_revision,
         storage_transaction_id=provenance.terminal_transaction_id,
         require_storage_authority=False,
+        same_run_tool_authorities=same_run_tool_authorities,
     )
     if provenance != expected:
         _fail(ConfirmedReviewDiagnosticCode.STORAGE, "confirmed_review_provenance.json")

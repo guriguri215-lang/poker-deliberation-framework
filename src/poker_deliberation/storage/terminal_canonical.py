@@ -374,6 +374,21 @@ def product_payload_commitments(
     _validate_state_event_chain(state, events)
     if report.run_id != run_id:
         raise CanonicalStorageError("final report run ID mismatch")
+    try:
+        # Delayed import preserves the storage package's dependency direction.
+        from poker_deliberation.confirmed_review import (
+            _active_confirmed_review_same_run_tool_authorities,
+        )
+
+        same_run_tool_authorities = _active_confirmed_review_same_run_tool_authorities(
+            run_id=run_id,
+            case=input_case,
+            report=report,
+        )
+    except ValueError as exc:
+        raise CanonicalStorageError(
+            "same-run tool publication authority does not match the payload"
+        ) from exc
 
     expected_public_status = {
         "approval_required": "approval_required",
@@ -605,16 +620,30 @@ def product_payload_commitments(
         raise CanonicalStorageError("range-equity persisted cases do not correlate") from exc
     if not bounded_river_marker:
         try:
-            verify_versioned_range_tool_chain(
-                input_case,
-                report.tool_results,
-                run_status=report.run_status,
-            )
-            verify_versioned_range_river_equity_tool_chain(
-                input_case,
-                report.tool_results,
-                run_status=report.run_status,
-            )
+            if binding_artifact is None:
+                if same_run_tool_authorities is None:
+                    verify_versioned_range_tool_chain(
+                        input_case,
+                        report.tool_results,
+                        run_status=report.run_status,
+                    )
+                else:
+                    from poker_deliberation.range_grammar import (
+                        _verify_versioned_range_tool_chain_from_same_run_authority,
+                    )
+
+                    _verify_versioned_range_tool_chain_from_same_run_authority(
+                        input_case,
+                        report.tool_results,
+                        run_status=report.run_status,
+                        same_run_tool_authorities=same_run_tool_authorities,
+                    )
+            else:
+                verify_versioned_range_river_equity_tool_chain(
+                    input_case,
+                    report.tool_results,
+                    run_status=report.run_status,
+                )
         except ValueError as exc:
             raise CanonicalStorageError("versioned range tool chain replay failed") from exc
     confirmed_names = set(payloads) & _CONFIRMED_REVIEW_ARTIFACTS

@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
+import poker_deliberation.storage.terminal_store as terminal_store_module
 from poker_deliberation.budgets.contracts import BudgetPolicyV2
 from poker_deliberation.budgets.durable_store import (
     DurableBudgetStore,
@@ -288,6 +289,7 @@ def _store(
 
 def test_terminal_publish_is_marker_last_then_cas_then_settlement(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     hooks: list[str] = []
     budget = FakeBudget()
@@ -298,9 +300,43 @@ def test_terminal_publish_is_marker_last_then_cas_then_settlement(
         publication_kind="product_terminal",
         status="succeeded",
     )
+    semantic_verification_calls = 0
+    original_product_payload_commitments = terminal_store_module.product_payload_commitments
+
+    def counted_product_payload_commitments(*args: object, **kwargs: object):
+        nonlocal semantic_verification_calls
+        semantic_verification_calls += 1
+        return original_product_payload_commitments(*args, **kwargs)
+
+    monkeypatch.setattr(
+        terminal_store_module,
+        "product_payload_commitments",
+        counted_product_payload_commitments,
+    )
 
     outcome = store.publish(request)
+    # One call is request preparation and one is the mandatory post-settlement
+    # public read. The locked pre-pointer revision read must not add a third
+    # semantic replay of the same exact payload.
+    assert semantic_verification_calls == 2
     read = store.read_current("run-1")
+    assert semantic_verification_calls == 3
+    with pytest.raises(ValueError, match="unknown staged revision integrity capability"):
+        store._read_revision(
+            request.run_id,
+            read.pointer,
+            verify_budget=False,
+            staged_revision_integrity_capability=object(),
+        )
+    with pytest.raises(ValueError, match="cannot bypass a budget-verified read"):
+        store._read_revision(
+            request.run_id,
+            read.pointer,
+            verify_budget=True,
+            staged_revision_integrity_capability=(
+                terminal_store_module._STAGED_REVISION_INTEGRITY_ONLY
+            ),
+        )
 
     assert outcome.outcome_kind == "published"
     assert read.read_status is RunReadStatus.SUCCEEDED
@@ -413,6 +449,44 @@ def test_payload_tamper_is_corrupt_not_completed(tmp_path: Path) -> None:
 
     assert captured.value.failure.code is ProductRunFailureCode.RUN_CORRUPT
     assert captured.value.failure.read_status is RunReadStatus.CORRUPT
+
+
+def test_pre_pointer_integrity_read_rejects_payload_byte_tamper(
+    tmp_path: Path,
+) -> None:
+    budget = FakeBudget()
+    store: TerminalRunStore
+    request: TerminalPublishRequest
+
+    def corrupt_after_revision_rename(hook: str) -> None:
+        if hook != "revision.after_rename":
+            return
+        report_path = (
+            store.runs_root
+            / request.run_id
+            / ".terminal-store"
+            / "revisions"
+            / f"r1-{request.transaction_id}"
+            / "payload"
+            / "final_report.json"
+        )
+        data = report_path.read_bytes()
+        report_path.write_bytes(data[:-1] + bytes([data[-1] ^ 1]))
+
+    store = _store(tmp_path, budget, fault_injector=corrupt_after_revision_rename)
+    request = _request(
+        "run-pre-pointer-tamper",
+        transaction_suffix="7",
+        publication_kind="product_terminal",
+        status="succeeded",
+    )
+
+    with pytest.raises(ProductRunError) as captured:
+        store.publish(request)
+
+    assert captured.value.failure.code is ProductRunFailureCode.DURABILITY_UNCONFIRMED
+    current = store.runs_root / request.run_id / ".terminal-store" / "current.json"
+    assert not current.exists()
 
 
 def test_real_durable_budget_binding_reserves_and_settles_exact_pointer(

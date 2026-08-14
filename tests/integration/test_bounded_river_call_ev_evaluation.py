@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import os
 import sys
+from collections.abc import Generator
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import ModuleType
+from uuid import uuid4
 
 import pytest
 
@@ -20,11 +25,22 @@ from poker_deliberation.bounded_river_call_ev_evaluation import (
     verify_bounded_river_call_ev_evaluation_module_origins,
 )
 from poker_deliberation.range_equity_models import canonical_domain_sha256
+from scripts import run_bounded_river_call_ev_evaluation as evaluation_runner
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests" / "fixtures" / "bounded_river_call_ev" / "v1" / "scenarios.json"
 COMMIT_ID = "1" * 40
 TREE_ID = "2" * 40
+
+
+@pytest.fixture
+def short_work_roots() -> Generator[tuple[Path, Path, Path], None, None]:
+    with ExitStack() as stack:
+        yield tuple(Path(stack.enter_context(TemporaryDirectory(prefix="p3e-"))) for _ in range(3))
+
+
+def _windows_utf16_units_with_nul(path: Path) -> int:
+    return len(str(path.resolve(strict=False)).encode("utf-16-le")) // 2 + 1
 
 
 def _clean_checkout(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, ...], str]:
@@ -50,13 +66,14 @@ def _clean_checkout(monkeypatch: pytest.MonkeyPatch) -> dict[tuple[str, ...], st
 
 def test_bounded_river_call_ev_evaluation_scores_all_metrics(
     tmp_path: Path,
+    short_work_roots: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clean_checkout(monkeypatch)
     result = run_bounded_river_call_ev_evaluation(
         load_bounded_river_call_ev_evaluation_fixture(FIXTURE),
         repository_root=tmp_path,
-        work_root=tmp_path / "run",
+        work_root=short_work_roots[0],
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
@@ -74,6 +91,7 @@ def test_bounded_river_call_ev_evaluation_scores_all_metrics(
 
 def test_evaluation_fixture_and_result_tamper_fail_closed(
     tmp_path: Path,
+    short_work_roots: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clean_checkout(monkeypatch)
@@ -86,7 +104,7 @@ def test_evaluation_fixture_and_result_tamper_fail_closed(
     result = run_bounded_river_call_ev_evaluation(
         fixture,
         repository_root=tmp_path,
-        work_root=tmp_path / "run",
+        work_root=short_work_roots[0],
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
@@ -100,6 +118,7 @@ def test_evaluation_fixture_and_result_tamper_fail_closed(
 
 def test_evaluation_is_deterministic_and_source_bound(
     tmp_path: Path,
+    short_work_roots: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     responses = _clean_checkout(monkeypatch)
@@ -107,14 +126,14 @@ def test_evaluation_is_deterministic_and_source_bound(
     first = run_bounded_river_call_ev_evaluation(
         fixture,
         repository_root=tmp_path,
-        work_root=tmp_path / "first",
+        work_root=short_work_roots[0],
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
     second = run_bounded_river_call_ev_evaluation(
         fixture,
         repository_root=tmp_path,
-        work_root=tmp_path / "second",
+        work_root=short_work_roots[1],
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
@@ -122,7 +141,7 @@ def test_evaluation_is_deterministic_and_source_bound(
     rebound = run_bounded_river_call_ev_evaluation(
         fixture,
         repository_root=tmp_path,
-        work_root=tmp_path / "rebound",
+        work_root=short_work_roots[2],
         source_commit_id="3" * 40,
         source_tree_id=TREE_ID,
     )
@@ -216,6 +235,7 @@ def test_evaluation_rejects_stale_foreign_registry_callable(
 
 def test_evaluation_rechecks_loaded_module_origins_after_handlers(
     tmp_path: Path,
+    short_work_roots: tuple[Path, Path, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clean_checkout(monkeypatch)
@@ -232,10 +252,125 @@ def test_evaluation_rechecks_loaded_module_origins_after_handlers(
     result = run_bounded_river_call_ev_evaluation(
         load_bounded_river_call_ev_evaluation_fixture(FIXTURE),
         repository_root=tmp_path,
-        work_root=tmp_path / "run",
+        work_root=short_work_roots[0],
         source_commit_id=COMMIT_ID,
         source_tree_id=TREE_ID,
     )
 
     assert result.passed is True
     assert calls == [tmp_path, tmp_path]
+
+
+def test_evaluation_runner_accepts_bounded_paths_without_writing(tmp_path: Path) -> None:
+    token = uuid4().hex[:8]
+    shallow_root = Path(tmp_path.anchor) / f"p3c-{token}"
+    work_root = shallow_root / "w"
+    output = shallow_root / "result.json"
+
+    assert evaluation_runner._validate_runner_paths(
+        work_root=work_root,
+        output=output,
+    ) == (
+        evaluation_module.normalize_bounded_river_call_ev_evaluation_root(work_root),
+        output.resolve(),
+    )
+    assert not work_root.exists()
+    assert not output.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows legacy path budget")
+def test_evaluation_runner_accepts_exact_windows_path_limit_without_writing() -> None:
+    raw_work_root = Path("C:\\" + "v" * 46)
+    output = Path("C:\\") / f"evaluation-result-{uuid4().hex}.json"
+    normalized_root = evaluation_module.normalize_bounded_river_call_ev_evaluation_root(
+        raw_work_root
+    )
+    deepest_path = normalized_root / evaluation_module.BOUNDED_RIVER_CALL_EV_EVALUATION_PATH_BUDGET
+    assert len(str(raw_work_root)) == 49
+    assert len(str(normalized_root)) == 53
+    assert _windows_utf16_units_with_nul(deepest_path) == 260
+
+    assert evaluation_runner._validate_runner_paths(
+        work_root=raw_work_root,
+        output=output,
+    ) == (normalized_root, output.resolve())
+    assert not raw_work_root.exists()
+    assert not output.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows legacy path budget")
+def test_evaluation_runner_rejects_path_overflow_before_loading_or_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_work_root = Path("C:\\" + "w" * 47)
+    output = Path("C:\\") / f"evaluation-result-{uuid4().hex}.json"
+    normalized_root = evaluation_module.normalize_bounded_river_call_ev_evaluation_root(
+        raw_work_root
+    )
+    deepest_path = normalized_root / evaluation_module.BOUNDED_RIVER_CALL_EV_EVALUATION_PATH_BUDGET
+    assert len(str(raw_work_root)) == 50
+    assert len(str(normalized_root)) == 54
+    assert _windows_utf16_units_with_nul(deepest_path) == 261
+    calls: list[str] = []
+
+    def refuse_loader(_path: Path) -> None:
+        calls.append("fixture")
+        raise AssertionError("fixture loader must not run after path refusal")
+
+    def refuse_evaluator(*_args: object, **_kwargs: object) -> None:
+        calls.append("evaluator")
+        raise AssertionError("evaluator must not run after path refusal")
+
+    monkeypatch.setattr(
+        evaluation_runner,
+        "load_bounded_river_call_ev_evaluation_fixture",
+        refuse_loader,
+    )
+    monkeypatch.setattr(
+        evaluation_runner,
+        "run_bounded_river_call_ev_evaluation",
+        refuse_evaluator,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_bounded_river_call_ev_evaluation.py",
+            "--source-commit",
+            COMMIT_ID,
+            "--source-tree",
+            TREE_ID,
+            "--work-root",
+            str(raw_work_root),
+            "--output",
+            str(output),
+        ],
+    )
+
+    with pytest.raises(ValueError, match=r"^BRC_E_STORAGE:"):
+        evaluation_runner.main()
+
+    assert calls == []
+    assert not raw_work_root.exists()
+    assert not output.exists()
+
+    monkeypatch.setattr(
+        evaluation_module,
+        "verify_bounded_river_call_ev_evaluation_module_origins",
+        lambda _root: None,
+    )
+    monkeypatch.setattr(
+        evaluation_module,
+        "verify_bounded_river_call_ev_evaluation_checkout",
+        lambda *_args, **_kwargs: None,
+    )
+    fixture = load_bounded_river_call_ev_evaluation_fixture(FIXTURE)
+    with pytest.raises(ValueError, match=r"^BRC_E_STORAGE:"):
+        run_bounded_river_call_ev_evaluation(
+            fixture,
+            repository_root=ROOT,
+            work_root=raw_work_root,
+            source_commit_id=COMMIT_ID,
+            source_tree_id=TREE_ID,
+        )
+    assert not raw_work_root.exists()

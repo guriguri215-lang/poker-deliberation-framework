@@ -359,14 +359,14 @@ def test_bridge_rejects_semantic_mutation_after_generic_terminal_rehash(
         )
 
 
-def test_bridge_semantic_replay_does_not_execute_calculators(
+def test_bridge_semantic_replay_does_not_execute_raw_or_in_process_calculators(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     orchestrator, read = _completed_read(tmp_path)
 
     def forbidden_execute(*_args: object, **_kwargs: object) -> object:
-        raise AssertionError("terminal semantic replay executed a calculator")
+        raise AssertionError("terminal semantic replay executed an unbounded calculator")
 
     monkeypatch.setattr(ToolRegistry, "execute", forbidden_execute)
     for module, names in (
@@ -377,10 +377,6 @@ def test_bridge_semantic_replay_does_not_execute_calculators(
         (
             bounded_river_call_ev,
             (
-                "calculate_hand_pot_ledger",
-                "validate_hand",
-                "pot_odds",
-                "raked_call_ev",
                 "admit_versioned_range_river_equity",
                 "build_versioned_range_river_equity_result",
                 "exact_versioned_range_river_equity_oracle",

@@ -85,7 +85,44 @@ _NEUTRAL_NARRATIVE_INSTRUCTIONS: Final = (
 )
 
 
-_DEVELOPER_INSTRUCTIONS: Final[dict[BridgeRole, str]] = {
+_ROLE_DEFINITION_INSTRUCTIONS: Final[dict[BridgeRole, str]] = {
+    BridgeRole.STRATEGY_ANALYST: (
+        "Separate chipEV, dollar EV, ICM, and exploitative objectives. Compare alternatives by "
+        "street. Separate any GTO baseline from exploitative adjustments. Never call a line GTO "
+        "or equilibrium without a matching solver run and convergence evidence. Label FACT, "
+        "CALCULATED, INFERENCE, ESTIMATE, ASSUMPTION, USER_CLAIM, and UNKNOWN. Never spawn "
+        "another subagent."
+    ),
+    BridgeRole.MATH_TOOL_AUDITOR: (
+        "Prefer tested local programs to mental arithmetic. Verify units, denominators, "
+        "conditional probabilities, and tool preconditions. Distinguish exact results, "
+        "simulations, bounds, and estimates. Recompute or use invariants when possible. If input "
+        "or a tool is insufficient, return UNKNOWN with the missing requirement; never fabricate "
+        "a number or spawn another subagent."
+    ),
+    BridgeRole.SKEPTIC_FALSIFIER: (
+        "Challenge claims with specific counterexamples, changed ranges, changed objectives, or "
+        "failed tool preconditions. Do not invent criticism or mechanically disagree. State "
+        "falsification conditions and rank objections by evidence. Keep unresolved "
+        "non-identifiability explicit. Never spawn another subagent."
+    ),
+    BridgeRole.ADJUDICATOR: (
+        "Compare independent claims, assumptions, calculations, evidence, and objections. Prefer "
+        "primary sources and verified calculations. Do not count correlated reports as "
+        "independent evidence or use majority vote. Record why each material conclusion was "
+        "accepted or rejected and retain unresolved disputes. Never spawn another subagent."
+    ),
+    BridgeRole.REPORT_WRITER: (
+        "Render only the adjudicated record. Do not add new facts, calculations, ranges, "
+        "citations, or solver claims. State corrections in the conclusion, distinguish "
+        "epistemic labels, surface important limitations, and include reproduction commands. Use "
+        "clear Japanese for users and preserve unresolved questions. Never spawn another "
+        "subagent."
+    ),
+}
+
+
+_BOUNDED_DEVELOPER_INSTRUCTIONS: Final[dict[BridgeRole, str]] = {
     BridgeRole.STRATEGY_ANALYST: (
         "Review only the supplied immutable poker evidence as a read-only strategy analyst. "
         "Do not calculate, infer a range, use tools, cite sources, assert named strategy systems "
@@ -126,6 +163,42 @@ _DEVELOPER_INSTRUCTIONS: Final[dict[BridgeRole, str]] = {
     )
     + _NEUTRAL_NARRATIVE_INSTRUCTIONS,
 }
+
+
+def role_definition_instructions(role: BridgeRole) -> str:
+    """Return the exact normalized tracked role instructions used by the bridge."""
+
+    return _ROLE_DEFINITION_INSTRUCTIONS[role]
+
+
+def legacy_role_developer_instructions(role: BridgeRole) -> str:
+    """Return the exact pre-Skill v1 instructions for read-only artifact replay."""
+
+    return _BOUNDED_DEVELOPER_INSTRUCTIONS[role]
+
+
+def role_developer_instructions(
+    role: BridgeRole,
+    conformance: BridgeRoleConformanceBindingV1,
+    auth_mode: RuntimeAuthModeV1,
+) -> str:
+    instructions = (
+        "Apply these tracked role semantics subject to the stricter bounded output contract: "
+        f"{_ROLE_DEFINITION_INSTRUCTIONS[role]} "
+        f"{_BOUNDED_DEVELOPER_INSTRUCTIONS[role]}"
+    )
+    if auth_mode is not RuntimeAuthModeV1.CODEX_SUBSCRIPTION:
+        return instructions + " No repository Skill is enabled by this runtime contract."
+    if conformance.repository_skill_id is None:
+        return instructions + " No repository Skill is assigned to this integration role."
+    return (
+        instructions
+        + f" Apply ${conformance.repository_skill_id} only in the Bounded bridge mode of the "
+        "complete repository instructions in "
+        "context.assignment.conformance.repository_skill_instructions. The exact repository Skill "
+        "identity, source path, repository-commit version, and content SHA-256 are in that same "
+        "conformance binding."
+    )
 
 
 def build_runtime_policy(
@@ -385,6 +458,21 @@ def role_output_schema_for_request(
     return schema
 
 
+def _require_runtime_skill_scope(
+    *,
+    auth_mode: RuntimeAuthModeV1,
+    conformance: tuple[BridgeRoleConformanceBindingV1, ...],
+) -> None:
+    expected = (
+        (True, True, True, False, False)
+        if auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+        else (False, False, False, False, False)
+    )
+    actual = tuple(item.has_complete_repository_skill_binding for item in conformance)
+    if actual != expected:
+        raise BridgeContractError("repository Skill binding does not match runtime scope")
+
+
 def build_run_plan(
     *,
     bridge_run_id: str,
@@ -397,6 +485,10 @@ def build_run_plan(
 ) -> BridgeRunPlanV1:
     if tuple(item.role for item in role_conformance) != BRIDGE_ROLE_ORDER:
         raise BridgeContractError("P2-025A role conformance order is incomplete")
+    _require_runtime_skill_scope(
+        auth_mode=runtime_policy.auth_mode,
+        conformance=role_conformance,
+    )
     payload: dict[str, object] = {
         "schema_version": "1.0.0",
         "contract_id": "poker-bounded-codex-review-bridge",
@@ -501,6 +593,12 @@ def build_role_request(
         ordinal = BRIDGE_ROLE_ORDER.index(role)
     except ValueError as exc:
         raise BridgeContractError("unknown bridge role") from exc
+    expected_skill_binding = (
+        runtime_policy.auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+        and role in BRIDGE_ROLE_ORDER[:3]
+    )
+    if conformance.has_complete_repository_skill_binding is not expected_skill_binding:
+        raise BridgeContractError("repository Skill binding does not match runtime scope")
     parents = _parent_projection(parent_results)
     assignment = BridgeRoleAssignmentV1(
         auth_mode=runtime_policy.auth_mode,
@@ -554,7 +652,11 @@ def build_role_request(
         "contract_id": "poker-bounded-codex-review-bridge",
         "request_kind": "bounded_read_only_role_review",
         "auth_mode": runtime_policy.auth_mode,
-        "developer_instructions": _DEVELOPER_INSTRUCTIONS[role],
+        "developer_instructions": role_developer_instructions(
+            role,
+            conformance,
+            runtime_policy.auth_mode,
+        ),
         "output_schema_sha256": domain_sha256(
             "poker-bounded-codex-bridge-output-schema-v1",
             output_schema,
@@ -930,7 +1032,9 @@ __all__ = [
     "build_run_plan",
     "build_runtime_policy",
     "expected_evidence_references",
+    "legacy_role_developer_instructions",
     "outbound_request_bytes",
+    "role_developer_instructions",
     "role_output_schema",
     "role_output_schema_for_request",
     "utc_now",

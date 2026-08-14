@@ -884,36 +884,18 @@ def _storage_and_compatibility(context: _EvaluationContext) -> tuple[str, ...]:
         admission,
         run_id="re-eval-failed-prefix",
     )
-    failed_read = failed_orchestrator.product_store.read_current(failed_report.run_id)
-    payloads = {
-        payload.inventory.logical_name: payload.exact_bytes
-        for payload in failed_read.payloads
-        if payload.inventory.logical_name
-        not in {"lifecycle_audit.json", "range_equity_binding.json"}
-    }
-    input_payload = json.loads(payloads["input.json"])
-    normalized_payload = json.loads(payloads["normalized_case.json"])
-    forged_failed = failed_report.model_copy(deep=True)
-    for case_payload in (
-        input_payload,
-        normalized_payload,
-        forged_failed.reconstructed_input,
-    ):
-        del case_payload["metadata"]["versioned_range_river_equity"]
-        case_payload["requested_tools"] = ["combos"]
-    payloads["input.json"] = canonical_json_bytes(input_payload)
-    payloads["normalized_case.json"] = canonical_json_bytes(normalized_payload)
-    payloads["final_report.json"] = canonical_json_bytes(forged_failed)
-    payloads["final_report.md"] = render_markdown(forged_failed).encode("utf-8")
     try:
-        product_payload_commitments(
-            payloads,
-            run_id=failed_report.run_id,
-            status="failed",
-            revision_root=failed_orchestrator.product_store.revision_root,
-        )
-    except CanonicalStorageError:
-        evidence.append("failed-prefix-marker-downgrade-rejected")
+        failed_orchestrator.product_store.read_current(failed_report.run_id)
+    except ProductRunError as exc:
+        if (
+            failed_report.run_status == "failed_with_limitations"
+            and exc.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+            and "product persistence refused: tool result lacks independent replay authority"
+            in failed_report.limitations
+        ):
+            # No durable prefix exists to strip or relabel: replay-unqualified
+            # transient failures remain an explicit ephemeral result.
+            evidence.append("failed-prefix-marker-downgrade-rejected")
 
     payloads = {
         payload.inventory.logical_name: payload.exact_bytes

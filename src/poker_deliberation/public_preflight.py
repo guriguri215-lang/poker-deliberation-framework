@@ -33,7 +33,7 @@ RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
 )
 EXPECTED_ROADMAP_SCHEMA_VERSION = "17.0.0"
 ROADMAP_MODULE_SHA256 = "0567ffc8593b4115258412d7b3dfd4b17b8ce217933a5ed0a54536a28ca82279"
-RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
+RANGE_EQUITY_BRIDGE_DOC_SHA256 = "0a3e3ce846b817c52420b97f83c4e08e55ccd71eeacee5cded1170442090371b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
     "docs/bounded-codex-river-review-bridge.md",
@@ -46,7 +46,7 @@ CAPABILITY_DOCUMENT_PATHS = (
     "docs/roadmap-status.md",
     "qualifications/README.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "b49f708dc6a6688c4223fe32575005384727b21a16e0677f90f2549205b112ed"
+CAPABILITY_DOCUMENT_SET_SHA256 = "81ed122bf5ec83f44159d7824a6adbe7c7e81a9d8bce47b8e24a517f06afa864"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
     "6334a0426bd2ef395257ef89c79d7783cc2a42283e38cacd10c54b8815dd0747"
 )
@@ -1213,7 +1213,9 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "local_only",
             "codex_subscription",
             "openai_api",
-            "現行qualificationは`UNKNOWN`",
+            "strict canonical V2 live manifest",
+            "両方欠落は`UNKNOWN`",
+            "subscription_live_qualified=true",
         ],
         "docs/capabilities.md": [
             "implemented",
@@ -1230,7 +1232,10 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
             'transport_qualification="deterministic_fixture"',
             'live_qualification_status="UNKNOWN"',
-            "Current qualification: UNKNOWN",
+            "strict canonical V2 live manifest",
+            "bound deterministic evaluation",
+            "両方欠落は`UNKNOWN`",
+            "subscription_live_qualified=true",
         ],
         "docs/limitations.md": [
             "outbound analyze",
@@ -1241,7 +1246,9 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P3-016B",
             "all-in",
             "990",
-            "subscription_live_qualified=false",
+            "strict canonical V2 live manifest",
+            "両方欠落は`UNKNOWN`",
+            "subscription_live_qualified=true",
             "P3-030G",
             'transport_qualification="deterministic_fixture"',
             'live_qualification_status="UNKNOWN"',
@@ -1300,6 +1307,9 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             'live_qualification_status="UNKNOWN"',
             "actual-live/provider qualification",
             "固定5 roleそれぞれのfresh previewと人間による",
+            "strict canonical V2",
+            "両方欠落は",
+            "subscription_live_qualified=true",
             "--manifest-output",
         ],
     }
@@ -1318,7 +1328,8 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "live-unqualified",
         "candidate-bound historical",
         "strict canonical V2",
-        "subscription_live_qualified=false",
+        "bridge_public_evidence:incomplete_pair",
+        "subscription_live_qualified=true",
         "UNKNOWN",
     ]
     missing: list[str] = []
@@ -1713,6 +1724,7 @@ def _bridge_manifest_role_conformance_matches_current_tree(
         expected = build_bridge_role_conformance(
             repo,
             repository_commit_id=manifest.repository_commit_id,
+            include_repository_skill_bindings=True,
         )
         observed = []
         for role_evidence in manifest.roles:

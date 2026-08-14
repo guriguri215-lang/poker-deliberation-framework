@@ -7,9 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from poker_deliberation.budgets import BudgetPolicyV2, canonical_json_utf8_size
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
-from poker_deliberation.schemas import CaseInput
+from poker_deliberation.phases.contracts import successful_outcome
+from poker_deliberation.schemas import (
+    CaseInput,
+    Exactness,
+    NumericalExactness,
+    ToolResult,
+    ToolStatus,
+)
 from poker_deliberation.storage.revision_canonical import canonical_json_bytes
 from poker_deliberation.storage.terminal_models import (
     ProductRunError,
@@ -253,3 +261,407 @@ def test_tool_result_metadata_and_reproduction_input_round_trip_exactly(
     assert verified.payload_bytes(result_name) == canonical_json_bytes(result)
     assert verified.payload_bytes(input_name) == canonical_json_bytes(result.input)
     assert Path(argv[-1]).read_bytes() == verified.payload_bytes(input_name)
+
+
+def test_load_report_rejects_a_hash_valid_but_calculator_invalid_tool_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    orchestrator = Orchestrator(config)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="combination replay",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={"tool_inputs": {"combos": {"hand_class": "AA"}}},
+        ),
+        run_id="run-product-tool-replay-tamper",
+    )
+    verified = orchestrator.product_store.read_current(report.run_id)
+    result = next(item for item in report.tool_results if item.tool_name == "combos")
+    forged_result = result.model_copy(
+        update={
+            "output": {
+                **result.output,
+                "count": int(result.output["count"]) + 1,
+            }
+        }
+    )
+    forged_report = report.model_copy(
+        update={
+            "tool_results": [
+                forged_result if item.result_id == result.result_id else item
+                for item in report.tool_results
+            ]
+        }
+    )
+
+    class ForgedVerifiedRead:
+        read_status = verified.read_status
+
+        def payload_bytes(self, logical_name: str) -> bytes:
+            if logical_name == "final_report.json":
+                return canonical_json_bytes(forged_report)
+            return verified.payload_bytes(logical_name)
+
+    monkeypatch.setattr(
+        orchestrator.product_store,
+        "read_current",
+        lambda _run_id: ForgedVerifiedRead(),
+    )
+
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.load_report(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_CORRUPT
+    assert caught.value.failure.stage == "load_report_tool_verification"
+
+
+def test_load_report_rejects_general_forged_budget_failure_without_external_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    orchestrator = Orchestrator(config)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="combination replay",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={"tool_inputs": {"combos": {"hand_class": "AA"}}},
+        ),
+        run_id="run-product-forged-budget-failure",
+    )
+    verified = orchestrator.product_store.read_current(report.run_id)
+    actual = next(item for item in report.tool_results if item.tool_name == "combos")
+    forged = ToolResult(
+        result_id=actual.result_id,
+        tool_name=actual.tool_name,
+        input=actual.input,
+        status=ToolStatus.FAILED,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        contract_version=actual.contract_version,
+        error="strict budget failure: tool_input_exceeded",
+    )
+    forged_report = report.model_copy(
+        update={
+            "tool_results": [
+                forged if item.result_id == actual.result_id else item
+                for item in report.tool_results
+            ]
+        }
+    )
+
+    class ForgedVerifiedRead:
+        read_status = verified.read_status
+
+        def payload_bytes(self, logical_name: str) -> bytes:
+            if logical_name == "final_report.json":
+                return canonical_json_bytes(forged_report)
+            return verified.payload_bytes(logical_name)
+
+    monkeypatch.setattr(
+        orchestrator.product_store,
+        "read_current",
+        lambda _run_id: ForgedVerifiedRead(),
+    )
+
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.load_report(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_CORRUPT
+    assert caught.value.failure.stage == "load_report_tool_verification"
+
+
+def test_general_budget_failure_remains_ephemeral_without_external_authority(
+    tmp_path: Path,
+) -> None:
+    orchestrator = Orchestrator(
+        _config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=1_024),
+    )
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="oversized general tool input",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={
+                "tool_inputs": {
+                    "combos": {
+                        "range": ",".join(["AA"] * 500),
+                        "dead_cards": [],
+                    }
+                }
+            },
+        ),
+        run_id="run-product-general-budget-ephemeral",
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert report.tool_results[-1].error == "strict budget failure: tool_input_exceeded"
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_injected_tool_executor_success_cannot_issue_publication_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = Orchestrator(_config(tmp_path))
+    original_run = orchestrator.tool_research_executor.run
+
+    def forged_run(request):  # type: ignore[no-untyped-def]
+        outcome = original_run(request)
+        assert outcome.output is not None
+        binding = outcome.output.bindings[0]
+        forged_result = binding.result.model_copy(
+            update={
+                "output": {
+                    **binding.result.output,
+                    "count": int(binding.result.output["count"]) + 1,
+                }
+            }
+        )
+        forged_output = outcome.output.model_copy(
+            update={"bindings": (binding.model_copy(update={"result": forged_result}),)}
+        )
+        return successful_outcome(request, forged_output)
+
+    monkeypatch.setattr(orchestrator.tool_research_executor, "run", forged_run)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="forged executor result",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={"tool_inputs": {"combos": {"hand_class": "AA"}}},
+        ),
+        run_id="run-product-forged-executor-success",
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_self_removing_tool_executor_shadow_cannot_issue_publication_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = Orchestrator(_config(tmp_path))
+    executor = orchestrator.tool_research_executor
+    original_run = executor.run
+
+    def self_removing_forged_run(request):  # type: ignore[no-untyped-def]
+        monkeypatch.delattr(executor, "run")
+        outcome = original_run(request)
+        assert outcome.output is not None
+        binding = outcome.output.bindings[0]
+        forged_result = binding.result.model_copy(
+            update={
+                "output": {
+                    **binding.result.output,
+                    "count": int(binding.result.output["count"]) + 1,
+                }
+            }
+        )
+        forged_output = outcome.output.model_copy(
+            update={"bindings": (binding.model_copy(update={"result": forged_result}),)}
+        )
+        return successful_outcome(request, forged_output)
+
+    monkeypatch.setattr(executor, "run", self_removing_forged_run)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="self-removing forged executor result",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={"tool_inputs": {"combos": {"hand_class": "AA"}}},
+        ),
+        run_id="run-product-self-removing-forged-executor-success",
+    )
+
+    assert "run" not in vars(executor)
+    assert report.run_status == "failed_with_limitations"
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_self_removing_registry_dispatch_shadow_cannot_issue_publication_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = Orchestrator(_config(tmp_path))
+    registry = orchestrator.registry
+    original_execute_isolated = registry._execute_isolated
+
+    def self_removing_forged_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
+        monkeypatch.delattr(registry, "_execute_isolated")
+        result = original_execute_isolated(*args, **kwargs)
+        return result.model_copy(
+            update={
+                "output": {
+                    **result.output,
+                    "count": int(result.output["count"]) + 1,
+                }
+            }
+        )
+
+    monkeypatch.setattr(registry, "_execute_isolated", self_removing_forged_execute)
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="self-removing forged registry result",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={"tool_inputs": {"combos": {"hand_class": "AA"}}},
+        ),
+        run_id="run-product-self-removing-registry-dispatch",
+    )
+
+    assert "_execute_isolated" not in vars(registry)
+    assert report.run_status == "failed_with_limitations"
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_shadowed_runtime_guard_cannot_authorize_self_removing_registry_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orchestrator = Orchestrator(_config(tmp_path))
+    registry = orchestrator.registry
+    original_execute_isolated = registry._execute_isolated
+
+    def self_removing_forged_execute(*args, **kwargs):  # type: ignore[no-untyped-def]
+        monkeypatch.delattr(registry, "_execute_isolated")
+        result = original_execute_isolated(*args, **kwargs)
+        return result.model_copy(
+            update={
+                "output": {
+                    **result.output,
+                    "count": int(result.output["count"]) + 1,
+                }
+            }
+        )
+
+    monkeypatch.setattr(registry, "_execute_isolated", self_removing_forged_execute)
+    monkeypatch.setattr(
+        orchestrator,
+        "_phase_tool_publication_runtime_is_exact",
+        lambda: True,
+    )
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="shadowed publication guard and self-removing registry dispatch",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={"tool_inputs": {"combos": {"hand_class": "AA"}}},
+        ),
+        run_id="run-product-shadowed-publication-guard",
+    )
+
+    assert "_phase_tool_publication_runtime_is_exact" in vars(orchestrator)
+    assert "_execute_isolated" not in vars(registry)
+    assert report.run_status == "failed_with_limitations"
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_custom_tool_limits_round_trip_and_mismatched_reader_fails_closed(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    range_text = ",".join(
+        [
+            "AA",
+            "KK",
+            "QQ",
+            "JJ",
+            "TT",
+            "99",
+            "88",
+            "77",
+            "AKs",
+            "AQs",
+            "AJs",
+            "ATs",
+            "KQs",
+            "KJs",
+            "QJs",
+        ]
+    )
+    writer_policy = BudgetPolicyV2(max_tool_output_bytes=5_000)
+    writer = Orchestrator(config, budget_policy=writer_policy)
+    report = writer.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="custom tool output limit",
+            analysis_scope="retrospective",
+            requested_tools=["combos"],
+            metadata={
+                "tool_inputs": {
+                    "combos": {
+                        "range": range_text,
+                        "dead_cards": [],
+                    }
+                }
+            },
+        ),
+        run_id="run-product-custom-tool-limits",
+    )
+    result = next(item for item in report.tool_results if item.tool_name == "combos")
+
+    assert report.run_status == "completed"
+    assert 3_000 < canonical_json_utf8_size(result.output) <= 5_000
+    assert writer._phase_tool_publication_runtime_is_exact()
+    fresh_registry = writer._fresh_tool_verification_registry()
+    assert (
+        fresh_registry.max_payload_bytes,
+        fresh_registry.max_output_bytes,
+        fresh_registry.max_duration_seconds,
+    ) == (
+        writer_policy.max_tool_input_bytes,
+        writer_policy.max_tool_output_bytes,
+        min(30.0, writer_policy.max_runtime_seconds),
+    )
+    assert Orchestrator(config, budget_policy=writer_policy).load_report(report.run_id) == report
+
+    writer.registry.max_output_bytes += 1
+    assert not writer._phase_tool_publication_runtime_is_exact()
+
+    mismatched_reader = Orchestrator(
+        config,
+        budget_policy=BudgetPolicyV2(max_tool_output_bytes=3_000),
+    )
+    with pytest.raises(ProductRunError) as caught:
+        mismatched_reader.load_report(report.run_id)
+    assert caught.value.failure.code in {
+        ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED,
+        ProductRunFailureCode.RUN_CORRUPT,
+    }

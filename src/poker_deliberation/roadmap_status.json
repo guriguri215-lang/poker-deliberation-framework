@@ -230,7 +230,7 @@
       "id": "P2-025B",
       "rm_id": "RM-025",
       "status": "completed",
-      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete. Candidate-bound historical saved-subscription evidence is preserved, but current-tree qualification is UNKNOWN until a fresh matching canonical manifest passes public preflight; the optional API route remains disabled and live-unqualified.",
+      "status_reason": "The three explicit runtime/auth modes, bounded bridge contracts, deterministic transports, additive storage and terminal replay, deterministic evaluation, and sealed live-attestation admission are complete. Candidate-bound historical saved-subscription evidence is preserved but is not current authority. Current-tree qualification is derived only from public preflight over the current strict canonical V2 live manifest and its bound deterministic evaluation: both absent is UNKNOWN, an incomplete or invalid/binding-mismatched pair is FAIL, and only a fully passing pair sets subscription_live_qualified=true. The optional API route remains disabled and live-unqualified.",
       "dependencies": [
         "P2-024A",
         "P2-025A",
@@ -367,7 +367,7 @@
       "id": "P3-030G",
       "rm_id": "RM-030",
       "status": "completed",
-      "status_reason": "The repository-owned deterministic production-workflow qualification harness, fixed cases and metrics, deterministic no-network transport seam, self-hashed canonical sanitized evidence manifest, and declared tests are implemented. This is deterministic repository evidence only; current live model/provider qualification remains UNKNOWN.",
+      "status_reason": "The repository-owned deterministic production-workflow qualification harness, fixed cases and metrics, deterministic no-network transport seam, self-hashed canonical sanitized evidence manifest, and declared tests are implemented. This is deterministic repository evidence only, not current live model/provider authority. Current-tree qualification is derived only from public preflight over the current strict canonical V2 live manifest and its bound deterministic evaluation: both absent is UNKNOWN, an incomplete or invalid/binding-mismatched pair is FAIL, and only a fully passing pair sets subscription_live_qualified=true.",
       "dependencies": [
         "P2-025B",
         "P3-030D",
@@ -1262,7 +1262,7 @@
       "phase": "phase-4",
       "priority": "P2",
       "status": "planned",
-      "status_reason": "P2-025B completed a separately named river-only saved-subscription path and preserves candidate-bound historical sealed evidence, but current-tree qualification is UNKNOWN and the bounded path does not start the broad provider milestone. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.",
+      "status_reason": "P2-025B completed a separately named river-only saved-subscription path and preserves candidate-bound historical sealed evidence, but that evidence is not current authority and the bounded path does not start the broad provider milestone. Current-tree qualification is derived only from public preflight over the current strict canonical V2 live manifest and its bound deterministic evaluation: both absent is UNKNOWN, an incomplete or invalid/binding-mismatched pair is FAIL, and only a fully passing pair sets subscription_live_qualified=true. The optional API route remains disabled, deterministic-only, and live-unqualified; RM-019 dependencies and general provider scope remain planned.",
       "dependencies": [
         "RM-010",
         "RM-011",

@@ -427,6 +427,27 @@ def test_failed_terminal_correlates_allowed_tool_failure_code_to_report(
             )
 
 
+def test_failed_terminal_reader_accepts_verified_external_budget_authority(
+    tmp_path: Path,
+) -> None:
+    admitted = admission(run_id="run-river-failed-reader-authority")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+
+    assert report.run_status == "failed_with_limitations"
+    loaded = orchestrator.load_report(report.run_id)
+    assert loaded.run_status == "failed_with_limitations"
+    assert loaded.tool_results[-1].error == "strict budget failure: tool_input_exceeded"
+    exact = orchestrator._exact_terminal_report(
+        orchestrator.product_store.read_current(report.run_id)
+    )
+    assert exact.run_status == "failed_with_limitations"
+    assert exact.tool_results == loaded.tool_results
+
+
 def test_failed_terminal_rejects_coherent_budget_cause_rewrite(tmp_path: Path) -> None:
     admitted = admission(run_id="run-river-failed-coherent")
     orchestrator = Orchestrator(

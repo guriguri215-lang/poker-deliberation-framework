@@ -63,7 +63,6 @@ from poker_deliberation.phases.services import (
 from poker_deliberation.schemas import (
     Claim,
     EpistemicLabel,
-    Exactness,
     NumericalExactness,
     ToolResult,
     ToolStatus,
@@ -93,7 +92,7 @@ from poker_deliberation.storage.revision_models import (
     VerifiedStorageRevisionV1,
 )
 from poker_deliberation.storage.revision_store import RunRevisionStore
-from poker_deliberation.tools.contracts import contract_by_name
+from poker_deliberation.tools.registry import default_registry
 
 TRANSITION_REASON = "durable synthesis revision committed"
 TRANSITION_PLAN_SCHEMA = "1.0.0"
@@ -725,70 +724,14 @@ def _tool_binding(
     )
 
 
-def _validate_tool_result_contract(result: ToolResult) -> None:
-    contract = contract_by_name().get(result.tool_name)
-    if contract is None:
-        raise ValueError
-    expected_command = (
-        f"poker-deliberate calculate {result.tool_name} --analysis-scope retrospective "
-        "--input <input.json>"
-    )
-    if (
-        result.contract_version != contract.contract_version
-        or result.version != contract.version
-        or tuple(result.assumptions) != contract.assumptions
-        or result.model_qualifier != contract.model_qualifier
-        or result.reproduce_command != expected_command
-    ):
-        raise ValueError
-    try:
-        contract.input_model.model_validate(result.input, strict=True)
-    except Exception:
-        if result.status is not ToolStatus.FAILED:
-            raise ValueError from None
-    if result.status is ToolStatus.FAILED:
-        if (
-            result.output
-            or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
-            or result.exactness is not Exactness.UNAVAILABLE
-            or not result.error
-        ):
-            raise ValueError
-        return
-    validated_output = contract.output_model.model_validate(result.output, strict=True)
-    if validated_output.model_dump(mode="python", exclude_none=True) != result.output:
-        raise ValueError
-    unavailable = bool(result.output.get("unavailable", False))
-    expected_numeric = (
-        NumericalExactness.UNAVAILABLE
-        if unavailable
-        else contract.resolve_numeric_exactness(result.output)
-    )
-    expected_exactness = (
-        Exactness.UNAVAILABLE
-        if expected_numeric is NumericalExactness.UNAVAILABLE
-        else Exactness.APPROXIMATE
-        if expected_numeric is NumericalExactness.APPROXIMATE
-        else Exactness.EXACT
-    )
-    expected_status = ToolStatus.UNAVAILABLE if unavailable else ToolStatus.SUCCESS
-    if (
-        result.status is not expected_status
-        or result.numeric_exactness is not expected_numeric
-        or result.exactness is not expected_exactness
-    ):
-        raise ValueError
-    if result.tool_name == "solver_status":
-        capability = result.output.get("capability")
-        if (
-            result.status is not ToolStatus.UNAVAILABLE
-            or result.output.get("status") != "unavailable"
-            or result.output.get("result") != {}
-            or not isinstance(capability, dict)
-            or capability.get("available") is not False
-            or result.numeric_exactness is not NumericalExactness.UNAVAILABLE
-        ):
-            raise ValueError
+def _validate_tool_result_contract(
+    result: ToolResult,
+) -> None:
+    # A phase output is the object being published, not independent authority
+    # for itself.  Only a canonical hard replay may qualify a result here.
+    # Product-specific external evidence is verified later by its terminal
+    # reader and is deliberately not accepted by this general coordinator.
+    default_registry().reverify_materialized_result(result)
 
 
 def _bindings_of_type(

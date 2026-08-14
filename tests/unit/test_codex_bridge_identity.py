@@ -106,6 +106,9 @@ def test_runtime_source_inventory_is_sorted_and_covers_role_and_request_authorit
         ".codex/agents/strategy-analyst.toml",
     }
     request_authority_paths = {
+        ".agents/skills/audit-poker-claim/SKILL.md",
+        ".agents/skills/review-poker-hand/SKILL.md",
+        ".agents/skills/run-poker-calculation/SKILL.md",
         "src/poker_deliberation/capabilities.py",
         "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
     }
@@ -129,6 +132,9 @@ def test_runtime_source_inventory_is_sorted_and_covers_role_and_request_authorit
 
 def _minimal_runtime_inventory_root(root: Path) -> Path:
     files = {
+        ".agents/skills/audit-poker-claim/SKILL.md": b"---\nname: audit-poker-claim\n---\n",
+        ".agents/skills/review-poker-hand/SKILL.md": b"---\nname: review-poker-hand\n---\n",
+        ".agents/skills/run-poker-calculation/SKILL.md": b"---\nname: run-poker-calculation\n---\n",
         ".codex/agents/strategy-analyst.toml": b'name = "strategy-analyst"\n',
         "pyproject.toml": b"[project]\nname = 'inventory-fixture'\n",
         "requirements.lock": b"fixture==1.0\n",
@@ -151,6 +157,7 @@ def _minimal_runtime_inventory_root(root: Path) -> Path:
     "relative",
     [
         ".codex/agents/strategy-analyst.toml",
+        ".agents/skills/review-poker-hand/SKILL.md",
         "src/poker_deliberation/capabilities.py",
         "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
         "scripts/run_bounded_river_review_workflow_evaluation.py",

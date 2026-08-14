@@ -627,38 +627,14 @@ def test_terminal_rejects_marker_downgrade_of_a_failed_tool_prefix(tmp_path: Pat
         admission,
         run_id="p3-016b-failed-prefix-downgrade",
     )
-    read = orchestrator.product_store.read_current(report.run_id)
-    payloads = {
-        payload.inventory.logical_name: payload.exact_bytes
-        for payload in read.payloads
-        if payload.inventory.logical_name
-        not in {
-            "lifecycle_audit.json",
-            "range_equity_binding.json",
-        }
-    }
-    input_payload = json.loads(payloads["input.json"])
-    normalized_payload = json.loads(payloads["normalized_case.json"])
-    forged = report.model_copy(deep=True)
-    for case_payload in (
-        input_payload,
-        normalized_payload,
-        forged.reconstructed_input,
-    ):
-        del case_payload["metadata"]["versioned_range_river_equity"]
-        case_payload["requested_tools"] = ["combos"]
-    payloads["input.json"] = canonical_json_bytes(input_payload)
-    payloads["normalized_case.json"] = canonical_json_bytes(normalized_payload)
-    payloads["final_report.json"] = canonical_json_bytes(forged)
-    payloads["final_report.md"] = render_markdown(forged).encode("utf-8")
-
-    with pytest.raises(CanonicalStorageError, match="range-equity persisted cases"):
-        product_payload_commitments(
-            payloads,
-            run_id=report.run_id,
-            status="failed",
-            revision_root=orchestrator.product_store.revision_root,
-        )
+    assert report.run_status == "failed_with_limitations"
+    assert (
+        "product persistence refused: tool result lacks independent replay authority"
+        in report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
 
 
 def test_revision_source_graph_rejects_report_marker_removal(tmp_path: Path) -> None:

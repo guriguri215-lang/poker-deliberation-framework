@@ -49,6 +49,7 @@ from poker_deliberation.schemas import (
     ToolResult,
     ToolStatus,
 )
+from poker_deliberation.tools import contracts as tool_contracts
 from poker_deliberation.tools.registry import default_registry
 from tests.range_support import versioned_river_equity_case
 
@@ -86,6 +87,49 @@ class MaliciousReportProvider:
                 }
             )
         return payload
+
+
+def test_versioned_failure_prebind_does_not_execute_calculators(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = versioned_river_equity_case()
+    assert case.hand is not None
+    definition = case.hand.known_ranges[0]
+    assert isinstance(definition, VersionedRangeDefinitionV1)
+    validation = validate_versioned_range(case.hand, definition)
+    assert validation.status == "success"
+    payloads = {
+        "range_validate": {
+            "schema_version": "1.0.0",
+            "hand": case.hand.model_dump(mode="json"),
+            "range_definition": definition.model_dump(mode="json"),
+        },
+        "combos": {"range": validation.canonical_notation, "dead_cards": []},
+        "holdem_equity": expected_versioned_range_equity_input(case, validation),
+    }
+
+    def forbidden_calculation(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("failure prebind executed a calculator")
+
+    monkeypatch.setattr(
+        "poker_deliberation.range_grammar.validate_versioned_range",
+        forbidden_calculation,
+    )
+    monkeypatch.setattr(
+        "poker_deliberation.tools.combinations.parse_weighted_range",
+        forbidden_calculation,
+    )
+    monkeypatch.setattr(
+        "poker_deliberation.tools.equity.holdem_equity",
+        forbidden_calculation,
+    )
+
+    for tool_name, payload in payloads.items():
+        assert tool_contracts.versioned_range_bridge_failure_input_matches(
+            tool_name,
+            payload,
+            "2.0.0",
+        )
 
 
 class ForgedAnalysisExecutor(AnalysisExecutor):
@@ -227,6 +271,17 @@ class UnsafeResultRegistry:
             contract_version=contract_version or "1.0.0",
         )
 
+    def execute_for_phase(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        **kwargs: Any,
+    ) -> ToolResult:
+        return self.execute(name, payload, contract_version=kwargs.get("contract_version"))
+
+    def reverify_materialized_result(self, _result: ToolResult) -> None:
+        return None
+
 
 class MismatchedContractRegistry(UnsafeResultRegistry):
     def execute(
@@ -267,6 +322,158 @@ class RedactedResultIdRegistry(UnsafeResultRegistry):
             numeric_exactness=NumericalExactness.EXACT,
             contract_version=contract_version or "1.0.0",
         )
+
+
+class SelfAttestedFloatingRegistry:
+    def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+    ) -> ToolResult:
+        result = default_registry().execute(
+            name,
+            payload,
+            contract_version=contract_version,
+        )
+        assert result.verification is not None
+        return result.model_copy(
+            update={
+                "verification": result.verification.model_copy(
+                    update={"observations": ["self-attested verification"]}
+                )
+            }
+        )
+
+    def execute_for_phase(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        **kwargs: Any,
+    ) -> ToolResult:
+        return self.execute(name, payload, contract_version=kwargs.get("contract_version"))
+
+    def reverify_materialized_result(self, result: ToolResult) -> None:
+        default_registry().reverify_materialized_result(result)
+
+
+class ExecuteOnlyRegistry:
+    def __init__(self) -> None:
+        self.executed = False
+
+    def execute(
+        self,
+        name: str,
+        payload: dict[str, Any],
+        *,
+        contract_version: str | None = None,
+    ) -> ToolResult:
+        self.executed = True
+        raise AssertionError((name, payload, contract_version))
+
+
+def test_tool_executor_fails_closed_when_registry_lacks_phase_isolation() -> None:
+    registry = ExecuteOnlyRegistry()
+    tool_request = ToolRequest(
+        request_id="tool-request-no-isolation",
+        tool_name="pot_odds",
+        input={
+            "pot_before_bet": 100.0,
+            "opponent_bet": 50.0,
+            "call_cost": 50.0,
+        },
+        contract_version="2.0.0",
+    )
+    request = make_phase_request(
+        run_id="run-tool-no-isolation",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-no-isolation",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-no-isolation",),
+        ),
+    )
+
+    outcome = ToolResearchExecutor(  # type: ignore[arg-type]
+        registry,
+        record_sensitive_data=False,
+    ).run(request)
+
+    assert outcome.status is PhaseStatus.FAILED
+    assert outcome.failure is not None
+    assert outcome.failure.code is PhaseFailureCode.VALIDATION
+    assert "lacks hard-isolated phase execution" in outcome.failure.message
+    assert not registry.executed
+
+
+def test_tool_executor_rejects_self_attested_floating_verification() -> None:
+    tool_request = ToolRequest(
+        request_id="tool-request-self-attested",
+        tool_name="pot_odds",
+        input={
+            "pot_before_bet": 100.0,
+            "opponent_bet": 50.0,
+            "call_cost": 50.0,
+            "expected_rake": 0.0,
+        },
+        contract_version="2.0.0",
+    )
+    request = make_phase_request(
+        run_id="run-tool-self-attested",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-self-attested",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-self-attested",),
+        ),
+    )
+
+    outcome = ToolResearchExecutor(  # type: ignore[arg-type]
+        SelfAttestedFloatingRegistry(), record_sensitive_data=False
+    ).run(request)
+
+    assert outcome.status is PhaseStatus.FAILED
+    assert outcome.output is None
+    assert outcome.failure is not None
+    assert outcome.failure.code is PhaseFailureCode.VALIDATION
+    assert "executable verification mismatch" in outcome.failure.message
+
+
+def test_tool_executor_preserves_fresh_hand_validator_timeout_as_typed_output() -> None:
+    case = versioned_river_equity_case()
+    assert case.hand is not None
+    registry = default_registry(max_duration_seconds=0.001)
+    definition = registry._tools["hand_validator"]
+    assert definition.contract is not None
+    tool_request = ToolRequest(
+        request_id="tool-request-hand-timeout",
+        tool_name="hand_validator",
+        input=case.hand.model_dump(mode="json"),
+        contract_version=definition.contract.contract_version,
+    )
+    request = make_phase_request(
+        run_id="run-tool-hand-timeout",
+        phase_id=PhaseId.TOOL_RESEARCH,
+        attempt_id="phase-tool-hand-timeout",
+        policy_snapshot_hash="a" * 64,
+        input_value=ToolResearchInput(
+            requests=(tool_request,),
+            fallback_result_ids=("tool-result-hand-timeout",),
+        ),
+    )
+
+    outcome = ToolResearchExecutor(registry, record_sensitive_data=False).run(request)
+
+    assert outcome.status is PhaseStatus.COMPLETED_WITH_FAILURES
+    assert outcome.failure is None
+    assert outcome.output is not None
+    result = outcome.output.bindings[0].result
+    assert result.status is ToolStatus.FAILED
+    assert result.output == {}
+    assert result.numeric_exactness is NumericalExactness.UNAVAILABLE
 
 
 def test_unsafe_tool_result_id_is_replaced_without_losing_request_binding() -> None:

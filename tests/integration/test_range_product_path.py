@@ -15,7 +15,11 @@ from poker_deliberation.schemas import (
     NumericalExactness,
     ToolStatus,
 )
-from poker_deliberation.storage.terminal_models import RunReadStatus
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+    RunReadStatus,
+)
 from poker_deliberation.tools import default_registry
 from tests.range_support import versioned_range_hand
 
@@ -182,7 +186,7 @@ def test_actual_range_validation_failure_prevents_combos_execution(
 ) -> None:
     clock = FakeMonotonicClock()
     registry = default_registry(
-        max_duration_seconds=0.1,
+        max_duration_seconds=5.0,
         monotonic_clock=clock,
     )
     calls: list[str] = []
@@ -192,7 +196,7 @@ def test_actual_range_validation_failure_prevents_combos_execution(
     def slow_range(payload: dict[str, object]) -> dict[str, object]:
         calls.append("range_validate")
         output = original_range.function(payload)
-        clock.advance_ns(200_000_000)
+        clock.advance_ns(6_000_000_000)
         return output
 
     def counted_combos(payload: dict[str, object]) -> dict[str, object]:
@@ -202,10 +206,12 @@ def test_actual_range_validation_failure_prevents_combos_execution(
     registry._tools["range_validate"] = replace(
         original_range,
         function=slow_range,
+        phase_isolated=False,
     )
     registry._tools["combos"] = replace(
         original_combos,
         function=counted_combos,
+        phase_isolated=False,
     )
     orchestrator = Orchestrator(
         _config(tmp_path),
@@ -226,9 +232,12 @@ def test_actual_range_validation_failure_prevents_combos_execution(
         for result in report.tool_results
         if result.tool_name in {"range_validate", "combos"}
     ] == [("range_validate", "failed")]
-    assert (
-        orchestrator.product_store.read_current(report.run_id).read_status is RunReadStatus.FAILED
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
     )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
 
 
 def test_actual_combos_failure_marks_product_run_failed(
@@ -236,7 +245,7 @@ def test_actual_combos_failure_marks_product_run_failed(
 ) -> None:
     clock = FakeMonotonicClock()
     registry = default_registry(
-        max_duration_seconds=0.1,
+        max_duration_seconds=5.0,
         monotonic_clock=clock,
     )
     calls: list[str] = []
@@ -250,16 +259,18 @@ def test_actual_combos_failure_marks_product_run_failed(
     def slow_combos(payload: dict[str, object]) -> dict[str, object]:
         calls.append("combos")
         output = original_combos.function(payload)
-        clock.advance_ns(200_000_000)
+        clock.advance_ns(6_000_000_000)
         return output
 
     registry._tools["range_validate"] = replace(
         original_range,
         function=counted_range,
+        phase_isolated=False,
     )
     registry._tools["combos"] = replace(
         original_combos,
         function=slow_combos,
+        phase_isolated=False,
     )
     orchestrator = Orchestrator(
         _config(tmp_path),
@@ -283,9 +294,38 @@ def test_actual_combos_failure_marks_product_run_failed(
         ("range_validate", "success"),
         ("combos", "failed"),
     ]
-    assert (
-        orchestrator.product_store.read_current(report.run_id).read_status is RunReadStatus.FAILED
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
     )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_low_timeout_hand_failure_marks_range_product_failed_with_limitations(
+    tmp_path: Path,
+) -> None:
+    registry = default_registry(max_duration_seconds=0.001)
+    orchestrator = Orchestrator(_config(tmp_path), registry=registry)
+
+    report = orchestrator.run(
+        _case(),
+        run_id="p3-016a-hand-hard-timeout",
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    hand_results = [
+        result for result in report.tool_results if result.tool_name == "hand_validator"
+    ]
+    assert len(hand_results) == 1
+    assert hand_results[0].status is ToolStatus.FAILED
+    assert hand_results[0].output == {}
+    assert "product persistence refused: tool result lacks independent replay authority" in (
+        report.limitations
+    )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
 
 
 def test_failed_terminal_before_tool_phase_preserves_empty_versioned_chain(

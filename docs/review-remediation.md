@@ -47,8 +47,9 @@ tests are part of the repository.
 
 Regression tests cover every item above, manifest/registry parity, lock/build parity, evidence
 persistence, nondefault run roots with spaces, free-text normalization, and duplicate-run protection.
-OS-level process preemption is intentionally not claimed: local calculators are in-process and
-structurally capped; any future external executor must add process CPU/memory isolation.
+Default canonical calculators have a direct-child wall-time boundary, but process-tree, CPU, and
+memory isolation are intentionally not claimed. Noncanonical `phase_isolated=False` diagnostic
+tools remain in-process, and any future external executor needs its own resource isolation.
 
 ## Comparative framework hardening
 

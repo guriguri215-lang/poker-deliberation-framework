@@ -335,6 +335,10 @@ def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
     assert "canonical sanitized evidence" in qualification_scope
     assert "No live model or network execution" in qualification_scope
     assert "retry, repair, fallback" in qualification_scope
+    qualification_reason = str(milestones["P3-030G"]["status_reason"])
+    assert "both absent is UNKNOWN" in qualification_reason
+    assert "invalid/binding-mismatched pair is FAIL" in qualification_reason
+    assert "subscription_live_qualified=true" in qualification_reason
     assert "general natural-language/site/OCR/model-assisted parsing is unimplemented" in str(
         items["RM-030"]["status_reason"]
     )
@@ -446,7 +450,9 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     ]
     assert "five fresh, serial, read-only roles" in milestones["P2-025B"]["scope"]
     assert "live-unqualified" in milestones["P2-025B"]["scope"]
-    assert "current-tree qualification is UNKNOWN" in milestones["P2-025B"]["status_reason"]
+    assert "both absent is UNKNOWN" in milestones["P2-025B"]["status_reason"]
+    assert "invalid/binding-mismatched pair is FAIL" in milestones["P2-025B"]["status_reason"]
+    assert "subscription_live_qualified=true" in milestones["P2-025B"]["status_reason"]
     assert "historical saved-subscription evidence" in milestones["P2-025B"]["status_reason"]
     assert (
         "optional API route remains disabled and live-unqualified"
@@ -475,7 +481,9 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     assert items["RM-019"]["status"] == "planned"
     assert "river-only saved-subscription path" in items["RM-019"]["status_reason"]
     assert "historical sealed evidence" in items["RM-019"]["status_reason"]
-    assert "current-tree qualification is UNKNOWN" in items["RM-019"]["status_reason"]
+    assert "both absent is UNKNOWN" in items["RM-019"]["status_reason"]
+    assert "invalid/binding-mismatched pair is FAIL" in items["RM-019"]["status_reason"]
+    assert "subscription_live_qualified=true" in items["RM-019"]["status_reason"]
     assert "optional API route remains disabled" in items["RM-019"]["status_reason"]
     assert items["RM-020"]["status"] == "planned"
 

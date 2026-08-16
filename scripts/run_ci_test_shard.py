@@ -10,9 +10,11 @@ import tempfile
 import xml.etree.ElementTree as ET
 from collections import Counter
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PYTEST_EXIT_NO_TESTS_COLLECTED = 5
 
 
 class RunnerContractError(ValueError):
@@ -25,6 +27,33 @@ class RunnerAccountingError(ValueError):
 
 class JUnitEvidenceError(ValueError):
     """Raised when a per-file pytest run did not produce valid test evidence."""
+
+
+@dataclass(frozen=True)
+class JUnitEvidence:
+    """Validated JUnit counts and result-level evidence for one pytest process."""
+
+    tests: int
+    skipped: int | None
+    failures: int | None
+    errors: int | None
+    testcase_count: int
+    all_testcases_skipped: bool
+    contains_failure_or_error: bool
+    suite_results_reconciled: bool
+
+    @property
+    def all_skipped(self) -> bool:
+        return (
+            self.testcase_count == self.tests
+            and self.testcase_count > 0
+            and self.all_testcases_skipped
+            and not self.contains_failure_or_error
+            and self.suite_results_reconciled
+            and self.skipped == self.tests
+            and self.failures == 0
+            and self.errors == 0
+        )
 
 
 def discover_test_files(repository_root: Path) -> tuple[str, ...]:
@@ -100,20 +129,83 @@ def _xml_local_name(tag: str) -> str:
     return tag.rsplit("}", maxsplit=1)[-1]
 
 
-def _parse_test_count(value: str | None, *, path: Path) -> int:
+def _parse_count(value: str | None, *, name: str, path: Path) -> int:
     if value is None:
-        raise JUnitEvidenceError(f"JUnit tests attribute is missing: {path}")
+        raise JUnitEvidenceError(f"JUnit {name} attribute is missing: {path}")
     try:
         count = int(value)
     except ValueError as exc:
-        raise JUnitEvidenceError(f"JUnit tests attribute is not an integer: {path}") from exc
+        raise JUnitEvidenceError(f"JUnit {name} attribute is not an integer: {path}") from exc
     if count < 0:
-        raise JUnitEvidenceError(f"JUnit tests attribute is negative: {path}")
+        raise JUnitEvidenceError(f"JUnit {name} attribute is negative: {path}")
     return count
 
 
-def junit_test_count(path: Path) -> int:
-    """Parse a pytest JUnit document and require evidence of at least one test."""
+def _aggregate_count(
+    root: ET.Element,
+    suites: Sequence[ET.Element],
+    *,
+    name: str,
+    path: Path,
+    required: bool,
+) -> int | None:
+    root_value = root.get(name)
+    root_count = _parse_count(root_value, name=name, path=path) if root_value is not None else None
+    suite_counts: list[int] = []
+    suites_complete = bool(suites)
+    for suite in suites:
+        value = suite.get(name)
+        if value is None:
+            suites_complete = False
+        else:
+            suite_counts.append(_parse_count(value, name=name, path=path))
+    suite_count = sum(suite_counts) if suites_complete else None
+    if root_count is not None and suite_count is not None and root_count != suite_count:
+        raise JUnitEvidenceError(f"JUnit {name} aggregate does not match its suites: {path}")
+    count = root_count if root_count is not None else suite_count
+    if required and count is None:
+        raise JUnitEvidenceError(f"JUnit {name} attribute is missing: {path}")
+    return count
+
+
+def _suite_results_reconcile(suite: ET.Element, *, path: Path) -> bool:
+    required_counts: dict[str, int] = {}
+    for name in ("tests", "skipped", "failures", "errors"):
+        value = suite.get(name)
+        if value is None:
+            return False
+        required_counts[name] = _parse_count(value, name=name, path=path)
+
+    testcases = tuple(child for child in suite if _xml_local_name(child.tag) == "testcase")
+    skipped_results = 0
+    failure_results = 0
+    error_results = 0
+    for testcase in testcases:
+        result_elements = tuple(
+            child
+            for child in testcase
+            if _xml_local_name(child.tag) in {"skipped", "failure", "error"}
+        )
+        result_names = tuple(_xml_local_name(child.tag) for child in result_elements)
+        skipped_results += result_names.count("skipped")
+        failure_results += result_names.count("failure")
+        error_results += result_names.count("error")
+        if result_names != ("skipped",):
+            return False
+        if result_elements[0].get("message") != "collection skipped":
+            return False
+        if "type" in result_elements[0].attrib:
+            return False
+    return (
+        len(testcases) == required_counts["tests"]
+        and skipped_results == required_counts["skipped"] == required_counts["tests"]
+        and failure_results == required_counts["failures"] == 0
+        and error_results == required_counts["errors"] == 0
+    )
+
+
+def junit_evidence(path: Path) -> JUnitEvidence:
+    """Parse and validate pytest JUnit counts and testcase result evidence."""
 
     if not path.is_file():
         raise JUnitEvidenceError(f"JUnit file is missing: {path}")
@@ -124,21 +216,55 @@ def junit_test_count(path: Path) -> int:
 
     root_name = _xml_local_name(root.tag)
     if root_name == "testsuite":
-        count = _parse_test_count(root.get("tests"), path=path)
+        suites: tuple[ET.Element, ...] = ()
+        result_suites = (root,)
     elif root_name == "testsuites":
-        if root.get("tests") is not None:
-            count = _parse_test_count(root.get("tests"), path=path)
-        else:
-            suites = [child for child in root if _xml_local_name(child.tag) == "testsuite"]
-            if not suites:
-                raise JUnitEvidenceError(f"JUnit document has no test suites: {path}")
-            count = sum(_parse_test_count(suite.get("tests"), path=path) for suite in suites)
+        suites = tuple(child for child in root if _xml_local_name(child.tag) == "testsuite")
+        result_suites = suites
     else:
         raise JUnitEvidenceError(f"JUnit document has an unexpected root element: {path}")
 
-    if count == 0:
+    tests = _aggregate_count(root, suites, name="tests", path=path, required=True)
+    assert tests is not None
+    if tests == 0:
         raise JUnitEvidenceError(f"JUnit document reports zero tests: {path}")
-    return count
+    skipped = _aggregate_count(root, suites, name="skipped", path=path, required=False)
+    failures = _aggregate_count(root, suites, name="failures", path=path, required=False)
+    errors = _aggregate_count(root, suites, name="errors", path=path, required=False)
+    outcome_counts = tuple(count for count in (skipped, failures, errors) if count is not None)
+    if any(count > tests for count in outcome_counts):
+        raise JUnitEvidenceError(f"JUnit outcome count exceeds its test count: {path}")
+    if len(outcome_counts) == 3 and sum(outcome_counts) > tests:
+        raise JUnitEvidenceError(f"JUnit outcome counts exceed its test count: {path}")
+
+    testcases = tuple(
+        element for element in root.iter() if _xml_local_name(element.tag) == "testcase"
+    )
+    all_testcases_skipped = bool(testcases) and all(
+        any(_xml_local_name(child.tag) == "skipped" for child in testcase) for testcase in testcases
+    )
+    contains_failure_or_error = any(
+        _xml_local_name(element.tag) in {"failure", "error"} for element in root.iter()
+    )
+    suite_results_reconciled = bool(result_suites) and all(
+        _suite_results_reconcile(suite, path=path) for suite in result_suites
+    )
+    return JUnitEvidence(
+        tests=tests,
+        skipped=skipped,
+        failures=failures,
+        errors=errors,
+        testcase_count=len(testcases),
+        all_testcases_skipped=all_testcases_skipped,
+        contains_failure_or_error=contains_failure_or_error,
+        suite_results_reconciled=suite_results_reconciled,
+    )
+
+
+def junit_test_count(path: Path) -> int:
+    """Parse a pytest JUnit document and require evidence of at least one test."""
+
+    return junit_evidence(path).tests
 
 
 def _file_runtime_paths(invocation_root: Path, file_index: int) -> dict[str, Path]:
@@ -230,9 +356,11 @@ def run_test_shard(
             )
             return_code = None
 
+        evidence: JUnitEvidence | None = None
         evidence_error: JUnitEvidenceError | None = None
         try:
-            total_tests += junit_test_count(paths["junit"])
+            evidence = junit_evidence(paths["junit"])
+            total_tests += evidence.tests
         except JUnitEvidenceError as exc:
             evidence_error = exc
             print(
@@ -240,7 +368,12 @@ def run_test_shard(
                 file=sys.stderr,
                 flush=True,
             )
-        if return_code != 0 or evidence_error is not None:
+        accepted_return_code = return_code == 0 or (
+            return_code == PYTEST_EXIT_NO_TESTS_COLLECTED
+            and evidence is not None
+            and evidence.all_skipped
+        )
+        if not accepted_return_code or evidence_error is not None:
             failed_files.append(test_file)
 
     _audit_attempts(selected, attempted)

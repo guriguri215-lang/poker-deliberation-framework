@@ -25,6 +25,23 @@ def _write_junit(command: list[str], *, tests: int = 1) -> None:
     path.write_text(f'<testsuites tests="{tests}" failures="0" errors="0"/>', encoding="utf-8")
 
 
+def _all_skipped_junit(*, namespaced: bool = False) -> bytes:
+    payload = (
+        b'<testsuites name="pytest tests">'
+        b'<testsuite errors="0" failures="0" skipped="1" tests="1">'
+        b'<testcase classname="" name="tests/test_platform.py">'
+        b'<skipped message="collection skipped">platform</skipped></testcase>'
+        b"</testsuite></testsuites>"
+    )
+    if namespaced:
+        return payload.replace(
+            b"<testsuites ",
+            b'<testsuites xmlns="urn:pytest-junit" ',
+            1,
+        )
+    return payload
+
+
 def test_discovery_and_round_robin_partition_are_complete_and_disjoint(tmp_path: Path) -> None:
     repository_root = tmp_path / "repo"
     for relative_path in (
@@ -209,6 +226,121 @@ def test_pytest_failure_does_not_prevent_later_files_from_running(
 
     assert result == 1
     assert tuple(command[-1] for command in calls) == selected_files
+
+
+@pytest.mark.parametrize(
+    "junit_payload",
+    (_all_skipped_junit(), _all_skipped_junit(namespaced=True)),
+)
+def test_pytest_no_tests_exit_is_accepted_only_with_all_skipped_junit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    junit_payload: bytes,
+) -> None:
+    repository_root = tmp_path / "repo"
+    _make_test_file(repository_root, "tests/test_platform.py")
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        _junit_path(command).write_bytes(junit_payload)
+        return subprocess.CompletedProcess(command, runner.PYTEST_EXIT_NO_TESTS_COLLECTED)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_test_shard(
+        repository_root,
+        shard_number=1,
+        shard_count=1,
+        temp_root=tmp_path / "ci",
+    )
+
+    assert result == 0
+
+
+@pytest.mark.parametrize(
+    ("return_code", "junit_payload"),
+    (
+        (
+            5,
+            b'<testsuites><testsuite tests="1" skipped="0" failures="0" errors="0">'
+            b'<testcase name="passed"/></testsuite></testsuites>',
+        ),
+        (
+            5,
+            b'<testsuites><testsuite tests="2" skipped="1" failures="0" errors="0">'
+            b'<testcase name="skipped"><skipped message="collection skipped"/></testcase>'
+            b'<testcase name="passed"/></testsuite></testsuites>',
+        ),
+        (
+            5,
+            b'<testsuites><testsuite tests="1" skipped="0" failures="1" errors="0">'
+            b'<testcase name="failed"><failure/></testcase></testsuite></testsuites>',
+        ),
+        (
+            5,
+            b'<testsuites><testsuite tests="1" skipped="0" failures="0" errors="1">'
+            b'<testcase name="errored"><error/></testcase></testsuite></testsuites>',
+        ),
+        (5, None),
+        (5, b'<testsuites tests="0" skipped="0" failures="0" errors="0"/>'),
+        (5, b'<testsuites tests="1" skipped="1" failures="0" errors="0"/>'),
+        (
+            5,
+            b'<testsuites><testsuite tests="2" skipped="2" failures="0" errors="0">'
+            b'<testcase name="only"><skipped/></testcase></testsuite></testsuites>',
+        ),
+        (
+            5,
+            b'<testsuites><testsuite tests="1" skipped="0" failures="0" errors="0">'
+            b'<testcase name="skip"><skipped/></testcase></testsuite></testsuites>',
+        ),
+        (
+            5,
+            b'<testsuites tests="1" skipped="1" failures="0" errors="0">'
+            b'<testsuite tests="1" skipped="0" failures="0" errors="0">'
+            b'<testcase name="skip"><skipped message="collection skipped"/></testcase>'
+            b"</testsuite></testsuites>",
+        ),
+        (
+            5,
+            b'<testsuites><testsuite tests="1" skipped="1" failures="0" errors="0">'
+            b'<testcase name="runtime"><skipped message="platform"/></testcase>'
+            b"</testsuite></testsuites>",
+        ),
+        (
+            5,
+            b'<testsuites><testsuite tests="1" skipped="1" failures="0" errors="0">'
+            b'<testcase name="runtime"><skipped type="pytest.skip" '
+            b'message="collection skipped"/></testcase></testsuite></testsuites>',
+        ),
+        (1, _all_skipped_junit()),
+    ),
+)
+def test_no_tests_exit_rejects_non_skipped_empty_failed_error_and_other_exit_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    return_code: int,
+    junit_payload: bytes | None,
+) -> None:
+    repository_root = tmp_path / "repo"
+    _make_test_file(repository_root, "tests/test_platform.py")
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if junit_payload is not None:
+            _junit_path(command).write_bytes(junit_payload)
+        return subprocess.CompletedProcess(command, return_code)
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    result = runner.run_test_shard(
+        repository_root,
+        shard_number=1,
+        shard_count=1,
+        temp_root=tmp_path / "ci",
+    )
+
+    assert result == 1
 
 
 @pytest.mark.parametrize("junit_payload", (None, b"<not-xml", b'<testsuites tests="0"/>'))

@@ -175,8 +175,9 @@
   UNKNOWN when an object, ref inventory, or supported text encoding cannot be read completely. Git
   author/committer/tagger identities are review candidates, not confirmed personal information.
 - Package metadataの`requires-python >=3.11`と、tracked GitHub Actions verification matrixは別である。
-  workflowはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを実行し、別jobでstatic gateと
-  candidate-bound reproducible package evidenceを検査する。2026-08-12 20:06:17 JSTのfresh read-backでは、
+  workflowはWindows/Ubuntu × CPython 3.12/3.13の各組合せを3つのdeterministic file shardへ分け、
+  各test fileをfresh pytest processで実行する。3 shardの和がその組合せのfull suiteを重複・欠落なく覆い、
+  別jobでstatic gateとcandidate-bound reproducible package evidenceを検査する。2026-08-12 20:06:17 JSTのfresh read-backでは、
   commit `ad3f267345491651153a18be12e854632366e34a`のActions run `31583851426`で、Windows/Ubuntu ×
   Python 3.12/3.13のfull-test 4 row、static quality、package evidenceの全6 jobが成功した。
   これは同commitだけに対する証拠であり、public releaseまたはproduction readinessを証明しない。

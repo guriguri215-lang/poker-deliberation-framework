@@ -160,8 +160,10 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 固定共有ディレクトリを再利用しないため、並行sessionが互いのtempを開始時に削除しません。
 
 - **FACT**: package metadataは`requires-python >=3.11`である。これは単独では検証済みmatrixを意味しない。
-- **FACT**: tracked GitHub Actions matrixはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを
-  実行する。Windows 3.13でstatic gate、Ubuntu 3.13でreproducible package evidenceも実行する。
+- **FACT**: tracked GitHub Actions matrixはWindows/Ubuntu × CPython 3.12/3.13の各組合せを
+  3つのdeterministic file shardへ分け、各test fileをfresh pytest processで実行する。3 shardの和が
+  そのOS/Python組合せのfull suiteを重複・欠落なく覆う。Windows 3.13でstatic gate、Ubuntu 3.13で
+  reproducible package evidenceも実行する。
   2026-08-12 20:06:17 JSTのfresh read-backでは、commit
   `ad3f267345491651153a18be12e854632366e34a`のActions run `31583851426`で、Windows/Ubuntu ×
   Python 3.12/3.13のfull-test 4 row、static quality、package evidenceの全6 jobが成功した。

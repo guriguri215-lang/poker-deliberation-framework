@@ -160,6 +160,8 @@ def _executable_with_publication_fault(
     fail_on_current_replace: int,
     operation: SyntheticOperation = SyntheticOperation.SUCCESS,
     arguments: SyntheticArgumentsV1 | None = None,
+    wall_clock_ms: int = 2_000,
+    budget_runtime_seconds: float | None = None,
 ):
     legacy = tmp_path / "legacy"
     legacy.mkdir()
@@ -186,9 +188,18 @@ def _executable_with_publication_fault(
         clock=lambda: 0,
         wall_clock=lambda: NOW,
     )
+    budget_policy = durable_policy()
+    if budget_runtime_seconds is not None:
+        budget_policy = budget_policy.model_copy(
+            update={
+                "base_policy": budget_policy.base_policy.model_copy(
+                    update={"max_runtime_seconds": budget_runtime_seconds}
+                )
+            }
+        )
     budget.create(
         value.budget_run_id,
-        durable_policy(),
+        budget_policy,
         operation_id=f"initialize-{suffix}",
     )
     current_replace_count = 0
@@ -228,7 +239,7 @@ def _executable_with_publication_fault(
     }
     return (
         value,
-        policy_for(workspace),
+        policy_for(workspace, job_limits=limits(wall_clock_ms=wall_clock_ms)),
         coordinator,
         job_store,
         budget,
@@ -1668,11 +1679,16 @@ def test_budget_settlement_postreplace_fault_exactly_confirms_and_closes_permit(
 
 
 @pytest.mark.parametrize(
-    ("fault_ordinal", "expected_job_status", "expected_cancellation"),
+    (
+        "fault_ordinal",
+        "expected_job_status",
+        "expected_cancellation",
+        "expected_after_replace_count",
+    ),
     [
-        (3, IsolatedJobStatus.EFFECT_UNKNOWN, CancellationState.EFFECT_UNKNOWN),
-        (4, IsolatedJobStatus.CANCELLED, CancellationState.CANCELLED),
-        (5, IsolatedJobStatus.CANCELLED, CancellationState.CANCELLED),
+        (3, IsolatedJobStatus.EFFECT_UNKNOWN, CancellationState.EFFECT_UNKNOWN, 5),
+        (4, IsolatedJobStatus.CANCELLED, CancellationState.CANCELLED, 6),
+        (5, IsolatedJobStatus.CANCELLED, CancellationState.CANCELLED, 6),
     ],
 )
 def test_cancel_publication_faults_close_started_permit(
@@ -1680,13 +1696,16 @@ def test_cancel_publication_faults_close_started_permit(
     fault_ordinal: int,
     expected_job_status: IsolatedJobStatus,
     expected_cancellation: CancellationState,
+    expected_after_replace_count: int,
 ) -> None:
     value, policy, coordinator, job_store, budget, kwargs = _executable_with_publication_fault(
         tmp_path,
         suffix=f"cancel-fault-{fault_ordinal}",
         fail_on_current_replace=99,
         operation=SyntheticOperation.HANG,
-        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+        arguments=SyntheticArgumentsV1(duration_ms=60_000),
+        wall_clock_ms=30_000,
+        budget_runtime_seconds=90.0,
     )
     after_replace_count = 0
     fired = False
@@ -1702,11 +1721,13 @@ def test_cancel_publication_faults_close_started_permit(
     budget.revisions.fault_injector = fault
     result = coordinator.execute(value, policy, cancelled=lambda: True, **kwargs)
     budget_state = budget.load(value.budget_run_id)
+
+    assert fired is True
+    assert after_replace_count == expected_after_replace_count
     cancellation = next(
         item for item in budget_state.cancellations if item.permit_id == value.budget_permit_id
     )
 
-    assert fired is True
     assert result.status is expected_job_status
     assert job_store.load(value.execution_id).status is expected_job_status
     assert cancellation.state is expected_cancellation

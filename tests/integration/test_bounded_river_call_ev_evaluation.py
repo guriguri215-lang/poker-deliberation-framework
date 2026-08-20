@@ -35,8 +35,27 @@ TREE_ID = "2" * 40
 
 @pytest.fixture
 def short_work_roots() -> Generator[tuple[Path, Path, Path], None, None]:
+    runner_temp = os.environ.get("RUNNER_TEMP")
+    temporary_parent = Path(runner_temp).resolve(strict=True) if runner_temp else None
     with ExitStack() as stack:
-        yield tuple(Path(stack.enter_context(TemporaryDirectory(prefix="p3e-"))) for _ in range(3))
+        roots = tuple(
+            Path(
+                stack.enter_context(TemporaryDirectory(prefix="p3e-", dir=temporary_parent))
+            ).resolve()
+            for _ in range(3)
+        )
+        assert len(set(roots)) == 3
+        if temporary_parent is not None:
+            assert all(root.parent == temporary_parent for root in roots)
+        for root in roots:
+            normalized = evaluation_module.normalize_bounded_river_call_ev_evaluation_root(root)
+            evaluation_module.check_path_lengths(
+                (
+                    normalized,
+                    normalized / evaluation_module.BOUNDED_RIVER_CALL_EV_EVALUATION_PATH_BUDGET,
+                )
+            )
+        yield roots
 
 
 def _windows_utf16_units_with_nul(path: Path) -> int:

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from poker_deliberation.bounded_river_call_ev_evaluation import (
     build_repository_owned_bounded_river_evaluation_admission,
 )
+from poker_deliberation.budgets import BudgetPolicyV2
 from poker_deliberation.codex_bridge.canonical import (
     canonical_json_bytes,
     domain_sha256,
@@ -197,7 +198,11 @@ def test_local_only_p3_path_completes_with_network_blocked_and_api_key_present(
     monkeypatch.setenv("OPENAI_API_KEY", "synthetic-api-key-canary")
     monkeypatch.setattr(socket.socket, "connect", forbid_network)
     policy = build_runtime_policy(auth_mode=RuntimeAuthModeV1.LOCAL_ONLY)
-    orchestrator = Orchestrator(config=app_config(tmp_path), provider=LocalProvider())
+    orchestrator = Orchestrator(
+        config=app_config(tmp_path),
+        provider=LocalProvider(),
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=900.0),
+    )
     report = orchestrator.run_bounded_river_call_ev_review(
         build_repository_owned_bounded_river_evaluation_admission(
             "QcJc",
@@ -206,7 +211,7 @@ def test_local_only_p3_path_completes_with_network_blocked_and_api_key_present(
     )
 
     assert policy.network_allowed is False
-    assert report.run_status == "completed"
+    assert report.run_status == "completed", report.limitations
     assert orchestrator.product_store.read_current(report.run_id).pointer.status == "succeeded"
 
 

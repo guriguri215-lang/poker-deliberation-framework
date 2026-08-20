@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from pydantic import TypeAdapter
@@ -50,6 +51,12 @@ def _completed(tmp_path: Path):
         if payload.inventory.logical_name != "lifecycle_audit.json"
     }
     return orchestrator, report, read, payloads
+
+
+@pytest.fixture(scope="module")
+def completed_provenance_baseline():
+    with TemporaryDirectory(prefix="p3-terminal-provenance-") as raw_root:
+        yield _completed(Path(raw_root))
 
 
 def _replay(orchestrator, report, read, payloads) -> None:
@@ -129,10 +136,11 @@ def test_terminal_rejects_raw_text_in_agent_case(tmp_path: Path) -> None:
     ],
 )
 def test_provenance_rejects_role_context_and_lineage_mismatch(
-    tmp_path: Path,
+    completed_provenance_baseline,
     update: dict[str, object],
 ) -> None:
-    orchestrator, report, read, payloads = _completed(tmp_path)
+    orchestrator, report, read, baseline_payloads = completed_provenance_baseline
+    payloads = dict(baseline_payloads)
     candidate = parse_canonical_model(
         payloads["bounded_river_call_ev_candidate.json"],
         BoundedRiverCallEvCandidateV1,

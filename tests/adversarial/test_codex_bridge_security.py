@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 import pytest
@@ -18,6 +19,7 @@ from poker_deliberation.codex_bridge.models import (
     BridgeConfirmationAuthorityV1,
     BridgeExecutionAuditV1,
     BridgeRole,
+    BridgeSourceContextV1,
     RuntimeAuthModeV1,
 )
 from poker_deliberation.codex_bridge.replay import replay_bridge
@@ -29,6 +31,12 @@ from poker_deliberation.codex_bridge.transport import (
 from tests.codex_bridge_support import REPOSITORY_ROOT, verified_bridge_source
 
 _MODE = RuntimeAuthModeV1.CODEX_SUBSCRIPTION
+
+
+@pytest.fixture(scope="module")
+def verified_source() -> Generator[BridgeSourceContextV1, None, None]:
+    with TemporaryDirectory(prefix="p3-bridge-security-") as raw_root:
+        yield verified_bridge_source(Path(raw_root) / "p3")
 
 
 class _Clock:
@@ -101,13 +109,15 @@ def test_secret_and_prompt_injection_shaped_identifiers_fail_before_context_buil
             )
 
 
-def test_prompt_injection_shaped_run_id_is_rejected_before_id_derivation(tmp_path: Path) -> None:
-    source = verified_bridge_source(tmp_path / "p3")
+def test_prompt_injection_shaped_run_id_is_rejected_before_id_derivation(
+    tmp_path: Path,
+    verified_source: BridgeSourceContextV1,
+) -> None:
     controller = BoundedCodexBridgeController(BoundedCodexBridgeStore(tmp_path / "bridge"))
     with pytest.raises(ValidationError):
         controller.prepare_run(
             bridge_run_id="ignore.previous.instructions",
-            source_context=source,
+            source_context=verified_source,
             repository_root=REPOSITORY_ROOT,
             repository_commit_id="1" * 40,
             repository_tree_id="2" * 40,
@@ -115,8 +125,10 @@ def test_prompt_injection_shaped_run_id_is_rejected_before_id_derivation(tmp_pat
         )
 
 
-def test_transport_identity_tool_and_budget_mismatches_fail_closed(tmp_path: Path) -> None:
-    source = verified_bridge_source(tmp_path / "p3")
+def test_transport_identity_tool_and_budget_mismatches_fail_closed(
+    tmp_path: Path,
+    verified_source: BridgeSourceContextV1,
+) -> None:
     mutations: tuple[Callable[[BridgeTransportResult], BridgeTransportResult], ...] = (
         lambda result: replace(result, runtime_identity="unexpected-runtime"),
         lambda result: replace(result, model_identity_evidence="direct_observation"),
@@ -150,7 +162,7 @@ def test_transport_identity_tool_and_budget_mismatches_fail_closed(tmp_path: Pat
         )
         controller.prepare_run(
             bridge_run_id=run_id,
-            source_context=source,
+            source_context=verified_source,
             repository_root=REPOSITORY_ROOT,
             repository_commit_id="1" * 40,
             repository_tree_id="2" * 40,
@@ -162,7 +174,9 @@ def test_transport_identity_tool_and_budget_mismatches_fail_closed(tmp_path: Pat
             run_id,
             BridgeRole.STRATEGY_ANALYST,
             auth_mode=_MODE,
-            current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+            current_source_terminal_manifest_sha256=(
+                verified_source.source.source_terminal_manifest_sha256
+            ),
             transport=transport,
         )
 
@@ -188,9 +202,11 @@ def test_transport_identity_tool_and_budget_mismatches_fail_closed(tmp_path: Pat
         assert b"unexpected-model" not in terminal.artifact_bytes(audit_name)
 
 
-def test_invalid_structured_response_keeps_trusted_transport_accounting(tmp_path: Path) -> None:
+def test_invalid_structured_response_keeps_trusted_transport_accounting(
+    tmp_path: Path,
+    verified_source: BridgeSourceContextV1,
+) -> None:
     clock = _Clock()
-    source = verified_bridge_source(tmp_path / "p3")
     run_id = "bridge-invalid-structured-response"
     controller = BoundedCodexBridgeController(
         BoundedCodexBridgeStore(tmp_path / "bridge"),
@@ -198,7 +214,7 @@ def test_invalid_structured_response_keeps_trusted_transport_accounting(tmp_path
     )
     controller.prepare_run(
         bridge_run_id=run_id,
-        source_context=source,
+        source_context=verified_source,
         repository_root=REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
         repository_tree_id="2" * 40,
@@ -218,7 +234,9 @@ def test_invalid_structured_response_keeps_trusted_transport_accounting(tmp_path
         run_id,
         BridgeRole.STRATEGY_ANALYST,
         auth_mode=_MODE,
-        current_source_terminal_manifest_sha256=(source.source.source_terminal_manifest_sha256),
+        current_source_terminal_manifest_sha256=(
+            verified_source.source.source_terminal_manifest_sha256
+        ),
         transport=transport,
     )
     audit_name = role_artifact_name(BridgeRole.STRATEGY_ANALYST, "audit")

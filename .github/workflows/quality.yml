@@ -16,8 +16,9 @@ concurrency:
 
 jobs:
   test-matrix:
-    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    name: test (${{ matrix.os }}, Python ${{ matrix.python-version }}, shard ${{ matrix.shard }}/3)
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +28,10 @@ jobs:
         python-version:
           - "3.12"
           - "3.13"
+        shard:
+          - 1
+          - 2
+          - 3
     steps:
       - uses: actions/checkout@v4
         with:
@@ -40,10 +45,12 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r requirements.lock
           python -m pip install --disable-pip-version-check --no-deps -e .
-      - name: Run full test suite once per matrix row
+      - name: Run deterministic test shard in fresh pytest processes
         run: >-
-          python -m pytest
-          --basetemp "${{ runner.temp }}/poker-deliberation-tests-${{ matrix.os }}-${{ matrix.python-version }}"
+          python scripts/run_ci_test_shard.py
+          --shard-number ${{ matrix.shard }}
+          --shard-count 3
+          --temp-root "${{ runner.temp }}/pdt-${{ matrix.python-version }}-${{ matrix.shard }}"
 
   static-quality:
     name: static quality and tracked projections
@@ -65,6 +72,7 @@ jobs:
         run: >-
           python -m pytest
           tests/unit/test_release_readiness.py
+          tests/unit/test_ci_test_shard.py
           tests/integration/test_release_workflow.py
           tests/integration/test_roadmap_status.py
       - name: Run static quality gates

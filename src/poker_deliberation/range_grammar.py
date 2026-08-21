@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from decimal import Decimal
 from itertools import combinations
 from typing import Any, cast
@@ -33,7 +33,6 @@ from poker_deliberation.schemas import (
     NumericalExactness,
     ToolResult,
     ToolStatus,
-    VerificationMetadata,
 )
 from poker_deliberation.tools.cards import RANKS, SUITS, normalize_cards
 
@@ -460,8 +459,23 @@ def validate_versioned_range(
     )
 
 
-def _replay_range_validate_result(result: ToolResult) -> RangeValidationResultV1:
+def _verify_same_run_materialized_result(
+    result: ToolResult,
+    same_run_tool_authorities: Mapping[str, bytes],
+) -> None:
+    from poker_deliberation.storage.revision_canonical import canonical_json_bytes
+
+    if same_run_tool_authorities.get(result.result_id) != canonical_json_bytes(result):
+        raise ValueError("same-run tool result lacks its exact publication authority")
+
+
+def _replay_range_validate_result(
+    result: ToolResult,
+    *,
+    same_run_tool_authorities: Mapping[str, bytes] | None = None,
+) -> RangeValidationResultV1:
     from poker_deliberation.tools.contracts import RangeValidateInput
+    from poker_deliberation.tools.registry import default_registry
 
     if (
         result.status is not ToolStatus.SUCCESS
@@ -469,7 +483,16 @@ def _replay_range_validate_result(result: ToolResult) -> RangeValidationResultV1
         or result.contract_version != "2.0.0"
     ):
         raise ValueError("range_validate result lacks an exact successful contract binding")
-    request = RangeValidateInput.model_validate_json(
+    if same_run_tool_authorities is None:
+        try:
+            default_registry().reverify_materialized_result(result)
+        except ValueError as exc:
+            if str(exc).startswith("materialized tool result differs from canonical replay:"):
+                raise ValueError("range_validate output differs from deterministic replay") from exc
+            raise
+    else:
+        _verify_same_run_materialized_result(result, same_run_tool_authorities)
+    RangeValidateInput.model_validate_json(
         _canonical_json_bytes(result.input),
         strict=True,
     )
@@ -480,12 +503,6 @@ def _replay_range_validate_result(result: ToolResult) -> RangeValidationResultV1
     )
     if _canonical_json_bytes(observed.model_dump(mode="python")) != output_bytes:
         raise ValueError("range_validate output is not in its unique canonical model form")
-    expected = validate_versioned_range(request.hand, request.range_definition)
-    if observed != expected or not _canonical_tree_matches(
-        observed.model_dump(mode="python"),
-        expected.model_dump(mode="python"),
-    ):
-        raise ValueError("range_validate result differs from deterministic replay")
     return observed
 
 
@@ -493,9 +510,10 @@ def _replay_combos_result(
     result: ToolResult,
     *,
     expected_payload: dict[str, object],
+    same_run_tool_authorities: Mapping[str, bytes] | None = None,
 ) -> None:
-    from poker_deliberation.tools.combinations import parse_weighted_range
-    from poker_deliberation.tools.contracts import CombosInput, CombosOutput, contract_by_name
+    from poker_deliberation.tools.contracts import CombosInput, CombosOutput
+    from poker_deliberation.tools.registry import default_registry
 
     if (
         result.status is not ToolStatus.SUCCESS
@@ -504,31 +522,16 @@ def _replay_combos_result(
         or not _canonical_tree_matches(result.input, expected_payload)
     ):
         raise ValueError("versioned range combos result lacks the required product binding")
+    if same_run_tool_authorities is None:
+        default_registry().reverify_materialized_result(result)
+    else:
+        _verify_same_run_materialized_result(result, same_run_tool_authorities)
     payload = CombosInput.model_validate_json(
         _canonical_json_bytes(result.input),
         strict=True,
     )
     if payload.range is None or payload.hand_class is not None or payload.dead_cards:
         raise ValueError("versioned range combos input is not a canonical range projection")
-    combos = parse_weighted_range(payload.range, ())
-    total_weight = sum(combo.weight for combo in combos)
-    expected = CombosOutput.model_validate_json(
-        _canonical_json_bytes(
-            {
-                "range": payload.range,
-                "combo_count": len(combos),
-                "total_combo_weight": total_weight,
-                "normalized_weights": [
-                    {
-                        "cards": list(combo.cards),
-                        "weight": combo.weight / total_weight,
-                    }
-                    for combo in combos
-                ],
-            }
-        ),
-        strict=True,
-    )
     output_bytes = _canonical_json_bytes(result.output)
     observed = CombosOutput.model_validate_json(
         output_bytes,
@@ -536,22 +539,6 @@ def _replay_combos_result(
     )
     if _canonical_json_bytes(observed.model_dump(mode="python", exclude_none=True)) != output_bytes:
         raise ValueError("versioned range combos output is not uniquely canonical")
-    if observed != expected or not _canonical_tree_matches(
-        observed.model_dump(mode="python", exclude_none=True),
-        expected.model_dump(mode="python", exclude_none=True),
-    ):
-        raise ValueError("versioned range combos result differs from deterministic replay")
-    contract = contract_by_name()["combos"]
-    evidence = contract.verify_floating(result.input, result.output)
-    expected_verification = VerificationMetadata(
-        method="executed tool-specific invariant checks",
-        checks=list(evidence.checks),
-        observations=list(evidence.observations),
-        tolerance=evidence.tolerance,
-        passed=True,
-    )
-    if result.verification != expected_verification:
-        raise ValueError("versioned range combos verification metadata is invalid")
 
 
 def _verify_failed_product_result(
@@ -597,17 +584,21 @@ def _verify_failed_product_result(
         raise ValueError("failed versioned range product result lacks its exact failure binding")
 
 
-def verify_versioned_range_tool_chain(
+def _verify_versioned_range_tool_chain(
     case: CaseInput,
     tool_results: Sequence[ToolResult],
     *,
     run_status: str = "completed",
+    same_run_tool_authorities: Mapping[str, bytes] | None = None,
 ) -> None:
     """Replay versioned range artifacts and enforce the product-chain boundary."""
 
     range_results = [result for result in tool_results if result.tool_name == "range_validate"]
     replayed = {
-        id(result): _replay_range_validate_result(result)
+        id(result): _replay_range_validate_result(
+            result,
+            same_run_tool_authorities=same_run_tool_authorities,
+        )
         for result in range_results
         if result.status is ToolStatus.SUCCESS
     }
@@ -707,6 +698,39 @@ def verify_versioned_range_tool_chain(
     _replay_combos_result(
         combo_results[0],
         expected_payload=expected_combo_payload,
+        same_run_tool_authorities=same_run_tool_authorities,
+    )
+
+
+def verify_versioned_range_tool_chain(
+    case: CaseInput,
+    tool_results: Sequence[ToolResult],
+    *,
+    run_status: str = "completed",
+) -> None:
+    """Hard-replay versioned range artifacts outside an active publication."""
+
+    _verify_versioned_range_tool_chain(
+        case,
+        tool_results,
+        run_status=run_status,
+    )
+
+
+def _verify_versioned_range_tool_chain_from_same_run_authority(
+    case: CaseInput,
+    tool_results: Sequence[ToolResult],
+    *,
+    run_status: str,
+    same_run_tool_authorities: Mapping[str, bytes],
+) -> None:
+    """Verify exact same-run results without re-executing their calculators."""
+
+    _verify_versioned_range_tool_chain(
+        case,
+        tool_results,
+        run_status=run_status,
+        same_run_tool_authorities=same_run_tool_authorities,
     )
 
 

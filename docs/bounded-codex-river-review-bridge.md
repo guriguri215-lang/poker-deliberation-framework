@@ -29,8 +29,10 @@ workflow/bridge linkage、state、numeric-contractの検査に合格したこと
   自動確認・再確認、一括・並列実行、retry、skip、新mode、mode/model/provider fallbackを許可しない。
 - **FACT**: 固定synthetic P3-030C・5 role経路にはcandidate-bound historical sealed live evidenceがある。
   そのmanifestは過去candidateの証拠としてbytes不変で保存し、current treeの資格へ昇格しない。
-- **UNKNOWN**: current treeと一致するfresh strict canonical V2 manifestは現在のcanonical pathにない。
-  public preflightは`subscription_live_qualified=false`とし、現行live資格を主張しない。
+- **FACT**: current qualificationの唯一の正は、current canonical pathのstrict canonical V2 live manifestと、
+  それへ束縛されたdeterministic evaluationのpairに対するpublic preflight結果である。両方欠落は`UNKNOWN`、
+  片方だけの欠落、noncanonical、invalid、untrackedまたはcurrent-tree binding不一致は`FAIL`、pairが揃い
+  全binding checkに合格した場合だけ`subscription_live_qualified=true`である。
 - **UNKNOWN**: strategy quality、human usefulness、正確な実戦range、backend immutable model snapshotは
   transport qualificationからは確定しない。
 - **FACT**: このmilestoneではAPI live qualificationを行わない。API adapterはlive-unqualifiedである。
@@ -113,9 +115,16 @@ runtimeは各roleをfresh `codex exec --ephemeral --json --output-schema` turn�
 `--ignore-user-config`、`--ignore-rules`、approval `never`、sandbox `read-only`、history `none`、
 repository外のsingle-use CWD/HOME/AppData/TEMPを固定します。保存済み認証の`CODEX_HOME` referenceは
 維持しますが、credential subtreeは走査しません。`CODEX_HOME/skills`と`CODEX_HOME/plugins`だけを
-boundedに列挙し、全`SKILL.md`をexact file pathで無効化してcontent hashをlaunch直前に再検査します。
+boundedに列挙し、ambientな`SKILL.md`をexact file pathで無効化します。strategy、math、skepticには
+repository-ownedの`review-poker-hand`、`run-poker-calculation`、`audit-poker-claim`をそれぞれexact 1件だけ
+有効化し、source path、content hash、repository commit、bounded instructionsをrequestへ束縛します。
+adjudicator/report-writerにはSkillを割り当てません。全Skillのcontent hashはlaunch直前と終了後に再検査します。
 shell、web、file-write、MCP、apps/connectors、browser/computer、plugins、nested/multi-agentその他の
 tool featureを無効化し、empty tool allowlist以外をfail closedにします。
+
+この証拠はSkillの選択、設定、入力への束縛を示しますが、modelがSkillの意味を完全に遵守したことを
+自己申告fieldから証明するものではありません。deterministic fixtureはSkill runtimeを実行せず、actual-liveの
+意味的品質も証明しません。
 
 確認・公開するexact bytes/hashはapplication-owned canonical stdin payloadです。Codexが追加する
 platform/system contextを含むactual backend model inputはCLI JSONLから観測できません。requested
@@ -429,7 +438,8 @@ live実行はcleanなqualification commit/treeへ
 manifest内の全runtime source fileのpath/size/SHA-256と
 `poker-bounded-codex-runtime-source-inventory-v1` hashを最終treeで再計算し、qualification commitが
 最終commitのancestorであることもpublic preflightで検証します。roadmap状態projectionだけはruntime execution
-inventoryから明示的に除外し、public preflight自体はevidence validation pathとしてinventoryへ含めます。
+inventoryから明示的に除外するのは`src/poker_deliberation/roadmap.py`だけであり、public preflight自体は
+evidence validation pathとしてinventoryへ含めます。
 
 current公開qualificationのexact run ID、qualification commit/tree、role別usage、manifest hash、runtime source
 inventoryは、current canonical pathに置かれたschema `2.0.0` manifestだけを正とします。文書へ特定runの値を
@@ -442,12 +452,12 @@ attestation hashはunkeyed integrity bindingであり、同一Python process内�
 subprocess primitivesまで悪意をもってmonkeypatchできるsame-privilege callerに対するauthenticity anchorではありません。
 公開claimはclean repository-controlled processとsealed execution evidenceのtrust boundary内に限定します。
 
-current canonical manifest/evaluationが欠落している現在、public preflightの
-`p2_025b_public_artifacts`は`UNKNOWN`、`subscription_live_qualified=false`、evidence authority `null`を返します。
-current canonical pathに非canonical、invalid、legacy V1 manifestが存在する場合は
-`bridge_public_evidence:noncanonical_or_invalid`で`FAIL`するのが正常です。historical evidenceや手動re-hashで
-回避せず、fresh liveが生成したstrict V2 manifestをcurrent canonical pathへ公開し、preflight合格後にだけ
-current qualified claimを成立させます。
+public preflightの`p2_025b_public_artifacts`は、current canonical manifest/evaluationの両方が欠落する場合に
+`UNKNOWN`、`subscription_live_qualified=false`、evidence authority `null`を返します。片方だけの欠落は
+`bridge_public_evidence:incomplete_pair`、noncanonical、invalid、legacy V1 manifestは
+`bridge_public_evidence:noncanonical_or_invalid`として`FAIL`します。historical evidenceや手動re-hashで
+回避せず、fresh liveが生成したstrict V2 manifestとbound deterministic evaluationをcurrent canonical pathへ
+公開し、全current-tree binding checkを含むpreflight合格後にだけcurrent qualified claimを成立させます。
 
 ## Data handlingとretention
 

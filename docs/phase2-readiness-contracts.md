@@ -245,6 +245,7 @@ v1の実効baselineはanalysis batch 1回、automatic retry 0、peak concurrency
 
 - enforcement clockはinjected `monotonic_ns()`。UTC wall timeはaudit表示だけ。
 - active runtimeはphase compute、provider/tool attempt、retry backoff、serialization、artifact writeを含む。
+- terminal publicationではtool-result replayとpayload commitment後にも同じrun deadlineを再確認し、staging、revision rename、current pointer replaceの各安全境界で再確認する。current pointer replace直前の確認をatomic commit pointとし、超過時はcurrentを進めず`failed_with_limitations`を返す。commit point後のterminal I/Oは、その時点までに検証した残runtimeを既存durable budget reservationへ束縛し、settlement overrunまたはsettlement欠落時はreaderがterminal statusを返さない。
 - `approval_required`でprocessを返してからresumeするまでの人間待ちはactive runtimeに含めない。
 - resumeはmanifestの元policy/usageを復元し、policy差替えを拒否する。tightenは新revisionと理由を
   auditし、既使用量未満へのtightenは即`BudgetExceeded`。

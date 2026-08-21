@@ -9,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 import poker_deliberation.orchestrator as orchestrator_module
+from poker_deliberation.budgets import BudgetFailure, BudgetFailureCode
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.phases.revision_coordinator import (
     PhaseRevisionFailureCode,
@@ -25,6 +26,7 @@ from poker_deliberation.schemas import (
     ToolStatus,
 )
 from poker_deliberation.tools import default_registry
+from poker_deliberation.tools.contracts import contract_by_name
 
 
 def _digest(domain: str, value: object) -> str:
@@ -114,6 +116,59 @@ def test_solver_status_result_requires_canonical_unavailable_contract() -> None:
     )
 
     with pytest.raises(ValueError):
+        _validate_tool_result_contract(forged)
+
+
+def test_revision_coordinator_reexecutes_floating_verification_metadata() -> None:
+    actual = default_registry().execute(
+        "pot_odds",
+        {
+            "pot_before_bet": 100.0,
+            "opponent_bet": 50.0,
+            "call_cost": 50.0,
+            "expected_rake": 0.0,
+        },
+        contract_version="2.0.0",
+    )
+    _validate_tool_result_contract(actual)
+    assert actual.verification is not None
+    forged = actual.model_copy(
+        update={
+            "verification": actual.verification.model_copy(
+                update={"observations": [*actual.verification.observations, "self-attested"]}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="canonical replay"):
+        _validate_tool_result_contract(forged)
+
+
+def test_revision_coordinator_does_not_accept_phase_self_attested_budget_failure() -> None:
+    contract = contract_by_name()["combos"]
+    forged = ToolResult(
+        result_id="tool-result-phase-budget",
+        tool_name="combos",
+        input={"hand_class": "AA"},
+        status=ToolStatus.FAILED,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        contract_version=contract.contract_version,
+        error="strict budget failure: tool_input_exceeded",
+    )
+    phase_self_attestation = BudgetFailure(
+        code=BudgetFailureCode.TOOL_INPUT_EXCEEDED,
+        resource="tool_input_bytes",
+        message="phase claims its own tool input exceeded",
+        limit=10,
+        observed=11,
+    )
+
+    # The value can be typed and internally correlated while still not being
+    # independent publication authority.  The coordinator exposes no seam for
+    # passing it to durable verification.
+    assert phase_self_attestation.code.value in (forged.error or "")
+    with pytest.raises(ValueError, match="storage authority"):
         _validate_tool_result_contract(forged)
 
 

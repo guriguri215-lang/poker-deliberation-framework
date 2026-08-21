@@ -23,6 +23,7 @@ from poker_deliberation.bounded_river_call_ev import (
     review_bounded_river_call_ev_intake,
 )
 from poker_deliberation.bounded_river_call_ev_models import (
+    BOUNDED_RIVER_CALL_EV_TOOL_ORDER,
     MAX_BOUNDED_RIVER_CALL_EV_ARTIFACT_BYTES,
     BoundedRiverCallEvCandidateV1,
     BoundedRiverCallEvConfirmationV1,
@@ -98,7 +99,9 @@ from poker_deliberation.storage.directory_durability import sync_directory
 from poker_deliberation.storage.revision_canonical import (
     canonical_domain_sha256,
     canonical_json_bytes,
+    check_path_lengths,
     parse_canonical_model,
+    run_lock_key_sha256,
     sha256_bytes,
     validate_run_id,
 )
@@ -120,7 +123,12 @@ _PLAN_HASH_DOMAIN = "poker-bounded-river-review-workflow-plan-v1"
 _LINKAGE_HASH_DOMAIN = "poker-bounded-river-review-workflow-linkage-v1"
 _ROLE_CONFIRMATION_BINDING_HASH_DOMAIN = "poker-bounded-river-review-role-confirmation-binding-v1"
 _WORKFLOW_DIRECTORY_DOMAIN = b"poker-bounded-river-review-workflow-directory-v1\0"
+_PATH_BUDGET_TRANSACTION_ID = f"txn-{'0' * 32}"
+_PATH_BUDGET_TOOL_RESULT_ID = f"tool-result-{'0' * 24}"
+_PATH_BUDGET_OWNER_TOKEN = f"owner-{'0' * 32}"
+_PATH_BUDGET_BRIDGE_REVISION = 16
 Clock = Callable[[], datetime]
+RoleExecutor = Callable[..., VerifiedBridgeRead]
 
 
 class BoundedRiverReviewWorkflowError(ValueError):
@@ -253,6 +261,133 @@ def _workflow_directory(root: Path, workflow_id: str) -> Path:
         :32
     ]
     return root / digest
+
+
+def _preflight_workflow_storage_paths(
+    repository_root: Path,
+    workflow_root: Path,
+    *,
+    workflow_id: str,
+    bridge_run_id: str,
+) -> None:
+    """Bound the deepest workflow-owned bridge path before creating its root."""
+
+    try:
+        root = _workflow_root(repository_root, workflow_root, create=False)
+        directory = _workflow_directory(root, workflow_id)
+        bridge_store = BoundedCodexBridgeStore(directory / "bridge")
+        _run, _control, _transactions, revisions, _current = bridge_store._paths(bridge_run_id)
+        # The bridge publishes one initial plan revision and three transitions
+        # (confirmation, admission, result/audit) for each of five serial roles.
+        deepest_finalized_path = (
+            revisions
+            / f"r{_PATH_BUDGET_BRIDGE_REVISION}-{_PATH_BUDGET_TRANSACTION_ID}"
+            / "payload"
+            / "roles"
+            / "0"
+            / "confirmation.json"
+        )
+        check_path_lengths((root, directory, deepest_finalized_path))
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
+
+
+def _preflight_existing_workflow_storage_paths(
+    repository_root: Path,
+    workflow_root: Path,
+    *,
+    workflow_id: str,
+) -> tuple[Path, Path, BoundedRiverReviewWorkflowPlanV1]:
+    """Bound an existing workflow before any public mutation can continue."""
+
+    root = _workflow_root(repository_root, workflow_root, create=False)
+    directory = _workflow_directory(root, workflow_id)
+    plan = _read_plan(directory, workflow_id=workflow_id)
+    _preflight_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+        bridge_run_id=plan.bridge_run_id,
+    )
+    return root, directory, plan
+
+
+def _source_storage_path_budget(config: AppConfig, run_id: str) -> dict[str, Path]:
+    """Model every deepest source-product path without creating storage roots."""
+
+    legacy_root, revision_root, budget_root = config.resolved_storage_roots()
+    config._validate_nonoverlapping_roots((legacy_root, revision_root, budget_root))
+    lock_key = run_lock_key_sha256(run_id)
+    return {
+        "legacy_root": legacy_root,
+        "revision_root": revision_root,
+        "budget_root": budget_root,
+        "terminal_tool_input": (
+            revision_root
+            / "runs"
+            / run_id
+            / ".terminal-store"
+            / "transactions"
+            / _PATH_BUDGET_TRANSACTION_ID
+            / "payload"
+            / "tool_results"
+            / f"{_PATH_BUDGET_TOOL_RESULT_ID}.input.json"
+        ),
+        "durable_budget_payload": (
+            budget_root
+            / "runs"
+            / run_id
+            / ".revision-store"
+            / "transactions"
+            / _PATH_BUDGET_TRANSACTION_ID
+            / "payload"
+            / "budget_state.json"
+        ),
+        "admission_record": (
+            revision_root
+            / ".revision-control"
+            / "bounded-river-call-ev-admissions"
+            / f"{'0' * 64}.json"
+        ),
+        "budget_failure_record": (
+            revision_root
+            / ".revision-control"
+            / "bounded-river-call-ev-budget-failures"
+            / f"{lock_key}.{len(BOUNDED_RIVER_CALL_EV_TOOL_ORDER) - 1}.json"
+        ),
+        "buffered_tool_input": (
+            revision_root
+            / "buffer"
+            / run_id
+            / "tool_results"
+            / f"{_PATH_BUDGET_TOOL_RESULT_ID}.input.json"
+        ),
+        "revision_lock_metadata_temp": (
+            revision_root
+            / ".revision-control"
+            / "locks"
+            / f"{lock_key}.{_PATH_BUDGET_OWNER_TOKEN}.metadata.tmp"
+        ),
+        "budget_lock_metadata_temp": (
+            budget_root
+            / ".revision-control"
+            / "locks"
+            / f"{lock_key}.{_PATH_BUDGET_OWNER_TOKEN}.metadata.tmp"
+        ),
+    }
+
+
+def _preflight_source_storage_paths(config: AppConfig, run_id: str) -> None:
+    """Reject bounded-review storage paths before an orchestrator can create roots."""
+
+    try:
+        check_path_lengths(_source_storage_path_budget(config, run_id).values())
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, BoundedRiverReviewWorkflowError):
+            raise
+        raise BoundedRiverReviewWorkflowError("BRW_E_STORAGE") from exc
 
 
 def _write_new(path: Path, value: BaseModel) -> bytes:
@@ -459,6 +594,12 @@ def prepare_bounded_river_review_workflow(
 ) -> tuple[BoundedRiverReviewWorkflowPlanV1, BoundedRiverCallEvPreparationResultV1]:
     """Prepare immutable P3-030C material without creating a product run."""
 
+    _preflight_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+        bridge_run_id=bridge_run_id,
+    )
     root = _workflow_root(repository_root, workflow_root)
     directory = _workflow_directory(root, workflow_id)
     if _entry_exists(directory):
@@ -557,9 +698,11 @@ def confirm_bounded_river_review_workflow(
     confirmed_at: datetime | None = None,
     expires_at: datetime | None = None,
 ) -> BoundedRiverCallEvConfirmationV1:
-    root = _workflow_root(repository_root, workflow_root, create=False)
-    directory = _workflow_directory(root, workflow_id)
-    plan = _read_plan(directory, workflow_id=workflow_id)
+    _root, directory, plan = _preflight_existing_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+    )
     preparation = _read_preparation(directory)
     if expected_plan_sha256 != plan.plan_sha256:
         _fail("BRW_E_PLAN_BINDING")
@@ -598,6 +741,7 @@ def _verified_source_read(
     *,
     expected_source_sha256: str,
 ) -> tuple[VerifiedRunReadV2, BridgeSourceContextV1, str]:
+    _preflight_source_storage_paths(config, source_run_id)
     orchestrator = Orchestrator(config=config, provider=LocalProvider())
     read = orchestrator.product_store.read_current(source_run_id)
     try:
@@ -1191,9 +1335,11 @@ def run_bounded_river_review_workflow(
     workflow_id: str,
     clock: Clock = _now,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    root = _workflow_root(repository_root, workflow_root, create=False)
-    directory = _workflow_directory(root, workflow_id)
-    plan = _read_plan(directory, workflow_id=workflow_id)
+    _root, directory, plan = _preflight_existing_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+    )
     preparation = _read_preparation(directory)
     confirmation = _read_confirmation(directory)
     _verify_confirmation_binding(plan, preparation, confirmation)
@@ -1206,6 +1352,7 @@ def run_bounded_river_review_workflow(
         _fail("BRW_E_SOURCE_BINDING")
     if preparation.candidate is None:  # pragma: no cover - checked by reader
         _fail("BRW_E_PREPARATION")
+    _preflight_source_storage_paths(config, plan.source_run_id)
     admission = admit_bounded_river_call_ev_review(
         source_bytes,
         preparation.candidate,
@@ -1250,6 +1397,11 @@ def resume_bounded_river_review_workflow(
             workflow_root=workflow_root,
             workflow_id=workflow_id,
         )
+    _preflight_existing_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+    )
     if source_bytes is None:
         plan = _read_plan(directory, workflow_id=workflow_id)
         preparation = _read_preparation(directory)
@@ -1821,6 +1973,15 @@ def bounded_river_review_role_request_preview(
     }
 
 
+def _exact_role_confirmation_fields_match(
+    supplied: tuple[object, ...],
+    authoritative: tuple[object, ...],
+) -> bool:
+    """Compare the exact, ordered 17-field confirmation contract without mutation."""
+
+    return len(supplied) == 17 and len(authoritative) == 17 and supplied == authoritative
+
+
 def confirm_bounded_river_review_role_request(
     *,
     config: AppConfig,
@@ -1897,27 +2058,54 @@ def confirm_bounded_river_review_role_request(
         _fail("BRW_E_ROLE_ORDER")
     request = _bridge_role_request(bridge, status.next_role)
     policy = request.context.runtime_policy
-    if (
-        expected_plan_sha256 != plan.plan_sha256
-        or expected_linkage_sha256 != linkage.linkage_sha256
-        or expected_bridge_revision != bridge.pointer.revision
-        or expected_bridge_manifest_sha256 != bridge.manifest.manifest_sha256
-        or expected_bridge_inventory_sha256 != bridge.manifest.inventory_sha256
-        or expected_bridge_pointer_sha256 != bridge.pointer_sha256
-        or expected_auth_mode is not plan.auth_mode
-        or expected_request_sha256 != request.request_sha256
-        or expected_request_bytes_sha256 != request.request_bytes_sha256
-        or expected_envelope_sha256 != request.context.envelope_sha256
-        or expected_runtime_policy_sha256 != policy.policy_sha256
-        or expected_runtime_identity != policy.runtime_identity
-        or expected_model_provider != policy.model_provider
-        or expected_model != policy.model
-        or expected_credential_reference != policy.credential_reference
-        or expected_remote_retention_policy != policy.remote_retention_policy
+    if not _exact_role_confirmation_fields_match(
+        (
+            expected_plan_sha256,
+            expected_linkage_sha256,
+            expected_bridge_revision,
+            expected_bridge_manifest_sha256,
+            expected_bridge_inventory_sha256,
+            expected_bridge_pointer_sha256,
+            expected_auth_mode,
+            expected_request_sha256,
+            expected_request_bytes_sha256,
+            expected_envelope_sha256,
+            expected_runtime_policy_sha256,
+            expected_runtime_identity,
+            expected_model_provider,
+            expected_model,
+            expected_credential_reference,
+            expected_remote_retention_policy,
+            expected_role,
+        ),
+        (
+            plan.plan_sha256,
+            linkage.linkage_sha256,
+            bridge.pointer.revision,
+            bridge.manifest.manifest_sha256,
+            bridge.manifest.inventory_sha256,
+            bridge.pointer_sha256,
+            plan.auth_mode,
+            request.request_sha256,
+            request.request_bytes_sha256,
+            request.context.envelope_sha256,
+            policy.policy_sha256,
+            policy.runtime_identity,
+            policy.model_provider,
+            policy.model,
+            policy.credential_reference,
+            policy.remote_retention_policy,
+            status.next_role,
+        ),
     ):
         _fail("BRW_E_ROLE_BINDING")
     if _now() >= request.context.assignment.expires_at:
         _fail("BRW_E_ROLE_EXPIRED")
+    _preflight_existing_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+    )
     bridge_confirmation = _bridge_role_confirmation(bridge, status.next_role)
     if bridge_confirmation is None:
         try:
@@ -1992,8 +2180,13 @@ def execute_bounded_river_review_role(
     workflow_id: str,
     runtime_root: Path,
     codex_binary: Path | None = None,
+    _role_executor: RoleExecutor | None = None,
 ) -> BoundedRiverReviewWorkflowStatusV1:
-    """Execute the one confirmed next role, without retry or fallback."""
+    """Execute the one confirmed next role, without retry or fallback.
+
+    ``_role_executor`` is an internal deterministic-evaluation seam. Product callers leave it
+    unset so the verified production executor remains authoritative.
+    """
 
     observed_at = _now()
     observed = _verified_role_workflow(
@@ -2034,8 +2227,14 @@ def execute_bounded_river_review_role(
         _fail("BRW_E_ROLE_BINDING")
     if _now() >= bridge_confirmation.expires_at:
         _fail("BRW_E_ROLE_EXPIRED")
+    _preflight_existing_workflow_storage_paths(
+        repository_root,
+        workflow_root,
+        workflow_id=workflow_id,
+    )
+    role_executor = execute_product_role if _role_executor is None else _role_executor
     try:
-        execute_product_role(
+        role_executor(
             config=config,
             repository_root=repository_root,
             bridge_root=directory / "bridge",

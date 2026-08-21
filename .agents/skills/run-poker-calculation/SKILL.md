@@ -5,6 +5,13 @@ description: Choose, validate, and run the framework's deterministic poker calcu
 
 # Run Poker Calculation
 
+## Bounded bridge mode
+
+When the bounded Codex bridge supplies immutable ToolResults from calculators that have already
+run, verify applicability, status, exactness, assumptions, warnings, seed, samples, confidence
+interval, version, and error fields, then return the bounded role-output contract. Do not rerun,
+replace, or invent a calculation.
+
 ## Workflow
 
 1. Read [references/tool-selection.md](references/tool-selection.md) and `tools/manifest.yaml`.

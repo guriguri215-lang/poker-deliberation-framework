@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import poker_deliberation.orchestrator as orchestrator_module
 from poker_deliberation.budgets import (
     BudgetFailureCode,
     BudgetPolicyV2,
@@ -26,7 +27,11 @@ from poker_deliberation.providers import (
     ProviderStatus,
 )
 from poker_deliberation.schemas import AgentAssignment, AgentContext, AgentReport, CaseInput
-from poker_deliberation.storage.terminal_models import RunReadStatus
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+    RunReadStatus,
+)
 from poker_deliberation.tools import default_registry
 from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 
@@ -536,13 +541,14 @@ def test_context_runtime_window_at_exact_cap_publishes_structured_failure(
 
     report = orchestrator.run(_strategy_case(), run_id=run_id)
     state = orchestrator.store.read_json(run_id, "state.json")
-    verified = orchestrator.product_store.read_current(run_id)
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(run_id)
 
     assert provider.calls == 0
     assert report.run_status == "failed_with_limitations"
     assert "maximum runtime reached during context build" in report.data_quality
     assert state["state"] == "FAILED_WITH_LIMITATIONS"
-    assert verified.read_status is RunReadStatus.FAILED
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
     assert orchestrator._run_machines[run_id].last_budget_failure is not None
     assert (
         orchestrator._run_machines[run_id].last_budget_failure.code
@@ -892,12 +898,13 @@ def test_final_synthesis_runtime_overrun_is_structured_and_not_completed(
         run_id=run_id,
     )
     state = orchestrator.store.read_json(run_id, "state.json")
-    verified = orchestrator.product_store.read_current(run_id)
 
     assert report.run_status == "failed_with_limitations"
     assert state["state"] == "FAILED_WITH_LIMITATIONS"
-    assert verified.read_status is RunReadStatus.FAILED
     assert "maximum runtime exceeded during final synthesis" in report.data_quality
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
 
 
 def test_final_artifact_runtime_overrun_rewrites_terminal_state_fail_closed(
@@ -930,13 +937,125 @@ def test_final_artifact_runtime_overrun_rewrites_terminal_state_fail_closed(
     )
     state = orchestrator.store.read_json(run_id, "state.json")
     stored_report = orchestrator.store.read_json(run_id, "final_report.json")
-    verified = orchestrator.product_store.read_current(run_id)
 
     assert report.run_status == "failed_with_limitations"
     assert state["state"] == "FAILED_WITH_LIMITATIONS"
     assert stored_report["run_status"] == "failed_with_limitations"
-    assert verified.read_status is RunReadStatus.FAILED
     assert "maximum runtime exceeded during final artifact writes" in report.data_quality
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_terminal_commitment_replay_runtime_overrun_remains_ephemeral(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = FakeMonotonicClock()
+    run_id = "run-terminal-commitment-runtime-overrun"
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    )
+    original_commitments = orchestrator_module.product_payload_commitments
+
+    def advance_after_commitments(*args, **kwargs):  # type: ignore[no-untyped-def]
+        result = original_commitments(*args, **kwargs)
+        clock.advance_ns(2_000_000_000)
+        return result
+
+    monkeypatch.setattr(
+        orchestrator_module,
+        "product_payload_commitments",
+        advance_after_commitments,
+    )
+
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="review terminal commitment runtime",
+            analysis_scope="retrospective",
+        ),
+        run_id=run_id,
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert "maximum runtime exceeded during terminal publication" in report.data_quality
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_terminal_storage_runtime_overrun_cannot_advance_current(
+    tmp_path: Path,
+) -> None:
+    clock = FakeMonotonicClock()
+    run_id = "run-terminal-storage-runtime-overrun"
+    config = AppConfig(runs_dir=tmp_path / "runs")
+    orchestrator = Orchestrator(
+        config,
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    )
+
+    def advance_before_current(hook: str) -> None:
+        if hook == "current.before_replace":
+            clock.advance_ns(2_000_000_000)
+
+    orchestrator.product_store.fault_injector = advance_before_current
+
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="review terminal storage runtime",
+            analysis_scope="retrospective",
+        ),
+        run_id=run_id,
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert "maximum runtime exceeded during terminal publication" in report.data_quality
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_INCOMPLETE
+    assert not (
+        config.revision_runs_dir / "runs" / run_id / ".terminal-store" / "current.json"
+    ).exists()
+
+
+def test_terminal_runtime_overrun_after_pointer_replace_is_not_readable_as_completed(
+    tmp_path: Path,
+) -> None:
+    clock = FakeMonotonicClock()
+    run_id = "run-terminal-post-pointer-runtime-overrun"
+    orchestrator = Orchestrator(
+        AppConfig(runs_dir=tmp_path / "runs"),
+        monotonic_clock=clock,
+        budget_policy=BudgetPolicyV2(max_runtime_seconds=1.0),
+    )
+    orchestrator.durable_budget_store.clock = clock.now_ns
+
+    def advance_after_current(hook: str) -> None:
+        if hook == "current.after_replace":
+            clock.advance_ns(2_000_000_000)
+
+    orchestrator.product_store.fault_injector = advance_after_current
+
+    report = orchestrator.run(
+        CaseInput(
+            kind="calculation",
+            raw_text="review post-pointer terminal runtime",
+            analysis_scope="retrospective",
+        ),
+        run_id=run_id,
+    )
+
+    assert report.run_status == "failed_with_limitations"
+    assert "product persistence failed: budget_settlement_failed" in report.limitations
+    with pytest.raises(ProductRunError) as read_caught:
+        orchestrator.product_store.read_current(run_id)
+    assert read_caught.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
 
 
 def test_run_store_writes_settle_peak_artifact_and_current_run_bytes(tmp_path: Path) -> None:

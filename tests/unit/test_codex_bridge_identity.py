@@ -106,15 +106,24 @@ def test_runtime_source_inventory_is_sorted_and_covers_role_and_request_authorit
         ".codex/agents/strategy-analyst.toml",
     }
     request_authority_paths = {
+        ".agents/skills/audit-poker-claim/SKILL.md",
+        ".agents/skills/review-poker-hand/SKILL.md",
+        ".agents/skills/run-poker-calculation/SKILL.md",
         "src/poker_deliberation/capabilities.py",
         "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
     }
+    deterministic_workflow_paths = {
+        "scripts/run_bounded_river_review_workflow_evaluation.py",
+        "tests/fixtures/bounded_river_review_workflow/v1/range.json",
+        "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt",
+        "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json",
+    }
 
     assert tuple(item.path for item in inventory) == tuple(sorted(item.path for item in inventory))
-    assert agent_paths | request_authority_paths <= by_path.keys()
+    assert agent_paths | request_authority_paths | deterministic_workflow_paths <= by_path.keys()
     assert "src/poker_deliberation/codex_bridge/qualification.py" in by_path
     assert "src/poker_deliberation/public_preflight.py" in by_path
-    for relative in agent_paths | request_authority_paths:
+    for relative in agent_paths | request_authority_paths | deterministic_workflow_paths:
         raw = REPOSITORY_ROOT.joinpath(*relative.split("/")).read_bytes()
         assert by_path[relative].size == len(raw)
         assert by_path[relative].sha256 == hashlib.sha256(raw).hexdigest()
@@ -123,12 +132,19 @@ def test_runtime_source_inventory_is_sorted_and_covers_role_and_request_authorit
 
 def _minimal_runtime_inventory_root(root: Path) -> Path:
     files = {
+        ".agents/skills/audit-poker-claim/SKILL.md": b"---\nname: audit-poker-claim\n---\n",
+        ".agents/skills/review-poker-hand/SKILL.md": b"---\nname: review-poker-hand\n---\n",
+        ".agents/skills/run-poker-calculation/SKILL.md": b"---\nname: run-poker-calculation\n---\n",
         ".codex/agents/strategy-analyst.toml": b'name = "strategy-analyst"\n',
         "pyproject.toml": b"[project]\nname = 'inventory-fixture'\n",
         "requirements.lock": b"fixture==1.0\n",
         "scripts/run_codex_bridge_live_qualification.py": b"# fixture runner\n",
+        "scripts/run_bounded_river_review_workflow_evaluation.py": b"# workflow fixture runner\n",
         "src/poker_deliberation/capabilities.py": b"CAPABILITIES = ()\n",
         "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json": b"{}",
+        "tests/fixtures/bounded_river_review_workflow/v1/range.json": b"{}",
+        "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt": b"fixture\n",
+        "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json": b"{}",
     }
     for relative, raw in files.items():
         path = root.joinpath(*relative.split("/"))
@@ -141,8 +157,11 @@ def _minimal_runtime_inventory_root(root: Path) -> Path:
     "relative",
     [
         ".codex/agents/strategy-analyst.toml",
+        ".agents/skills/review-poker-hand/SKILL.md",
         "src/poker_deliberation/capabilities.py",
         "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json",
+        "scripts/run_bounded_river_review_workflow_evaluation.py",
+        "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json",
     ],
 )
 def test_runtime_source_inventory_hash_changes_when_new_authority_bytes_change(

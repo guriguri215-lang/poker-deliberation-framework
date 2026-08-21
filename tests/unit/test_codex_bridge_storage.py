@@ -36,6 +36,7 @@ def _anchors(tmp_path: Path):  # type: ignore[no-untyped-def]
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
+        include_repository_skill_bindings=True,
     )
     created = datetime(2029, 12, 31, 23, 40, tzinfo=UTC)
     plan = build_run_plan(
@@ -165,6 +166,7 @@ def test_successor_cannot_remove_or_mutate_prior_inventory(tmp_path: Path) -> No
         role_conformance=build_bridge_role_conformance(
             REPOSITORY_ROOT,
             repository_commit_id="1" * 40,
+            include_repository_skill_bindings=True,
         ),
         repository_commit_id="1" * 40,
         repository_tree_id="2" * 40,

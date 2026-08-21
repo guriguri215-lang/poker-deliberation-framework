@@ -1,23 +1,23 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+import poker_deliberation.confirmed_review as confirmed_review_module
 import poker_deliberation.orchestrator as orchestrator_module
+import poker_deliberation.tools.registry as tool_registry_module
 from poker_deliberation.agents import select_roles
 from poker_deliberation.config import BudgetConfig
 from poker_deliberation.confirmed_review import (
-    _CONFIRMED_RUNTIME_DATA_QUALITY,
-    PROVENANCE_CANONICALIZATION_ID,
     ConfirmedReviewError,
-    _domain_sha256,
     admit_confirmed_review,
     build_confirmed_review_provenance,
     create_review_confirmation,
-    provenance_sha256,
 )
 from poker_deliberation.confirmed_review_models import (
     ConfirmedReviewDiagnosticCode,
@@ -42,6 +42,7 @@ from poker_deliberation.schemas import (
     EpistemicLabel,
     FinalReport,
 )
+from poker_deliberation.state_machine import RunState
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_json_bytes,
@@ -53,7 +54,7 @@ from poker_deliberation.storage.terminal_models import (
     ProductRunFailureCode,
     RunReadStatus,
 )
-from poker_deliberation.tools import default_registry
+from poker_deliberation.tools import ToolRegistry, default_registry
 from tests.confirmed_review_support import app_config, confirmed_admission
 from tests.confirmed_review_support import candidate_payload as base_candidate_payload
 from tests.range_support import versioned_range_hand
@@ -1139,6 +1140,49 @@ def test_provider_failure_status_and_runtime_stage_are_authoritative(tmp_path) -
             )
         assert mismatched_followup.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
+    ordered_runtime_report = staged_failure_report("maximum runtime exceeded after tool execution")
+    ordered_runtime_data_quality = [
+        *ordered_runtime_report.data_quality,
+        "strict budget failure: runtime_exceeded",
+        "maximum runtime exceeded during final synthesis",
+        "maximum runtime exceeded during final artifact writes",
+        "maximum runtime exceeded during terminal publication",
+    ]
+    ordered_runtime_report = ordered_runtime_report.model_copy(
+        update={
+            "data_quality": ordered_runtime_data_quality,
+            "limitations": [*ordered_runtime_data_quality, report.limitations[-1]],
+        },
+        deep=True,
+    )
+    ordered_runtime_provenance = build_confirmed_review_provenance(
+        admission,
+        ordered_runtime_report,
+        **provenance_authority,
+    )
+    assert ordered_runtime_provenance.terminal_status == "failed_with_limitations"
+
+    reversed_followup_data_quality = [
+        *ordered_runtime_report.data_quality[:-3],
+        "maximum runtime exceeded during final artifact writes",
+        "maximum runtime exceeded during final synthesis",
+        "maximum runtime exceeded during terminal publication",
+    ]
+    reversed_followup_report = ordered_runtime_report.model_copy(
+        update={
+            "data_quality": reversed_followup_data_quality,
+            "limitations": [*reversed_followup_data_quality, report.limitations[-1]],
+        },
+        deep=True,
+    )
+    with pytest.raises(ConfirmedReviewError) as reversed_followup:
+        build_confirmed_review_provenance(
+            admission,
+            reversed_followup_report,
+            **provenance_authority,
+        )
+    assert reversed_followup.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
     continued_after_failure = forged_failure_report(
         status=AgentExecutionStatus.FAILED,
         error="context envelope has expired",
@@ -1210,6 +1254,134 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
     assert rebuilt_provenance.model_dump(
         exclude={"provenance_sha256"}
     ) == durable_provenance.model_dump(exclude={"provenance_sha256"})
+
+    same_run_authorities = {
+        result.result_id: canonical_json_bytes(result) for result in durable_report.tool_results
+    }
+    same_run_provenance = (
+        confirmed_review_module._build_confirmed_review_provenance_from_same_run_authority(
+            replay_admission,
+            durable_report,
+            same_run_tool_authorities=same_run_authorities,
+            assignments=assignments,
+            agent_reports=agent_reports,
+            **storage_authority,
+        )
+    )
+    assert same_run_provenance == durable_provenance
+    with pytest.raises(ConfirmedReviewError) as missing_same_run_authority:
+        confirmed_review_module._build_confirmed_review_provenance_from_same_run_authority(
+            replay_admission,
+            durable_report,
+            same_run_tool_authorities={},
+            assignments=assignments,
+            agent_reports=agent_reports,
+            **storage_authority,
+        )
+    assert missing_same_run_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+    forged_same_run_authorities = dict(same_run_authorities)
+    forged_same_run_authorities[durable_report.tool_results[0].result_id] = canonical_json_bytes(
+        {"forged": True}
+    )
+    with pytest.raises(ConfirmedReviewError) as forged_same_run_authority:
+        confirmed_review_module._build_confirmed_review_provenance_from_same_run_authority(
+            replay_admission,
+            durable_report,
+            same_run_tool_authorities=forged_same_run_authorities,
+            assignments=assignments,
+            agent_reports=agent_reports,
+            **storage_authority,
+        )
+    assert forged_same_run_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+    extra_same_run_authorities = {
+        **same_run_authorities,
+        "tool-result-extra-authority": canonical_json_bytes({"forged": True}),
+    }
+    with (
+        pytest.raises(ConfirmedReviewError) as extra_same_run_authority,
+        confirmed_review_module._confirmed_review_same_run_publication_authority(
+            replay_admission,
+            durable_report,
+            extra_same_run_authorities,
+        ),
+    ):
+        raise AssertionError("extra authority must be rejected before publication")
+    assert extra_same_run_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+
+    with confirmed_review_module._confirmed_review_same_run_publication_authority(
+        replay_admission,
+        durable_report,
+        same_run_authorities,
+    ):
+        active = confirmed_review_module._active_confirmed_review_same_run_tool_authorities(
+            run_id=durable_report.run_id,
+            case=replay_admission.case,
+            report=durable_report,
+            source_bytes=replay_admission.source_bytes,
+            candidate=replay_admission.candidate,
+            confirmation=replay_admission.confirmation,
+        )
+        assert active == same_run_authorities
+        with pytest.raises(ConfirmedReviewError) as cross_run_authority:
+            confirmed_review_module._active_confirmed_review_same_run_tool_authorities(
+                run_id="run-confirmed-cross-run-authority",
+                case=replay_admission.case,
+                report=durable_report,
+            )
+        assert cross_run_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+        tampered_result = durable_report.tool_results[0].model_copy(
+            update={
+                "output": {
+                    **durable_report.tool_results[0].output,
+                    "valid": False,
+                }
+            },
+            deep=True,
+        )
+        tampered_report = durable_report.model_copy(
+            update={
+                "tool_results": [
+                    tampered_result,
+                    *durable_report.tool_results[1:],
+                ]
+            },
+            deep=True,
+        )
+        with pytest.raises(ConfirmedReviewError) as tampered_authority:
+            confirmed_review_module._active_confirmed_review_same_run_tool_authorities(
+                run_id=durable_report.run_id,
+                case=replay_admission.case,
+                report=tampered_report,
+            )
+        assert tampered_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+        copied_context = copy_context()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            crossed_thread = executor.submit(
+                copied_context.run,
+                confirmed_review_module._active_confirmed_review_same_run_tool_authorities,
+                run_id=durable_report.run_id,
+                case=replay_admission.case,
+                report=durable_report,
+            )
+            with pytest.raises(ConfirmedReviewError) as crossed_thread_authority:
+                crossed_thread.result()
+        assert crossed_thread_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
+    assert (
+        confirmed_review_module._active_confirmed_review_same_run_tool_authorities(
+            run_id=durable_report.run_id,
+            case=replay_admission.case,
+            report=durable_report,
+        )
+        is None
+    )
+    with pytest.raises(ConfirmedReviewError) as expired_copied_authority:
+        copied_context.run(
+            confirmed_review_module._active_confirmed_review_same_run_tool_authorities,
+            run_id=durable_report.run_id,
+            case=replay_admission.case,
+            report=durable_report,
+        )
+    assert expired_copied_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
     forged_agent_reports = [
         agent_report.model_copy(
@@ -1417,6 +1589,113 @@ def test_agent_reports_and_synthesis_projection_are_authoritative(tmp_path) -> N
         assert forged_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
+def test_fresh_read_after_confirmed_publication_hard_replays_tools(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    hand, _definition = versioned_range_hand()
+    payload = base_candidate_payload(intake_id="intake-confirmed-fresh-read-replay-1")
+    payload["hand"] = hand.model_dump(mode="json")
+    admission = confirmed_admission(
+        run_id="run-confirmed-fresh-read-replay-1",
+        payload=payload,
+        now=datetime.now(UTC),
+    )
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    )
+    original_default_registry = confirmed_review_module.default_registry
+    original_range_plan_validator = confirmed_review_module.validate_versioned_range
+    original_tool_registry_factory = tool_registry_module.default_registry
+    active_range_plan_count = 0
+
+    def forbidden_publication_replay(*args, **kwargs):  # type: ignore[no-untyped-def]
+        del args, kwargs
+        raise AssertionError("active same-run publication must not hard-replay tools")
+
+    def admission_only_range_validation(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal active_range_plan_count
+        active_range_plan_count += 1
+        if active_range_plan_count > 1:
+            raise AssertionError("active publication must not repeat range admission validation")
+        return original_range_plan_validator(*args, **kwargs)
+
+    monkeypatch.setattr(
+        confirmed_review_module,
+        "default_registry",
+        forbidden_publication_replay,
+    )
+    monkeypatch.setattr(
+        confirmed_review_module,
+        "validate_versioned_range",
+        admission_only_range_validation,
+    )
+    monkeypatch.setattr(
+        tool_registry_module,
+        "default_registry",
+        forbidden_publication_replay,
+    )
+    report = orchestrator.run_confirmed_review(admission)
+    assert active_range_plan_count == 1
+    monkeypatch.setattr(
+        confirmed_review_module,
+        "default_registry",
+        original_default_registry,
+    )
+    monkeypatch.setattr(
+        confirmed_review_module,
+        "validate_versioned_range",
+        original_range_plan_validator,
+    )
+    monkeypatch.setattr(
+        tool_registry_module,
+        "default_registry",
+        original_tool_registry_factory,
+    )
+    replay_count = 0
+    range_plan_replay_count = 0
+    range_replay_count = 0
+
+    def counted_default_registry(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal replay_count
+        replay_count += 1
+        return original_default_registry(*args, **kwargs)
+
+    def counted_range_registry(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal range_replay_count
+        range_replay_count += 1
+        return original_tool_registry_factory(*args, **kwargs)
+
+    def counted_range_plan(*args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal range_plan_replay_count
+        range_plan_replay_count += 1
+        return original_range_plan_validator(*args, **kwargs)
+
+    monkeypatch.setattr(
+        confirmed_review_module,
+        "default_registry",
+        counted_default_registry,
+    )
+    monkeypatch.setattr(
+        confirmed_review_module,
+        "validate_versioned_range",
+        counted_range_plan,
+    )
+    monkeypatch.setattr(
+        tool_registry_module,
+        "default_registry",
+        counted_range_registry,
+    )
+
+    read = orchestrator.product_store.read_current(report.run_id)
+
+    assert read.read_status is RunReadStatus.SUCCEEDED
+    assert replay_count >= 1
+    assert range_plan_replay_count >= 1
+    assert range_replay_count >= 1
+
+
 def test_user_claim_wording_cannot_create_a_calculated_correction(tmp_path) -> None:
     payload = base_candidate_payload(intake_id="intake-confirmed-user-wording-1")
     payload["claims"][0]["text"] = (
@@ -1469,199 +1748,61 @@ def test_all_final_report_authority_fields_are_fail_closed(tmp_path) -> None:
         assert captured.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
 
 
-def test_tiny_runtime_confirmed_review_persists_but_never_returns_unverified_failure(
+def test_tiny_runtime_confirmed_review_returns_ephemeral_fail_closed_terminal(
     tmp_path,
 ) -> None:
     config = app_config(tmp_path)
     config.budgets = BudgetConfig(max_runtime_seconds=0.000_000_001)
     orchestrator = Orchestrator(config, provider=LocalProvider())
-
-    for ordinal in range(5):
-        admission = confirmed_admission(
-            run_id=f"run-confirmed-tiny-runtime-{ordinal}",
-            now=datetime.now(UTC),
-        )
-        with pytest.raises(ProductRunError) as failure:
-            orchestrator.run_confirmed_review(admission)
-        assert failure.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-        run_id = admission.confirmation.run_id
-        read = orchestrator.product_store.read_current(run_id, verify_budget=False)
-        assert read.read_status is RunReadStatus.FAILED
-        assert orchestrator.store.read_json(run_id, "assignments.json")
-        payloads = {
-            payload.inventory.logical_name: payload.exact_bytes
-            for payload in read.payloads
-            if payload.inventory.logical_name != "lifecycle_audit.json"
-        }
-        authority = {
-            "revision_root": orchestrator.product_store.revision_root,
-            "revision": read.revision,
-            "transaction_id": read.transaction_id,
-        }
-        provenance_authority = {
-            "storage_root": authority["revision_root"],
-            "storage_revision": authority["revision"],
-            "storage_transaction_id": authority["transaction_id"],
-        }
-        commitments = product_payload_commitments(
-            payloads,
-            run_id=run_id,
-            status="failed",
-            **authority,
-        )
-        assert len(commitments) == 6
-        for mutation in (
-            {"revision_root": tmp_path / "different-revision-root"},
-            {"revision": read.revision + 1},
-            {"transaction_id": f"txn-{'a' * 32}"},
-        ):
-            with pytest.raises(CanonicalStorageError):
-                product_payload_commitments(
-                    payloads,
-                    run_id=run_id,
-                    status="failed",
-                    **{**authority, **mutation},
-                )
-        durable_provenance = ConfirmedReviewProvenanceV1.model_validate_json(
-            read.payload_bytes("confirmed_review_provenance.json")
-        )
-        durable_report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
-        replay_admission = replace(admission, admitted_at=durable_provenance.admitted_at)
-        assignments = [
-            AgentAssignment.model_validate(item)
-            for item in json.loads(read.payload_bytes("assignments.json"))
-        ]
-        forged_data_quality = [
-            item
-            for item in durable_report.data_quality
-            if not (
-                item.startswith(("strict usage settlement failed: ", "strict budget failure: "))
-                or item in _CONFIRMED_RUNTIME_DATA_QUALITY
-            )
-        ]
-        forged_report = durable_report.model_copy(
-            update={
-                "data_quality": forged_data_quality,
-                "limitations": [*forged_data_quality, durable_report.limitations[-1]],
-            },
-            deep=True,
-        )
-        with pytest.raises(ConfirmedReviewError) as missing_failure_evidence:
-            build_confirmed_review_provenance(
-                replay_admission,
-                forged_report,
-                assignments=assignments,
-                agent_reports=[],
-                **provenance_authority,
-            )
-        assert missing_failure_evidence.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
-
-        provisional_forged_provenance = durable_provenance.model_copy(
-            update={
-                "final_report_sha256": _domain_sha256(
-                    PROVENANCE_CANONICALIZATION_ID + ":final-report",
-                    forged_report.model_dump(mode="json"),
-                ),
-                "provenance_sha256": "0" * 64,
-            },
-            deep=True,
-        )
-        forged_provenance = provisional_forged_provenance.model_copy(
-            update={"provenance_sha256": provenance_sha256(provisional_forged_provenance)}
-        )
-        forged_payloads = {
-            **payloads,
-            "final_report.json": canonical_json_bytes(forged_report),
-            "confirmed_review_provenance.json": canonical_json_bytes(forged_provenance),
-        }
-        with pytest.raises(CanonicalStorageError, match="source-to-report replay"):
-            product_payload_commitments(
-                forged_payloads,
-                run_id=run_id,
-                status="failed",
-                **authority,
-            )
-        with pytest.raises(ConfirmedReviewError) as missing_authority:
-            build_confirmed_review_provenance(
-                replay_admission,
-                durable_report,
-                assignments=assignments,
-                agent_reports=[],
-            )
-        assert missing_authority.value.code is ConfirmedReviewDiagnosticCode.REPORT_OVERREACH
-        with pytest.raises(ProductRunError) as replay:
-            orchestrator.run_confirmed_review(admission)
-        assert replay.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-        replay_read = orchestrator.product_store.read_current(
-            run_id,
-            verify_budget=False,
-        )
-        assert replay_read.revision == read.revision
-        assert replay_read.manifest_sha256 == read.manifest_sha256
-        assert replay_read.current_pointer_sha256 == read.current_pointer_sha256
-
-
-def test_runtime_boundary_never_diverges_api_and_durable_terminal_status(tmp_path) -> None:
-    config = app_config(tmp_path)
-    config.budgets = BudgetConfig(max_runtime_seconds=0.08)
-    orchestrator = Orchestrator(config, provider=LocalProvider())
-
-    for ordinal in range(6):
-        admission = confirmed_admission(
-            run_id=f"run-confirmed-runtime-boundary-{ordinal}",
-            now=datetime.now(UTC),
-        )
-        report: FinalReport | None = None
-        try:
-            report = orchestrator.run_confirmed_review(admission)
-        except ProductRunError as failure:
-            assert failure.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-            read = orchestrator.product_store.read_current(
-                admission.confirmation.run_id,
-                verify_budget=False,
-            )
-            with pytest.raises(ProductRunError) as verified_failure:
-                orchestrator.product_store.read_current(admission.confirmation.run_id)
-            assert (
-                verified_failure.value.failure.code
-                is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-            )
-        else:
-            read = orchestrator.product_store.read_current(report.run_id)
-        durable_report = FinalReport.model_validate_json(read.payload_bytes("final_report.json"))
-
-        assert read.read_status is RunReadStatus.FAILED
-        assert durable_report.run_status == "failed_with_limitations"
-        if report is not None:
-            assert durable_report == report
-
-
-@pytest.mark.parametrize("runtime_seconds", [0.4, 0.5, 0.75])
-def test_success_is_never_returned_when_budget_settlement_is_unverified(
-    tmp_path,
-    runtime_seconds: float,
-) -> None:
-    config = app_config(tmp_path / str(runtime_seconds))
-    config.budgets = BudgetConfig(max_runtime_seconds=runtime_seconds)
-    orchestrator = Orchestrator(config, provider=LocalProvider())
     admission = confirmed_admission(
-        run_id=f"run-confirmed-settlement-boundary-{str(runtime_seconds).replace('.', '-')}",
+        run_id="run-confirmed-tiny-runtime",
         now=datetime.now(UTC),
     )
+    report = orchestrator.run_confirmed_review(admission)
 
-    try:
-        report = orchestrator.run_confirmed_review(admission)
-    except ProductRunError as failure:
-        assert failure.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-        with pytest.raises(ProductRunError) as reread:
-            orchestrator.product_store.read_current(admission.confirmation.run_id)
-        assert reread.value.failure.code is ProductRunFailureCode.BUDGET_SETTLEMENT_FAILED
-    else:
-        verified = orchestrator.product_store.read_current(report.run_id)
-        assert (verified.read_status is RunReadStatus.SUCCEEDED) == (
-            report.run_status == "completed"
-        )
-        assert orchestrator.load_report(report.run_id) == report
+    assert report.run_status == "failed_with_limitations"
+    assert any(
+        item.startswith(("strict usage settlement failed: ", "strict budget failure: "))
+        for item in report.data_quality
+    )
+    assert any(
+        item
+        in {
+            "maximum runtime exceeded during terminal publication",
+            "product persistence refused: tool result lacks independent replay authority",
+        }
+        for item in report.data_quality
+    )
+    assert report.limitations[: len(report.data_quality)] == report.data_quality
+    assert report.confidence is ConfidenceGrade.D
+    with pytest.raises(ProductRunError) as current:
+        orchestrator.product_store.read_current(report.run_id)
+    assert current.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
+
+
+def test_invalid_hand_stops_before_agent_analysis(tmp_path) -> None:
+    payload = base_candidate_payload(intake_id="intake-confirmed-invalid-hand-1")
+    payload["hand"]["hero_cards"] = ["As", "As"]
+    admission = confirmed_admission(
+        run_id="run-confirmed-invalid-hand-1",
+        payload=payload,
+        now=datetime.now(UTC),
+    )
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        provider=LocalProvider(),
+    )
+
+    with pytest.raises(ConfirmedReviewError) as invalid:
+        orchestrator.run_confirmed_review(admission)
+
+    assert invalid.value.code is ConfirmedReviewDiagnosticCode.CANDIDATE_SCHEMA
+    events = orchestrator._run_machines[admission.confirmation.run_id].snapshot()["events"]
+    assert all(
+        event["target"] not in {RunState.TASK_ROUTING.value, RunState.INDEPENDENT_ANALYSIS.value}
+        for event in events
+    )
+    assert admission.confirmation.run_id not in orchestrator._phase_tool_publication_authorities
 
 
 def test_exact_idempotent_replay_is_read_only_and_conflict_fails(tmp_path) -> None:
@@ -1850,6 +1991,23 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(
         original = orchestrator.registry.execute
         orchestrator.registry.execute = lambda *args, **kwargs: original(*args, **kwargs)
 
+    def shadow_registry_isolated_dispatch(orchestrator) -> None:
+        original = orchestrator.registry._execute_isolated
+        orchestrator.registry._execute_isolated = lambda *args, **kwargs: original(
+            *args,
+            **kwargs,
+        )
+
+    def replace_registry_impl(orchestrator):
+        del orchestrator
+        original = ToolRegistry._execute_impl
+
+        def replacement(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            return original(self, *args, **kwargs)
+
+        ToolRegistry._execute_impl = replacement
+        return lambda: setattr(ToolRegistry, "_execute_impl", original)
+
     def replace_tool_function(orchestrator) -> None:
         definition = orchestrator.registry._tools["hand_validator"]
         orchestrator.registry._tools["hand_validator"] = replace(
@@ -1975,6 +2133,8 @@ def test_runtime_callable_and_tool_function_mutation_are_rejected(
     assert_runtime_rejected("provider", shadow_provider)
     assert_runtime_rejected("analysis-executor", shadow_analysis_executor)
     assert_runtime_rejected("registry-execute", shadow_registry_execute)
+    assert_runtime_rejected("registry-isolated-dispatch", shadow_registry_isolated_dispatch)
+    assert_runtime_rejected("registry-impl-class", replace_registry_impl)
     assert_runtime_rejected("tool-function", replace_tool_function)
     assert_runtime_rejected("registry-clock", replace_registry_clock)
     assert_runtime_rejected("registry-mapping", replace_registry_mapping)

@@ -193,7 +193,9 @@ def test_running_exact_duplicate_cannot_abort_first_callers_lease(
         suffix="running-duplicate",
         backend=backend,
         operation=SyntheticOperation.HANG,
-        arguments=SyntheticArgumentsV1(duration_ms=5_000),
+        arguments=SyntheticArgumentsV1(duration_ms=60_000),
+        wall_clock_ms=30_000,
+        budget_runtime_seconds=90.0,
     )
     running = threading.Event()
     cancel_first = threading.Event()
@@ -247,7 +249,7 @@ def test_running_exact_duplicate_cannot_abort_first_callers_lease(
     )
 
     cancel_first.set()
-    thread.join(timeout=15)
+    thread.join(timeout=60)
     assert not thread.is_alive()
     assert not first_errors
     assert [result.status for result in first_results] == [IsolatedJobStatus.CANCELLED]

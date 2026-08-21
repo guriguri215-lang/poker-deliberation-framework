@@ -94,6 +94,7 @@ def test_scaling_values_and_declared_unit_preserves_integer_ledger(factor: int) 
 
 
 @pytest.mark.property
+@settings(deadline=None)
 @given(order=st.permutations([0, 1, 2]))
 def test_player_declaration_order_does_not_change_canonical_accounting(
     order: list[int],

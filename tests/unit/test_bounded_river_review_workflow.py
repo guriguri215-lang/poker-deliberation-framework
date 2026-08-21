@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import pytest
@@ -48,6 +49,18 @@ from poker_deliberation.storage.revision_canonical import (
 from tests.bounded_river_call_ev_support import app_config, range_definition, river_source
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("field_index", range(17))
+def test_exact_role_confirmation_contract_rejects_each_field_mutation(
+    field_index: int,
+) -> None:
+    authoritative: tuple[object, ...] = tuple(f"field-{index}" for index in range(17))
+    supplied = list(authoritative)
+    supplied[field_index] = f"mismatch-{field_index}"
+
+    assert not workflow._exact_role_confirmation_fields_match(tuple(supplied), authoritative)
+    assert workflow._exact_role_confirmation_fields_match(authoritative, authoritative)
 
 
 def _allow_test_root(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -106,6 +119,11 @@ def _complete_workflow(
         api_max_cost_micro_usd=api_max_cost_micro_usd,
     )
     shutil.copytree(REPOSITORY_ROOT / ".codex" / "agents", repository / ".codex" / "agents")
+    if auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION:
+        shutil.copytree(
+            REPOSITORY_ROOT / ".agents" / "skills",
+            repository / ".agents" / "skills",
+        )
     assert preparation.candidate is not None
     confirmation = confirm_bounded_river_review_workflow(
         repository_root=repository,
@@ -144,6 +162,20 @@ def _complete_local_only(
     )
     assert status.state == "completed_local_only"
     return repository, config, plan, confirmation
+
+
+@pytest.fixture(scope="module")
+def completed_local_only_tamper_baseline():
+    with TemporaryDirectory(prefix="brw-") as raw_root:
+        baseline_root = Path(raw_root)
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            repository, _config, plan, _confirmation = _complete_local_only(
+                baseline_root,
+                monkeypatch,
+            )
+        baseline_tree = _tree_snapshot(baseline_root)
+        yield repository, baseline_root / "storage", plan
+        assert _tree_snapshot(baseline_root) == baseline_tree
 
 
 class _StepClock:
@@ -298,6 +330,7 @@ def test_workflow_root_authority_routes_mutations_and_pure_reads_separately(
         pass
 
     observed: list[tuple[bool, bool]] = []
+    allow_initial_preflight = True
 
     def probe_root(
         _repository_root: Path,
@@ -306,7 +339,12 @@ def test_workflow_root_authority_routes_mutations_and_pure_reads_separately(
         create: bool = True,
         pure_read: bool = False,
     ) -> Path:
+        nonlocal allow_initial_preflight
         observed.append((create, pure_read))
+        if allow_initial_preflight:
+            assert (create, pure_read) == (False, False)
+            allow_initial_preflight = False
+            return _workflow_root
         raise RootProbe
 
     monkeypatch.setattr(workflow, "_workflow_root", probe_root)
@@ -333,7 +371,8 @@ def test_workflow_root_authority_routes_mutations_and_pure_reads_separately(
             repository_commit_id="1" * 40,
             repository_tree_id="2" * 40,
         )
-    assert observed.pop() == (True, False)
+    assert observed.pop(0) == (False, False)
+    assert observed.pop(0) == (True, False)
 
     with pytest.raises(RootProbe):
         confirm_bounded_river_review_workflow(
@@ -1469,10 +1508,15 @@ def test_report_view_accepts_linked_ancestor_after_real_five_role_progress(
 def test_report_view_rejects_rehashed_plan_semantic_binding_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    completed_local_only_tamper_baseline,
     plan_update: dict[str, object],
     error_code: str,
 ) -> None:
-    repository, config, plan, _confirmation = _complete_local_only(tmp_path, monkeypatch)
+    baseline_repository, baseline_storage_root, plan = completed_local_only_tamper_baseline
+    repository = tmp_path / "repository"
+    shutil.copytree(baseline_repository, repository)
+    _allow_test_root(monkeypatch)
+    config = app_config(baseline_storage_root)
     _rewrite_rehashed_plan_and_linkage(repository, plan_update)
 
     with pytest.raises(BoundedRiverReviewWorkflowError, match=error_code):

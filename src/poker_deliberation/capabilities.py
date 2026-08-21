@@ -106,7 +106,18 @@ CAPABILITIES: tuple[Capability, ...] = (
         "bridge hashes/state. P3-030F adds workflow-bound preview, explicit all-field "
         "confirmation, and one confirmed next-role execution at a time for supervised "
         "nonlocal mode; local_only role operations reject without transport, and automatic "
-        "confirmation, bulk or parallel execution, retry, skip, and fallback are absent.",
+        "confirmation, bulk or parallel execution, retry, skip, and fallback are absent. "
+        "P3-030G adds a first-class deterministic production-workflow qualification harness "
+        "that drives all five fixed roles through the production preview, explicit 17-field "
+        "confirmation, and single-role execute wrappers using only an injected deterministic "
+        "read-only executor seam, then emits a sanitized self-hashed canonical manifest. Passing "
+        "that fixture is not actual-live/provider qualification. Current subscription "
+        "qualification is derived only from public preflight over the current strict canonical V2 "
+        "live manifest "
+        "and its bound deterministic evaluation: both absent is UNKNOWN, an incomplete or invalid/"
+        "binding-mismatched pair is FAIL, and only a fully passing pair sets "
+        "subscription_live_qualified=true. Actual-live qualification also requires five fresh "
+        "preview and explicit human-confirmation cycles.",
     ),
     Capability(
         "confirmed_natural_language_review_intake",
@@ -151,14 +162,21 @@ CAPABILITIES: tuple[Capability, ...] = (
         "implemented",
         "The P2-025B bounded bridge is implemented only for one verified P3-030C river review "
         "and five fresh, serial, read-only turns with durable replay. Candidate-bound historical "
-        "live evidence is preserved, but current-tree live qualification is UNKNOWN.",
+        "live evidence is preserved, but it does not determine current qualification. The sole "
+        "authority is public preflight over the current strict canonical V2 live manifest and its "
+        "bound deterministic evaluation: both absent is UNKNOWN, an incomplete or invalid/binding-"
+        "mismatched pair is FAIL, and only a fully passing pair sets "
+        "subscription_live_qualified=true.",
     ),
     Capability(
         "codex_subscription_bounded_river_review",
         "implemented",
         "The explicit saved-ChatGPT-login route has a bounded no-fallback implementation and "
-        "candidate-bound historical live evidence; it is not currently live-qualified until "
-        "fresh evidence matches the current runtime inventory and role conformance.",
+        "candidate-bound historical live evidence. Its current qualification is derived only from "
+        "public preflight over the current strict canonical V2 live manifest and its bound "
+        "deterministic evaluation: both absent is UNKNOWN, an incomplete or invalid/binding-"
+        "mismatched pair is FAIL, and only a fully passing pair sets "
+        "subscription_live_qualified=true.",
     ),
     Capability(
         "openai_api_bounded_river_review_adapter",

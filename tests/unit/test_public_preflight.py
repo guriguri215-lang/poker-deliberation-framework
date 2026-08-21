@@ -14,6 +14,7 @@ from poker_deliberation.public_preflight import (
     _capability_docs_check,
     _decode_scannable,
     _identity_findings,
+    _p3_030g_public_artifacts_check,
     _range_grammar_artifacts_check,
     _safe_worktree_path,
     _scan_history,
@@ -109,6 +110,7 @@ def _copy_preflight_contract_surface(tmp_path: Path) -> Path:
     )
     for relative in (
         *public_documents,
+        "qualifications/README.md",
         "src/poker_deliberation/roadmap.py",
         "src/poker_deliberation/roadmap_status.json",
         "tests/fixtures/range/v1/cases.json",
@@ -140,7 +142,7 @@ def test_capability_preflight_detects_roadmap_schema_and_bridge_drift(
 
     readme = repo / "README.md"
     readme.write_text(
-        readme.read_text(encoding="utf-8").replace("schema 16.0.0", "schema 10.0"),
+        readme.read_text(encoding="utf-8").replace("schema 17.0.0", "schema 10.0"),
         encoding="utf-8",
     )
     assert _capability_docs_check(repo).status == "fail"
@@ -169,17 +171,17 @@ def test_capability_preflight_rejects_schema_value_drift_hidden_by_comments(
 ) -> None:
     repo = _copy_preflight_contract_surface(tmp_path)
     replacements = {
-        "README.md": ("schema 16.0.0", "schema 10.0.0\n<!-- schema 16.0.0 -->"),
+        "README.md": ("schema 17.0.0", "schema 10.0.0\n<!-- schema 17.0.0 -->"),
         "docs/roadmap-status.md": (
-            "schema version: `16.0.0`",
-            "schema version: `10.0.0`\n<!-- schema version: `16.0.0` -->",
+            "schema version: `17.0.0`",
+            "schema version: `10.0.0`\n<!-- schema version: `17.0.0` -->",
         ),
         "src/poker_deliberation/roadmap.py": (
-            'ROADMAP_SCHEMA_VERSION = "16.0.0"',
-            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "16.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "17.0.0"',
+            'ROADMAP_SCHEMA_VERSION = "10.0.0"\n# ROADMAP_SCHEMA_VERSION = "17.0.0"',
         ),
         "src/poker_deliberation/roadmap_status.json": (
-            '"schema_version": "16.0.0"',
+            '"schema_version": "17.0.0"',
             '"schema_version": "10.0.0"',
         ),
     }
@@ -232,6 +234,183 @@ def test_capability_preflight_requires_supervised_role_workflow_markers(
 
     assert result.status == "fail"
     assert f"{relative}:{marker}" in result.details["missing_markers"]
+
+
+@pytest.mark.parametrize(
+    ("relative", "marker"),
+    (
+        ("README.md", "P3-030G"),
+        ("README.md", "deterministic production-workflow qualification harness"),
+        ("README.md", "actual-live/provider qualification"),
+        ("docs/capabilities.md", "P3-030G"),
+        (
+            "docs/capabilities.md",
+            "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
+        ),
+        ("docs/limitations.md", 'live_qualification_status="UNKNOWN"'),
+        ("docs/bounded-river-review-workflow.md", "BoundedRiverReviewWorkflowFixtureV2"),
+        ("docs/bounded-river-review-workflow.md", "DeterministicReadOnlyTransport"),
+        ("docs/bounded-river-review-workflow.md", "--manifest-output"),
+        ("qualifications/README.md", "P3-030G"),
+        (
+            "qualifications/README.md",
+            'transport_qualification="deterministic_fixture"',
+        ),
+        ("qualifications/README.md", "actual-live/provider qualification"),
+    ),
+)
+def test_capability_preflight_requires_p3_030g_qualification_markers(
+    tmp_path: Path,
+    relative: str,
+    marker: str,
+) -> None:
+    repo = _copy_preflight_contract_surface(tmp_path)
+    path = repo / relative
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(marker, "removed-p3-030g-marker"),
+        encoding="utf-8",
+    )
+
+    result = _capability_docs_check(repo)
+
+    assert result.status == "fail"
+    assert f"{relative}:{marker}" in result.details["missing_markers"]
+
+
+def _copy_p3_030g_public_contract_surface(tmp_path: Path) -> Path:
+    repo = tmp_path / "repo"
+    for relative in public_preflight.P3_030G_PUBLIC_CONTRACT_PATHS:
+        source = ROOT / relative
+        target = repo / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+    return repo
+
+
+def test_p3_030g_public_artifact_preflight_binds_tracked_v2_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _copy_p3_030g_public_contract_surface(tmp_path)
+    monkeypatch.setattr(
+        public_preflight,
+        "_tracked_paths",
+        lambda _repo: list(public_preflight.P3_030G_PUBLIC_CONTRACT_PATHS),
+    )
+
+    result = _p3_030g_public_artifacts_check(repo)
+
+    assert result.status == "pass"
+    assert result.details["failures"] == []
+    assert result.details["transport_qualification"] == "deterministic_fixture"
+    assert result.details["live_qualification_status"] == "UNKNOWN"
+    assert result.details["live_model_or_provider_executed"] is False
+    fixture_path = repo / "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json"
+    assert result.details["fixture_sha256"] == hashlib.sha256(fixture_path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "untracked_runner",
+        "noncanonical_v2_fixture",
+        "source_binding",
+        "range_canonical",
+        "evaluation_symbol",
+        "qualification_symbol",
+        "runner_reference",
+        "runner_path_preflight",
+        "runner_production_confinement",
+        "runner_platform_path_bounds",
+    ),
+)
+def test_p3_030g_public_artifact_preflight_rejects_contract_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    repo = _copy_p3_030g_public_contract_surface(tmp_path)
+    tracked = list(public_preflight.P3_030G_PUBLIC_CONTRACT_PATHS)
+    if mutation == "untracked_runner":
+        tracked.remove("scripts/run_bounded_river_review_workflow_evaluation.py")
+    elif mutation == "noncanonical_v2_fixture":
+        path = repo / "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                '  "schema_version"',
+                '    "schema_version"',
+                1,
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "source_binding":
+        path = repo / "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt"
+        path.write_bytes(path.read_bytes() + b"\n")
+    elif mutation == "range_canonical":
+        path = repo / "tests/fixtures/bounded_river_review_workflow/v1/range.json"
+        path.write_bytes(path.read_bytes()[:-1] + b" \n")
+    elif mutation == "evaluation_symbol":
+        path = repo / "src/poker_deliberation/bounded_river_review_workflow_evaluation.py"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "BoundedRiverReviewWorkflowFixtureV2",
+                "RemovedWorkflowFixtureV2",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "qualification_symbol":
+        path = repo / "src/poker_deliberation/bounded_river_review_workflow_qualification.py"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
+                "RemovedWorkflowQualificationManifestV1",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "runner_reference":
+        path = repo / "scripts/run_bounded_river_review_workflow_evaluation.py"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "run_bounded_river_review_workflow_evaluation_v2",
+                "removed_workflow_evaluation_v2",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "runner_path_preflight":
+        path = repo / "scripts/run_bounded_river_review_workflow_evaluation.py"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "_validate_runner_paths",
+                "removed_runner_path_preflight",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "runner_production_confinement":
+        path = repo / "scripts/run_bounded_river_review_workflow_evaluation.py"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "confined_runtime_scratch_path(resolved_work, repository)",
+                "resolved_work",
+                1,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        path = repo / "scripts/run_bounded_river_review_workflow_evaluation.py"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "check_path_lengths((*targets, resolved_work / _TERMINAL_STORE_PATH_BUDGET))",
+                "None",
+                1,
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(public_preflight, "_tracked_paths", lambda _repo: tracked)
+
+    result = _p3_030g_public_artifacts_check(repo)
+
+    assert result.status == "fail"
+    assert result.details["failures"]
 
 
 def test_capability_preflight_rejects_computed_schema_reassignment(

@@ -31,9 +31,9 @@ LARGE_FILE_BYTES = 1_000_000
 RANGE_EQUITY_EVALUATION_RUNNER_SHA256 = (
     "35f76a142e93132fde84f8bc08a2c17537ace3446c135a933dcb36bc373afe5d"
 )
-EXPECTED_ROADMAP_SCHEMA_VERSION = "16.0.0"
-ROADMAP_MODULE_SHA256 = "055bc26da13b2cbc9da94dd0809037c0ff9128cf810b33942dfbed973879f8c7"
-RANGE_EQUITY_BRIDGE_DOC_SHA256 = "8e1b9e7b6e21a1b11d9f1e33a1067c1012aecb7e6cd1c6ec9986e5f0cb15964b"
+EXPECTED_ROADMAP_SCHEMA_VERSION = "17.0.0"
+ROADMAP_MODULE_SHA256 = "0567ffc8593b4115258412d7b3dfd4b17b8ce217933a5ed0a54536a28ca82279"
+RANGE_EQUITY_BRIDGE_DOC_SHA256 = "0a3e3ce846b817c52420b97f83c4e08e55ccd71eeacee5cded1170442090371b"
 CAPABILITY_DOCUMENT_PATHS = (
     "README.md",
     "docs/bounded-codex-river-review-bridge.md",
@@ -44,10 +44,36 @@ CAPABILITY_DOCUMENT_PATHS = (
     "docs/range-grammar.md",
     "docs/range-equity-bridge.md",
     "docs/roadmap-status.md",
+    "qualifications/README.md",
 )
-CAPABILITY_DOCUMENT_SET_SHA256 = "fa8020059ac55a350ab5b9d1dbec8f40ba5298aefea80e4f11a0faadf9382700"
+CAPABILITY_DOCUMENT_SET_SHA256 = "7adc87027015a5c81cb696d25e408c011c3cad6668d7e3a53acb53c32acace59"
 PUBLIC_DOCUMENT_INVENTORY_SHA256 = (
     "6334a0426bd2ef395257ef89c79d7783cc2a42283e38cacd10c54b8815dd0747"
+)
+P3_030G_PUBLIC_CONTRACT_PATHS = (
+    "scripts/run_bounded_river_review_workflow_evaluation.py",
+    "src/poker_deliberation/bounded_river_review_workflow_evaluation.py",
+    "src/poker_deliberation/bounded_river_review_workflow_qualification.py",
+    "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json",
+    "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt",
+    "tests/fixtures/bounded_river_review_workflow/v1/range.json",
+)
+P3_030G_EVALUATION_PUBLIC_SYMBOLS = (
+    "BoundedRiverReviewWorkflowFixtureV2",
+    "BoundedRiverReviewWorkflowCaseV2",
+    "BoundedRiverReviewWorkflowMetricV2",
+    "BoundedRiverReviewWorkflowEvaluationResultV2",
+    "bounded_river_review_workflow_evaluation_config",
+    "load_bounded_river_review_workflow_fixture_v2",
+    "load_bounded_river_review_workflow_evaluation_result_v2",
+    "run_bounded_river_review_workflow_evaluation_v2",
+    "verify_bounded_river_review_workflow_evaluation_result_v2",
+)
+P3_030G_QUALIFICATION_PUBLIC_SYMBOLS = (
+    "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
+    "build_sanitized_bounded_river_review_workflow_qualification_manifest",
+    "load_sanitized_bounded_river_review_workflow_qualification_manifest",
+    "write_sanitized_bounded_river_review_workflow_qualification_manifest",
 )
 
 
@@ -172,6 +198,68 @@ def _assigned_string_constant(path: Path, name: str) -> str | None:
         ):
             matches.append(statement.value.value)
     return matches[0] if len(stores) == 1 and len(matches) == 1 else None
+
+
+def _python_symbol_surface(
+    path: Path,
+) -> tuple[dict[str, int], set[str], set[str], set[str]] | None:
+    """Return top-level definitions, literal exports, loaded names, and string literals."""
+
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeError):
+        return None
+    definitions: dict[str, int] = {}
+    for statement in module.body:
+        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions[statement.name] = definitions.get(statement.name, 0) + 1
+    export_values: list[tuple[str, ...]] = []
+    for statement in module.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name) or target.id != "__all__":
+            continue
+        try:
+            value = ast.literal_eval(statement.value)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            export_values.append(tuple(value))
+    exports = set(export_values[0]) if len(export_values) == 1 else set()
+    loaded_names = {
+        node.id
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+    }
+    string_literals = {
+        node.value
+        for node in ast.walk(module)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    return definitions, exports, loaded_names, string_literals
+
+
+def _function_call_lines(path: Path, function_name: str) -> dict[str, tuple[int, ...]] | None:
+    """Return direct-name call line numbers inside one uniquely defined top-level function."""
+
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeError):
+        return None
+    matches = [
+        statement
+        for statement in module.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and statement.name == function_name
+    ]
+    if len(matches) != 1:
+        return None
+    calls: dict[str, list[int]] = {}
+    for node in ast.walk(matches[0]):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            calls.setdefault(node.func.id, []).append(node.lineno)
+    return {name: tuple(sorted(lines)) for name, lines in calls.items()}
 
 
 def _head_worktree_blob_binding(repo: Path) -> dict[str, object]:
@@ -1116,12 +1204,18 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P2-025B",
             "P3-030E",
             "P3-030F",
+            "P3-030G",
             "show-bounded-river-review",
             "show-bounded-river-review-role-request",
+            "deterministic production-workflow qualification harness",
+            "sanitized self-hashed canonical manifest",
+            "actual-live/provider qualification",
             "local_only",
             "codex_subscription",
             "openai_api",
-            "現行qualificationは`UNKNOWN`",
+            "strict canonical V2 live manifest",
+            "両方欠落は`UNKNOWN`",
+            "subscription_live_qualified=true",
         ],
         "docs/capabilities.md": [
             "implemented",
@@ -1134,7 +1228,14 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "990",
             "P3-030E",
             "P3-030F",
-            "Current qualification: UNKNOWN",
+            "P3-030G",
+            "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
+            'transport_qualification="deterministic_fixture"',
+            'live_qualification_status="UNKNOWN"',
+            "strict canonical V2 live manifest",
+            "bound deterministic evaluation",
+            "両方欠落は`UNKNOWN`",
+            "subscription_live_qualified=true",
         ],
         "docs/limitations.md": [
             "outbound analyze",
@@ -1145,7 +1246,12 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P3-016B",
             "all-in",
             "990",
-            "subscription_live_qualified=false",
+            "strict canonical V2 live manifest",
+            "両方欠落は`UNKNOWN`",
+            "subscription_live_qualified=true",
+            "P3-030G",
+            'transport_qualification="deterministic_fixture"',
+            'live_qualification_status="UNKNOWN"',
         ],
         "docs/range-grammar.md": [
             "poker-deliberation.nlhe-range",
@@ -1177,6 +1283,7 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "P3-030D",
             "P3-030E",
             "P3-030F",
+            "P3-030G",
             "P3-030C",
             "P2-025B",
             "local_only",
@@ -1187,6 +1294,23 @@ def _capability_docs_check(repo: Path) -> CheckResult:
             "show-bounded-river-review-role-request",
             "confirm-bounded-river-review-role-request",
             "execute-bounded-river-review-role",
+            "BoundedRiverReviewWorkflowFixtureV2",
+            "DeterministicReadOnlyTransport",
+            "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
+            "--manifest-output",
+        ],
+        "qualifications/README.md": [
+            "P3-030G",
+            "deterministic production-workflow qualification harness",
+            "SanitizedBoundedRiverReviewWorkflowQualificationManifestV1",
+            'transport_qualification="deterministic_fixture"',
+            'live_qualification_status="UNKNOWN"',
+            "actual-live/provider qualification",
+            "固定5 roleそれぞれのfresh previewと人間による",
+            "strict canonical V2",
+            "両方欠落は",
+            "subscription_live_qualified=true",
+            "--manifest-output",
         ],
     }
     required["docs/bounded-codex-river-review-bridge.md"] = [
@@ -1204,7 +1328,8 @@ def _capability_docs_check(repo: Path) -> CheckResult:
         "live-unqualified",
         "candidate-bound historical",
         "strict canonical V2",
-        "subscription_live_qualified=false",
+        "bridge_public_evidence:incomplete_pair",
+        "subscription_live_qualified=true",
         "UNKNOWN",
     ]
     missing: list[str] = []
@@ -1398,6 +1523,183 @@ def _range_grammar_artifacts_check(repo: Path) -> CheckResult:
     )
 
 
+def _p3_030g_public_artifacts_check(repo: Path) -> CheckResult:
+    """Validate the tracked deterministic production-workflow qualification contract."""
+
+    from poker_deliberation.bounded_river_review_workflow_evaluation import (
+        load_bounded_river_review_workflow_fixture_v2,
+    )
+    from poker_deliberation.codex_bridge.canonical import (
+        canonical_json_bytes,
+        parse_canonical_model,
+    )
+    from poker_deliberation.range_models import VersionedRangeDefinitionV1
+
+    repo = repo.resolve()
+    tracked = set(_tracked_paths(repo))
+    failures: list[str] = []
+    paths: dict[str, Path] = {}
+    for relative in P3_030G_PUBLIC_CONTRACT_PATHS:
+        if relative not in tracked:
+            failures.append(f"p3_030g_public_contract:{relative}:untracked")
+            continue
+        try:
+            paths[relative] = _safe_worktree_path(repo, relative)
+        except (OSError, ValueError):
+            failures.append(f"p3_030g_public_contract:{relative}:missing_or_unsafe")
+
+    evaluation_relative = "src/poker_deliberation/bounded_river_review_workflow_evaluation.py"
+    qualification_relative = "src/poker_deliberation/bounded_river_review_workflow_qualification.py"
+    runner_relative = "scripts/run_bounded_river_review_workflow_evaluation.py"
+    evaluation_surface = (
+        _python_symbol_surface(paths[evaluation_relative]) if evaluation_relative in paths else None
+    )
+    if evaluation_surface is None:
+        failures.append("p3_030g_public_contract:evaluation_module_invalid")
+    else:
+        definitions, exports, _loaded_names, _string_literals = evaluation_surface
+        if any(definitions.get(symbol) != 1 for symbol in P3_030G_EVALUATION_PUBLIC_SYMBOLS):
+            failures.append("p3_030g_public_contract:evaluation_symbols_missing")
+        if not set(P3_030G_EVALUATION_PUBLIC_SYMBOLS).issubset(exports):
+            failures.append("p3_030g_public_contract:evaluation_exports_missing")
+
+    qualification_surface = (
+        _python_symbol_surface(paths[qualification_relative])
+        if qualification_relative in paths
+        else None
+    )
+    if qualification_surface is None:
+        failures.append("p3_030g_public_contract:qualification_module_invalid")
+    else:
+        definitions, exports, _loaded_names, string_literals = qualification_surface
+        if any(definitions.get(symbol) != 1 for symbol in P3_030G_QUALIFICATION_PUBLIC_SYMBOLS):
+            failures.append("p3_030g_public_contract:qualification_symbols_missing")
+        if not set(P3_030G_QUALIFICATION_PUBLIC_SYMBOLS).issubset(exports):
+            failures.append("p3_030g_public_contract:qualification_exports_missing")
+        if not {
+            "poker-bounded-river-review-workflow-qualification-manifest-v1",
+            "deterministic_fixture",
+            "UNKNOWN",
+        }.issubset(string_literals):
+            failures.append("p3_030g_public_contract:qualification_boundary_markers_missing")
+
+    runner_surface = (
+        _python_symbol_surface(paths[runner_relative]) if runner_relative in paths else None
+    )
+    runner_main_calls = (
+        _function_call_lines(paths[runner_relative], "main") if runner_relative in paths else None
+    )
+    runner_path_calls = (
+        _function_call_lines(paths[runner_relative], "_validate_runner_paths")
+        if runner_relative in paths
+        else None
+    )
+    runner_references = {
+        "_validate_runner_paths",
+        "check_path_lengths",
+        "load_bounded_river_review_workflow_fixture_v2",
+        "run_bounded_river_review_workflow_evaluation_v2",
+        "verify_bounded_river_review_workflow_evaluation_result_v2",
+        "build_sanitized_bounded_river_review_workflow_qualification_manifest",
+        "write_sanitized_bounded_river_review_workflow_qualification_manifest",
+    }
+    if runner_surface is None:
+        failures.append("p3_030g_public_contract:runner_invalid")
+    else:
+        _definitions, _exports, loaded_names, string_literals = runner_surface
+        if not runner_references.issubset(loaded_names) or not {
+            "--manifest-output",
+            "--qualification-id",
+            "BRWE_E_PATH",
+        }.issubset(string_literals):
+            failures.append("p3_030g_public_contract:runner_v2_contract_missing")
+        if (
+            runner_main_calls is None
+            or len(runner_main_calls.get("_validate_runner_paths", ())) != 1
+            or len(runner_main_calls.get("load_bounded_river_review_workflow_fixture_v2", ())) != 1
+            or len(runner_main_calls.get("run_bounded_river_review_workflow_evaluation_v2", ()))
+            != 1
+            or runner_main_calls["_validate_runner_paths"][0]
+            >= runner_main_calls["load_bounded_river_review_workflow_fixture_v2"][0]
+            or runner_main_calls["_validate_runner_paths"][0]
+            >= runner_main_calls["run_bounded_river_review_workflow_evaluation_v2"][0]
+        ):
+            failures.append("p3_030g_public_contract:runner_path_preflight_order")
+        if (
+            runner_path_calls is None
+            or len(runner_path_calls.get("confined_runtime_scratch_path", ())) != 1
+        ):
+            failures.append("p3_030g_public_contract:runner_production_confinement")
+        if runner_path_calls is None or len(runner_path_calls.get("check_path_lengths", ())) != 1:
+            failures.append("p3_030g_public_contract:runner_platform_path_bounds")
+
+    fixture_relative = "tests/fixtures/bounded_river_review_workflow/v2/scenarios.json"
+    source_relative = "tests/fixtures/bounded_river_review_workflow/v1/source-ja.txt"
+    range_relative = "tests/fixtures/bounded_river_review_workflow/v1/range.json"
+    fixture_sha256: str | None = None
+    fixture = None
+    if fixture_relative in paths:
+        try:
+            fixture, fixture_sha256 = load_bounded_river_review_workflow_fixture_v2(
+                paths[fixture_relative]
+            )
+            fixture_bytes = paths[fixture_relative].read_bytes()
+            canonical_fixture = (
+                json.dumps(
+                    fixture.model_dump(mode="json"),
+                    ensure_ascii=False,
+                    indent=2,
+                ).encode("utf-8")
+                + b"\n"
+            )
+            if (
+                fixture_sha256 != hashlib.sha256(fixture_bytes).hexdigest()
+                or fixture_bytes != canonical_fixture
+            ):
+                failures.append("p3_030g_public_contract:v2_fixture_noncanonical")
+        except (OSError, TypeError, ValueError):
+            failures.append("p3_030g_public_contract:v2_fixture_invalid")
+    if fixture is not None and source_relative in paths:
+        try:
+            source_bytes = paths[source_relative].read_bytes()
+            source_bytes.decode("utf-8", errors="strict")
+        except (OSError, UnicodeError):
+            failures.append("p3_030g_public_contract:source_fixture_invalid")
+        else:
+            if hashlib.sha256(source_bytes).hexdigest() != fixture.source_sha256:
+                failures.append("p3_030g_public_contract:source_fixture_binding")
+    if fixture is not None and range_relative in paths:
+        try:
+            range_fixture_bytes = paths[range_relative].read_bytes()
+            if not range_fixture_bytes.endswith(b"\n") or range_fixture_bytes.endswith(b"\n\n"):
+                raise ValueError("range fixture newline contract mismatch")
+            range_bytes = range_fixture_bytes[:-1]
+            range_definition = parse_canonical_model(range_bytes, VersionedRangeDefinitionV1)
+            if canonical_json_bytes(range_definition) != range_bytes:
+                raise ValueError("range fixture is not canonical")
+        except (OSError, ValueError):
+            failures.append("p3_030g_public_contract:range_fixture_invalid")
+        else:
+            if hashlib.sha256(range_bytes).hexdigest() != fixture.range_sha256:
+                failures.append("p3_030g_public_contract:range_fixture_binding")
+
+    return CheckResult(
+        "p3_030g_public_artifacts",
+        "pass" if not failures else "fail",
+        "FACT",
+        "P3-030G tracked runner, V2 APIs, sanitized-manifest projector, and canonical "
+        "repository fixtures were checked offline without executing a model or provider.",
+        {
+            "failures": failures,
+            "required_paths": list(P3_030G_PUBLIC_CONTRACT_PATHS),
+            "fixture_sha256": fixture_sha256,
+            "transport_qualification": "deterministic_fixture",
+            "live_qualification_status": "UNKNOWN",
+            "live_model_or_provider_executed": False,
+        },
+    )
+
+
 def _bridge_manifest_role_conformance_matches_current_tree(
     repo: Path,
     manifest: object,
@@ -1422,6 +1724,7 @@ def _bridge_manifest_role_conformance_matches_current_tree(
         expected = build_bridge_role_conformance(
             repo,
             repository_commit_id=manifest.repository_commit_id,
+            include_repository_skill_bindings=True,
         )
         observed = []
         for role_evidence in manifest.roles:
@@ -1864,6 +2167,7 @@ def run_preflight(repo: Path) -> dict[str, object]:
         ),
         _capability_docs_check(repo),
         _range_grammar_artifacts_check(repo),
+        _p3_030g_public_artifacts_check(repo),
         _codex_bridge_public_artifacts_check(repo),
         CheckResult(
             "tracked_release_candidates",

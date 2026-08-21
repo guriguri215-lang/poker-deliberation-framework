@@ -1,0 +1,31 @@
+{
+  "schema_version": "2.0.0",
+  "fixture_id": "p3-030g-bounded-river-review-workflow-v2",
+  "source_sha256": "cbb85f5fce0f83596e581cafee14ad8c154edd04661500ac420c9d43573edab1",
+  "range_sha256": "a4170f4c8c486747f6bcccae36a3914485892305be6405b4f059b8172e846756",
+  "expected_confirmation_hash_count": 12,
+  "expected_confirmation_field_count": 17,
+  "expected_roles": [
+    "strategy-analyst",
+    "math-tool-auditor",
+    "skeptic-falsifier",
+    "adjudicator",
+    "report-writer"
+  ],
+  "case_ids": [
+    "source-workflow-identity",
+    "workflow-confirmation-binding",
+    "five-role-supervision",
+    "p2-artifact-lineage",
+    "terminal-replay-report",
+    "repository-runtime-identity"
+  ],
+  "metric_ids": [
+    "source_workflow_identity",
+    "workflow_confirmation_binding",
+    "five_role_supervision",
+    "p2_artifact_lineage",
+    "terminal_replay_report",
+    "repository_runtime_identity"
+  ]
+}

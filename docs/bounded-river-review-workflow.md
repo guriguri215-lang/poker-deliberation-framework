@@ -13,6 +13,11 @@ workflow/bridge linkage、state、numeric-contractの検査に合格したこと
 P3-030Fは、nonlocal modeで次の固定roleだけを、request preview、利用者による全fieldの明示確認、
 workflow-owned canonical confirmation receipt、1回のexecuteへ進めるworkflow-level wrapperを追加します。
 
+P3-030Gは、このproduction workflowをrepository-owned fixtureで端から端まで通すfirst-class
+deterministic production-workflow qualification harnessと、sanitized self-hashed canonical manifestを
+追加します。実際のP3-030D prepare/12-hash confirm/runとP3-030F show/17-field confirm/execute wrapperを
+再利用し、別の簡略workflowをqualification対象にはしません。
+
 ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
 hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
 現在資格を意味しません。
@@ -35,6 +40,11 @@ hash束縛する手続です。利用者の本人認証、戦略判断の承認�
   canonical receiptとしてworkflow側へ保存する。receipt検証後だけそのroleを実行可能にする。
 - 1 roleごとにshow、全field confirm、executeを直列に繰り返す。自動確認、一括・並列実行、retry、
   skip、mode/model/provider fallbackは行わない。
+- P3-030Gはfresh previewのexact 17 fieldをfixture管理のlocal authorityからproduction confirmへ渡し、
+  confirm自体のzero executionと、private deterministic read-only executor seamを通した1回のexecuteを
+  固定順の5 roleすべてで検査する。terminal status、replay、report、lineage、hashも再検証する。
+- P3-030Gのsanitized manifestはsafe code、hash、count、固定metric、runtime inventoryだけを保持し、raw
+  source、prompt/outbound bytes、credential、narrative、model trace、`user_materials/`を含めない。
 
 一般自然言語・site固有history・OCR、複数range、multiwayまたはearlier-street equity、rake、all-in、
 side pot、外部solver、GTO/equilibrium、一般Codex/Python bridgeは範囲外です。
@@ -202,6 +212,49 @@ statusは次roleの`role_request_expires_at`と、P2 confirmationが存在する
 `BRW_E_ROLE_RECONCILIATION`で停止し、同じroleの再実行、再確認、skip、新しいmodeでの実行を行いません。
 `failed` / `timed_out` / `cancelled`など、reconciliationを要求しないterminal stateも自動retryしません。
 
+## P3-030G deterministic qualification
+
+`BoundedRiverReviewWorkflowFixtureV2`を使うV2 evaluatorは、production workflowを次の順で検査します。
+
+1. P3-030Dのprepare、12-hash confirm、terminal runを実行する。
+2. 各roleでfresh `show-bounded-river-review-role-request`相当のpreviewを取得し、exact 17 fieldを
+   fixture管理のlocal authorityでproduction confirmへ渡す。
+3. confirmだけではrole execution countが増えないことを検証する。
+4. production single-role execute wrapperをprivate `_role_executor` evaluation seam経由で1回だけ呼ぶ。
+5. 固定5 roleをserial orderで完了後、terminal replay、verified report、lineage、hashを再検証する。
+
+callbackはshared `DeterministicReadOnlyTransport`だけを使い、live model/provider、network、credentialを
+使いません。fixture管理の確認は人間の本人認証や判断ではなく、exact field bindingを検査する決定論的な
+test actionです。したがって`SanitizedBoundedRiverReviewWorkflowQualificationManifestV1`が
+`qualification_status="passed"`でも、`transport_qualification="deterministic_fixture"`、
+`live_qualification_status="UNKNOWN"`、`api_live_executed=false`、
+`api_production_qualified=false`です。
+
+actual-live/provider qualificationはこのharnessとは別です。固定5 roleそれぞれについてfresh previewを
+人間が確認し、全fieldを明示確認してから1 roleずつ実行する5 cycleが必要です。deterministic manifest、
+historical live evidence、API keyの存在をcurrent live資格へ昇格しません。strategy quality、human usefulness、
+range accuracy、GTO/equilibrium、外部solver一致もqualification対象外です。
+
+repository runnerはV2を既定とし、canonicalな`v2/scenarios.json`と、hash-boundされた既存V1
+`source-ja.txt` / compact `range.json`を使います。`--output`はself-hashed V2 evaluation resultを
+exclusive-createし、全case/metricが合格した場合だけ、任意の`--manifest-output`へsanitized manifestを
+exclusive-createします。既存pathの上書きや不合格resultからのmanifest生成は行いません。
+
+`--work-root`はproduction workflowのconfined namespaceとなるため、repository内のGit-ignoredかつuntrackedな
+まだ存在しないpathだけを受理します。`--output`と任意の`--manifest-output`はrepository外、または
+repository内ならGit-ignoredかつuntrackedな、まだ存在しないpathを受理します。3 pathは互いにdistinctかつ
+non-overlappingでなければならず、tracked/unignored path、fixture/source/range path、それらの親子、または
+互いの親子は受理しません。runnerはこのpath preflightをevaluationやdirectory/file作成より先に行い、拒否時は
+これら3 pathのいずれも作成しません。preflight例外についてcanonical failure artifactは生成しません。
+
+```powershell
+python scripts\run_bounded_river_review_workflow_evaluation.py `
+  --source-commit <commit> --source-tree <tree> `
+  --work-root .\tmp\codex-goals\p3-030g\work `
+  --output .\tmp\codex-goals\p3-030g\evaluation.json `
+  --manifest-output .\tmp\codex-goals\p3-030g\manifest.json
+```
+
 ## 状態
 
 | state | 意味 | next action |
@@ -248,7 +301,9 @@ conclusion/evidence allowlist、local_onlyでmodel/nonlocal runtimeを開始し�
 P3-030Fのtestは、次roleのpreviewがread-onlyであること、17 fieldとcanonical receiptのcross-binding、
 direct P2 confirmationからの明示復旧、receipt欠落・expiry・reconciliationのfail-closed性、固定role順、
 1 roleずつの実行、local-only typed拒否、no fallback、既存`FinalReport`とexact計算結果の不変性を検査します。
+P3-030GのV2 testは、production prepare/confirm/run、5回のfresh preview/fixture確認/単発execute、confirm時の
+zero execution、terminal replay/report、sanitized canonical manifestを検査します。外部model、provider、
+network、credential、live qualification、security scanは実行しません。
 
-```powershell
-python scripts\run_bounded_river_review_workflow_evaluation.py --help
-```
+CLI引数と既定fixture pathだけを確認する場合は
+`python scripts\run_bounded_river_review_workflow_evaluation.py --help`を使います。

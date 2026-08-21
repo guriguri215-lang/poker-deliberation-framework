@@ -35,14 +35,14 @@ Providerの`available`は、現在`analyze`を実行できる場合だけ`true`�
 | `natural_language_or_site_parser` | **unavailable** | 一般自然言語およびsite-specific hand history parserはない。独立したbounded Japanese grammarをこの能力へ拡張しない。 |
 | `bounded_japanese_nlhe_cash_parser` | **implemented** | version 1の文書化済み日本語retrospective NLHE cash grammarを、exact UTF-8 span、6 hash確認、固定LocalProvider、限定tool、durable replayに接続する。一般自然言語・site parserではない。 |
 | `bounded_japanese_river_call_ev_review` | **implemented** | P3-030C専用admissionで、P3-030Bのriver fold完了履歴と明示確認済み単一rangeを、calculator-free source semantic replay、P3-015A ledger、P3-016B exact equity、既存`pot_odds`/`raked_call_ev`へ一度ずつ固定順で接続し、exact Fraction oracle、ULP検証、model限定call/fold比較、typed terminal replay、checkout/module/callable-origin拘束済み3 metric評価へ拘束する。tool budget拒否は独立external recordへ先行拘束する。一般戦略やGTOではない。 |
-| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。P3-030Eは既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけをpure/read-only表示する。P3-030Fはnonlocal modeで次の1 roleだけをrequest preview、17 fieldの明示確認、workflow-owned canonical hash receipt、1回のexecuteへ拘束する。direct P2 confirmationだけではworkflow上は未確認で、期限切れとreconciliationはtyped停止する。`local_only`はprocessを開始せず、自動確認・再確認、一括・並列、retry、skip、fallbackはない。 |
+| `bounded_river_review_workflow` | **implemented** | P3-030Dは1つの明示確認済みP3-030C reviewと1つのmode-bound P2-025B固定5役bridge planを、canonical plan、linkage、status、resume、replayで接続する。P3-030Eは既存のverified `FinalReport`とworkflow/bridgeのhash・stateだけをpure/read-only表示する。P3-030Fはnonlocal modeで次の1 roleだけをrequest preview、17 fieldの明示確認、workflow-owned canonical hash receipt、1回のexecuteへ拘束する。direct P2 confirmationだけではworkflow上は未確認で、期限切れとreconciliationはtyped停止する。P3-030Gは同じproduction wrapperを固定5 roleで通すfirst-class deterministic production-workflow qualification harnessとsanitized self-hashed canonical manifestを提供する。deterministic fixtureはactual-live/provider qualificationではない。current qualificationはcurrent canonical V2 live manifest、bound deterministic evaluation、public preflightの共通規則だけで判定する。`local_only`はprocessを開始せず、自動確認・再確認、一括・並列、retry、skip、fallbackはない。 |
 | `confirmed_natural_language_review_intake` | **implemented** | 呼出側が作成した完全な候補を利用者がsource/candidate hashで明示確認した場合に限り、固定LocalProvider・限定tool・検証済みterminal reportへ接続する。自然言語の意味抽出やsite parserを実装したという意味ではない。 |
 | `process_sandbox` | **unavailable** | 構造的hard capはあるがOS-level CPU/memory sandboxはない。 |
 | `parallel_deliberation_and_tool_retry` | **disabled** | budget fieldは存在するが、通常のorchestrator経路は並列round/retryを実行しない。 |
 | `runtime_conformance_contract` | **implemented** | P2-025Aの役割inventory、assignment/context/resultのversioned contract、pure比較、verified Python product projectionを提供する。実行bridgeではない。 |
 | `local_only_runtime_mode` | **implemented** | API key、ChatGPT/Codex login、外部model、networkなしでdeterministic parser/calculator、LocalProvider、storage、replay、evaluation、verified report projectionを利用し、model/nonlocal runtimeを開始しない。 |
-| `bounded_codex_river_review_bridge` | **implemented** | **Current qualification: UNKNOWN.** P2-025B実装はterminal verification済みP3-030C run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定される。candidate-bound historical live evidenceはbytes不変で保存するが、current treeと一致するfresh canonical manifestがないため現行live資格は主張しない。 |
-| `codex_subscription_bounded_river_review` | **implemented** | **Current qualification: UNKNOWN.** 保存済みChatGPT loginを使う明示経路はconfigured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。過去candidateのsealed evidenceをcurrent-tree資格へ昇格せず、fresh runtime inventory・role conformance一致まで`subscription_live_qualified=false`とする。 |
+| `bounded_codex_river_review_bridge` | **implemented** | P2-025B実装はterminal verification済みP3-030C run、固定5 role、fresh serial read-only turn、strict result、durable replayに限定される。candidate-bound historical live evidenceはbytes不変で保存するがcurrent authorityではない。current qualificationの唯一の正は、current canonical pathのstrict canonical V2 live manifestとbound deterministic evaluationのpairに対するpublic preflight結果である。 |
+| `codex_subscription_bounded_river_review` | **implemented** | 保存済みChatGPT loginを使う明示経路はconfigured provider `openai` / auth boundary `chatgpt`を分離し、API keyやfallbackを使わない。canonical pairの両方欠落は`UNKNOWN`、片方だけの欠落、noncanonical、invalid、untrackedまたはcurrent-tree binding不一致は`FAIL`、pairが揃い全binding checkに合格した場合だけ`subscription_live_qualified=true`である。 |
 | `openai_api_bounded_river_review_adapter` | **disabled** | **Qualification: deterministic contract only / live-unqualified.** optional `openai_api` adapterはno-network contract test済みだが、price authority/hard cost stopがなく、process/network起動前にfail closedする。subscription qualificationをAPIへ拡張しない。 |
 | `codex_python_runtime_bridge` | **unavailable** | 一般Codex/Python bridgeはない。P2-025Bの別名bounded river-only bridgeを広いinteroperabilityへ拡張しない。 |
 | `local_data_lifecycle_policy` | **implemented** | P2-027Aのstrict versioned policy、canonical hash、pure lifecycle evaluationを実装する。filesystem mutationは行わない。 |
@@ -59,6 +59,15 @@ hash束縛する手続です。利用者の本人認証、戦略判断の承認�
 P3-030Eの`verified FinalReport`とreport projectionは、repository-ownedなschema、hash、
 workflow/bridge linkage、state、numeric-contractの検査に合格したことを意味します。戦略品質、
 実戦rangeの正確性、GTO/equilibrium、外部solver一致、第三者認証、release readinessは証明しません。
+
+P3-030Gは、fresh production previewの17 fieldをfixture管理のlocal authorityでproduction confirmへ
+渡し、confirm時のzero executionと、その後のsingle-role executeを固定順の5 roleすべてで検査します。
+role実行だけをprivateなdeterministic read-only executor seamへ差し替え、外部model/provider/network/
+credentialを使いません。生成する`SanitizedBoundedRiverReviewWorkflowQualificationManifestV1`は
+`transport_qualification="deterministic_fixture"`、`live_qualification_status="UNKNOWN"`、
+`api_live_executed=false`、`api_production_qualified=false`を保持します。これは人間の本人確認、
+actual-live/provider qualification、戦略品質、GTO/equilibriumを証明しません。別のlive qualificationには
+固定5 roleそれぞれのfresh previewと人間による明示確認が必要です。
 
 ## 22 tools、Codex 9役、Python 7役
 
@@ -77,8 +86,10 @@ workflow/bridge linkage、state、numeric-contractの検査に合格したこと
   `undeclared`として保持する。
 - **FACT**: P2-025B限定bridgeだけは、terminal verification済みP3-030C river run、固定5 role、
   empty tool allowlist、fresh serial thread、mode-bound confirmation/resultへ限定した別artifact familyを
-  提供する。candidate-bound historical evidenceは保存するが、current treeと一致するfresh strict canonical
-  V2 manifestがpublic preflightに合格するまで現行資格は`UNKNOWN`である。通常経路は別実行面のままであり、
+  提供する。candidate-bound historical evidenceは保存するがcurrent authorityではない。current qualificationの
+  唯一の正はcurrent canonical V2 live manifest、bound deterministic evaluation、public preflightであり、両方欠落は
+  `UNKNOWN`、incomplete/invalid/binding不一致は`FAIL`、全binding check合格時だけ
+  `subscription_live_qualified=true`である。通常経路は別実行面のままであり、
   一般bridgeではない。P3-030Fは、この既存bridgeの次のroleだけをworkflow plan、linkage、current bridge
   lineageへcross-bindして監督実行するwrapperであり、P2-025Bのrole順、request bytes、confirmation、result、
   replayの意味を変更しない。wrapper確認はexact P2 confirmationとそのexpiryを
@@ -103,7 +114,13 @@ workflow/bridge linkage、state、numeric-contractの検査に合格したこと
   canonical confirmation receipt、1回のexecuteへ直列化する。statusはrequest/confirmation expiryと
   `expired` / reconciliation停止も投影する。admission・完了済みroleにreceiptがなければfail closedし、
   既存P3 `FinalReport`、parser/calculator、単一range、7-tool exact semantics、P2-025B authorityは不変である。
-- toolはpayload/work/output capを持つが、in-process実行を強制停止するOS sandboxではない。
+- P3-030GはP3-030D/Fのproduction compositionを、repository-owned deterministic fixtureとread-only
+  transport seamだけでqualificationする。固定case/metric、terminal status、replay、report、lineage、hash、
+  sanitized canonical manifestを検査するが、live model/providerを実行またはqualifyせず、deterministic
+  evidenceをcurrent live資格へ昇格しない。
+- default canonical toolはpayload/work/output capに加え、1つのdirect childへ隔離したwall deadlineと
+  terminate/kill確認を持つ。ただしprocess-tree、CPU、memoryのOS sandboxではなく、明示的な
+  `phase_isolated=False` custom diagnostic toolはin-processのままである。
 - solver実行、収束、対象game/rake/stackの一致がない結果をGTO・均衡・正確なrangeと表示しない。
 
 ## 品質とplatform
@@ -143,8 +160,10 @@ pytestの既定tempは`tests/conftest.py`により、ワークスペース内の
 固定共有ディレクトリを再利用しないため、並行sessionが互いのtempを開始時に削除しません。
 
 - **FACT**: package metadataは`requires-python >=3.11`である。これは単独では検証済みmatrixを意味しない。
-- **FACT**: tracked GitHub Actions matrixはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを
-  実行する。Windows 3.13でstatic gate、Ubuntu 3.13でreproducible package evidenceも実行する。
+- **FACT**: tracked GitHub Actions matrixはWindows/Ubuntu × CPython 3.12/3.13の各組合せを
+  3つのdeterministic file shardへ分け、各test fileをfresh pytest processで実行する。3 shardの和が
+  そのOS/Python組合せのfull suiteを重複・欠落なく覆う。Windows 3.13でstatic gate、Ubuntu 3.13で
+  reproducible package evidenceも実行する。
   2026-08-12 20:06:17 JSTのfresh read-backでは、commit
   `ad3f267345491651153a18be12e854632366e34a`のActions run `31583851426`で、Windows/Ubuntu ×
   Python 3.12/3.13のfull-test 4 row、static quality、package evidenceの全6 jobが成功した。

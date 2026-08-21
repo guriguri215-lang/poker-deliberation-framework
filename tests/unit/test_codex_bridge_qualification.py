@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,31 @@ from tests.codex_bridge_support import REPOSITORY_ROOT, verified_bridge_source
 
 _MODE = RuntimeAuthModeV1.CODEX_SUBSCRIPTION
 _FIXTURE = REPOSITORY_ROOT / "tests/fixtures/codex_bridge/v1/public-synthetic-qualification.json"
+
+
+def _skill_catalog_probe(
+    _cwd: Path,
+    _environment: dict[str, str],
+    skill_snapshot: tuple[subscription_module._SkillState, ...],
+) -> bytes:
+    lines = ["<skills_instructions>", "## Skills", "### Available skills"]
+    lines.extend(
+        f"- {item.skill_id}: fixture description (file: {item.configuration_path})"
+        for item in skill_snapshot
+        if item.enabled and item.skill_id is not None
+    )
+    lines.append("</skills_instructions>")
+    return json.dumps(
+        [
+            {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "\n".join(lines)}],
+            }
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
 
 
 class _Clock:
@@ -234,6 +260,7 @@ for event in events:
                 payload,
                 f"thread-injected-{index}",
             ],
+            skill_catalog_probe=_skill_catalog_probe,
             isolation_root=tmp_path / "isolated-execution",
             credential_codex_home=codex_home,
         )

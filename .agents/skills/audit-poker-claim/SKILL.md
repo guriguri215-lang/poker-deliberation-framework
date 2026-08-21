@@ -5,6 +5,12 @@ description: Audit mathematical, probabilistic, game-theoretic, solver, range, a
 
 # Audit Poker Claim
 
+## Bounded bridge mode
+
+When the bounded Codex bridge supplies a claim and immutable program evidence, identify a concrete
+counterexample, changed premise, failed precondition, or unresolved UNKNOWN and return the bounded
+role-output contract. Do not invoke another agent or tool, decide by vote, or add evidence.
+
 ## Workflow
 
 1. State the USER_CLAIM exactly and identify whether it is mathematical, empirical, strategic,

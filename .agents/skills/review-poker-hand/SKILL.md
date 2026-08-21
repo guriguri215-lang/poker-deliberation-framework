@@ -5,6 +5,13 @@ description: Normalize and review NLHE cash or tournament hand histories with ca
 
 # Review Poker Hand
 
+## Bounded bridge mode
+
+When the bounded Codex bridge supplies an already-normalized hand and immutable ToolResults,
+inspect only the assigned strategy evidence, preserve material unknowns, and return the bounded
+role-output contract. Do not rerun calculators or render the standalone 15-section report; the
+Python orchestrator owns calculation, adjudication, and final projection.
+
 ## Workflow
 
 1. Read [references/input-schema.md](references/input-schema.md) when the input is free text,

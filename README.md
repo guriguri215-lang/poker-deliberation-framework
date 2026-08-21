@@ -50,6 +50,9 @@ workflow/bridge linkage、state、numeric-contractの検査に合格したこと
 - P3-030Fの`show-bounded-river-review-role-request`から始まるworkflow wrapperで、nonlocal modeの
   次の1 roleだけをpreview、全fieldの明示確認、workflow-ownedなcanonical hash receiptの保存、
   1回のexecuteという順で監督実行する。
+- P3-030Gのfirst-class deterministic production-workflow qualification harnessで、repository-owned
+  fixtureを実際のproduction preview、17-field confirm、single-role execute wrapperへ固定5 roleの順に通し、
+  sanitized self-hashed canonical manifestを生成する。
 - Codex上で同梱Skillと専門agent定義を利用する。通常のCodex利用とPython CLIは別実行面であり、
   P2-025Bだけがterminal検証済みの限定river reviewを固定5 roleへ渡す専用bridgeである。
 
@@ -159,6 +162,11 @@ receiptがない間は`awaiting_confirmation`です。P2 confirmationだけが�
 hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
 現在資格を意味しません。
 
+P3-030Gのdeterministic fixtureは、fresh previewの17 fieldをfixture管理のlocal authorityで
+production confirmへ正確に渡し、confirmだけではroleが実行されないことを確認してから、評価専用の
+deterministic read-only executor seamを通して各roleを1回ずつ実行します。外部model、provider、network、
+credentialは使いません。この機械的な確認は人間の確認やactual-live/provider qualificationではありません。
+
 statusは`role_request_expires_at`と`role_confirmation_expires_at`も表示します。期限切れは
 `role_state=expired`となり、role wrapperは`BRW_E_ROLE_EXPIRED`で停止します。
 `reconciliation_required`のterminalまたは`in_progress`も自動retryしません。
@@ -166,9 +174,16 @@ statusは`role_request_expires_at`と`role_confirmation_expires_at`も表示し�
 自動確認、期限切れの自動再確認、一括または並列実行、retry、skip、新しいmodeへの切替、
 mode/model/provider fallbackはありません。既存の
 P3 `FinalReport`、parser/calculator、明示済み単一opponent range、7-tool exact semanticsは変わりません。
-`codex_subscription`の現行qualificationは`UNKNOWN`です。具体的な全flag、状態遷移、resume、replay、
-保存範囲は
+`codex_subscription`のcurrent qualificationの唯一の正は、current canonical pathにある
+strict canonical V2 live manifestと、それへ束縛されたdeterministic evaluationのpairに対するpublic preflight結果です。
+両方欠落は`UNKNOWN`、片方だけの欠落、noncanonical、invalid、untrackedまたはcurrent-tree binding不一致は
+`FAIL`、pairが揃い全binding checkに合格した場合だけ`subscription_live_qualified=true`です。具体的な
+全flag、状態遷移、resume、replay、保存範囲は
 [限定river review workflow](docs/bounded-river-review-workflow.md)を参照してください。
+P3-030Gのdeterministic合格やsanitized manifestから現行live資格を推定しません。live qualificationは
+別手順であり、固定5 roleのそれぞれにfresh previewと人間による明示確認が必要です。
+subscriptionの最初の3 roleは既存repository Skillを各1件だけpath/hash/commitへ束縛しますが、これは
+Skill選択と入力契約の証拠であり、modelによる意味的遵守やactual-live品質の証明ではありません。
 
 ## 実行環境
 
@@ -198,8 +213,9 @@ P3 `FinalReport`、parser/calculator、明示済み単一opponent range、7-tool
   未実装である。
 - 一般Codex/Python runtime bridgeはない。P2-025Bの専用bridgeを広いinteroperabilityへ拡張しない。
 - `openai_api` bounded adapterはdefault-disabledかつlive-unqualifiedで、現在は送信前にfail closedする。
-- 現在の`codex_subscription`実装にはcandidate-bound historical live evidenceがあるが、current treeに一致する
-  fresh evidenceはなく、現行qualificationは`UNKNOWN`である。API keyや過去manifestから現在の資格を推定しない。
+- `codex_subscription`のcurrent qualificationはREADMEやhistorical evidenceから推定せず、current canonical
+  V2 manifest、bound deterministic evaluation、public preflightの上記規則だけで判定する。API keyや過去manifestは
+  このauthorityを代替しない。
 - 一般process sandbox、network isolation、secure erase、at-rest encryptionは提供しない。
 
 全境界は[Current limitations](docs/limitations.md)を参照してください。
@@ -259,7 +275,7 @@ PowerShellでは[`scripts/check_quality.ps1`](scripts/check_quality.ps1)、candi
 [`scripts/release_readiness.py`](scripts/release_readiness.py)、公開候補のoffline検査は
 [`scripts/public_preflight.py`](scripts/public_preflight.py)を使います。
 
-**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema 16.0.0の[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
+**FACT**: milestone/RMの公開状態と技術契約の機械可読な正本は、schema 17.0.0の[`src/poker_deliberation/roadmap_status.json`](src/poker_deliberation/roadmap_status.json)です。
 milestone完了とcandidate-specific release evidenceは別です。
 
 ## 主な文書

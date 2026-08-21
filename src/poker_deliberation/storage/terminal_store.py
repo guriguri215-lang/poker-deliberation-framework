@@ -115,6 +115,7 @@ PRODUCT_TRANSACTION_DOMAIN = "poker-product-transaction-v2"
 PRODUCT_BUDGET_ID_DOMAIN = "poker-product-budget-id-v2"
 _CURRENT_TEMP = re.compile(r"^current\.txn-[0-9a-f]{32}\.tmp$")
 _APPROVAL_AUDIT_EVENT = re.compile(r"^(?P<sequence>[0-9]{4})-(?P<hash>[0-9a-f]{64})\.json$")
+_STAGED_REVISION_INTEGRITY_ONLY = object()
 APPROVAL_AUDIT_MAX_EVENTS = 1024
 APPROVAL_AUDIT_MAX_EVENT_BYTES = 16_384
 APPROVAL_AUDIT_MAX_TOTAL_BYTES = 1_048_576
@@ -354,6 +355,7 @@ class TerminalPublishRequest:
     legacy_source: LegacySourceBindingV2 | None
     lifecycle_audit_sha256: str | None
     payloads: tuple[VerifiedPayloadV2, ...]
+    remaining_active_runtime_ns: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -488,6 +490,18 @@ class DurableBudgetCoordinator:
             raise ValueError("durable budget binding identity mismatch")
         return state
 
+    @staticmethod
+    def _requested_active_runtime(
+        request: TerminalPublishRequest,
+        state: DurableBudgetStateV1,
+    ) -> int:
+        remaining = request.remaining_active_runtime_ns
+        if remaining is None:
+            return state.active_runtime_remaining_ns
+        if isinstance(remaining, bool) or not isinstance(remaining, int) or remaining < 0:
+            raise ValueError("remaining active runtime must be a non-negative integer")
+        return min(remaining, state.active_runtime_remaining_ns)
+
     def reserve(
         self,
         request: TerminalPublishRequest,
@@ -499,7 +513,7 @@ class DurableBudgetCoordinator:
         self.store.rebase_monotonic_clock(request.run_id)
         ids = self._ids(request)
         requested = ResourceAmountsV1(
-            active_runtime_ns=state.active_runtime_remaining_ns,
+            active_runtime_ns=self._requested_active_runtime(request, state),
             artifact_bytes=artifact_bytes,
             run_bytes=run_bytes,
             concurrency_slots=1,
@@ -566,7 +580,7 @@ class DurableBudgetCoordinator:
 
         state = self._state(request)
         requested = ResourceAmountsV1(
-            active_runtime_ns=state.active_runtime_remaining_ns,
+            active_runtime_ns=self._requested_active_runtime(request, state),
             artifact_bytes=artifact_bytes,
             run_bytes=run_bytes,
             concurrency_slots=1,
@@ -1149,6 +1163,7 @@ class TerminalRunStore:
         pointer: RunCurrentPointerV2,
         *,
         verify_budget: bool,
+        staged_revision_integrity_capability: object | None,
     ) -> tuple[
         RunManifestV2,
         bytes,
@@ -1156,6 +1171,13 @@ class TerminalRunStore:
         bytes | None,
         tuple[VerifiedPayloadV2, ...],
     ]:
+        integrity_only = staged_revision_integrity_capability is _STAGED_REVISION_INTEGRITY_ONLY
+        if staged_revision_integrity_capability is not None and not integrity_only:
+            raise ValueError("unknown staged revision integrity capability")
+        if integrity_only and verify_budget:
+            raise ValueError(
+                "staged revision integrity capability cannot bypass a budget-verified read"
+            )
         _run, control, _transactions, _revisions = self._paths(run_id)
         revision = control / pointer.revision_relative_path
         verify_directory(revision)
@@ -1215,7 +1237,7 @@ class TerminalRunStore:
         )
         if terminal_inventory_sha256(entries) != manifest.inventory_sha256:
             raise CanonicalStorageError("terminal inventory hash mismatch")
-        if manifest.publication_kind != "legacy_copy":
+        if manifest.publication_kind != "legacy_copy" and not integrity_only:
             commitments = product_payload_commitments(
                 payloads,
                 run_id=run_id,
@@ -1340,6 +1362,7 @@ class TerminalRunStore:
                 run_id,
                 pointer,
                 verify_budget=verify_budget,
+                staged_revision_integrity_capability=None,
             )
             reachable = [pointer.revision]
             child_manifest = manifest
@@ -1405,6 +1428,7 @@ class TerminalRunStore:
                     run_id,
                     reconstructed,
                     verify_budget=verify_budget,
+                    staged_revision_integrity_capability=None,
                 )
                 if verified_previous != previous:
                     raise CanonicalStorageError(
@@ -1521,8 +1545,11 @@ class TerminalRunStore:
         request: TerminalPublishRequest,
         *,
         pre_manifest_verifier: Callable[[], None] | None = None,
+        runtime_guard: Callable[[str], int] | None = None,
     ) -> TerminalPublishOutcome:
         prepared = self._prepare(request)
+        if runtime_guard is not None:
+            runtime_guard("prepared")
         previous_effect: Literal["not_applicable", "unchanged"] = (
             "not_applicable" if request.proposed_revision == 1 else "unchanged"
         )
@@ -1583,6 +1610,8 @@ class TerminalRunStore:
                 _fault(self.fault_injector, "pre_manifest_verifier.before")
                 pre_manifest_verifier()
                 _fault(self.fault_injector, "pre_manifest_verifier.after")
+            if runtime_guard is not None:
+                runtime_guard("staging")
             _run, control, transactions, revisions = self._bootstrap_namespace(request.run_id)
             staging = transactions / request.transaction_id
             revision = revisions / f"r{request.proposed_revision}-{request.transaction_id}"
@@ -1630,6 +1659,8 @@ class TerminalRunStore:
                     hook="completion",
                 )
             _fault(self.fault_injector, "revision.before_rename")
+            if runtime_guard is not None:
+                runtime_guard("revision")
             staging.replace(revision)
             revision_published = True
             _fault(self.fault_injector, "revision.after_rename")
@@ -1637,6 +1668,13 @@ class TerminalRunStore:
                 request.run_id,
                 prepared.pointer,
                 verify_budget=False,
+                # This is the only semantic-verification skip. ``_prepare``
+                # already verified the exact payload commitments; this locked,
+                # pre-pointer read still verifies transaction/manifest bytes,
+                # payload inventory and hashes, and the completion marker.
+                # Every public/read-after-settlement path passes None for full
+                # semantic verification; unknown capability objects fail.
+                staged_revision_integrity_capability=(_STAGED_REVISION_INTEGRITY_ONLY),
             )
             current_path = control / "current.json"
             if request.expected_pointer_sha256 is None:
@@ -1669,6 +1707,8 @@ class TerminalRunStore:
                 hook="pointer",
             )
             _fault(self.fault_injector, "current.before_replace")
+            if runtime_guard is not None:
+                runtime_guard("current")
             try:
                 os.replace(temporary, current_path)
             except Exception:
@@ -1831,6 +1871,7 @@ class TerminalRunStore:
         request: TerminalPublishRequest,
         *,
         authority_verifier: Callable[[], None],
+        runtime_guard: Callable[[str], int] | None = None,
     ) -> TerminalPublishOutcome:
         """Publish one approval successor with authority reverified in-lock."""
 
@@ -1842,6 +1883,7 @@ class TerminalRunStore:
         return self.publish(
             request,
             pre_manifest_verifier=authority_verifier,
+            runtime_guard=runtime_guard,
         )
 
     @staticmethod

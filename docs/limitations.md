@@ -21,6 +21,14 @@
   nonlocal modeの次の1 roleに限定した監督wrapperであり、既存P3 `FinalReport`、parser/calculator、
   明示済み単一opponent range、7-tool exact semantics、P2-025B role authorityを変更しない。
 
+  P3-030GはP3-030D/Fのproduction preview、confirm、single-role execute wrapperを固定5 roleで通す
+  deterministic qualificationである。17 fieldはfixture管理のlocal authorityが機械的に照合し、role実行は
+  privateなdeterministic read-only executor seamを使うため、人間の確認、本人認証、actual-live/provider
+  qualificationを再現または証明しない。sanitized manifestが`qualification_status="passed"`でも
+  `transport_qualification="deterministic_fixture"`かつ`live_qualification_status="UNKNOWN"`であり、
+  raw source、prompt/outbound bytes、credential、narrative、model trace、`user_materials/`を含めない。
+  live qualificationは別手順で、固定5 roleそれぞれのfresh previewと人間による明示確認が必要である。
+
   ここでrole confirmationは、previewされた全fieldへの利用者の明示的一致をworkflow receiptへ
   hash束縛する手続です。利用者の本人認証、戦略判断の承認、外部第三者検証、model/providerの
   現在資格を意味しません。
@@ -108,11 +116,17 @@
   the exact approved repository synthetic helper; it is not a provider/solver executor.
 - Evidence records are validated, claim-linked, stored in `evidence.jsonl`, and included in reports.
   Case-specific web retrieval itself still requires a connected agent and explicit recording.
-- Local calculators run in-process. Hard size/work/depth caps prevent callers from requesting
-  unbounded work, convergent best-response DAGs are memoized, and over-budget results fail closed,
-  but ordinary calculators remain in-process and have no OS-level preemptive CPU or memory sandbox.
-  Providers must honor the cooperative cancellation contract. P2-028A's separate Windows backend
-  applies Job Object CPU/memory/process limits only to the fixed repository synthetic helper.
+- Default canonical calculators run one direct spawned child per call. Input validation,
+  calculation, output validation, and floating-point verification stay inside that child; the
+  parent enforces a wall deadline and confirms direct-child termination before accepting output.
+  This is not an OS-level process-tree, CPU, or memory sandbox, and noncanonical diagnostic tools explicitly
+  registered with `phase_isolated=False` still run in-process. Providers must honor the cooperative
+  cancellation contract. P2-028A's separate Windows backend applies Job Object CPU/memory/process
+  limits only to the fixed repository synthetic helper.
+- A transient calculator failure or an ordinary strict tool-budget failure without independent
+  durable evidence is returned honestly as `failed_with_limitations`, but is not published as a
+  verified durable terminal. Only the bounded river call-EV path currently persists a budget
+  refusal, because that path already has an independently correlated append-only failure record.
 - Ordinary P2-011A deadline/cancellation is cooperative and in-process. It distinguishes requested,
   acknowledged, and unconfirmed cancellation, but an uncooperative daemon thread may continue after
   the run reports a limitation. P2-011A itself has no process-tree kill, remote cancellation, or
@@ -161,8 +175,9 @@
   UNKNOWN when an object, ref inventory, or supported text encoding cannot be read completely. Git
   author/committer/tagger identities are review candidates, not confirmed personal information.
 - Package metadataの`requires-python >=3.11`と、tracked GitHub Actions verification matrixは別である。
-  workflowはWindows/Ubuntu × CPython 3.12/3.13の各rowでfull pytestを実行し、別jobでstatic gateと
-  candidate-bound reproducible package evidenceを検査する。2026-08-12 20:06:17 JSTのfresh read-backでは、
+  workflowはWindows/Ubuntu × CPython 3.12/3.13の各組合せを3つのdeterministic file shardへ分け、
+  各test fileをfresh pytest processで実行する。3 shardの和がその組合せのfull suiteを重複・欠落なく覆い、
+  別jobでstatic gateとcandidate-bound reproducible package evidenceを検査する。2026-08-12 20:06:17 JSTのfresh read-backでは、
   commit `ad3f267345491651153a18be12e854632366e34a`のActions run `31583851426`で、Windows/Ubuntu ×
   Python 3.12/3.13のfull-test 4 row、static quality、package evidenceの全6 jobが成功した。
   これは同commitだけに対する証拠であり、public releaseまたはproduction readinessを証明しない。
@@ -300,6 +315,10 @@
   `BRW_E_LOCAL_ONLY`で拒否され、transportやruntime directoryを開始しない。
 - `codex_subscription`はterminal verification済みP3-030C river call-or-fold run、1 explicit range、固定5
   role、fresh serial turnだけを扱う。一般Codex/Python bridge、任意prompt/agent、双方向sessionではない。
+- strategy、math、skepticのrequestはrepository-owned Skillを各1件だけallowlistし、path/hash/commit/
+  bounded instructionsへ束縛する。adjudicator/report-writerにはSkillを割り当てない。この記録はSkillの
+  選択と入力契約を追跡するが、modelが意味を完全に遵守したことや回答品質を証明しない。deterministic
+  fixtureはSkill runtimeを実行した証拠ではない。
 - P3-030Fのnonlocal wrapperはstatusの`next_role` / `role_state`が示す次の1 roleだけを、exact request
   preview、17個すべての`confirmation_fields`の明示確認、workflow-owned canonical hash receipt、1回の
   executeの順に進める。lower-level P2 CLIによるdirect confirmationだけではworkflow receiptを作らず、
@@ -311,11 +330,17 @@
   mode/model/provider fallbackはない。`reconciliation_required`がterminalまたは`in_progress`であれば
   `BRW_E_ROLE_RECONCILIATION`で停止し、実行済みroleやcalculatorを再実行しない。
 - 過去candidateの`codex_subscription` sealed live manifestとdeterministic evaluationは、候補commit別の
-  historical evidenceとしてbytes不変で保存する。current treeのruntime inventory/role conformanceへ
-  一致するfresh canonical evidenceではないため、現行資格は`UNKNOWN`、
-  `subscription_live_qualified=false`である。legacy manifest、recorded/deterministic fixture、
-  caller-controlled label、wrapped/injected transportをcurrent actual transport evidenceへ昇格しない。
-  current canonical manifestが欠落する場合は`UNKNOWN`、存在しても非canonicalまたはinvalidなら`FAIL`とする。
+  historical evidenceとしてbytes不変で保存するがcurrent authorityではない。current qualificationの唯一の正は、
+  current canonical pathのstrict canonical V2 live manifestと、それへ束縛されたdeterministic evaluationのpairに
+  対するpublic preflight結果である。両方欠落は`UNKNOWN`、片方だけの欠落、noncanonical、invalid、untracked
+  またはcurrent-tree binding不一致は`FAIL`、pairが揃い全binding checkに合格した場合だけ
+  `subscription_live_qualified=true`である。両方欠落時は`subscription_live_qualified=false`である。legacy
+  manifest、recorded/deterministic fixture、caller-controlled label、wrapped/injected transportをcurrent
+  actual transport evidenceへ昇格しない。
+- P3-030Gのdeterministic production-workflow manifestもcurrent actual transport evidenceではない。
+  fixture合格、self-hash、runtime inventory、固定5 role完了のいずれも、live model/provider executionや
+  人間による5回のpreview確認の代用にせず、current qualificationは上記のcanonical pair/public preflight規則だけで
+  判定する。
 - `openai_api`はdefault-disabled、deterministic-contract-only、live-unqualifiedである。versioned price
   authorityとprovider hard cost stopがないため、API keyが存在してもprocess/network起動前に
   `api_live_execution_unqualified_cost_authority` / `not_launched`で拒否し、production-qualifiedまたは

@@ -11,8 +11,10 @@ from poker_deliberation.schemas import (
     CaseInput,
     DecisionSnapshot,
     FocalDecision,
+    ToolStatus,
 )
-from poker_deliberation.tools.hand_validator import validate_hand
+from poker_deliberation.tools.contracts import contract_by_name
+from poker_deliberation.tools.registry import default_registry
 
 FORBIDDEN_KEYS = frozenset(
     {
@@ -59,9 +61,17 @@ def build_blind_decision_context(case: CaseInput) -> BlindDecisionContext | None
     focal = resolve_focal_decision(case)
     if focal is None:
         return None
-    replay = validate_hand(case.hand)
-    if not replay.get("valid", False):
+    contract = contract_by_name()["hand_validator"]
+    replay_result = default_registry().execute(
+        "hand_validator",
+        case.hand.model_dump(mode="json"),
+        contract_version=contract.contract_version,
+    )
+    if replay_result.status is not ToolStatus.SUCCESS:
+        raise IsolationError("hard-isolated hand validation did not complete")
+    if replay_result.output.get("valid") is not True:
         return None
+    replay = replay_result.output
     raw_snapshots = replay.get("decision_snapshots", [])
     if not isinstance(raw_snapshots, list) or focal.action_index >= len(raw_snapshots):
         raise IsolationError("focal decision snapshot is unavailable")

@@ -64,6 +64,7 @@ from poker_deliberation.storage.range_equity_admission_store import (
 from poker_deliberation.storage.revision_canonical import (
     CanonicalStorageError,
     canonical_json_bytes,
+    check_path_lengths,
     parse_canonical_model,
     run_lock_key_sha256,
 )
@@ -74,6 +75,19 @@ EVALUATION_FAMILY_ID: Literal["poker-bounded-river-call-ev-evaluation-json-v1"] 
 )
 EVALUATION_SCHEMA_VERSION: Literal["1.0.0"] = "1.0.0"
 EVALUATION_THRESHOLD: Literal["1.0"] = "1.0"
+BOUNDED_RIVER_CALL_EV_EVALUATION_PATH_BUDGET = (
+    Path("i-00000000")
+    / "preexecution-bounded"
+    / "p"
+    / "runs"
+    / "river-eval-preexecution-bounded"
+    / ".terminal-store"
+    / "transactions"
+    / f"txn-{'0' * 32}"
+    / "payload"
+    / "tool_results"
+    / f"tool-result-{'0' * 24}.input.json"
+)
 EvaluationMetric = Literal[
     "exact_decision_math",
     "admission_security",
@@ -1202,7 +1216,9 @@ _HANDLERS = MappingProxyType(
 _HANDLER_IDENTITIES = tuple(_HANDLERS.items())
 
 
-def _evaluation_work_root(path: Path) -> Path:
+def normalize_bounded_river_call_ev_evaluation_root(path: Path) -> Path:
+    """Return the exact non-mutating root spelling used by the evaluator."""
+
     resolved = path.resolve(strict=False)
     if os.name != "nt":
         return resolved
@@ -1240,7 +1256,14 @@ def run_bounded_river_call_ev_evaluation(
         )
     ):
         raise ValueError("bounded river call-EV evaluation handler inventory mismatch")
-    root = _evaluation_work_root(work_root)
+    try:
+        root = normalize_bounded_river_call_ev_evaluation_root(work_root)
+        check_path_lengths((root, root / BOUNDED_RIVER_CALL_EV_EVALUATION_PATH_BUDGET))
+    except (CanonicalStorageError, OSError) as exc:
+        raise BoundedRiverCallEvError(
+            BoundedRiverCallEvDiagnosticCode.STORAGE,
+            "evaluation.paths",
+        ) from exc
     root.mkdir(parents=True, exist_ok=True)
     context = _EvaluationContext(Path(mkdtemp(prefix="i-", dir=root)))
     case_results: list[BoundedRiverCallEvEvaluationCaseResultV1] = []
@@ -1302,6 +1325,7 @@ def run_bounded_river_call_ev_evaluation(
 
 
 __all__ = [
+    "BOUNDED_RIVER_CALL_EV_EVALUATION_PATH_BUDGET",
     "EVALUATION_FAMILY_ID",
     "REQUIRED_CASE_EVIDENCE",
     "REQUIRED_CASE_IDS",
@@ -1310,6 +1334,7 @@ __all__ = [
     "BoundedRiverCallEvEvaluationResultV1",
     "build_repository_owned_bounded_river_evaluation_admission",
     "load_bounded_river_call_ev_evaluation_fixture",
+    "normalize_bounded_river_call_ev_evaluation_root",
     "run_bounded_river_call_ev_evaluation",
     "verify_bounded_river_call_ev_evaluation_checkout",
     "verify_bounded_river_call_ev_evaluation_module_origins",

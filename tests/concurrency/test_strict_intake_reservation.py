@@ -62,7 +62,10 @@ def test_bounded_preflight_and_reservation_share_run_authority(
 
     def run_bounded() -> None:
         try:
-            bounded_results.append(bounded.run_bounded_natural_language_review(request))
+            # This test owns the preflight/reservation collision boundary.  Stop at
+            # the prepared admission so unrelated terminal calculator replay does
+            # not turn a lock test into a product-performance test.
+            bounded_results.append(bounded._prepare_bounded_natural_language_run(request))
         except BaseException as exc:  # pragma: no cover - asserted below
             bounded_results.append(exc)
 

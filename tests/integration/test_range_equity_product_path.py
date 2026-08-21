@@ -17,9 +17,12 @@ from poker_deliberation.range_equity import (
 from poker_deliberation.range_grammar import validate_versioned_range
 from poker_deliberation.schemas import CaseInput, ToolStatus
 from poker_deliberation.storage.revision_canonical import canonical_json_bytes
-from poker_deliberation.storage.terminal_models import RunReadStatus
+from poker_deliberation.storage.terminal_models import (
+    ProductRunError,
+    ProductRunFailureCode,
+    RunReadStatus,
+)
 from poker_deliberation.tools import default_registry
-from poker_deliberation.tools.contracts import versioned_range_bridge_failure_error
 from tests.range_support import versioned_river_equity_case
 
 
@@ -147,8 +150,16 @@ def test_failed_combos_stops_before_equity(tmp_path: Path) -> None:
         calls.append("holdem_equity")
         return original_equity.function(payload)
 
-    registry._tools["combos"] = replace(original_combos, function=failing_combos)
-    registry._tools["holdem_equity"] = replace(original_equity, function=counted_equity)
+    registry._tools["combos"] = replace(
+        original_combos,
+        function=failing_combos,
+        phase_isolated=False,
+    )
+    registry._tools["holdem_equity"] = replace(
+        original_equity,
+        function=counted_equity,
+        phase_isolated=False,
+    )
     orchestrator = Orchestrator(_config(tmp_path), registry=registry)
     admission = admit_versioned_range_river_equity(versioned_river_equity_case())
 
@@ -161,10 +172,14 @@ def test_failed_combos_stops_before_equity(tmp_path: Path) -> None:
     assert calls == ["combos"]
     assert [result.tool_name for result in report.tool_results] == ["range_validate", "combos"]
     assert report.tool_results[-1].status is ToolStatus.FAILED
-    assert report.tool_results[-1].error == versioned_range_bridge_failure_error("combos")
+    assert report.tool_results[-1].error == "ValueError: fixture combos failure"
     assert (
-        orchestrator.product_store.read_current(report.run_id).read_status is RunReadStatus.FAILED
+        "product persistence refused: tool result lacks independent replay authority"
+        in report.limitations
     )
+    with pytest.raises(ProductRunError) as caught:
+        orchestrator.product_store.read_current(report.run_id)
+    assert caught.value.failure.code is ProductRunFailureCode.RUN_NOT_FOUND
 
 
 def test_full_169_class_river_range_is_bounded_to_990_evaluations(tmp_path: Path) -> None:

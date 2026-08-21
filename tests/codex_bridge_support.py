@@ -45,6 +45,7 @@ def prepared_bridge_request(
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
+        include_repository_skill_bindings=(auth_mode is RuntimeAuthModeV1.CODEX_SUBSCRIPTION),
     )
     return build_role_request(
         bridge_run_id="bridge-run-sdk-transport",

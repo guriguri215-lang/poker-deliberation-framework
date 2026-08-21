@@ -109,7 +109,7 @@ def test_packaged_public_roadmap_loads_outside_repository_cwd(
 
     document = load_roadmap()
 
-    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "16.0.0"
+    assert document["schema_version"] == ROADMAP_SCHEMA_VERSION == "17.0.0"
     assert resources.files("poker_deliberation").joinpath(ROADMAP_RESOURCE).is_file()
     assert not (tmp_path / "docs").exists()
 
@@ -202,6 +202,7 @@ def test_public_milestone_projection_keeps_only_current_state() -> None:
         "P3-030D",
         "P3-030E",
         "P3-030F",
+        "P3-030G",
     }
     assert {item_id for item_id, item in milestones.items() if item["status"] == "completed"} == (
         completed
@@ -322,6 +323,22 @@ def test_p3_030a_registration_is_confirmed_local_and_bounded() -> None:
     assert "without changing P2-025B bridge or P3 FinalReport authority" in supervised_scope
     assert "No auto-confirm, bulk or parallel execution" in supervised_scope
     assert "live qualification, parser, calculator, range, solver, GTO" in supervised_scope
+    assert milestones["P3-030G"]["status"] == "completed"
+    assert milestones["P3-030G"]["dependencies"] == [
+        "P2-025B",
+        "P3-030D",
+        "P3-030F",
+    ]
+    qualification_scope = milestones["P3-030G"]["scope"]
+    assert "deterministic production-workflow qualification harness" in qualification_scope
+    assert "all five fixed roles" in qualification_scope
+    assert "canonical sanitized evidence" in qualification_scope
+    assert "No live model or network execution" in qualification_scope
+    assert "retry, repair, fallback" in qualification_scope
+    qualification_reason = str(milestones["P3-030G"]["status_reason"])
+    assert "both absent is UNKNOWN" in qualification_reason
+    assert "invalid/binding-mismatched pair is FAIL" in qualification_reason
+    assert "subscription_live_qualified=true" in qualification_reason
     assert "general natural-language/site/OCR/model-assisted parsing is unimplemented" in str(
         items["RM-030"]["status_reason"]
     )
@@ -433,7 +450,9 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     ]
     assert "five fresh, serial, read-only roles" in milestones["P2-025B"]["scope"]
     assert "live-unqualified" in milestones["P2-025B"]["scope"]
-    assert "current-tree qualification is UNKNOWN" in milestones["P2-025B"]["status_reason"]
+    assert "both absent is UNKNOWN" in milestones["P2-025B"]["status_reason"]
+    assert "invalid/binding-mismatched pair is FAIL" in milestones["P2-025B"]["status_reason"]
+    assert "subscription_live_qualified=true" in milestones["P2-025B"]["status_reason"]
     assert "historical saved-subscription evidence" in milestones["P2-025B"]["status_reason"]
     assert (
         "optional API route remains disabled and live-unqualified"
@@ -462,7 +481,9 @@ def test_p2_025a_and_p2_025b_registration_preserve_bounded_execution() -> None:
     assert items["RM-019"]["status"] == "planned"
     assert "river-only saved-subscription path" in items["RM-019"]["status_reason"]
     assert "historical sealed evidence" in items["RM-019"]["status_reason"]
-    assert "current-tree qualification is UNKNOWN" in items["RM-019"]["status_reason"]
+    assert "both absent is UNKNOWN" in items["RM-019"]["status_reason"]
+    assert "invalid/binding-mismatched pair is FAIL" in items["RM-019"]["status_reason"]
+    assert "subscription_live_qualified=true" in items["RM-019"]["status_reason"]
     assert "optional API route remains disabled" in items["RM-019"]["status_reason"]
     assert items["RM-020"]["status"] == "planned"
 
@@ -479,6 +500,9 @@ def test_historical_relations_do_not_override_current_milestone_status() -> None
     assert "P3-030C completes the bounded" in str(items["RM-030"]["status_reason"])
     assert "P3-030D composes that slice" in str(items["RM-030"]["status_reason"])
     assert "P3-030F adds supervised confirmed one-role-at-a-time execution" in str(
+        items["RM-030"]["status_reason"]
+    )
+    assert "P3-030G qualifies the deterministic production workflow" in str(
         items["RM-030"]["status_reason"]
     )
     assert "P3-030C is an implementation candidate" not in str(items["RM-030"]["status_reason"])
@@ -717,8 +741,8 @@ def test_public_claim_paths_exist_as_required_and_are_tracked() -> None:
 def test_summary_is_public_dependency_projection_without_release_overclaim() -> None:
     summary = roadmap_summary()
 
-    assert summary["schema_version"] == "16.0.0"
-    assert "schema 16.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
+    assert summary["schema_version"] == "17.0.0"
+    assert "schema 17.0.0" in (ROOT / "README.md").read_text(encoding="utf-8")
     assert summary["total_items"] == 31
     assert summary["status_counts"] == {
         "completed": 19,
@@ -727,7 +751,7 @@ def test_summary_is_public_dependency_projection_without_release_overclaim() -> 
         "proposed": 1,
     }
     assert summary["milestone_state_counts"] == {
-        "completed": 25,
+        "completed": 26,
         "in_progress": 1,
     }
     assert summary["milestone_ready_ids"] == []

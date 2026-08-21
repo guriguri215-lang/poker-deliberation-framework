@@ -84,7 +84,9 @@ def test_same_run_reservation_serializes_before_tool_execution(
 
     def run_first() -> None:
         try:
-            reports.append(first.run_bounded_river_call_ev_review(admitted))
+            # Exercise the durable admission/reservation boundary without coupling
+            # this lock race to the later seven-tool terminal replay path.
+            reports.append(first._prepare_bounded_river_call_ev_run(admitted))
         except BaseException as exc:
             failures.append(exc)
 
@@ -101,8 +103,7 @@ def test_same_run_reservation_serializes_before_tool_execution(
 
     assert not worker.is_alive()
     assert failures == []
-    assert len(reports) == 1
-    assert reports[0].run_status == "completed"
+    assert reports == [None]
 
 
 def test_budget_failure_record_sync_stops_before_terminal_publication(

@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from pydantic import TypeAdapter
@@ -50,6 +51,12 @@ def _completed(tmp_path: Path):
         if payload.inventory.logical_name != "lifecycle_audit.json"
     }
     return orchestrator, report, read, payloads
+
+
+@pytest.fixture(scope="module")
+def completed_provenance_baseline():
+    with TemporaryDirectory(prefix="p3-terminal-provenance-") as raw_root:
+        yield _completed(Path(raw_root))
 
 
 def _replay(orchestrator, report, read, payloads) -> None:
@@ -129,10 +136,11 @@ def test_terminal_rejects_raw_text_in_agent_case(tmp_path: Path) -> None:
     ],
 )
 def test_provenance_rejects_role_context_and_lineage_mismatch(
-    tmp_path: Path,
+    completed_provenance_baseline,
     update: dict[str, object],
 ) -> None:
-    orchestrator, report, read, payloads = _completed(tmp_path)
+    orchestrator, report, read, baseline_payloads = completed_provenance_baseline
+    payloads = dict(baseline_payloads)
     candidate = parse_canonical_model(
         payloads["bounded_river_call_ev_candidate.json"],
         BoundedRiverCallEvCandidateV1,
@@ -425,6 +433,27 @@ def test_failed_terminal_correlates_allowed_tool_failure_code_to_report(
                 transaction_id=read.transaction_id,
                 budget_policy=orchestrator.budget_policy,
             )
+
+
+def test_failed_terminal_reader_accepts_verified_external_budget_authority(
+    tmp_path: Path,
+) -> None:
+    admitted = admission(run_id="run-river-failed-reader-authority")
+    orchestrator = Orchestrator(
+        app_config(tmp_path),
+        budget_policy=BudgetPolicyV2(max_tool_input_bytes=2_600),
+    )
+    report = orchestrator.run_bounded_river_call_ev_review(admitted)
+
+    assert report.run_status == "failed_with_limitations"
+    loaded = orchestrator.load_report(report.run_id)
+    assert loaded.run_status == "failed_with_limitations"
+    assert loaded.tool_results[-1].error == "strict budget failure: tool_input_exceeded"
+    exact = orchestrator._exact_terminal_report(
+        orchestrator.product_store.read_current(report.run_id)
+    )
+    assert exact.run_status == "failed_with_limitations"
+    assert exact.tool_results == loaded.tool_results
 
 
 def test_failed_terminal_rejects_coherent_budget_cause_rewrite(tmp_path: Path) -> None:

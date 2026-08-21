@@ -2,14 +2,22 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import replace
 from pathlib import Path
+from threading import Thread
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from poker_deliberation.budgets import FakeMonotonicClock, canonical_json_utf8_size
+import poker_deliberation.tools.registry as registry_module
+from poker_deliberation.budgets import (
+    BudgetFailure,
+    BudgetFailureCode,
+    FakeMonotonicClock,
+    canonical_json_utf8_size,
+)
 from poker_deliberation.reporting import render_markdown
 from poker_deliberation.schemas import (
     Exactness,
@@ -20,7 +28,11 @@ from poker_deliberation.schemas import (
     ToolStatus,
 )
 from poker_deliberation.tools import default_registry
-from poker_deliberation.tools.contracts import contract_by_name, tool_contracts
+from poker_deliberation.tools.contracts import (
+    contract_by_name,
+    tool_contracts,
+    versioned_range_bridge_failure_error,
+)
 from poker_deliberation.tools.icm import calculate_icm
 from poker_deliberation.tools.registry import ToolDefinition, ToolRegistry
 from poker_deliberation.tools.verification import within_tolerance
@@ -88,6 +100,50 @@ VALID_INPUTS: dict[str, dict[str, object]] = {
     "sensitivity": {"scenarios": [{"name": "base", "parameters": {"x": 1}, "value": 2}]},
     "solver_status": {},
 }
+
+
+def _phase_hanging_tool(_payload: dict[str, object]) -> dict[str, object]:
+    time.sleep(60.0)
+    return {"value": 0}
+
+
+def _phase_success_tool(_payload: dict[str, object]) -> dict[str, object]:
+    return {"value": 1}
+
+
+def _phase_wrong_pot_odds_tool(_payload: dict[str, object]) -> dict[str, object]:
+    return {
+        "pot_after_opponent_bet": 999.0,
+        "final_pot_before_rake": 1000.0,
+        "expected_rake": 0.0,
+        "final_pot_after_rake": 1000.0,
+        "required_equity": 0.5,
+        "required_equity_percent": 50.0,
+        "pot_odds_against": 1.0,
+    }
+
+
+class _VerifierHangingOutput(dict[str, object]):
+    def __getitem__(self, key: str) -> object:
+        if key == "pot_after_opponent_bet":
+            time.sleep(60.0)
+        return super().__getitem__(key)
+
+
+def _phase_verifier_hanging_pot_odds_tool(
+    _payload: dict[str, object],
+) -> dict[str, object]:
+    return _VerifierHangingOutput(
+        {
+            "pot_after_opponent_bet": 150.0,
+            "final_pot_before_rake": 200.0,
+            "expected_rake": 0.0,
+            "final_pot_after_rake": 200.0,
+            "required_equity": 0.25,
+            "required_equity_percent": 25.0,
+            "pot_odds_against": 3.0,
+        }
+    )
 
 
 def test_canonical_inventory_has_twenty_two_unique_complete_contracts() -> None:
@@ -676,3 +732,530 @@ def test_registry_preserves_measurable_duration_for_failed_tool() -> None:
 
     assert result.status is ToolStatus.FAILED
     assert result.duration_seconds == 0.1
+
+
+def test_public_execute_terminates_isolated_worker_and_registry_remains_usable() -> None:
+    registry = ToolRegistry(max_duration_seconds=2.0)
+    registry.register(
+        ToolDefinition(
+            name="hang",
+            purpose="hard timeout fixture",
+            exact_or_approximate="exact",
+            supported_games=("fixture",),
+            function=_phase_hanging_tool,
+            phase_isolated=True,
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            name="after-timeout",
+            purpose="post-timeout success fixture",
+            exact_or_approximate="exact",
+            supported_games=("fixture",),
+            function=_phase_success_tool,
+            phase_isolated=True,
+        )
+    )
+
+    started = time.monotonic()
+    timed_out = registry.execute("hang", {})
+    elapsed = time.monotonic() - started
+    after_timeout = registry.execute("after-timeout", {})
+
+    assert elapsed < 6.0
+    assert timed_out.status is ToolStatus.FAILED
+    assert "exceeded hard runtime limit" in (timed_out.error or "")
+    assert after_timeout.status is ToolStatus.SUCCESS
+    assert after_timeout.output == {"value": 1}
+
+
+def test_public_execute_terminates_worker_when_floating_verifier_hangs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = contract_by_name()["pot_odds"]
+    monkeypatch.setitem(
+        registry_module._CANONICAL_PHASE_FUNCTIONS,
+        contract.name,
+        _phase_verifier_hanging_pot_odds_tool,
+    )
+    registry = ToolRegistry(max_duration_seconds=2.0)
+    registry.register(
+        ToolDefinition(
+            name=contract.name,
+            purpose=contract.purpose,
+            exact_or_approximate="floating-verified",
+            supported_games=contract.supported_games,
+            function=_phase_verifier_hanging_pot_odds_tool,
+            assumptions=contract.assumptions,
+            version=contract.version,
+            contract=contract,
+            phase_isolated=True,
+        )
+    )
+
+    started = time.monotonic()
+    result = registry.execute(contract.name, VALID_INPUTS[contract.name])
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 6.0
+    assert result.status is ToolStatus.FAILED
+    assert "exceeded hard runtime limit" in (result.error or "")
+
+
+def test_phase_isolation_rejects_non_picklable_callable_before_execution() -> None:
+    executed = False
+
+    def local_callable(_payload: dict[str, object]) -> dict[str, object]:
+        nonlocal executed
+        executed = True
+        return {"value": 1}
+
+    registry = ToolRegistry()
+    registry.register(
+        ToolDefinition(
+            name="local-callable",
+            purpose="spawn qualification fixture",
+            exact_or_approximate="exact",
+            supported_games=("fixture",),
+            function=local_callable,
+            phase_isolated=True,
+        )
+    )
+
+    result = registry.execute_for_phase("local-callable", {})
+
+    assert result.status is ToolStatus.FAILED
+    assert "not spawn-picklable" in (result.error or "")
+    assert not executed
+
+
+def test_phase_isolated_output_is_verified_by_parent_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    contract = contract_by_name()["pot_odds"]
+    monkeypatch.setitem(
+        registry_module._CANONICAL_PHASE_FUNCTIONS,
+        contract.name,
+        _phase_wrong_pot_odds_tool,
+    )
+    registry = ToolRegistry(max_duration_seconds=5.0)
+    registry.register(
+        ToolDefinition(
+            name=contract.name,
+            purpose=contract.purpose,
+            exact_or_approximate="floating-verified",
+            supported_games=contract.supported_games,
+            function=_phase_wrong_pot_odds_tool,
+            contract=contract,
+            phase_isolated=True,
+        )
+    )
+
+    result = registry.execute_for_phase(contract.name, VALID_INPUTS["pot_odds"])
+
+    assert result.status is ToolStatus.FAILED
+    assert result.verification is None
+    assert "verification failed for pot_after_opponent_bet" in (result.error or "")
+
+
+def test_materialized_exact_result_is_replayed_before_trust() -> None:
+    registry = default_registry()
+    result = registry.execute("combos", VALID_INPUTS["combos"])
+    mutated = result.model_copy(
+        update={"output": {**result.output, "count": result.output["count"] + 1}}
+    )
+
+    with pytest.raises(ValueError, match="canonical replay"):
+        registry.reverify_materialized_result(mutated)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("version", "999.0.0"),
+        ("assumptions", ["forged"]),
+        ("model_qualifier", "forged"),
+        ("reproduce_command", "forged"),
+    ],
+)
+def test_materialized_floating_result_rejects_contract_metadata_tampering(
+    field: str,
+    value: object,
+) -> None:
+    registry = default_registry()
+    result = registry.execute("pot_odds", VALID_INPUTS["pot_odds"])
+    mutated = result.model_copy(update={field: value})
+
+    with pytest.raises(ValueError, match="metadata"):
+        registry.reverify_materialized_result(mutated)
+
+
+def test_materialized_floating_result_rejects_verification_tampering() -> None:
+    registry = default_registry()
+    result = registry.execute("pot_odds", VALID_INPUTS["pot_odds"])
+    assert result.verification is not None
+    mutated = result.model_copy(
+        update={
+            "verification": result.verification.model_copy(
+                update={"observations": ["self-attested"]}
+            )
+        }
+    )
+
+    with pytest.raises(ValueError, match="canonical replay"):
+        registry.reverify_materialized_result(mutated)
+
+
+def test_materialized_result_rejects_json_distinct_integer_for_float_tampering() -> None:
+    registry = default_registry()
+    result = registry.execute("pot_odds", VALID_INPUTS["pot_odds"])
+    original = result.output["final_pot_before_rake"]
+    assert isinstance(original, float) and original.is_integer()
+    mutated = result.model_copy(
+        update={
+            "output": {
+                **result.output,
+                "final_pot_before_rake": int(original),
+            }
+        }
+    )
+    assert result.output == mutated.output
+
+    with pytest.raises(ValueError, match="canonical JSON representation"):
+        registry.reverify_materialized_result(mutated)
+
+
+def test_materialized_unknown_failed_result_is_rejected() -> None:
+    result = ToolResult(
+        tool_name="unknown",
+        input={},
+        status=ToolStatus.FAILED,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        error="forged failure",
+    )
+
+    with pytest.raises(ValueError, match="no canonical replay"):
+        default_registry().reverify_materialized_result(result)
+
+
+def test_materialized_normal_failed_result_requires_exact_replay() -> None:
+    registry = default_registry()
+    result = registry.execute("pot_odds", {"pot_before_bet": 100})
+    assert result.status is ToolStatus.FAILED
+
+    registry.reverify_materialized_result(result)
+
+    with pytest.raises(ValueError, match="canonical replay"):
+        registry.reverify_materialized_result(result.model_copy(update={"error": "forged failure"}))
+
+
+@pytest.mark.parametrize("tool_name", ["range_validate", "combos", "holdem_equity"])
+def test_materialized_versioned_range_failure_requires_exact_replay(
+    tool_name: str,
+) -> None:
+    registry = default_registry()
+    contract = contract_by_name()[tool_name]
+    success = registry.execute(
+        tool_name,
+        VALID_INPUTS[tool_name],
+        contract_version=contract.contract_version,
+    )
+    assert success.status is ToolStatus.SUCCESS
+    forged = ToolResult(
+        result_id=success.result_id,
+        tool_name=tool_name,
+        input=success.input,
+        status=ToolStatus.FAILED,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        contract_version=contract.contract_version,
+        assumptions=list(contract.assumptions),
+        version=contract.version,
+        error=versioned_range_bridge_failure_error(tool_name),
+        reproduce_command=(
+            f"poker-deliberate calculate {tool_name} "
+            "--analysis-scope retrospective --input <input.json>"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="canonical replay"):
+        registry.reverify_materialized_result(forged)
+
+
+def test_fresh_phase_failure_authority_is_exact_and_one_shot() -> None:
+    registry = default_registry(max_duration_seconds=0.001)
+    result = registry.execute_for_phase(
+        "hand_validator",
+        VALID_INPUTS["hand_validator"],
+        contract_version=contract_by_name()["hand_validator"].contract_version,
+    )
+    assert result.status is ToolStatus.FAILED
+
+    forged = result.model_copy(update={"error": "forged failure"})
+    with pytest.raises(ValueError, match="immediately executed result"):
+        registry.reverify_materialized_result(
+            forged,
+            allow_fresh_execution_failure=True,
+        )
+
+    fresh = registry.execute_for_phase(
+        "hand_validator",
+        VALID_INPUTS["hand_validator"],
+        contract_version=contract_by_name()["hand_validator"].contract_version,
+    )
+    assert fresh.status is ToolStatus.FAILED
+    registry.reverify_materialized_result(
+        fresh,
+        allow_fresh_execution_failure=True,
+    )
+    with pytest.raises(ValueError, match="immediate execution authority"):
+        registry.reverify_materialized_result(
+            fresh,
+            allow_fresh_execution_failure=True,
+        )
+
+
+def test_fresh_phase_failure_snapshot_rejects_nested_in_place_mutation() -> None:
+    registry = default_registry(max_duration_seconds=0.001)
+    result = registry.execute_for_phase(
+        "hand_validator",
+        VALID_INPUTS["hand_validator"],
+        contract_version=contract_by_name()["hand_validator"].contract_version,
+    )
+    assert result.status is ToolStatus.FAILED
+    result.input["players"][0]["stack"] = 999  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="immediately executed result"):
+        registry.reverify_materialized_result(
+            result,
+            allow_fresh_execution_failure=True,
+        )
+
+
+def test_fresh_phase_failure_rejects_cross_thread_consumption() -> None:
+    registry = default_registry(max_duration_seconds=0.001)
+    result = registry.execute_for_phase(
+        "hand_validator",
+        VALID_INPUTS["hand_validator"],
+        contract_version=contract_by_name()["hand_validator"].contract_version,
+    )
+    failures: list[Exception] = []
+
+    def consume() -> None:
+        try:
+            registry.reverify_materialized_result(
+                result,
+                allow_fresh_execution_failure=True,
+            )
+        except Exception as exc:
+            failures.append(exc)
+
+    thread = Thread(target=consume)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert len(failures) == 1
+    assert "another thread" in str(failures[0])
+
+
+def test_fresh_phase_success_avoids_only_the_immediate_duplicate_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    original = ToolRegistry._execute_isolated
+
+    def counted(self: ToolRegistry, *args: object, **kwargs: object) -> ToolResult:
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ToolRegistry, "_execute_isolated", counted)
+    registry = default_registry()
+    contract = contract_by_name()["pot_odds"]
+    result = registry.execute_for_phase(
+        "pot_odds",
+        VALID_INPUTS["pot_odds"],
+        contract_version=contract.contract_version,
+    )
+    assert result.status is ToolStatus.SUCCESS
+    assert calls == 1
+
+    registry.reverify_materialized_result(
+        result,
+        allow_fresh_phase_success=True,
+    )
+    assert calls == 1
+
+    # The authority is one-shot. A later or storage-style verification still
+    # performs a canonical hard replay rather than trusting the old result.
+    registry.reverify_materialized_result(
+        result,
+        allow_fresh_phase_success=True,
+    )
+    assert calls == 2
+
+
+def test_fresh_phase_success_rejects_mutation_before_consuming_authority() -> None:
+    registry = default_registry()
+    contract = contract_by_name()["pot_odds"]
+    result = registry.execute_for_phase(
+        "pot_odds",
+        VALID_INPUTS["pot_odds"],
+        contract_version=contract.contract_version,
+    )
+    assert result.status is ToolStatus.SUCCESS
+    mutated = result.model_copy(update={"output": {**result.output, "required_equity": 0.99}})
+
+    with pytest.raises(ValueError, match="immediately executed phase result"):
+        registry.reverify_materialized_result(
+            mutated,
+            allow_fresh_phase_success=True,
+        )
+
+
+def test_fresh_phase_success_snapshot_rejects_nested_in_place_mutation() -> None:
+    registry = default_registry()
+    contract = contract_by_name()["pot_odds"]
+    result = registry.execute_for_phase(
+        "pot_odds",
+        VALID_INPUTS["pot_odds"],
+        contract_version=contract.contract_version,
+    )
+    assert result.status is ToolStatus.SUCCESS
+    result.output["required_equity"] = 0.99
+
+    with pytest.raises(ValueError, match="immediately executed phase result"):
+        registry.reverify_materialized_result(
+            result,
+            allow_fresh_phase_success=True,
+        )
+
+
+def test_fresh_phase_success_rejects_result_id_change() -> None:
+    registry = default_registry()
+    contract = contract_by_name()["pot_odds"]
+    result = registry.execute_for_phase(
+        "pot_odds",
+        VALID_INPUTS["pot_odds"],
+        contract_version=contract.contract_version,
+    )
+
+    with pytest.raises(ValueError, match="result ID changed"):
+        registry.reverify_materialized_result(
+            result.model_copy(update={"result_id": "tool-result-replaced"}),
+            allow_fresh_phase_success=True,
+        )
+
+
+def test_fresh_phase_success_rejects_cross_thread_consumption() -> None:
+    registry = default_registry()
+    contract = contract_by_name()["pot_odds"]
+    result = registry.execute_for_phase(
+        "pot_odds",
+        VALID_INPUTS["pot_odds"],
+        contract_version=contract.contract_version,
+    )
+    failures: list[Exception] = []
+
+    def consume() -> None:
+        try:
+            registry.reverify_materialized_result(
+                result,
+                allow_fresh_phase_success=True,
+            )
+        except Exception as exc:
+            failures.append(exc)
+
+    thread = Thread(target=consume)
+    thread.start()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert len(failures) == 1
+    assert "another thread" in str(failures[0])
+
+
+def test_fresh_custom_nonisolated_success_is_immediate_and_one_shot() -> None:
+    calls = 0
+
+    def custom_tool(_payload: dict[str, object]) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"value": 1}
+
+    registry = ToolRegistry()
+    registry.register(_size_test_definition(custom_tool))
+    result = registry.execute_for_phase("size-test", {})
+
+    assert result.status is ToolStatus.SUCCESS
+    registry.reverify_materialized_result(
+        result,
+        allow_fresh_phase_success=True,
+    )
+    assert calls == 1
+
+    with pytest.raises(ValueError, match="no canonical replay"):
+        registry.reverify_materialized_result(
+            result,
+            allow_fresh_phase_success=True,
+        )
+    assert calls == 1
+
+    fresh = registry.execute_for_phase("size-test", {})
+    with pytest.raises(ValueError, match="no canonical replay"):
+        registry.reverify_materialized_result(fresh)
+
+
+def test_fresh_custom_nonisolated_success_rejects_tamper_and_consumes_authority() -> None:
+    registry = ToolRegistry()
+    registry.register(_size_test_definition())
+    result = registry.execute_for_phase("size-test", {})
+    mutated = result.model_copy(update={"output": {"value": 2}})
+
+    with pytest.raises(ValueError, match="immediately executed phase result"):
+        registry.reverify_materialized_result(
+            mutated,
+            allow_fresh_phase_success=True,
+        )
+    with pytest.raises(ValueError, match="no canonical replay"):
+        registry.reverify_materialized_result(
+            result,
+            allow_fresh_phase_success=True,
+        )
+
+
+def test_budget_failed_result_requires_explicit_storage_authority() -> None:
+    contract = contract_by_name()["pot_odds"]
+    result = ToolResult(
+        tool_name=contract.name,
+        input=dict(VALID_INPUTS[contract.name]),
+        status=ToolStatus.FAILED,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        contract_version=contract.contract_version,
+        error="strict budget failure: tool_input_exceeded",
+    )
+    registry = default_registry()
+
+    with pytest.raises(ValueError, match="storage authority"):
+        registry.reverify_materialized_result(result)
+    authority = BudgetFailure(
+        code=BudgetFailureCode.TOOL_INPUT_EXCEEDED,
+        resource="tool_input_bytes",
+        message="tool input exceeded its strict budget",
+        limit=10,
+        observed=11,
+    )
+    registry.reverify_materialized_result(
+        result,
+        authoritative_budget_failure=authority,
+    )
+    with pytest.raises(ValueError, match="differs from its authority"):
+        registry.reverify_materialized_result(
+            result,
+            authoritative_budget_failure=authority.model_copy(
+                update={"code": BudgetFailureCode.TOOL_OUTPUT_EXCEEDED}
+            ),
+        )

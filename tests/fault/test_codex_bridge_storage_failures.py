@@ -34,6 +34,7 @@ def _anchors(tmp_path: Path):  # type: ignore[no-untyped-def]
         role_conformance=build_bridge_role_conformance(
             REPOSITORY_ROOT,
             repository_commit_id="1" * 40,
+            include_repository_skill_bindings=True,
         ),
         repository_commit_id="1" * 40,
         repository_tree_id="2" * 40,

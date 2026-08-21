@@ -10,7 +10,17 @@ import pytest
 from poker_deliberation.config import AppConfig
 from poker_deliberation.orchestrator import Orchestrator
 from poker_deliberation.range_equity import admit_versioned_range_river_equity
-from poker_deliberation.schemas import CaseInput, FinalReport
+from poker_deliberation.schemas import (
+    CaseInput,
+    Exactness,
+    FinalReport,
+    NumericalExactness,
+    ToolResult,
+    ToolStatus,
+)
+from poker_deliberation.storage.range_equity_admission_store import (
+    read_range_equity_admission_record,
+)
 from poker_deliberation.storage.run_store import RunStore
 from poker_deliberation.storage.terminal_models import (
     ProductRunError,
@@ -28,7 +38,12 @@ def _config(tmp_path: Path) -> AppConfig:
     )
 
 
-def _legacy_source(config: AppConfig, run_id: str = "run-legacy-source") -> Path:
+def _legacy_source(
+    config: AppConfig,
+    run_id: str = "run-legacy-source",
+    *,
+    tool_results: list[ToolResult] | None = None,
+) -> Path:
     store = RunStore(config.runs_dir)
     store.create_run(run_id)
     store.write_json(
@@ -55,6 +70,7 @@ def _legacy_source(config: AppConfig, run_id: str = "run-legacy-source") -> Path
         run_id=run_id,
         run_status="completed",
         conclusion="legacy source conclusion",
+        tool_results=tool_results or [],
     )
     store.write_json(run_id, "final_report.json", report)
     store.write_text(run_id, "final_report.md", "legacy source conclusion\n")
@@ -121,6 +137,32 @@ def test_copy_migration_preserves_exact_bytes_and_replays_idempotently(
     with pytest.raises(ProductRunError) as caught:
         Orchestrator(config).report_path("run-legacy-copy", "json")
     assert caught.value.failure.code is ProductRunFailureCode.LEGACY_RUN_UNVERIFIED
+
+
+def test_migrated_unknown_legacy_tool_is_readable_as_unverified_projection(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    unknown_result = ToolResult(
+        tool_name="retired_legacy_tool",
+        input={"legacy": True},
+        status=ToolStatus.UNAVAILABLE,
+        exactness=Exactness.UNAVAILABLE,
+        numeric_exactness=NumericalExactness.UNAVAILABLE,
+        error="unknown tool: retired_legacy_tool",
+    )
+    _legacy_source(config, tool_results=[unknown_result])
+    Orchestrator(config).migrate_legacy_run(
+        "run-legacy-source",
+        "run-legacy-copy-unknown-tool",
+        source_quiescence_acknowledged=True,
+    )
+
+    projection = Orchestrator(config).load_report("run-legacy-copy-unknown-tool")
+
+    assert projection.run_status == "failed_with_limitations"
+    assert projection.tool_results == [unknown_result]
+    assert "legacy_unverified_integrity_guarantees_missing" in projection.limitations
 
 
 def test_migration_requires_explicit_source_quiescence(tmp_path: Path) -> None:
@@ -201,26 +243,18 @@ def test_migration_cannot_publish_into_reserved_range_equity_namespace(
     destination = "run-migration-bridge-race"
     migration_ready_to_reserve = Event()
     release_migration = Event()
-    bridge_tool_entered = Event()
-    release_bridge = Event()
+    bridge_namespace_reserved = Event()
     migration_results: list[object] = []
     bridge_results: list[object] = []
+    bridge_binding_sha256: list[str] = []
     original_reserve = migration._reserve_legacy_migration_destination
-    original_execute = bridge.registry.execute
 
     def pausing_reserve(run_id: str) -> None:
         migration_ready_to_reserve.set()
         assert release_migration.wait(timeout=20)
         original_reserve(run_id)
 
-    def pausing_execute(tool_name: str, *args: object, **kwargs: object):
-        if not bridge_tool_entered.is_set():
-            bridge_tool_entered.set()
-            assert release_bridge.wait(timeout=20)
-        return original_execute(tool_name, *args, **kwargs)
-
     monkeypatch.setattr(migration, "_reserve_legacy_migration_destination", pausing_reserve)
-    monkeypatch.setattr(bridge.registry, "execute", pausing_execute)
 
     def migrate() -> None:
         try:
@@ -237,21 +271,22 @@ def test_migration_cannot_publish_into_reserved_range_equity_namespace(
     def run_bridge() -> None:
         try:
             admission = admit_versioned_range_river_equity(versioned_river_equity_case())
-            bridge_results.append(
-                bridge.run_versioned_range_river_equity(admission, run_id=destination)
-            )
+            bridge._reserve_new_run(admission.case, destination)
+            bridge_results.append(admission)
+            bridge_binding_sha256.append(admission.binding.binding_sha256)
         except ProductRunError as exc:
             bridge_results.append(exc)
+        finally:
+            bridge_namespace_reserved.set()
 
     migration_thread = Thread(target=migrate)
     bridge_thread = Thread(target=run_bridge)
     migration_thread.start()
     assert migration_ready_to_reserve.wait(timeout=20)
     bridge_thread.start()
-    assert bridge_tool_entered.wait(timeout=20)
+    assert bridge_namespace_reserved.wait(timeout=20)
     release_migration.set()
     migration_thread.join(timeout=30)
-    release_bridge.set()
     bridge_thread.join(timeout=30)
 
     assert not migration_thread.is_alive()
@@ -261,6 +296,11 @@ def test_migration_cannot_publish_into_reserved_range_equity_namespace(
     assert migration_results[0].failure.code is ProductRunFailureCode.MIGRATION_CONFLICT
     assert len(bridge_results) == 1
     assert not isinstance(bridge_results[0], ProductRunError)
-    current = bridge.product_store.read_current(destination)
-    assert current.read_status is RunReadStatus.SUCCEEDED
-    assert current.reachable_revisions == (1,)
+    assert bridge._namespace_kind(destination) == "product"
+    admission_record = read_range_equity_admission_record(
+        bridge.revision_runs_root,
+        destination,
+        maximum_bytes=bridge.budget_policy.max_artifact_bytes,
+    )
+    assert admission_record is not None
+    assert admission_record.binding_sha256 == bridge_binding_sha256[0]

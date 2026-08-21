@@ -706,6 +706,48 @@ def test_supervised_workflow_completes_exactly_one_confirmed_role_per_cycle(
             confirmed_at=confirmed_at,
             expires_at=confirmed_at + timedelta(hours=1),
         )
+        original_verified_source_read = workflow_product._verified_source_read
+        source_authority = None
+        source_storage_snapshot = None
+        real_source_read_calls = 0
+        source_storage_roots = config.resolved_storage_roots()
+        source_revision_root = source_storage_roots[1]
+
+        def stable_verified_source_read(
+            requested_config,
+            source_run_id,
+            *,
+            expected_source_sha256,
+        ):
+            nonlocal source_authority, source_storage_snapshot, real_source_read_calls
+            assert requested_config is config
+            assert requested_config.resolved_storage_roots() == source_storage_roots
+            assert source_run_id == plan.source_run_id
+            assert expected_source_sha256 == plan.source_sha256
+            if source_authority is None:
+                real_source_read_calls += 1
+                source_authority = original_verified_source_read(
+                    requested_config,
+                    source_run_id,
+                    expected_source_sha256=expected_source_sha256,
+                )
+                source_storage_snapshot = _file_snapshot(short_storage_root)
+                return source_authority
+            assert source_storage_snapshot is not None
+            assert _file_snapshot(short_storage_root) == source_storage_snapshot
+            source_context, verified_source = workflow_product._replay_verified_source_for_view(
+                source_authority[0],
+                source_revision_root=source_revision_root,
+            )
+            assert source_context == source_authority[1]
+            assert verified_source.confirmation.confirmation_sha256 == source_authority[2]
+            return source_authority
+
+        monkeypatch.setattr(
+            workflow_product,
+            "_verified_source_read",
+            stable_verified_source_read,
+        )
         status = run_bounded_river_review_workflow(
             source,
             config=config,
@@ -713,11 +755,53 @@ def test_supervised_workflow_completes_exactly_one_confirmed_role_per_cycle(
             workflow_root=workflow_root,
             workflow_id=plan.workflow_id,
         )
+        assert source_authority is not None
+        assert source_storage_snapshot is not None
+
+        original_source_terminal_for_view = workflow_product._read_source_terminal_for_view
+        source_view_authority = None
+        real_source_view_calls = 0
+
+        def capture_source_terminal_for_view(requested_config, source_run_id):
+            nonlocal source_view_authority, real_source_view_calls
+            assert requested_config is config
+            assert requested_config.resolved_storage_roots() == source_storage_roots
+            assert source_run_id == plan.source_run_id
+            assert _file_snapshot(short_storage_root) == source_storage_snapshot
+            real_source_view_calls += 1
+            source_view_authority = original_source_terminal_for_view(
+                requested_config,
+                source_run_id,
+            )
+            assert _file_snapshot(short_storage_root) == source_storage_snapshot
+            return source_view_authority
+
+        monkeypatch.setattr(
+            workflow_product,
+            "_read_source_terminal_for_view",
+            capture_source_terminal_for_view,
+        )
         initial_view = bounded_river_review_report_view(
             config=config,
             repository_root=REPOSITORY_ROOT,
             workflow_root=workflow_root,
             workflow_id=plan.workflow_id,
+        )
+        assert source_view_authority is not None
+        assert source_view_authority[0] == source_authority[0]
+        assert source_view_authority[1] == source_revision_root
+
+        def stable_source_terminal_for_view(requested_config, source_run_id):
+            assert requested_config is config
+            assert requested_config.resolved_storage_roots() == source_storage_roots
+            assert source_run_id == plan.source_run_id
+            assert _file_snapshot(short_storage_root) == source_storage_snapshot
+            return source_view_authority
+
+        monkeypatch.setattr(
+            workflow_product,
+            "_read_source_terminal_for_view",
+            stable_source_terminal_for_view,
         )
         workflow_directory = next(workflow_root.rglob("linkage.json")).parent
         store = BoundedCodexBridgeStore(workflow_directory / "bridge")
@@ -836,6 +920,9 @@ def test_supervised_workflow_completes_exactly_one_confirmed_role_per_cycle(
             terminal_view.final_report_artifact_sha256 == initial_view.final_report_artifact_sha256
         )
         assert terminal_view.report_writer_additive_evidence
+        assert real_source_read_calls == 1
+        assert real_source_view_calls == 1
+        assert _file_snapshot(short_storage_root) == source_storage_snapshot
     finally:
         if workflow_root.exists():
             shutil.rmtree(workflow_root)

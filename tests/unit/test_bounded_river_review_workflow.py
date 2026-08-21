@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import pytest
@@ -161,6 +162,20 @@ def _complete_local_only(
     )
     assert status.state == "completed_local_only"
     return repository, config, plan, confirmation
+
+
+@pytest.fixture(scope="module")
+def completed_local_only_tamper_baseline():
+    with TemporaryDirectory(prefix="brw-") as raw_root:
+        baseline_root = Path(raw_root)
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            repository, _config, plan, _confirmation = _complete_local_only(
+                baseline_root,
+                monkeypatch,
+            )
+        baseline_tree = _tree_snapshot(baseline_root)
+        yield repository, baseline_root / "storage", plan
+        assert _tree_snapshot(baseline_root) == baseline_tree
 
 
 class _StepClock:
@@ -1493,10 +1508,15 @@ def test_report_view_accepts_linked_ancestor_after_real_five_role_progress(
 def test_report_view_rejects_rehashed_plan_semantic_binding_tamper(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    completed_local_only_tamper_baseline,
     plan_update: dict[str, object],
     error_code: str,
 ) -> None:
-    repository, config, plan, _confirmation = _complete_local_only(tmp_path, monkeypatch)
+    baseline_repository, baseline_storage_root, plan = completed_local_only_tamper_baseline
+    repository = tmp_path / "repository"
+    shutil.copytree(baseline_repository, repository)
+    _allow_test_root(monkeypatch)
+    config = app_config(baseline_storage_root)
     _rewrite_rehashed_plan_and_linkage(repository, plan_update)
 
     with pytest.raises(BoundedRiverReviewWorkflowError, match=error_code):

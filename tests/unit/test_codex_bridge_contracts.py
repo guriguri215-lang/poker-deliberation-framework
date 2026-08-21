@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from typing import cast
 
@@ -81,8 +83,10 @@ def test_role_output_schema_requires_every_object_field_without_defaults() -> No
     assert claim_id["pattern"] == r"^claim-(?:0[1-9]|1[0-6])$"
 
 
-def test_role_output_schema_binds_exact_identity_and_evidence(tmp_path: Path) -> None:
-    request = _request(tmp_path)
+def test_role_output_schema_binds_exact_identity_and_evidence(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    request = _request(verified_source_context)
     schema = role_output_schema_for_request(request)
     assert request.output_schema_sha256 == domain_sha256(
         "poker-bounded-codex-bridge-output-schema-v1",
@@ -141,12 +145,16 @@ def test_role_output_schema_binds_exact_identity_and_evidence(tmp_path: Path) ->
     ]
 
 
-def _source(tmp_path: Path) -> BridgeSourceContextV1:
-    return verified_bridge_source(tmp_path)
+@pytest.fixture(scope="module")
+def verified_source_context() -> Iterator[BridgeSourceContextV1]:
+    with TemporaryDirectory(prefix="p3-bridge-contracts-") as directory:
+        source = verified_bridge_source(Path(directory) / "p3")
+        source_bytes = canonical_json_bytes(source)
+        yield source
+        assert canonical_json_bytes(source) == source_bytes
 
 
-def _request(tmp_path: Path) -> BoundedCodexBridgeRequestV1:
-    source = _source(tmp_path)
+def _request(source: BridgeSourceContextV1) -> BoundedCodexBridgeRequestV1:
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
@@ -165,9 +173,8 @@ def _request(tmp_path: Path) -> BoundedCodexBridgeRequestV1:
 
 
 def _role_chain(
-    tmp_path: Path,
+    source: BridgeSourceContextV1,
 ) -> tuple[tuple[BoundedCodexBridgeRequestV1, BridgeRoleResultV1], ...]:
-    source = _source(tmp_path)
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
         repository_commit_id="1" * 40,
@@ -207,10 +214,11 @@ def _role_chain(
     return tuple(chain)
 
 
-def test_verified_terminal_projects_minimal_exact_context(tmp_path: Path) -> None:
-    source = _source(tmp_path)
-    payload = source.model_dump(mode="json")
-    encoded = canonical_json_bytes(source)
+def test_verified_terminal_projects_minimal_exact_context(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    payload = verified_source_context.model_dump(mode="json")
+    encoded = canonical_json_bytes(verified_source_context)
 
     assert payload["math"]["required_equity"] == {"numerator": 5, "denominator": 24}
     assert payload["math"]["action_comparison"] == "call"
@@ -220,8 +228,10 @@ def test_verified_terminal_projects_minimal_exact_context(tmp_path: Path) -> Non
     assert b"final_report" not in encoded.lower()
 
 
-def test_strategy_request_seeds_only_safe_neutral_narrative_forms(tmp_path: Path) -> None:
-    request = _request(tmp_path)
+def test_strategy_request_seeds_only_safe_neutral_narrative_forms(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    request = _request(verified_source_context)
     instructions = request.developer_instructions
     lowered = instructions.lower()
 
@@ -242,9 +252,9 @@ def test_strategy_request_seeds_only_safe_neutral_narrative_forms(tmp_path: Path
 
 
 def test_request_confirmation_admission_and_response_are_exactly_bound(
-    tmp_path: Path,
+    verified_source_context: BridgeSourceContextV1,
 ) -> None:
-    source = _source(tmp_path)
+    source = verified_source_context
     policy = build_runtime_policy(auth_mode=RuntimeAuthModeV1.CODEX_SUBSCRIPTION)
     conformance = build_bridge_role_conformance(
         REPOSITORY_ROOT,
@@ -337,8 +347,10 @@ def test_request_confirmation_admission_and_response_are_exactly_bound(
             validate_role_response(request, canonical_json_bytes(mutated))
 
 
-def test_contract_rejects_replay_mutation_and_model_numeric_claim(tmp_path: Path) -> None:
-    request = _request(tmp_path)
+def test_contract_rejects_replay_mutation_and_model_numeric_claim(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    request = _request(verified_source_context)
     key = (
         request.auth_mode,
         request.context.assignment.bridge_run_id,
@@ -388,8 +400,10 @@ def test_contract_rejects_replay_mutation_and_model_numeric_claim(tmp_path: Path
         )
 
 
-def test_admission_rejects_source_manifest_rebinding(tmp_path: Path) -> None:
-    request = _request(tmp_path)
+def test_admission_rejects_source_manifest_rebinding(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    request = _request(verified_source_context)
     confirmed = datetime(2029, 12, 31, 23, 40, tzinfo=UTC)
     confirmation = build_role_confirmation(
         request,
@@ -628,8 +642,10 @@ def test_dependent_outputs_cannot_bypass_parent_lineage() -> None:
         )
 
 
-def test_parent_payload_is_complete_hash_bound_and_role_ordered(tmp_path: Path) -> None:
-    chain = _role_chain(tmp_path)
+def test_parent_payload_is_complete_hash_bound_and_role_ordered(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    chain = _role_chain(verified_source_context)
     adjudicator_request = chain[3][0]
     parents = adjudicator_request.context.parent_results
 
@@ -702,8 +718,10 @@ def test_parent_payload_is_complete_hash_bound_and_role_ordered(tmp_path: Path) 
         BoundedCodexBridgeRequestV1.model_validate(reordered, strict=True)
 
 
-def test_report_writer_is_exact_deterministic_adjudication_projection(tmp_path: Path) -> None:
-    report_request, report_result = _role_chain(tmp_path)[4]
+def test_report_writer_is_exact_deterministic_adjudication_projection(
+    verified_source_context: BridgeSourceContextV1,
+) -> None:
+    report_request, report_result = _role_chain(verified_source_context)[4]
     adjudicator = report_request.context.parent_results[0]
 
     assert tuple(claim.claim_id for claim in report_result.output.conclusions) == tuple(
@@ -820,11 +838,11 @@ def test_each_adjudicator_claim_must_bind_all_three_parent_results() -> None:
     ),
 )
 def test_execution_audit_binds_cancellation_kind_to_effect_state(
-    tmp_path: Path,
+    verified_source_context: BridgeSourceContextV1,
     effect_state: BridgeEffectState,
     cancellation_kind: str,
 ) -> None:
-    request = _request(tmp_path)
+    request = _request(verified_source_context)
     confirmed_at = datetime(2029, 12, 31, 23, 40, tzinfo=UTC)
     confirmation = build_role_confirmation(
         request,
